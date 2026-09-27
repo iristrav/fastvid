@@ -613,18 +613,6 @@ export function beatShortlistExhausted(
   return Boolean(f && f.shortlisted >= cap);
 }
 
-/** Was this asset ever on this beat's shortlist? The question the adoption guard asks. */
-export function isShortlisted(
-  state: BeatShortlistState | undefined,
-  sceneIndex: number,
-  beatIndex: number,
-  contentKey: string | undefined
-): boolean {
-  if (!state) return false;
-  const id = (contentKey ?? "").trim();
-  if (!id) return false;
-  return state.beats.get(key(sceneIndex, beatIndex))?.admitted.has(id) ?? false;
-}
 
 /** A judgement was actually put to the editor for this beat. */
 export function noteVisionAsked(

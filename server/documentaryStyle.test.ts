@@ -5,7 +5,6 @@ import {
   buildKenBurnsTail,
   buildMatFramedStillVF,
   buildPolaroidStillVF,
-  buildPostGradeVF,
   buildPerClipDocumentaryGradeVF,
   buildMontageBranchNormVF,
   buildFinalSceneGradeVF,
@@ -75,16 +74,6 @@ describe("documentaryStyle", () => {
     expect(vf).toContain("[vout]");
   });
 
-  it("film grain enabled by default", () => {
-    const prev = process.env.ENABLE_FILM_GRAIN;
-    delete process.env.ENABLE_FILM_GRAIN;
-    expect(buildPostGradeVF()).toContain("noise=");
-    process.env.ENABLE_FILM_GRAIN = "false";
-    expect(buildPostGradeVF()).not.toContain("noise=");
-    if (prev === undefined) delete process.env.ENABLE_FILM_GRAIN;
-    else process.env.ENABLE_FILM_GRAIN = prev;
-  });
-
   it("uses blur-fill still composition by default", () => {
     const vf = resolveStillCompositionVF(4, 1, 0, false);
     expect(vf).toContain("gblur=sigma=42");
@@ -101,12 +90,6 @@ describe("documentaryStyle", () => {
     expect(vf).not.toContain("gblur");
     if (prev === undefined) delete process.env.ARCHIVE_BLUR_FILL_STILLS;
     else process.env.ARCHIVE_BLUR_FILL_STILLS = prev;
-  });
-
-  it("builds post grade chain", () => {
-    const vf = buildPostGradeVF();
-    expect(vf).toContain("vignette=");
-    expect(vf).toContain("eq=contrast");
   });
 
   it("builds per-clip and final scene grades", () => {

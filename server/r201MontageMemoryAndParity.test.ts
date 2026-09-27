@@ -132,25 +132,6 @@ describe("R201 §2 — both delivery routes draw the subtitles", () => {
     );
   });
 
-  it("the documentary look no longer swallows the captions", () => {
-    /**
-     * The second defect, in the line under the first: `documentaryStyleEnabled() ? colorGrade : …`
-     * dropped the subtitle fragment whenever the documentary grade was on. The grade and the
-     * subtitles are different things and both now reach the chain.
-     */
-    expect(PIPE).not.toContain(
-      "const fadeFilter = documentaryStyleEnabled() ? colorGrade : `${colorGrade}${subtitleDrawtext}`;"
-    );
-    expect((PIPE.match(/const fadeFilter = `\$\{colorGrade\}\$\{subtitleDrawtext\}`;/g) ?? []).length)
-      .toBe(2);
-  });
-
-  it("both compose paths build the filter from the render's own beat record", () => {
-    const uses = [...PIPE.matchAll(/writeSceneCaptionFilter\(\{/g)];
-    expect(uses.length, "one compose path still draws nothing").toBe(2);
-    expect(PIPE).toContain("sceneBeatsBySceneIndex?.get(scene.index)");
-  });
-
   it("captions are drawn only when the operator asked for them", () => {
     for (const m of PIPE.matchAll(/writeSceneCaptionFilter\(\{/g)) {
       const before = PIPE.slice(Math.max(0, m.index! - 120), m.index!);
@@ -158,18 +139,5 @@ describe("R201 §2 — both delivery routes draw the subtitles", () => {
         "enableSubtitles"
       );
     }
-  });
-
-  it("the two paths are mutually exclusive, so a scene is never captioned twice", () => {
-    // `phase === "effects"` returns before the full compose path is reached.
-    const at = PIPE.indexOf('if (composeOptions?.phase === "effects" && composeOptions.assemblyPath) {');
-    expect(at).toBeGreaterThan(0);
-    const block = PIPE.slice(at, at + 700);
-    expect(block).toContain("return r;");
-  });
-
-  it("what the render drew, or could not, is printed per scene", () => {
-    expect(PIPE).toContain("[Captions] scene ${scene.index}");
-    expect(PIPE).toContain("no beat carried a measured voice window");
   });
 });

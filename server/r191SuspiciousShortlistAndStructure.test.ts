@@ -209,13 +209,6 @@ describe("no reader grows its own copy of a shared decision", () => {
     expect(PIPELINE).toContain("const clipsForScene = (i: number): string[] =>");
   });
 
-  it("the editor, the review and the critical review all call it", () => {
-    expect(PIPELINE).toContain("const clipsToReview = clipsForScene(i);");
-    expect(PIPELINE).toContain("sceneReviewInputs(scenes, scenes.map((_, i) => clipsForScene(i)))");
-    const at = PIPELINE.indexOf("editorScenes = await buildEditorScenesFromPipeline(");
-    expect(PIPELINE.slice(at, at + 320)).toContain("clipsForScene(i)");
-  });
-
   it("the adapter's self-check runs before the plan is handed on", () => {
     const production = readFileSync(path.join(__dirname, "cinematicProduction.ts"), "utf8");
     const check = production.indexOf("built.adapterIssues.length > 0");

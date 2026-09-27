@@ -160,15 +160,16 @@ describe("the demand reaches exactly the two routes that produce route=backfill"
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
   const code = PIPE.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
-  it("BOTH BACKFILL PUSH CLOSURES ASK FOR AN APPROVAL", () => {
+  it("THE BACKFILL PUSH CLOSURE ASKS FOR AN APPROVAL", () => {
     /**
      * `backfillComposeMontageIfShort` and `ensureArchiveMontageVoiceCoverage` each define a push
      * closure and each hands it to `backfillArchiveMontageFromPool`. Fixing one and not the other
      * would leave the same defect reachable down the second path, which is how this codebase's
      * recurring shape — a rule N routes must follow, registered by some of them — keeps recurring.
      */
+    /** RONDE 661: `backfillComposeMontageIfShort` is deleted; the remaining closure still demands a yes. */
     const strict = code.match(/beatClipRefusedByRelevanceGate\([^)]*"approval"\)/g) ?? [];
-    expect(strict.length, "one of the two backfill closures is still lenient").toBe(2);
+    expect(strict.length, "the backfill closure is lenient").toBe(1);
   });
 
   it("and no other caller does", () => {

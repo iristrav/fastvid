@@ -172,7 +172,8 @@ describe("FIX 7 — sourcing-ladder clock starts when the visual stage starts", 
 
   it("the hard wall-clock guard still uses pipelineWallStartMs, not the ladder clock", () => {
     const calls = codeOnly(pipelineSrc).match(/assertPipelineWithinBudget\(videoId, pipelineWallStartMs/g) ?? [];
-    expect(calls.length).toBeGreaterThanOrEqual(3);
+    /** RONDE 661: the scene loop's heartbeat — the P5A heartbeat and the stage-4 guard are deleted. */
+    expect(calls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("the fast-short ladder rungs exist and keep their order (values widened by RONDE 8)", () => {

@@ -57,14 +57,6 @@ describe("§1 — the rule", () => {
 describe("§2 — both sites that replace a non-empty scene", () => {
   const src = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("P5A: an under-filled scene's refill is judged against the scene", () => {
-    const at = src.indexOf("clips — strict refill`);");
-    expect(at).toBeGreaterThan(0);
-    const next = src.slice(at, at + 400);
-    expect(next).toContain("svr = applyRefillMayNotTradeDown(");
-    expect(next).not.toMatch(/svr = await refillSceneStrictVoiceMatch/);
-  });
-
   it("the chunk sweep: the same", () => {
     const at = src.indexOf("clips — strict beat refill`");
     expect(at).toBeGreaterThan(0);
@@ -81,9 +73,9 @@ describe("§2 — both sites that replace a non-empty scene", () => {
   });
 
   it("no site replaces a scene that has real clips with an unjudged refill", () => {
-    /** The two remaining direct calls run only when the scene holds no clips at all. */
+    /** The remaining direct call runs only when the scene holds no clips at all (RONDE 661: the P5A one went). */
     const direct = [...src.matchAll(/= await refillSceneStrictVoiceMatch\(/g)].map((m) => m.index ?? 0);
-    expect(direct).toHaveLength(2);
+    expect(direct).toHaveLength(1);
     for (const at of direct) {
       /** The chunk sweep's check opens its `if` above a fast-stock branch, about 2.5k characters up. */
       const before = src.slice(Math.max(0, at - 3500), at);

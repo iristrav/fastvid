@@ -6,7 +6,6 @@ import {
   VisualSourceLedger,
   emptySummaryCounts,
   formatFunnelReport,
-  formatLineageLine,
   formatSourceSummary,
 } from "./visualSourceLineage";
 import {
@@ -157,33 +156,6 @@ describe("RONDE 86 §A — a clip's origin outlives its filename", () => {
     });
     expect(withLedger.bySource.wikimedia).toBe(1);
     expect(withLedger.bySource.unknown).toBeUndefined();
-  });
-
-  it("TEST 7 — the compose manifest and the report read the same ledger", () => {
-    expect(PIPELINE_SRC).toContain("resolveSource: (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath)");
-    expect(PIPELINE_SRC).toContain("formatLineageLine(lineageRecord, clipPath)");
-    // MUTATION GUARD: the two renames that ended provenance must both still be linked, each with
-    // the stage that describes it (RONDE 87).
-    expect(PIPELINE_SRC).toContain('linkDerivedPath(effectiveClip, clipPath, "PADDED")');
-    expect(PIPELINE_SRC).toContain('linkDerivedPath(withText, effectiveClip, "OVERLAYED")');
-  });
-
-  it("TEST 8 — the lineage line names the source and whether it is proven", () => {
-    const l = ledger();
-    const rec = l.createLineage({
-      sceneIndex: 2, beatIndex: 5,
-      candidateId: "internet_archive:x", contentKey: "internet_archive:x",
-      provider: "internet_archive", providerAssetId: "berlin-1945",
-      localPath: "/w/ia.mp4", mediaType: "video", route: "rescue", candidateScore: 142,
-    });
-    const line = formatLineageLine(rec, "/w/ia.mp4");
-    expect(line).toContain("provider=internet_archive");
-    expect(line).toContain("providerStatus=VERIFIED");
-    expect(line).toContain("route=rescue");
-    // RONDE 87: no record means no provider — the line says UNVERIFIED rather than naming a guess.
-    const unknown = formatLineageLine(null, "/w/x.mp4");
-    expect(unknown).toContain("provider=UNVERIFIED");
-    expect(unknown).toContain("providerStatus=UNVERIFIED");
   });
 });
 
@@ -595,19 +567,6 @@ describe("RONDE 86 §G — the budget is global, not per render", () => {
 /* ═════════════ §H/I — nothing RONDE 83 fixed was undone ═════════════ */
 
 describe("RONDE 86 §I — the RONDE 83 concurrency limits are intact", () => {
-  it("TEST 38 — all seven per-render limits are unchanged", () => {
-    const semSrc = fs.readFileSync(path.join(__dirname, "_core", "semaphore.ts"), "utf8");
-    const graphicsSrc = fs.readFileSync(path.join(__dirname, "editorialGraphicsEngine.ts"), "utf8");
-
-    expect(semSrc).toContain('parseInt(process.env.FFMPEG_CONCURRENCY_LIMIT ?? "3", 10)');
-    expect(graphicsSrc).toContain("pLimit(Math.max(1, montageSegmentParallelism()))");
-    expect(CURATED_SRC).toContain("const archiveDownloadLimit = pLimit(archiveDownloadConcurrency());");
-    expect(PIPELINE_SRC).toContain("const visualLimit = pLimit(perf.sceneParallelism);");
-    expect(PIPELINE_SRC).toContain("const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));");
-    expect(PIPELINE_SRC).toContain("const beatLimit = pLimit(beatConcurrency);");
-    // RONDE 84's wave loop, which the funnel counters must not have restructured.
-    expect(PIPELINE_SRC).toContain("if (results.some(Boolean)) return true;");
-  });
 
   it("TEST 39 — compose parallelism is still the same at every video length", () => {
     const values = ["1", "8-10", "10-15", "15-20"].map((l) => composeParallelismForVideo(l, false));
@@ -621,6 +580,7 @@ describe("RONDE 86 §I — the RONDE 83 concurrency limits are intact", () => {
     // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
     // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
     // technical fallback). A THIRD would still mean a freeze had leaked back in.
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(2);
+    // RONDE 661: both clone-pads sat in the deleted compose montage's tail pad — none remain.
+    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(0);
   });
 });

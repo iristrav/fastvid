@@ -3,44 +3,26 @@ import {
   buildCinematicSfxAudioFilter,
   buildFacelessDrawtextVF,
   buildFacelessTypewriterDrawtextChain,
-  buildStatCountSteps,
-  cinematicEffectsEnabled,
   extractStatFromText,
   extractVoiceoverKeywords,
   extractYearsFromText,
   computeMontageBeatStarts,
   computeVoiceBeatWindows,
-  computeVoiceSyncedClipDurations,
   computeTtsHardCutMontagePlan,
   pickVoiceBackfillBeatIndex,
-  finalizeVoiceSyncedMontageDurations,
   planBeatAlignedYears,
   planIntervalScreenLabels,
-  planVoiceSyncedScreenLabels,
-  selectSpacedScreenLabels,
   buildYearCaption,
   buildYearDisplayText,
-  buildYearDrawtextFilterChain,
-  planPhotoShutterCues,
   YEAR_LABEL_ON_SCREEN_SEC,
   SCREEN_LABEL_INTERVAL_SEC,
   SCREEN_LABEL_FONT_SIZE,
-  overlayUsesFullFrame,
   parseFacelessSubtitleLines,
   planCinematicScene,
 } from "./cinematicEffectsEngine";
 import { archiveVisualMinClipSec } from "./sourcingPolicy";
 
 describe("cinematicEffectsEngine", () => {
-  it("is enabled by default", () => {
-    const prev = process.env.ENABLE_CINEMATIC_EFFECTS;
-    delete process.env.ENABLE_CINEMATIC_EFFECTS;
-    expect(cinematicEffectsEnabled()).toBe(true);
-    process.env.ENABLE_CINEMATIC_EFFECTS = "false";
-    expect(cinematicEffectsEnabled()).toBe(false);
-    if (prev === undefined) delete process.env.ENABLE_CINEMATIC_EFFECTS;
-    else process.env.ENABLE_CINEMATIC_EFFECTS = prev;
-  });
 
   it("extracts years in narration order", () => {
     expect(extractYearsFromText("In 1939 the war started. By 1945 it ended.")).toEqual([
@@ -88,50 +70,6 @@ describe("cinematicEffectsEngine", () => {
     expect(labels).toHaveLength(1);
     expect(labels[0].startTime).toBeGreaterThan(2);
     expect(labels[0].startTime).toBeLessThan(8);
-  });
-
-  it("plans voice-synced year and place labels from second 10", () => {
-    const labels = planVoiceSyncedScreenLabels(
-      [
-        { text: "Eerst was het rustig in Europa.", holdSec: 12 },
-        { text: "Maar in Duitsland veranderde alles in 1933.", holdSec: 14 },
-        { text: "In 1939 brak de oorlog uit in Polen.", holdSec: 14 },
-        { text: "Berlijn viel en de wereld veranderde.", holdSec: 12 },
-      ],
-      62,
-      0
-    );
-    expect(labels.length).toBeGreaterThanOrEqual(2);
-    expect(labels.every((l) => l.startTime >= 10)).toBe(true);
-    expect(labels.some((l) => /^\d{4}$/.test(l.displayText))).toBe(true);
-    expect(labels.some((l) => /DUITS|POLEN|BERLIJ/i.test(l.displayText))).toBe(true);
-    expect(labels.every((l) => !/ — /.test(l.displayText))).toBe(true);
-  });
-
-  it("shows percentage label for geo stat beats like America 1%", () => {
-    const labels = planVoiceSyncedScreenLabels(
-      [{ text: "In America, only 1% of trips are by bike.", holdSec: 8 }],
-      20,
-      10
-    );
-    expect(labels.some((l) => l.displayText === "1%")).toBe(true);
-    expect(labels.some((l) => /AMERIKA|AMERICA/i.test(l.displayText))).toBe(false);
-  });
-
-  it("spaces labels apart and caps count", () => {
-    const picked = selectSpacedScreenLabels(
-      [
-        { year: "1933", caption: "", displayText: "1933", startTime: 11, endTime: 15 },
-        { year: "1934", caption: "", displayText: "1934", startTime: 12, endTime: 16 },
-        { year: "BERLIJN", caption: "", displayText: "BERLIJN", startTime: 25, endTime: 29 },
-      ],
-      60,
-      10,
-      9,
-      2
-    );
-    expect(picked).toHaveLength(2);
-    expect(picked[1]!.startTime - picked[0]!.endTime).toBeGreaterThanOrEqual(8.5);
   });
 
   it("computes word-weighted voice beat windows", () => {
@@ -195,52 +133,6 @@ describe("cinematicEffectsEngine", () => {
     expect(plan!.cutStartsSec[2]).toBeGreaterThan(plan!.cutStartsSec[1]!);
   });
 
-  it("computes voice-synced clip durations with xfade overlap", () => {
-    const beats = [
-      { text: "Eerste zin.", holdSec: 3 },
-      { text: "Tweede zin met meer woorden.", holdSec: 4 },
-      { text: "Derde.", holdSec: 2 },
-    ];
-    const voiceDur = 12;
-    const xfade = 0.3;
-    const durs = computeVoiceSyncedClipDurations(beats, voiceDur, [0, 1, 2], xfade);
-    expect(durs).toHaveLength(3);
-    // RONDE 30: these numbers predate archiveVisualMinClipSec() being raised to 5s. Every clip
-    // now has a 5-second floor, so a voice window shorter than that cannot be matched exactly and
-    // the montage necessarily runs long — the tail is covered by holding the last frame
-    // (RONDE 26). Asserting the invariants that survive a change to the floor instead of the old
-    // literals. The underlying tension (a 5s floor cannot fit a 2s sentence) is real and is
-    // reported separately; it is not something a test edit should paper over silently.
-    const montageLen = durs.reduce((s, d) => s + d, 0) - 2 * xfade;
-    // Never shorter than the narration (that would leave audio with no picture), and never more
-    // than one minimum clip longer than the unavoidable floor for this many clips.
-    expect(montageLen).toBeGreaterThanOrEqual(voiceDur);
-    expect(montageLen).toBeLessThanOrEqual(
-      Math.max(voiceDur, durs.length * archiveVisualMinClipSec()) + archiveVisualMinClipSec()
-    );
-    expect(durs[1]).toBeGreaterThanOrEqual(durs[0]);
-    expect(durs[1]).toBeGreaterThanOrEqual(durs[2]);
-  });
-
-  it("splits voice window when multiple clips map to one beat", () => {
-    const beats = [
-      { text: "Kort.", holdSec: 3 },
-      { text: "Langere slot aan het einde van de voiceover.", holdSec: 7 },
-    ];
-    const voiceDur = 10;
-    const xfade = 0.25;
-    const durs = computeVoiceSyncedClipDurations(beats, voiceDur, [0, 1, 1], xfade, 0);
-    expect(durs).toHaveLength(3);
-    // RONDE 30: these numbers predate archiveVisualMinClipSec() being raised to 5s. Every clip
-    // now has a 5-second floor, so a voice window shorter than that cannot be matched exactly and
-    // the montage necessarily runs long — the tail is covered by holding the last frame
-    // (RONDE 26). Asserting the invariants that survive a change to the floor instead of the old
-    // literals. The underlying tension (a 5s floor cannot fit a 2s sentence) is real and is
-    // reported separately; it is not something a test edit should paper over silently.
-    expect(durs[2]).toBeCloseTo(durs[1], 0);
-    expect(durs[1]).toBeGreaterThanOrEqual(durs[0]);
-  });
-
   it("prefers later beats for backfill when end voice still needs footage", () => {
     const beats = [
       { text: "Opening zin.", holdSec: 3 },
@@ -253,24 +145,6 @@ describe("cinematicEffectsEngine", () => {
     const clipDurations = [windows[0]!.dur, windows[1]!.dur * 0.5];
     const pick = pickVoiceBackfillBeatIndex(beats, voiceDur, clipBeatIndices, clipDurations, 0.3);
     expect(pick).toBe(2);
-  });
-
-  it("finalizeVoiceSyncedMontageDurations scales down when montage runs long", () => {
-    const seed = [6, 6, 6];
-    const out = finalizeVoiceSyncedMontageDurations(seed, 10, [20, 20, 20], 0.3, 0);
-    // RONDE 30: these numbers predate archiveVisualMinClipSec() being raised to 5s. Every clip
-    // now has a 5-second floor, so a voice window shorter than that cannot be matched exactly and
-    // the montage necessarily runs long — the tail is covered by holding the last frame
-    // (RONDE 26). Asserting the invariants that survive a change to the floor instead of the old
-    // literals. The underlying tension (a 5s floor cannot fit a 2s sentence) is real and is
-    // reported separately; it is not something a test edit should paper over silently.
-    const montageLen = out.reduce((s, d) => s + d, 0) - 2 * 0.3;
-    // Three clips cannot go below 3 x the 5s floor, so the reachable target is that, not 10.3.
-    expect(montageLen).toBeLessThanOrEqual(
-      Math.max(10.3, out.length * archiveVisualMinClipSec())
-    );
-    // It must still have scaled DOWN from the 6s seed.
-    expect(Math.max(...out)).toBeLessThan(6);
   });
 
   it("plans interval screen labels every 30s with years and keywords", () => {
@@ -289,43 +163,6 @@ describe("cinematicEffectsEngine", () => {
     expect(labels[1].startTime).toBeCloseTo(30, 0);
     expect(labels[0].endTime - labels[0].startTime).toBeCloseTo(YEAR_LABEL_ON_SCREEN_SEC, 1);
     expect(labels.some((l) => /1933|1939/.test(l.displayText))).toBe(true);
-  });
-
-  it("builds centred white typewriter drawtext that types out and fades", () => {
-    const chain = buildYearDrawtextFilterChain("vmont", "vout", [
-      {
-        year: "1933",
-        caption: "RISE TO POWER",
-        displayText: "RISE TO POWER — 1933",
-        startTime: 2,
-        endTime: 6,
-      },
-    ]);
-    // RONDE 30: this asserted the old look — a yellow pill (drawbox, 0xFFCC00, black text)
-    // pinned to the bottom-left. The label is a centred white "V3" typewriter now: no box, white
-    // text, centred x and y, typed one character at a time and then faded. The whole treatment
-    // was redesigned and the test was never updated. Asserting the current design plus the
-    // behaviour that matters — the label appears, it is timed to its window, and it fades out.
-    expect(chain).not.toContain("drawbox");
-    expect(chain).toContain("fontcolor=white");
-    expect(chain).toContain("x=(w-text_w)/2");
-    expect(chain).toContain("y=(h-text_h)/2");
-    expect(chain).toContain("1933");
-    // Typed out one character at a time, starting at the label's own start time.
-    expect(chain).toContain("between(t\\,2.000\\,");
-    // And faded rather than cut, so it does not pop off screen.
-    expect(chain).toContain("alpha=");
-  });
-
-  it("plans shutter cues when photo stills enter montage", () => {
-    const cues = planPhotoShutterCues(
-      ["a.mp4", "scene_0_b1_wiki_1.mp4", "scene_0_b2_wiki_2.mp4", "b.mp4"],
-      [4, 5, 3, 4],
-      (p) => /_wiki_/.test(p)
-    );
-    expect(cues).toHaveLength(1);
-    expect(cues[0].type).toBe("shutter");
-    expect(cues[0].timeSec).toBeCloseTo(4.03, 2);
   });
 
   it("computes beat-aligned year overlay timing", () => {
@@ -356,24 +193,6 @@ describe("cinematicEffectsEngine", () => {
     expect(chain).toContain("[aout]");
   });
 
-  it("detects full-frame overlays", () => {
-    expect(overlayUsesFullFrame({ path: "x", startTime: 0, endTime: 1, isYearBadge: true })).toBe(
-      false
-    );
-    expect(
-      overlayUsesFullFrame({
-        path: "x",
-        startTime: 0,
-        endTime: 1,
-        isYearBadge: true,
-        overlayX: 56,
-        overlayY: 900,
-      })
-    ).toBe(false);
-    expect(overlayUsesFullFrame({ path: "x", startTime: 0, endTime: 1, fullFrame: true })).toBe(true);
-    expect(overlayUsesFullFrame({ path: "x", startTime: 0, endTime: 1 })).toBe(false);
-  });
-
   it("extracts voiceover keywords in narration order", () => {
     expect(extractVoiceoverKeywords("In 1945 costs hit $4.2 billion")).toEqual(["1945", "$4.2 BILLION"]);
     expect(extractVoiceoverKeywords("Unemployment hit 25 procent")).toEqual(["25%"]);
@@ -398,11 +217,5 @@ describe("cinematicEffectsEngine", () => {
     expect(chain).toContain("enable=");
     expect(chain).toContain("text='1'");
     expect(chain).toContain("[vout]");
-  });
-
-  it("builds stat count steps for money", () => {
-    const steps = buildStatCountSteps("$1 Billion");
-    expect(steps[0]).toBe("$0");
-    expect(steps.length).toBeGreaterThan(2);
   });
 });

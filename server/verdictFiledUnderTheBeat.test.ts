@@ -154,20 +154,11 @@ describe("a call site that offsets the slot declares the real beat", () => {
     expect(CODE).toContain(declaration);
   });
 
-  /** `si` is a plain variable, so the rule above cannot see it — pinned by hand. */
-  it("the slotBeatIndex sites declare the beat they were fetched for", () => {
-    const declared = [...CODE.matchAll(/beatIndex: slotBeatIndex \?\? si/g)];
-    expect(
-      declared.length,
-      "a rescue slot files its verdict under the slot number again; the adoption beside it is " +
-        "recorded under slotBeatIndex, so the two records describe different beats"
-    ).toBe(3);
-  });
-
   /** And every call still passes the relevance object at all — the check needs a context. */
   it("every call still asks for a verdict", () => {
     const calls = ladderCalls(CODE);
-    expect(calls.length, "the ladder's call sites have moved").toBeGreaterThanOrEqual(13);
+    /** RONDE 661: the compose, P5A and stage-4 rescue call sites went with the compose route. */
+    expect(calls.length, "the ladder's call sites have moved").toBeGreaterThanOrEqual(4);
     for (const args of calls) {
       expect(args, `a call stopped asking for a verdict: ${args.slice(0, 80)}`).toMatch(
         /dedup[,:]/

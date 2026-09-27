@@ -7,16 +7,6 @@ import { ENV } from "./_core/env";
 import type { WhisperSegment } from "./_core/voiceTranscription";
 import { syncBeatHoldSecToVoiceTimeline, type BeatHoldInput } from "./voiceMomentSync";
 import { archiveVisualMaxClipSec, archiveVisualMinClipSec } from "./sourcingPolicy";
-import {
-  extractFrameAtFraction,
-  resolveBeatVisionQueryEmbedding,
-  beatVisionContextFromProfile,
-  scoreFramePathsAgainstBeat,
-  localVisionEnabled,
-} from "./localClipVision";
-import { minClipQualityScore } from "./visualQualityGate";
-import { voiceVisualAuditMinScore } from "./voiceVisualMatch";
-import { probeVideoDurationSec } from "./archiveVideoSplitter";
 
 export type BeatVoiceAlignment = {
   beatIndex: number;
@@ -40,11 +30,6 @@ export function whisperApiKey(): string {
 export function voiceBeatAlignmentEnabled(): boolean {
   if (process.env.ENABLE_VOICE_BEAT_ALIGNMENT === "false") return false;
   return Boolean(whisperApiKey());
-}
-
-export function voiceAlignmentSpotCheckEnabled(): boolean {
-  if (process.env.ENABLE_VOICE_ALIGNMENT_SPOT_CHECK === "false") return false;
-  return localVisionEnabled() && voiceBeatAlignmentEnabled();
 }
 
 function normalizeAlignText(text: string): string {
@@ -322,109 +307,4 @@ export async function alignSceneBeatsToVoiceAudio(
       `(windows: ${alignments.map((a) => a.durationSec.toFixed(1)).join("s, ")}s)`
   );
   return true;
-}
-
-/** Validate montage clip durations cover the aligned voice window. */
-export function validateMontageVoiceCoverage(
-  beatDurations: number[],
-  voiceSec: number,
-  xfadeSec = 0.35
-): { ok: boolean; coverageSec: number; warnings: string[] } {
-  const warnings: string[] = [];
-  const n = beatDurations.length;
-  const gross = beatDurations.reduce((s, d) => s + d, 0);
-  const coverageSec = n > 1 ? gross - (n - 1) * xfadeSec : gross;
-  const delta = Math.abs(coverageSec - voiceSec);
-  if (delta > Math.max(1.2, voiceSec * 0.12)) {
-    warnings.push(
-      `montage coverage ${coverageSec.toFixed(1)}s vs voice ${voiceSec.toFixed(1)}s (Δ${delta.toFixed(1)}s)`
-    );
-  }
-  return { ok: warnings.length === 0, coverageSec, warnings };
-}
-
-/** Sample composed scene at each beat midpoint — quick CLIP sanity check. */
-export async function spotCheckComposedSceneBeatSync(
-  composedPath: string,
-  beats: BeatHoldInput[],
-  beatDurations: number[],
-  clipBeatIndices: number[],
-  workDir: string,
-  sceneIndex: number,
-  videoTitle?: string,
-  xfadeSec = 0.35,
-  options?: { skipClipScoring?: boolean }
-): Promise<{ ok: boolean; warnings: string[] }> {
-  if (!voiceAlignmentSpotCheckEnabled() || !fs.existsSync(composedPath)) {
-    return { ok: true, warnings: [] };
-  }
-
-  const skipClip = options?.skipClipScoring === true;
-  const warnings: string[] = [];
-  const minScore = voiceVisualAuditMinScore();
-  const totalDur = await probeVideoDurationSec(composedPath);
-  if (totalDur <= 0.5) return { ok: true, warnings: [] };
-
-  let timeline = 0;
-  const checkCap = Math.min(beatDurations.length, 4);
-
-  for (let ci = 0; ci < beatDurations.length; ci++) {
-    if (ci >= checkCap && ci !== beatDurations.length - 1) {
-      timeline += beatDurations[ci]! - (ci > 0 ? xfadeSec : 0);
-      continue;
-    }
-
-    const beatIdx = clipBeatIndices[ci] ?? ci;
-    const beat = beats[beatIdx];
-    if (!beat) {
-      timeline += beatDurations[ci]! - (ci > 0 ? xfadeSec : 0);
-      continue;
-    }
-
-    const sampleSec = Math.min(totalDur - 0.05, timeline + beatDurations[ci]! * 0.45);
-    const sampleFrac = Math.max(0.02, Math.min(0.98, sampleSec / totalDur));
-    const framePath = path.join(
-      workDir,
-      `scene_${sceneIndex}_align_spot_${ci}_${path.basename(composedPath).replace(/\.[^.]+$/, "")}.jpg`
-    );
-    const ok = await extractFrameAtFraction(composedPath, framePath, sampleFrac, 8_000);
-    if (!ok) {
-      timeline += beatDurations[ci]! - (ci > 0 ? xfadeSec : 0);
-      continue;
-    }
-
-    if (!skipClip) {
-      const ctx = beatVisionContextFromProfile({ text: beat.text }, videoTitle);
-      const queryEmb = await resolveBeatVisionQueryEmbedding(ctx);
-      const scored = await scoreFramePathsAgainstBeat(
-        [framePath],
-        beat.text,
-        undefined,
-        videoTitle,
-        composedPath,
-        minScore,
-        undefined,
-        queryEmb
-      );
-      if (scored && scored.score < minScore) {
-        warnings.push(
-          `beat ${beatIdx} timeline ${sampleSec.toFixed(1)}s CLIP ${scored.score}/10 < ${minScore}`
-        );
-      }
-    }
-    try {
-      fs.unlinkSync(framePath);
-    } catch {
-      /* ignore */
-    }
-
-    timeline += beatDurations[ci]! - (ci > 0 ? xfadeSec : 0);
-  }
-
-  if (warnings.length) {
-    console.warn(
-      `[VoiceAlign] Scene ${sceneIndex} composed spot-check: ${warnings.join("; ")}`
-    );
-  }
-  return { ok: warnings.length === 0, warnings };
 }

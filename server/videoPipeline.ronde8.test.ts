@@ -85,20 +85,6 @@ describe("RONDE 8B — a gray pad is registered and reported, not silently shipp
     expect(pipelineSrc).toContain("grayPadScenes: [],");
   });
 
-  it("the gray-pad warn site registers the scene on the dedup state (deduplicated)", () => {
-    /**
-     * RONDE 132 §10 moved the warning's TEXT into `formatMontageShortfallWarning` so it can carry
-     * the seconds and the clip counts. What these tests exist to protect — the registration on the
-     * dedup state, and the shortfall reaching the persisted report — is unchanged, and is asserted
-     * against the new call rather than against the old inline string.
-     */
-    const idx = pipelineSrc.indexOf("montage est ${estBeforeCompose.toFixed(1)}s < voice");
-    expect(idx).toBeGreaterThan(-1);
-    const before = pipelineSrc.slice(Math.max(0, idx - 1600), idx);
-    expect(before).toContain("composeOptions.dedup.grayPadScenes.push(scene.index)");
-    expect(before).toContain("!composeOptions.dedup.grayPadScenes.includes(scene.index)");
-  });
-
   it("the export path pushes the shortfall into the persisted quality report", () => {
     // RONDE 27 reworded this warning without changing what triggers it. The old text asserted a
     // grey filler had been RENDERED; the list is actually built from the pre-compose estimate,

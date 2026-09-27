@@ -349,26 +349,6 @@ describe("RONDE 89 §17 — the measured cases, through the whole chain", () => 
 /* ═══════════ §20 — nothing else moved ═══════════ */
 
 describe("RONDE 89 §20 — lineage, ranking and concurrency untouched", () => {
-  it("TEST 21 — the RONDE 83-88 anchors all still stand", () => {
-    for (const anchor of [
-      "export function scoreCandidateAgainstBeat(",
-      "rankCuratedPicksByBeatContext(ranked, curatedRankCtx)",
-      "export const ARCHIVE_PREPARE_ATTEMPTS_MAX = 6;",
-      "if (queue.length >= prepareCap) break;",
-      "const visualLimit = pLimit(perf.sceneParallelism);",
-      "const beatLimit = pLimit(beatConcurrency);",
-      // RONDE 223 re-anchor — see note above; the limiter still wraps every download.
-      "withGlobalMediaFetch(() =>",
-      "ledger.markFinalVideo(deliveredClips)",
-      "await withGlobalVisionGate(() => evaluateClipVisionGate(",
-    ]) {
-      expect(PIPELINE_SRC, anchor).toContain(anchor);
-    }
-    // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
-    // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
-    // technical fallback). A THIRD would still mean a freeze had leaked back in.
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(2);
-  });
 
   it("TEST 22 — the gate never rewrites a query, only admits or refuses it", () => {
     const idx = PIPELINE_SRC.indexOf("export function admitProviderQuery(");

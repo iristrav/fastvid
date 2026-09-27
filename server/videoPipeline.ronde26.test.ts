@@ -277,37 +277,3 @@ describe("RONDE 26c — the scene-pool stand-in topic is about the subject", () 
 // ── d) the grey filler ───────────────────────────────────────────────────────
 
 const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-
-describe("RONDE 26d — a short montage holds its last frame instead of going grey", () => {
-  const helper = pipelineSrc.slice(
-    pipelineSrc.indexOf("function montageTailPadFilterChain("),
-    pipelineSrc.indexOf("function montageTailPadVF("),
-  );
-
-  it("clones the last frame by default", () => {
-    expect(helper).toContain("stop_mode=clone");
-  });
-
-  it("keeps grey reachable without a redeploy", () => {
-    expect(helper).toContain("MONTAGE_TAIL_PAD");
-    expect(helper).toContain("color=0x2a2a2a");
-  });
-
-  it("is used by both padding sites, so neither can drift back to grey", () => {
-    const uses = pipelineSrc.split("montageTailPadFilterChain(").length - 1;
-    expect(uses).toBeGreaterThanOrEqual(3); // one definition + two call sites
-  });
-
-  it("no longer hardcodes the grey pad filter outside that one helper", () => {
-    const needle = "stop_duration=${pad.toFixed(3)}:color=0x2a2a2a";
-    const total = pipelineSrc.split(needle).length - 1;
-    const inHelper = helper.split(needle).length - 1;
-    expect(inHelper).toBe(1);
-    expect(total - inHelper).toBe(0);
-  });
-
-  it("still records the gap, because the real problem is the missing footage", () => {
-    expect(pipelineSrc).toContain("grayPadScenes.push(scene.index)");
-    expect(pipelineSrc).toContain("visual coverage incomplete");
-  });
-});

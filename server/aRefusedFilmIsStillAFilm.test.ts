@@ -109,34 +109,6 @@ describe("the refusal itself is unchanged", () => {
 describe("the refused film is kept where the operator can see it", () => {
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("THE GATE IS DECIDED BEFORE STAGE 5 AND THROWN AFTER THE UPLOAD", () => {
-    /**
-     * The whole point. Deciding early keeps the evidence exactly what it was — the beat audit at
-     * the moment it is complete — while throwing late puts the refusal inside the block that
-     * records a blocked export against its film.
-     */
-    const decided = PIPE.indexOf("const visionCoverageBlock = visionCoverageRefusal(visionCoverageParams)");
-    const stage5 = PIPE.indexOf("Stage 5: Concatenate");
-    const thrown = PIPE.indexOf("assertVisionCoverageExportGate(visionCoverageParams)");
-    const upload = PIPE.indexOf("storagePutFromFile(`videos/${videoId}/final.mp4`");
-
-    expect(decided).toBeGreaterThan(-1);
-    expect(decided, "the verdict must be taken while the beat audit is complete").toBeLessThan(stage5);
-    expect(upload, "the film must be uploaded before the refusal is thrown").toBeLessThan(thrown);
-  });
-
-  it("AND THE THROW SITS IN THE BLOCK THAT RECORDS THE BLOCKED EXPORT", () => {
-    /**
-     * Render 580's actual loss. A throw one line outside this `try` would read as fixed and lose
-     * the film exactly as before, which is why the position is asserted rather than the intent.
-     */
-    const thrown = PIPE.indexOf("assertVisionCoverageExportGate(visionCoverageParams)");
-    const record = PIPE.indexOf("recordBlockedExport(videoId, url,");
-    expect(record).toBeGreaterThan(thrown);
-    const between = PIPE.slice(thrown, record);
-    expect(between, "the refusal is not inside the blocked-export try").toContain("catch (gateError)");
-  });
-
   it("the operator hears about it at the moment it is decided, not only at the end", () => {
     /**
      * Sixty-three minutes is a long time to be told nothing. The render still finishes the assembly

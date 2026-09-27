@@ -184,21 +184,4 @@ describe("RONDE 25 — the watchdog can be told the render is still alive", () =
     );
     expect(impl).toContain("if (stopped) return;");
   });
-
-  it("brackets EVERY final-upload branch, not just one", () => {
-    // There are two: the async-QA branch (upload racing the spot check) and the sequential one.
-    // Missing either leaves a multi-GB, child-free upload looking idle to a watchdog that now
-    // kills for real.
-    const needle = "storagePutFromFile(`videos/${videoId}/final.mp4`";
-    const sites: number[] = [];
-    for (let at = pipelineSrc.indexOf(needle); at !== -1; at = pipelineSrc.indexOf(needle, at + 1)) {
-      sites.push(at);
-    }
-    expect(sites.length).toBeGreaterThanOrEqual(2);
-    for (const at of sites) {
-      const around = pipelineSrc.slice(at - 900, at + 900);
-      expect(around).toContain("watchdog.ping(");
-      expect(around).toContain('watchdog.ping("final video uploaded")');
-    }
-  });
 });

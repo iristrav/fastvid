@@ -94,14 +94,6 @@ describe("movement is planned, measured and scored", () => {
     expect(block).toContain("dedup.beatRhythmTargets.set(");
   });
 
-  it("and the compose-stage writer stores the band it was given, not half of it", () => {
-    expect(PIPE).toContain("visualDedup.beatRhythmTargets.set(`s${scene.index}b${bi}`, band);");
-    expect(
-      PIPE.includes("const mid = Math.round((min + max) / 2);"),
-      "the midpoint that threw the width away is gone"
-    ).toBe(false);
-  });
-
   /** `buildRhythmProfile` is documented as pure, which is what makes deriving it here safe. */
   it("the profile builder really is pure and gives a band per beat", () => {
     const profile = buildRhythmProfile([

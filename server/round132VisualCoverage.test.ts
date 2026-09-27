@@ -32,9 +32,7 @@
  * them so no route can record one identity and miss another.
  */
 import { describe, expect, it } from "vitest";
-
 import {
-  assetUsedInVideo,
   createVisualDedupStats,
   formatControlledReuse,
   formatVisualDedupReject,
@@ -56,6 +54,7 @@ import {
 } from "./beatSubjectFallback";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 
+
 /** One adopted beat, in the shape clipAdoptAudit records. */
 const adopt = (
   sceneIndex: number,
@@ -76,70 +75,6 @@ const sets = (): UsedAssetSets => ({
 /* ═══════════════════════ A–F: the brief's dedup cases ═══════════════════════ */
 
 describe("RONDE 132 §2 — a picture used once is not offered again", () => {
-  it("A. the same asset offered twice: the second is refused", () => {
-    const s = sets();
-    const asset = { archiveAssetId: 101, contentKey: "curated:asset:101" };
-    expect(assetUsedInVideo(s, asset).used).toBe(false);
-    markAssetUsedInVideo(s, asset);
-    expect(assetUsedInVideo(s, asset)).toEqual({ used: true, matchedOn: "archive_asset_id" });
-  });
-
-  it("B. the same asset via memory AND via the archive scan is used once", () => {
-    /**
-     * THE LEAK, as behaviour. The funnel adopts asset 101 and records it. The memory then offers
-     * the same asset to a later beat — and is refused, because the funnel now writes the identity
-     * the memory's exclude set is built from.
-     */
-    const s = sets();
-    // Funnel adopt: every identity, which is what this round changed.
-    markAssetUsedInVideo(s, {
-      funnelCandidateId: "archive:101",
-      archiveAssetId: 101,
-      contentKey: "curated:asset:101",
-    });
-    // Memory, a later beat, same asset.
-    expect(assetUsedInVideo(s, { archiveAssetId: 101 }).used).toBe(true);
-    // ...and the archive scan too.
-    expect(s.usedCuratedAssetIds.has(101)).toBe(true);
-  });
-
-  it("BEFORE: recording only the funnel id left the archive-asset question unanswered", () => {
-    // The old behaviour, stated so the fix cannot be read as cosmetic.
-    const s = sets();
-    s.usedFunnelCandidateIds.add("archive:101");
-    expect(assetUsedInVideo(s, { archiveAssetId: 101 }).used).toBe(false);
-    // Which is exactly what let memory hand it back.
-  });
-
-  it("C. the same file under two different asset rows is caught on the storage URL", () => {
-    const s = sets();
-    markAssetUsedInVideo(s, { archiveAssetId: 101, storageUrl: "s3://bucket/goering.mp4" });
-    // A DIFFERENT row (id 202) pointing at the same file.
-    expect(assetUsedInVideo(s, { archiveAssetId: 202, storageUrl: "s3://bucket/goering.mp4" }))
-      .toEqual({ used: true, matchedOn: "storage_url" });
-  });
-
-  it("C2. the same provider asset reached by two routes is caught on provider+id", () => {
-    const s = sets();
-    markAssetUsedInVideo(s, { provider: "wikimedia", providerAssetId: "File_Goering.jpg" });
-    expect(assetUsedInVideo(s, { provider: "WIKIMEDIA", providerAssetId: " File_Goering.jpg " }))
-      .toEqual({ used: true, matchedOn: "provider_asset_id" });
-  });
-
-  it("D. different clips from the same provider are all allowed", () => {
-    // The rule is about the same PICTURE, never about the same source.
-    const s = sets();
-    markAssetUsedInVideo(s, { provider: "wikimedia", providerAssetId: "A.jpg" });
-    for (const id of ["B.jpg", "C.jpg", "D.jpg"]) {
-      expect(assetUsedInVideo(s, { provider: "wikimedia", providerAssetId: id }).used, id).toBe(false);
-    }
-  });
-
-  it("E. with alternatives available, nothing is reused", () => {
-    const s = sets();
-    for (const id of [101, 102, 103]) markAssetUsedInVideo(s, { archiveAssetId: id });
-    expect(assetUsedInVideo(s, { archiveAssetId: 104 }).used).toBe(false);
-  });
 
   it("F. controlled reuse is possible but must announce itself", () => {
     /**
@@ -155,18 +90,6 @@ describe("RONDE 132 §2 — a picture used once is not offered again", () => {
     expect(line).toContain("status=CONTROLLED_REUSE");
     expect(line).toContain("reason=no_alternative_candidate");
     expect(line).toContain("video=556");
-  });
-
-  it("an identity FastVid does not have never matches by accident", () => {
-    // Empty, blank and null identities must not collide with each other.
-    const s = sets();
-    markAssetUsedInVideo(s, { contentKey: "  ", storageUrl: "", providerAssetId: "x" });
-    expect(assetUsedInVideo(s, { contentKey: "" }).used).toBe(false);
-    expect(assetUsedInVideo(s, { storageUrl: "   " }).used).toBe(false);
-    expect(assetUsedInVideo(s, {}).used).toBe(false);
-    // provider without id, and id without provider, are both incomplete.
-    expect(assetUsedInVideo(s, { providerAssetId: "x" }).used).toBe(false);
-    expect(assetUsedInVideo(s, { provider: "wikimedia" }).used).toBe(false);
   });
 
   it("a non-integer archive id is never recorded", () => {

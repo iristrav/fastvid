@@ -140,9 +140,8 @@ export type LineageAssetSnapshot = {
 /**
  * Which renderer produced the file the viewer receives.
  *
- * Two routes really deliver. The cinematic timeline render is a render job and carries a job id;
- * the compose montage is produced and uploaded inside the pipeline itself and has none. Recording
- * the route is what keeps a compose delivery from reading as a render job that lost its id.
+ * Only the render job delivers now. `compose_montage` is kept so records written before RONDE 661
+ * removed the compose route still read as what they were.
  */
 export type DeliveryRoute = "render_job" | "compose_montage";
 
@@ -483,41 +482,6 @@ export function recordDelivery(
       : {}),
   };
   return { snapshot: { ...snapshot, delivery: record }, record, marked };
-}
-
-/**
- * RONDE 122 §2 — the compose route's delivery, taken from the proof the pipeline already made.
- *
- * The cinematic route delivers through a render job, and that job records its own delivery from
- * its own output list. The compose montage has no render job: the pipeline builds it, uploads it
- * and — when the cinematic render did not deliver — hands it to the viewer itself. So the same
- * accounting is done here, and from the same kind of evidence: `markDelivered` has already written
- * DELIVERED onto exactly the records FINAL_VIDEO was proven for, and this reads that back.
- *
- * Returns null when the ledger holds no delivered asset at all. A snapshot claiming a delivery of
- * nothing is worse than no claim, and `markDelivered` returning zero already says why.
- */
-export function snapshotComposeDelivery(
-  ledger: VisualSourceLedger,
-  opts: { videoId: number; timelineVersion: number; published: boolean; now?: number }
-): DeliveryOutcome | null {
-  const snapshot = snapshotLineage(ledger, {
-    videoId: opts.videoId,
-    timelineVersion: opts.timelineVersion,
-  });
-  const deliveredKeys = snapshot.assets.filter((a) => a.stages.includes("DELIVERED")).map((a) => a.key);
-  if (!deliveredKeys.length) return null;
-  const unidentifiedClips = ledger
-    .allRecords()
-    .filter((r) => r.finalVideoAt != null && !assetIdentityKeyForRecord(r)).length;
-  return recordDelivery(snapshot, {
-    deliveredKeys,
-    unidentifiedClips,
-    route: "compose_montage",
-    published: opts.published,
-    timelineVersion: opts.timelineVersion,
-    now: opts.now,
-  });
 }
 
 /* ═══════════════════════ the render job's delivery, start to finish ═══════════════════════ */

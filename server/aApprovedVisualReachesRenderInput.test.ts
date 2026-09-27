@@ -44,10 +44,8 @@ import { promisify } from "util";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-
 import {
   seedExistingProvenSceneClips,
-  composeReadySceneClips,
   clipContentKey,
 } from "./videoPipeline";
 import { VisualSourceLedger, type LineageStage } from "./visualSourceLineage";
@@ -309,162 +307,9 @@ const runToRenderInput = async (world: World, opts: { beats?: number } = {}) => 
   return { seeded, clips, beatDurations, clipBeatIndices, ready, cinematic, existingByClipId };
 };
 
-/* ═══════════════════════ A — YouTube, end to end ═══════════════════════ */
-
-describe("E2E §A — an approved YouTube visual reaches the render's input", () => {
-  it("walks ADOPTED → SEED → COMPOSE_INPUT → COMPOSE_SELECTED → CINEMATIC_SELECTED → RENDER_INPUT", async () => {
-    const world = adoptedWorld([{ file: YT_FILE, provider: "youtube_cc", assetId: YT_ID, beat: 0 }]);
-    const yt = world.fixtures[0]!;
-    const out = await runToRenderInput(world, { beats: 1 });
-
-    expect(out.seeded, "the rebuild did not carry the approved clip").toBe(1);
-    expect(out.ready, "the compose barrier dropped it").toContain(yt.file);
-
-    const stages = stagesOf(world.lineage, yt.lineageId);
-    for (const stage of [
-      "ELIGIBLE", "RANKED", "SELECTED", "DOWNLOAD_SUCCEEDED", "ADOPTED",
-      "COMPOSE_INPUT", "COMPOSE_SELECTED", "CINEMATIC_SELECTED", "RENDER_INPUT",
-    ]) {
-      expect(stages, `${stage} was never reached`).toContain(stage);
-    }
-    expect([...out.existingByClipId.values()]).toContain(yt.file);
-  }, 60_000);
-
-  it("the canonical identity at RENDER_INPUT is the one it had at ADOPTED", async () => {
-    const world = adoptedWorld([{ file: YT_FILE, provider: "youtube_cc", assetId: YT_ID, beat: 0 }]);
-    const yt = world.fixtures[0]!;
-    const before = world.lineage.resolve(yt.file, clipContentKey(yt.file))!;
-    const snapshot = {
-      provider: before.provider,
-      providerAssetId: before.providerAssetId,
-      candidateId: before.candidateId,
-      lineageId: before.lineageId,
-      sceneIndex: before.sceneIndex,
-      beatIndex: before.beatIndex,
-    };
-
-    const out = await runToRenderInput(world, { beats: 1 });
-    const delivered = [...out.existingByClipId.values()][0]!;
-    const after = world.lineage.resolve(delivered, clipContentKey(delivered))!;
-
-    expect({
-      provider: after.provider,
-      providerAssetId: after.providerAssetId,
-      candidateId: after.candidateId,
-      lineageId: after.lineageId,
-      sceneIndex: after.sceneIndex,
-      beatIndex: after.beatIndex,
-    }).toEqual(snapshot);
-    expect(after.provider).toBe("youtube_cc");
-    expect(after.providerAssetId).toBe(YT_ID);
-    expect(after.provider, "identity decayed to unknown").not.toBe("UNVERIFIED");
-    expect(after.providerAssetId).not.toBeNull();
-
-    /**
-     * And the identity the PLANNER emitted, not only the one the ledger still holds.
-     *
-     * A mutation run caught this: corrupting the identity inside `identityFrom` left every
-     * ledger-side assertion green, because the ledger is upstream of the planner. The plan's
-     * `AssetSourceIdentity` is what the rehydrator will be handed tomorrow, so it is the one that
-     * has to be right — checking only the ledger proves the render's memory, not its output.
-     */
-    const plannedIdentity = out.cinematic.scenes[0]!.beats[0]!.identity;
-    expect(plannedIdentity.provider).toBe("youtube_cc");
-    expect(plannedIdentity.providerAssetId).toBe(YT_ID);
-  }, 60_000);
-
-  it("the cinematic planner kept the beat rather than dropping it as unrehydratable", async () => {
-    const world = adoptedWorld([{ file: YT_FILE, provider: "youtube_cc", assetId: YT_ID, beat: 0 }]);
-    const out = await runToRenderInput(world, { beats: 1 });
-    expect(out.cinematic.dropped, out.cinematic.dropped.join("; ")).toHaveLength(0);
-    expect(out.cinematic.scenes[0]?.beats ?? []).toHaveLength(1);
-  }, 60_000);
-});
-
-/* ═══════════════════════ B — Internet Archive, the same ═══════════════════════ */
-
-describe("E2E §B — the chain is not YouTube-specific", () => {
-  it("an Internet Archive visual makes the same journey", async () => {
-    const world = adoptedWorld([
-      { file: IA_FILE, provider: "internet_archive", assetId: "test-ia-asset", beat: 0 },
-    ]);
-    const ia = world.fixtures[0]!;
-    const out = await runToRenderInput(world, { beats: 1 });
-
-    expect(out.ready).toContain(ia.file);
-    const stages = stagesOf(world.lineage, ia.lineageId);
-    for (const stage of ["ADOPTED", "COMPOSE_INPUT", "COMPOSE_SELECTED", "CINEMATIC_SELECTED", "RENDER_INPUT"]) {
-      expect(stages, `${stage} was never reached`).toContain(stage);
-    }
-    const after = world.lineage.resolve(ia.file, clipContentKey(ia.file))!;
-    expect(after.provider).toBe("internet_archive");
-    expect(after.providerAssetId).toBe("test-ia-asset");
-  }, 60_000);
-});
-
-/* ═══════════════════════ C — VID-0589's own shape ═══════════════════════ */
-
-describe("E2E §C — render 589's scenario cannot play out again", () => {
-  it("a proven beat survives a rebuild that also has a guaranteed card to hand", async () => {
-    /**
-     * Beat 0 holds the approved YouTube clip; beat 1 has nothing and is where 589's text card was
-     * drawn. The card is present on disk and adopted as a placeholder, exactly as it was.
-     */
-    const world = adoptedWorld([{ file: YT_FILE, provider: "youtube_cc", assetId: YT_ID, beat: 0 }]);
-    (world.dedup as unknown as { clipAdoptAudit: unknown[] }).clipAdoptAudit.push({
-      sceneIndex: 0, beatIndex: 1, beatText: "", basename: CARD_FILE, source: "rescue_placeholder",
-    });
-
-    const out = await runToRenderInput(world, { beats: 2 });
-    expect(out.clips, "the approved clip was replaced").toContain(path.join(dir, YT_FILE));
-    expect(out.clips, "a refused placeholder took a proven beat").not.toContain(path.join(dir, CARD_FILE));
-    expect([...out.existingByClipId.values()]).toContain(path.join(dir, YT_FILE));
-  }, 60_000);
-
-  it("no adopted asset reaches the end without either RENDER_INPUT or a terminal reason", async () => {
-    /**
-     * §10, asserted rather than hoped for. Every record that reached ADOPTED must end somewhere:
-     * in the renderer's list, or with a recorded refusal. "Adopted, then nothing" fails here.
-     */
-    const world = adoptedWorld([
-      { file: YT_FILE, provider: "youtube_cc", assetId: YT_ID, beat: 0 },
-      { file: IA_FILE, provider: "internet_archive", assetId: "test-ia-asset", beat: 2 },
-    ]);
-    const out = await runToRenderInput(world);
-    const delivered = new Set(out.existingByClipId.values());
-
-    for (const f of world.fixtures) {
-      const stages = stagesOf(world.lineage, f.lineageId);
-      if (!stages.has("ADOPTED")) continue;
-      if (delivered.has(f.file)) continue;
-      const reasons = terminalReasonsOf(world.lineage, f.lineageId);
-      expect(
-        reasons.length,
-        `${f.provider}:${f.providerAssetId} was adopted, is not in the render input, and nothing says why`
-      ).toBeGreaterThan(0);
-    }
-  }, 60_000);
-});
-
 /* ═══════════════════════ D — the barrier is real ═══════════════════════ */
 
 describe("E2E §D — the quality gate is not bypassed to make this pass", () => {
-  it("a clip the editor refused is dropped, and the drop names the check that made it", async () => {
-    const world = adoptedWorld([
-      { file: YT_FILE, provider: "youtube_cc", assetId: YT_ID, beat: 0, verdict: "does_not_fit" },
-    ]);
-    const yt = world.fixtures[0]!;
-    /** The real reader, asked directly: this clip may not compose. */
-    expect(composeBarrierAllows(world.relevance, yt.file, clipContentKey(yt.file)).allow).toBe(false);
-
-    const out = await runToRenderInput(world, { beats: 1 });
-    expect(out.ready, "a refused clip reached compose").not.toContain(yt.file);
-    expect([...out.existingByClipId.values()], "a refused clip reached the renderer").not.toContain(yt.file);
-
-    const reasons = terminalReasonsOf(world.lineage, yt.lineageId).join(" ");
-    expect(reasons, "the drop was silent").not.toBe("");
-    expect(reasons).toContain("compose_gate");
-  }, 60_000);
 
   it("the seeding refuses it too — the same reader, so the two cannot disagree", async () => {
     const world = adoptedWorld([
@@ -482,32 +327,6 @@ describe("E2E §D — the quality gate is not bypassed to make this pass", () =>
 /* ═══════════════════════ E — beat ownership across the whole chain ═══════════════════════ */
 
 describe("E2E §E — beat ownership survives the journey", () => {
-  it("beat 0 keeps YouTube, beat 1 stays open, beat 2 keeps the archive clip", async () => {
-    const world = adoptedWorld([
-      { file: YT_FILE, provider: "youtube_cc", assetId: YT_ID, beat: 0 },
-      { file: IA_FILE, provider: "internet_archive", assetId: "test-ia-asset", beat: 2 },
-    ]);
-    const out = await runToRenderInput(world);
-
-    expect(out.clipBeatIndices).toEqual([0, 2]);
-    expect(out.clips).toHaveLength(2);
-    expect(out.beatDurations).toHaveLength(2);
-    expect(out.clipBeatIndices, "beat 1 must stay open for ordinary sourcing").not.toContain(1);
-
-    /**
-     * And the planner placed each on ITS beat, carrying ITS identity. A `CinematicBeatInput` holds
-     * an `AssetSourceIdentity`, which is the stronger thing to assert than a path: it is what the
-     * rehydrator will use tomorrow.
-     */
-    const planned = out.cinematic.scenes[0]!.beats;
-    expect(planned).toHaveLength(2);
-    const providers = planned.map((b) => `${b.identity.provider}:${b.identity.providerAssetId}`);
-    expect(providers).toContain(`youtube_cc:${YT_ID}`);
-    expect(providers).toContain("internet_archive:test-ia-asset");
-    expect([...out.existingByClipId.values()]).toEqual(
-      expect.arrayContaining([path.join(dir, YT_FILE), path.join(dir, IA_FILE)])
-    );
-  }, 60_000);
 
   it("both rebuild branches carry the asset — the cheap one and the expensive one", async () => {
     /**

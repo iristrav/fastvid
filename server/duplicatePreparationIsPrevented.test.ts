@@ -224,7 +224,8 @@ function ladderBody(): string {
 
 describe("the guaranteed ladder does not prepare a clip the push will refuse", () => {
   it("finds every call site", () => {
-    expect(guaranteedCallSites().length).toBeGreaterThanOrEqual(9);
+    /** RONDE 661: four — the compose, P5A and stage-4 rescue calls are deleted. */
+    expect(guaranteedCallSites().length).toBeGreaterThanOrEqual(4);
   });
 
   /**

@@ -256,35 +256,9 @@ describe("R222 §3 — measured, not asserted", () => {
 /* ═══════════ 4. it reaches BOTH delivery routes ═══════════ */
 
 describe("R222 §4 — one rule, both routes", () => {
-  it("THE COMPOSE ROUTE NORMALISES THE FILE IT UPLOADS", () => {
-    expect(PIPE).toContain("normaliseDeliveredLoudness(finalVideoPath)");
-  });
 
   it("THE CINEMATIC ROUTE NORMALISES THE FILE IT DELIVERS", () => {
     expect(WORKER).toContain("normaliseDeliveredLoudness(outputPath)");
-  });
-
-  it("the compose route corrects AFTER the export pass and BEFORE the deliverable is measured", () => {
-    /**
-     * Two envelope checks exist on this route and only the LAST one describes the delivered file.
-     * The first runs before `ensureFinalVideoExportReady`, which may REASSEMBLE the video — a
-     * correction applied there would be silently thrown away, which is why the pass sits after it.
-     * So the anchor is the stage-6 measurement, not the first `checkFileAvSync` in the file.
-     */
-    const norm = PIPE.indexOf("normaliseDeliveredLoudness(finalVideoPath)");
-    const exportReady = PIPE.indexOf("ensureFinalVideoExportReady({");
-    const size = PIPE.indexOf("const finalVideoSizeBytes");
-    const deliveredEnvelope = PIPE.lastIndexOf("await checkFileAvSync(finalVideoPath)");
-    expect(norm).toBeGreaterThan(0);
-    expect(exportReady).toBeGreaterThan(0);
-    expect(norm, "a rebuild by the export pass would discard the correction").toBeGreaterThan(
-      exportReady
-    );
-    expect(norm, "the size is taken before the audio is corrected").toBeLessThan(size);
-    expect(
-      norm,
-      "the delivered envelope is measured on a file that is about to change"
-    ).toBeLessThan(deliveredEnvelope);
   });
 
   it("the cinematic route corrects before its own envelope check", () => {
@@ -294,12 +268,13 @@ describe("R222 §4 — one rule, both routes", () => {
     expect(norm).toBeLessThan(env);
   });
 
-  it("NEITHER ROUTE FAILS A RENDER OVER THE LEVEL", () => {
+  it("THE RENDER DOES NOT FAIL OVER THE LEVEL", () => {
     /**
      * A film that could not be levelled is still a film. Both call sites catch, and neither
      * throws or returns early on the result.
      */
-    for (const [name, src] of [["compose", PIPE], ["cinematic", WORKER]] as const) {
+    /** RONDE 661 — the compose route's loudness pass went with it; the render job's is the one. */
+    for (const [name, src] of [["cinematic", WORKER]] as const) {
       const at = src.indexOf("normaliseDeliveredLoudness(");
       const block = src.slice(at, at + 700);
       expect(block, `${name} does not catch the loudness pass`).toContain(".catch(");

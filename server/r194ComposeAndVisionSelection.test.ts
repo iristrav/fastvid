@@ -1,13 +1,9 @@
 /**
  * R194 — TWO THINGS A RENDER COULD NOT PREVIOUSLY BE ASKED.
  *
- * ── 1. Did every clip compose was handed get an ending? ─────────────────────────────────────
+ * ── 1. (removed) ────────────────────────────────────────────────────────────────────────────
  *
- * The three events have existed for rounds and `returnComposed` writes all of them. What did not
- * exist is the arithmetic: a per-scene line printed three numbers and nothing added them up, so
- * `composeInputs = composeSelected + composeDropped` with `unresolved = 0` was never stated and
- * could not fail. A clip that entered compose and left with no ending at all produced a per-scene
- * line whose numbers still looked plausible.
+ * The compose census this round added went with the compose route in RONDE 661.
  *
  * ── 2. Did the picture editor's answer decide anything? ─────────────────────────────────────
  *
@@ -24,16 +20,6 @@ import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
-import {
-  VisualSourceLedger,
-  lifecyclesOf,
-  type AssetLifecycle,
-} from "./visualSourceLineage";
-import {
-  composeCensusOf,
-  composeCensusViolations,
-  formatComposeCensus,
-} from "./composeCensus";
 import {
   VISION_EVIDENCE_ORDER,
   bestByVisionEvidence,
@@ -53,198 +39,6 @@ import {
 } from "./visionAwareSelection";
 
 const PIPE = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-
-/* ═══════════════════════ §4–§14 — the compose lifecycle, counted ═══════════════════════ */
-
-function composeLedger(renderId = "rA") {
-  return new VisualSourceLedger({ renderId, videoId: 574 });
-}
-
-function composeAsset(
-  ledger: VisualSourceLedger,
-  id: string,
-  outcome: "selected" | "dropped" | "none",
-  reason = "UNKNOWN"
-) {
-  const rec = ledger.createLineage({
-    sceneIndex: 0,
-    beatIndex: 0,
-    candidateId: `internet_archive:${id}`,
-    contentKey: `internet_archive:${id}`,
-    provider: "internet_archive",
-    providerAssetId: id,
-    localPath: `/w/${id}.mp4`,
-    mediaType: "video",
-    route: "primary",
-  });
-  ledger.recordEvent(rec.lineageId, "ADOPTED", { status: "OK" });
-  ledger.recordEvent(rec.lineageId, "COMPOSE_INPUT", { status: "OK" });
-  if (outcome === "selected") {
-    ledger.recordEvent(rec.lineageId, "COMPOSE_SELECTED", { status: "OK" });
-  } else if (outcome === "dropped") {
-    ledger.recordEvent(rec.lineageId, "COMPOSE_DROPPED", { status: "REJECTED", reason });
-  }
-  return rec;
-}
-
-const censusOf = (l: VisualSourceLedger) =>
-  composeCensusOf(lifecyclesOf(l.allRecords(), l.allEvents()));
-
-describe("every clip compose was handed is accounted for", () => {
-  /** Test A — the round's own worked example. */
-  it("three in, one kept, two dropped, nothing unresolved", () => {
-    const l = composeLedger();
-    composeAsset(l, "a1", "selected");
-    composeAsset(l, "a2", "dropped", "duplicate_content");
-    composeAsset(l, "a3", "dropped", "compose_gate");
-    expect(censusOf(l)).toMatchObject({ inputs: 3, selected: 1, dropped: 2, unresolved: 0 });
-  });
-
-  it("the invariant holds and says so", () => {
-    const l = composeLedger();
-    composeAsset(l, "a1", "selected");
-    composeAsset(l, "a2", "dropped", "compose_gate");
-    const census = censusOf(l);
-    expect(census.inputs).toBe(census.selected + census.dropped + census.unresolved);
-    expect(composeCensusViolations(census, { composeCompleted: true })).toEqual([]);
-    expect(formatComposeCensus(census)[0]).toContain("outcomeInvariant=PASS");
-  });
-
-  /** Test E — a kept clip is selected, and only selected. */
-  it("a kept clip counts once, as selected", () => {
-    const l = composeLedger();
-    composeAsset(l, "a1", "selected");
-    expect(censusOf(l)).toMatchObject({ inputs: 1, selected: 1, dropped: 0 });
-  });
-
-  /** Test C — the duplicate reason travels with the drop. */
-  it("a duplicate is dropped for being a duplicate, not for nothing", () => {
-    const l = composeLedger();
-    composeAsset(l, "a1", "selected");
-    composeAsset(l, "a2", "dropped", "duplicate_content");
-    expect(censusOf(l).byReason).toEqual([{ reason: "duplicate_content", count: 1 }]);
-  });
-
-  /** Tests B and D — the census reports whichever reason the gate that refused it filed. */
-  it.each([
-    ["invalid_source_range", "a source range that runs backwards"],
-    ["scene_boundary", "a beat that fell outside its scene"],
-  ])("carries %s through to the report", (reason) => {
-    const l = composeLedger();
-    composeAsset(l, "a1", "dropped", reason);
-    const census = censusOf(l);
-    expect(census.dropped).toBe(1);
-    expect(census.byReason[0]).toEqual({ reason, count: 1 });
-    expect(formatComposeCensus(census)[1]).toContain(`${reason}×1`);
-  });
-
-  it("a clip compose saw and said nothing about is unresolved, and named", () => {
-    const l = composeLedger();
-    composeAsset(l, "a1", "selected");
-    composeAsset(l, "a2", "none");
-    const census = censusOf(l);
-    expect(census.unresolved).toBe(1);
-    expect(census.unresolvedAssets).toEqual(["internet_archive:a2"]);
-    expect(
-      composeCensusViolations(census, { composeCompleted: true }).join("\n")
-    ).toContain("COMPOSE_UNRESOLVED_INPUTS");
-  });
-
-  /** §11 — an abandoned compose is not a lifecycle defect, and must not read as one. */
-  it("a render that never completed is not accused of losing clips", () => {
-    const l = composeLedger();
-    composeAsset(l, "a1", "none");
-    expect(composeCensusViolations(censusOf(l), { composeCompleted: false })).toEqual([]);
-  });
-
-  /** §10 — an asset compose never saw is outside the invariant entirely. */
-  it("a candidate that never reached compose is not counted as an input", () => {
-    const l = composeLedger();
-    const rec = l.createLineage({
-      sceneIndex: 0,
-      beatIndex: 0,
-      candidateId: "pexels:p1",
-      contentKey: "pexels:p1",
-      provider: "pexels",
-      providerAssetId: "p1",
-      localPath: "/w/p1.mp4",
-      mediaType: "video",
-      route: "primary",
-    });
-    l.recordEvent(rec.lineageId, "ADOPTED", { status: "OK" });
-    expect(censusOf(l).inputs).toBe(0);
-  });
-
-  /** A derivation chain is one picture. Counting events would count it two or three times. */
-  it("a transformed copy is the same input, not a second one", () => {
-    const l = composeLedger();
-    composeAsset(l, "a1", "none");
-    l.linkDerivedPath("/w/a1_transformed.mp4", "/w/a1.mp4", "TRANSFORMED");
-    const child = l.resolve("/w/a1_transformed.mp4")!;
-    l.recordEvent(child.lineageId, "COMPOSE_INPUT", { status: "OK" });
-    l.recordEvent(child.lineageId, "COMPOSE_SELECTED", { status: "OK" });
-    expect(censusOf(l)).toMatchObject({ inputs: 1, selected: 1, dropped: 0, unresolved: 0 });
-  });
-
-  /** Being in the output is the stronger fact — a later drop must not un-ship a shipped clip. */
-  it("a clip kept by one scene and dropped by a later attempt counts as kept", () => {
-    const l = composeLedger();
-    const rec = composeAsset(l, "a1", "selected");
-    l.recordEvent(rec.lineageId, "COMPOSE_DROPPED", { status: "REJECTED", reason: "UNKNOWN" });
-    expect(censusOf(l)).toMatchObject({ inputs: 1, selected: 1, dropped: 0 });
-  });
-
-  /** Test F — two renders, two ledgers, no shared arithmetic. */
-  it("two renders keep their compose accounting apart", () => {
-    const a = composeLedger("rA");
-    const b = composeLedger("rB");
-    composeAsset(a, "a1", "selected");
-    composeAsset(a, "a2", "dropped", "compose_gate");
-    composeAsset(b, "b1", "selected");
-    expect(censusOf(a)).toMatchObject({ inputs: 2, selected: 1, dropped: 1 });
-    expect(censusOf(b)).toMatchObject({ inputs: 1, selected: 1, dropped: 0 });
-  });
-
-  /** The buckets are exclusive; a census that could double-count would report a false PASS. */
-  it("the three buckets are exclusive by construction", () => {
-    const l = composeLedger();
-    composeAsset(l, "a1", "selected");
-    composeAsset(l, "a2", "dropped", "compose_gate");
-    composeAsset(l, "a3", "none");
-    const c = censusOf(l);
-    expect(c.selected + c.dropped + c.unresolved).toBe(c.inputs);
-  });
-
-  it("an empty render reports zeroes rather than nothing", () => {
-    const census = composeCensusOf([] as AssetLifecycle[]);
-    expect(census).toMatchObject({ inputs: 0, selected: 0, dropped: 0, unresolved: 0 });
-    expect(formatComposeCensus(census)[0]).toContain("composeInputs=0");
-  });
-});
-
-/* ═══════════════════════ §5–§13 — instrumented where compose really leaves ═══════════════════════ */
-
-describe("the compose lifecycle is written at the one exit and reported once", () => {
-  it("the duplicate reason is established, not guessed", () => {
-    const at = PIPE.indexOf("const seenContentKeys = new Set<string>();");
-    expect(at, "the duplicate check at the compose exit is gone").toBeGreaterThan(-1);
-    const block = PIPE.slice(at, at + 1400);
-    expect(block).toContain("const duplicate = seenContentKeys.has(contentKey);");
-    expect(block).toContain('reason: duplicate ? "duplicate_content" : "UNKNOWN"');
-  });
-
-  it("the render-level census is printed and its violations are errors", () => {
-    expect(PIPE).toContain("const composeCensus = composeCensusOf(lifecycles);");
-    expect(PIPE).toContain("composeCensusViolations(composeCensus, {");
-    expect(PIPE).toContain("composeCompleted: ledger.finalVideoWasVerified,");
-  });
-
-  /** §13 — the events live on the render's own ledger; there is no videoId-only lookup. */
-  it("the ledger it writes to is the render's own", () => {
-    const at = PIPE.indexOf("const composeLedger = composeOptions?.dedup?.sourcingCache?.lineage;");
-    expect(at).toBeGreaterThan(-1);
-  });
-});
 
 /* ═══════════════════════ §15–§27 — the editor's answer picks the tier ═══════════════════════ */
 

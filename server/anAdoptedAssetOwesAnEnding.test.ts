@@ -338,7 +338,8 @@ describe("VID-0589 §2 — scene_resourced says which rebuild did it", () => {
 
   it("every call site passes a site, and the rebuilds that can drop a clip are distinguishable", () => {
     const calls = [...PIPELINE.matchAll(/noteSceneClipsResourced\(([^;]*?)\);/gs)].map((m) => m[1]!);
-    expect(calls.length, "the resourcing call sites moved").toBeGreaterThanOrEqual(14);
+    /** RONDE 661: 10 calls — the fast-short compose readiness sweep and the P5A site are deleted. */
+    expect(calls.length, "the resourcing call sites moved").toBeGreaterThanOrEqual(10);
     const named = calls.map((c) => /,\s*"([a-z_]+)"\s*$/.exec(c.trim())?.[1] ?? null);
     expect(named.filter((n) => n == null), "an anonymous rebuild is back").toEqual([]);
     /**
@@ -347,7 +348,7 @@ describe("VID-0589 §2 — scene_resourced says which rebuild did it", () => {
      * record could not previously tell them apart.
      */
     for (const site of [
-      "compose_ready_filter",
+      /** RONDE 661: "compose_ready_filter" went with `ensureFastShortScenesReadyForCompose`. */
       "strict_voice_refill",
       "guaranteed_fill",
       "last_resort_ai_clip",

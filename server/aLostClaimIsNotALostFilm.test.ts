@@ -358,18 +358,6 @@ describe("§8 — what the report says after a delivery this process did not mea
     return PIPE.slice(at, PIPE.indexOf("                } else {", at));
   };
 
-  it("THE COMPOSE MONTAGE'S BLACK-FRAME VERDICT IS NOT LEFT STANDING", () => {
-    expect(deliveredBranch()).toContain("delete qualityReport.postRenderSpotCheck;");
-  });
-
-  it("and every figure that CAN be qualified names the file it measured", () => {
-    const block = deliveredBranch();
-    expect(block).toContain('qualityReport.avSync.measuredOn = "compose_montage"');
-    expect(block).toContain('qualityReport.stillness.measuredOn = "compose_montage"');
-    expect(block).toContain('qualityReport.repeats.measuredOn = "compose_montage"');
-    expect(block).toContain("qualityReport.warnings.push(");
-  });
-
   it("AND THE FIGURE THAT COULD BE CORRECTED IS CORRECTED, NOT QUALIFIED", () => {
     /**
      * Render 603's actual defect. Unlike the spot check and the AV envelope, FINAL_VIDEO CAN be

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   alignBeatTextsToSegments,
   applyBeatVoiceAlignments,
-  validateMontageVoiceCoverage,
   voiceBeatAlignmentEnabled,
 } from "./voiceBeatAlignment";
 import { archiveVisualMinClipSec } from "./sourcingPolicy";
@@ -57,13 +56,6 @@ describe("voiceBeatAlignment", () => {
     // minimum clip. Both survive a future change to the floor.
     expect(gross).toBeGreaterThanOrEqual(10);
     expect(gross).toBeLessThanOrEqual(10 + archiveVisualMinClipSec());
-  });
-
-  it("validateMontageVoiceCoverage flags large drift", () => {
-    const bad = validateMontageVoiceCoverage([2, 2, 2], 12, 0.35);
-    expect(bad.ok).toBe(false);
-    const ok = validateMontageVoiceCoverage([4, 4, 4.5], 12, 0.35);
-    expect(ok.ok).toBe(true);
   });
 
   it("voiceBeatAlignmentEnabled respects env kill switch", () => {

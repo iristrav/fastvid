@@ -4,7 +4,6 @@ import os from "os";
 import path from "path";
 import { promisify } from "util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { montageTailPadFilterChain, montageTailPadVF } from "./videoPipeline";
 
 const exec = promisify(execFile);
 const FFMPEG = process.env.FFMPEG_BIN ?? "ffmpeg";
@@ -108,146 +107,9 @@ afterAll(() => {
   if (workDir) fs.rmSync(workDir, { recursive: true, force: true });
 });
 
-/* ═════════════ §A — the filter no longer freezes ═════════════ */
-
-describe("RONDE 85 §A — the tail filler is a slow-down, not a held frame", () => {
-  /**
-   * SUPERSEDED BY RONDE 111 — the same goal, reached without the trap this version walked into.
-   *
-   * RONDE 85 removed the held frame by slowing the montage instead, and left the ratio uncapped
-   * on purpose: a cap leaves a remainder, and the only fillers for a remainder were the two this
-   * round existed to delete. Measured later against real ffmpeg, with no interpolation anywhere
-   * in the chain, that was a freeze arriving through a different filter:
-   *
-   *     1.5x → each picture holds 0.10s     6x  → 0.32s
-   *     3.0x → 0.18s                        10x → 0.59s
-   *
-   * So the ratio is capped at 2x. Under the cap this round's behaviour is unchanged, which is
-   * what these two now assert; over it, the answer has to be real footage, which is why the
-   * coverage backfill spends its extra searches exactly there (see RONDE 111).
-   */
-  it("a short montage is stretched to the voice length", () => {
-    const chain = montageTailPadFilterChain(6, 8, "test");
-    expect(chain).toContain("setpts=");
-    expect(chain).toContain("*PTS,");
-    expect(chain, "the held frame is gone").not.toContain("tpad=stop_mode=clone");
-  });
-
-  it("the ratio is the gap it has to fill, up to the 2x cap", () => {
-    // 6s of footage under an 8s voice track runs at 8/6 = 1.333333x its own length.
-    expect(montageTailPadFilterChain(6, 8, "test")).toBe("setpts=1.333333*PTS,");
-    expect(montageTailPadFilterChain(10, 12, "test")).toBe("setpts=1.200000*PTS,");
-    expect(montageTailPadFilterChain(20, 20.5, "test")).toBe("setpts=1.025000*PTS,");
-    // Exactly at the cap is still pure slowing.
-    expect(montageTailPadFilterChain(4, 8, "test")).toBe("setpts=2.000000*PTS,");
-  });
-
-  it("the whole video-filter chain keeps its shape", () => {
-    const vf = montageTailPadVF("mont", 7, 20.8);
-    expect(vf.startsWith("[mont]")).toBe(true);
-    expect(vf.endsWith("[vmont]")).toBe(true);
-    // The slow-down must come BEFORE fps=25, which then resamples the stretched timeline.
-    expect(vf.indexOf("setpts=") < vf.indexOf("fps=25")).toBe(true);
-  });
-
-  it("a montage that already covers the voice is left completely alone", () => {
-    expect(montageTailPadVF("mont", 20, 20)).toBe(`[mont]${FPS_FORMAT_VF}[vmont]`);
-    expect(montageTailPadVF("mont", 21, 20)).toBe(`[mont]${FPS_FORMAT_VF}[vmont]`);
-    // Below the 0.08s threshold nothing is inserted either.
-    expect(montageTailPadVF("mont", 19.99, 20)).toBe(`[mont]${FPS_FORMAT_VF}[vmont]`);
-  });
-});
-
-/* ═════════════ §B — the escape hatches and the edge case ═════════════ */
-
-describe("RONDE 85 §B — overrides and a zero-length montage", () => {
-  const withEnv = (value: string | undefined, fn: () => void) => {
-    const previous = process.env.MONTAGE_TAIL_PAD;
-    if (value === undefined) delete process.env.MONTAGE_TAIL_PAD;
-    else process.env.MONTAGE_TAIL_PAD = value;
-    try { fn(); } finally {
-      if (previous === undefined) delete process.env.MONTAGE_TAIL_PAD;
-      else process.env.MONTAGE_TAIL_PAD = previous;
-    }
-  };
-
-  it("MONTAGE_TAIL_PAD=freeze restores the held frame", () => {
-    withEnv("freeze", () => {
-      expect(montageTailPadFilterChain(3, 8, "test")).toContain("tpad=stop_mode=clone");
-    });
-  });
-
-  it("MONTAGE_TAIL_PAD=grey restores the rectangle", () => {
-    withEnv("grey", () => {
-      expect(montageTailPadFilterChain(3, 8, "test")).toContain("tpad=stop_mode=add");
-    });
-  });
-
-  it("the default — no variable set — is the slow-down", () => {
-    withEnv(undefined, () => {
-      expect(montageTailPadFilterChain(3, 8, "test")).toContain("setpts=");
-    });
-  });
-
-  it("a zero-length montage cannot be stretched, and does not divide by zero", () => {
-    // There is nothing to slow down, so this one case keeps the old filler rather than emitting
-    // setpts=Infinity*PTS.
-    const chain = montageTailPadFilterChain(0, 8, "test");
-    expect(chain).toContain("tpad=stop_mode=clone");
-    expect(chain).not.toContain("Infinity");
-    expect(chain).not.toContain("NaN");
-  });
-
-  it("no ratio is ever NaN or Infinity for a real montage", () => {
-    for (const [dur, target] of [[0.06, 30], [0.5, 25], [1, 60], [19, 20]] as const) {
-      const chain = montageTailPadFilterChain(dur, target, "test");
-      expect(chain).not.toContain("NaN");
-      expect(chain).not.toContain("Infinity");
-      expect(chain.endsWith(",")).toBe(true);
-    }
-  });
-});
-
 /* ═════════════ §C — measured with ffmpeg, not inspected ═════════════ */
 
 describe("RONDE 85 §C — ffmpeg's own freezedetect confirms it", () => {
-  it("the old filler produced a frozen frame and the new one does not", async () => {
-    expect(ffmpegAvailable, "ffmpeg unavailable in this environment").toBe(true);
-
-    // Same 3-second source, same 6-second target (2x — within RONDE 111's cap), both fillers.
-    const held = await renderWith(
-      `tpad=stop_mode=clone:stop_duration=3.000,${FPS_FORMAT_VF}`, 6, "held"
-    );
-    const slowed = await renderWith(
-      `${montageTailPadFilterChain(3, 6, "test")}${FPS_FORMAT_VF}`, 6, "slowed"
-    );
-
-    // Both fill the voice track exactly — the fix must not shorten the scene.
-    expect(await probeDuration(held)).toBeCloseTo(6, 1);
-    expect(await probeDuration(slowed)).toBeCloseTo(6, 1);
-
-    // And this is the whole point of the round.
-    expect(await frozenSegments(held), "the old filler should freeze — otherwise this test proves nothing")
-      .toBeGreaterThan(0);
-    expect(await frozenSegments(slowed), "the new filler must not freeze").toBe(0);
-  }, 180_000);
-
-  it("slowing within the cap keeps moving", async () => {
-    expect(ffmpegAvailable).toBe(true);
-    // The source really is 3 seconds, so the filter has to be asked for a 3s montage.
-    const vf = `${montageTailPadFilterChain(3, 6, "test")}${FPS_FORMAT_VF}`;
-    const out = await renderWith(vf, 6, "wide");
-    expect(await probeDuration(out)).toBeCloseTo(6, 1);
-    expect(await frozenSegments(out), "a 2x stretch must keep moving").toBe(0);
-    /**
-     * ...and it is still real motion. Measured against the SOURCE's own picture rate rather than
-     * an absolute number: mpdecimate's threshold makes the absolute count depend on the material,
-     * so only the ratio between the two is meaningful. At 2x, half the source's rate is the
-     * arithmetic floor and anything near it is honest slow motion.
-     */
-    const sourceRate = await distinctFramesPerSecond(sourceClip);
-    expect(await distinctFramesPerSecond(out)).toBeGreaterThan(sourceRate * 0.4);
-  }, 180_000);
 
   /**
    * RONDE 111 — the measurement that made the cap necessary.
@@ -280,46 +142,4 @@ describe("RONDE 85 §C — ffmpeg's own freezedetect confirms it", () => {
      */
     expect(await frozenSegments(uncapped)).toBe(0);
   }, 180_000);
-});
-
-/* ═════════════ §D — nothing else in compose moved ═════════════ */
-
-describe("RONDE 85 §D — the rest of the compose path is untouched", () => {
-  const SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-
-  it("clone-padding exists in exactly two places, both of them named", () => {
-    /**
-     * SUPERSEDED BY RONDE 111: there are two now, and that is the design rather than a leak.
-     *   1. the MONTAGE_TAIL_PAD=freeze operator override, unchanged;
-     *   2. the remainder after slowing has been capped at 2x — the absolute last technical
-     *      fallback, reached only when every search, the short-clip round and re-using the
-     *      scene's own footage in motion have all come back empty.
-     * A third would be a leak, which is what this still guards.
-     */
-    const occurrences = (SRC.match(/tpad=stop_mode=clone/g) ?? []).length;
-    expect(occurrences, "a third freeze site would defeat the round").toBe(2);
-    const first = SRC.indexOf("tpad=stop_mode=clone");
-    expect(SRC.slice(Math.max(0, first - 700), first)).toContain('mode === "freeze"');
-    const second = SRC.indexOf("tpad=stop_mode=clone", first + 1);
-    expect(SRC.slice(Math.max(0, second - 900), second)).toContain(
-      "The absolute last technical fallback."
-    );
-  });
-
-  it("the single-clip montage fills its gap too", () => {
-    // It used to skip the filler entirely under strictNoVisualRepeat, leaving the scene short of
-    // its own voice track. Slowing repeats nothing, so that guard is gone.
-    const idx = SRC.indexOf("Scene ${sceneIndex} single-clip montage");
-    expect(idx).toBeGreaterThan(-1);
-    const block = SRC.slice(idx - 600, idx + 120);
-    expect(block).toContain("pad >= 0.08");
-    expect(block).not.toContain("pad >= 0.08 && !strictNoVisualRepeat()");
-  });
-
-  it("both callers hand over a real montage duration, not just the gap", () => {
-    // The ratio needs the montage's own length; passing only the pad would silently produce a
-    // wrong stretch.
-    expect(SRC).toContain("montageTailPadFilterChain(\n    montageDur,\n    montageDur + pad,");
-    expect(SRC).toContain("montageTailPadFilterChain(est, est + pad,");
-  });
 });

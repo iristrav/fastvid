@@ -33,68 +33,6 @@ function read(file: string): string {
 }
 
 describe("stillness and repetition name the file they measured", () => {
-  it("both blocks are written as delivered_file where the audits actually run", () => {
-    const src = read(PIPELINE);
-    /**
-     * The honest default. On the fallback path the compose montage IS the deliverable, so starting
-     * here means that path needs no correction at all — only the cinematic path does.
-     */
-    expect(src).toContain(`measuredOn: "delivered_file",\n          durationSec: stillness.durationSec,`);
-    expect(src).toContain(`measuredOn: "delivered_file",\n          distinctPictures: repeats.distinctPictures,`);
-  });
-
-  it("both are flipped to compose_montage when the cinematic render delivers", () => {
-    const src = read(PIPELINE);
-    expect(src).toContain(`qualityReport.stillness.measuredOn = "compose_montage";`);
-    expect(src).toContain(`qualityReport.repeats.measuredOn = "compose_montage";`);
-  });
-
-  it("the flip sits in the same block as the spot check it mirrors", () => {
-    /**
-     * Position, not just presence. The correction is only correct where `jobOutcome.ok` is already
-     * established — the spot-check overwrite is that block's anchor, and the flip must follow it
-     * before the block ends. A flip that drifted out to an unconditional path would mark every
-     * render's figures as compose-only, including the renders where they are exactly right.
-     */
-    const src = read(PIPELINE);
-    /**
-     * RONDE 633 — THERE ARE TWO WAYS THE CINEMATIC FILE CAN BE DELIVERED, AND BOTH FLIP.
-     *
-     * This measured the FIRST occurrence of the flip and required it to sit just after the spot
-     * check's own delivered-file warning. That located the right block while there was only one
-     * block. There are two now: the render this process ran itself, and the render the job worker
-     * ran while this process waited on the row (render 600's job 19, written off in 61 ms and
-     * published two and a half minutes later).
-     *
-     * The property is unchanged and is what is asserted: EVERY flip sits under an established
-     * cinematic delivery, never on an unconditional path where it would mark the figures of a
-     * render that measured them correctly. Checking every occurrence rather than the first is
-     * strictly stronger than what stood here.
-     */
-    const anchor = src.indexOf("qualityReport.warnings.push(`Delivered file: ${w}`);");
-    expect(anchor).toBeGreaterThan(-1);
-    const flips = [...src.matchAll(/qualityReport\.stillness\.measuredOn = "compose_montage";/g)];
-    expect(flips.length).toBeGreaterThan(0);
-    for (const m of flips) {
-      const at = m.index!;
-      /** The nearest delivery condition above this flip, and how far above it is. */
-      const guards = [
-        src.lastIndexOf("if (jobOutcome.ok) {", at),
-        src.lastIndexOf('if (waited.kind === "DELIVERED") {', at),
-      ];
-      const guard = Math.max(...guards);
-      expect(guard, "a flip with no cinematic delivery above it").toBeGreaterThan(-1);
-      /** Widened for RONDE 639's FINAL_VIDEO correction, which sits between the two on one path. */
-      expect(at - guard, "a flip that drifted away from the block that establishes it").toBeLessThan(
-        8_000
-      );
-    }
-  });
-
-  it("the render log says out loud that the two figures describe another file", () => {
-    const src = read(PIPELINE);
-    expect(src).toContain("stillness/repetition were measured on the compose montage");
-  });
 
   it("measuredOn is required on both blocks, so it cannot be omitted into a default", () => {
     const src = read(REPORT);

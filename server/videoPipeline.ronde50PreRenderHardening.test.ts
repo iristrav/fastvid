@@ -24,7 +24,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 // value written later is wiped again before the first assertion runs.
 process.env.SEARCH_GATE_STRICT = "false";
 
-
 // RONDE 50 — pre-render hardening.
 //
 // Three defects, all found by the Ronde-49 audit and all about the first real render being
@@ -478,97 +477,6 @@ describe("RONDE 50 #2 — the tier is set at runtime, not just in the source", (
     const { guaranteedAdoptSource, isPlaceholderGuaranteedTier } = await import("./videoPipeline");
     expect(guaranteedAdoptSource("color_fallback")).toBe("fallback");
     expect(isPlaceholderGuaranteedTier("color_fallback")).toBe(true);
-  });
-
-  it("a guaranteed clip is still muxed with an audio track by the last-resort compose", async () => {
-    const { generateGuaranteedBeatClip, composeLastResortSceneFromClip } = await import(
-      "./videoPipeline"
-    );
-    const clip = await generateGuaranteedBeatClip(7002, 0, 3, dir);
-    // No audio file on disk: the helper must generate a silent track rather than ship a mute
-    // scene. Ronde 34 point 7 relies on this, and the tier change must not have touched it.
-    const out = await composeLastResortSceneFromClip(7002, 3, clip, path.join(dir, "missing.mp3"), dir);
-    expect(fs.existsSync(out)).toBe(true);
-    expect(fs.statSync(out).size).toBeGreaterThan(1_000);
-    expect(fs.existsSync(path.join(dir, "scene_7002_lastresort_silent.mp3"))).toBe(true);
-  }, 180_000);
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. returnComposed coverage
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("RONDE 50 #3 — no compose output can be published without its clip list", () => {
-  it("every value-returning path that hands back a compose output goes through returnComposed", () => {
-    const body = functionBody(SRC(), "composeSceneVideoInner");
-    const returns = [...body.matchAll(/\breturn\s+([^\n;]+);/g)].map((m) => m[1].trim());
-    // Everything that hands back the compose output itself.
-    const outputReturns = returns.filter(
-      (r) => r.includes("outputPath") || r.includes("returnComposed") || /composed/i.test(r)
-    );
-    expect(outputReturns.length).toBeGreaterThanOrEqual(7);
-    for (const r of outputReturns) {
-      // RONDE 158 made the funnel async (it now measures the finished scene before publishing it),
-      // so the call is awaited. The rule is unchanged: nothing hands back a compose output except
-      // through the funnel.
-      expect(r).toMatch(/^(await\s+)?returnComposed\(/);
-    }
-    // A bare `return outputPath;` would bypass the publication entirely.
-    expect(returns).not.toContain("outputPath");
-  });
-
-  it("the clip list is published in exactly one place, inside returnComposed", () => {
-    const body = functionBody(SRC(), "composeSceneVideoInner");
-    const publishes = [...body.matchAll(/usedClipsOut\.push\(/g)];
-    expect(publishes).toHaveLength(1);
-    const funnel = body.indexOf("const returnComposed =");
-    expect(funnel).toBeGreaterThan(-1);
-    const funnelBlock = blockAt(body, funnel);
-    expect(funnelBlock).toContain("usedClipsOut.push(...pendingUsedClips);");
-    // ...and it is staged, not published, where the old code published it.
-    expect(body).toContain("pendingUsedClips = uniqueClipsInOrder(safeClips);");
-    const firstReturn = body.indexOf("return await returnComposed(");
-    expect(firstReturn).toBeGreaterThan(-1);
-    expect(body.indexOf("pendingUsedClips = uniqueClipsInOrder")).toBeLessThan(firstReturn);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. Rescue beat mapping — both paths publish after the clip exists
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("RONDE 50 #4 — a beat mapping is published only once its clip exists", () => {
-  const stage4Block = (src: string) => {
-    const idx = src.indexOf("`Stage4 rescue-compose s${scene.index}`");
-    expect(idx).toBeGreaterThan(-1);
-    // The rescue slot loop sits above the compose call that carries this label.
-    const loop = src.lastIndexOf("for (let si = 0; si < missing; si++) {", idx);
-    expect(loop).toBeGreaterThan(-1);
-    return blockAt(src, loop);
-  };
-
-  it("Stage4 pushes the mapping after the guaranteed call returns, like P5A already did", () => {
-    const block = stage4Block(SRC());
-    const generate = block.indexOf("generateGuaranteedBeatClip(");
-    const push = block.indexOf("rescueBeatIndices.push(");
-    expect(generate).toBeGreaterThan(-1);
-    expect(push).toBeGreaterThan(-1);
-    expect(push).toBeGreaterThan(generate);
-    // The clip itself is still pushed first, so the two arrays stay index-aligned.
-    const clipPush = block.indexOf("rescueClips.push(rescueClip);");
-    expect(clipPush).toBeGreaterThan(generate);
-    expect(push).toBeGreaterThan(clipPush);
-  });
-
-  it("both rescue paths agree: generate, then map", () => {
-    const src = SRC();
-    const p5aIdx = src.indexOf("`P5A composeSceneVideo s${scene.index}`");
-    const p5aLoop = src.indexOf("for (let si = 0; si < missing; si++) {", p5aIdx);
-    for (const block of [blockAt(src, p5aLoop), stage4Block(src)]) {
-      const generate = block.indexOf("generateGuaranteedBeatClip(");
-      const push = block.indexOf("rescueBeatIndices.push(");
-      expect(push).toBeGreaterThan(generate);
-    }
   });
 });
 

@@ -51,9 +51,9 @@ function report(clips: string[]) {
 }
 
 describe("the clip figures follow the file the viewer receives", () => {
-  it("a fresh report says it counted the compose montage", () => {
-    /** Honest at the moment it is built: stage 6 has no other finished film to count. */
-    expect(report(MONTAGE).clipsMeasuredOn).toBe("compose_montage");
+  it("a fresh report says it counted the selected clips", () => {
+    /** Honest at the moment it is built: at stage 6 no film exists yet (RONDE 661). */
+    expect(report(MONTAGE).clipsMeasuredOn).toBe("selected_clips");
   });
 
   it("recounting says so, and says which file", () => {
@@ -162,11 +162,9 @@ describe("the render calls it with the list it already built", () => {
     expect(PIPELINE).toContain("figures re-counted against the delivered file");
   });
 
-  it("the compose route is untouched — its montage IS the delivered file", () => {
-    /**
-     * `allClipPaths` still counts `composedUsedClips` at stage 6. On the fallback route that list
-     * is exactly right, and the recount above never runs.
-     */
-    expect(PIPELINE).toContain("const allClipPaths = composedUsedClips.flat().filter(Boolean);");
+  it("stage 6 counts the selected clips, and the recount replaces them with the delivered ones", () => {
+    /** RONDE 661 — there is no compose montage any more; the delivered file is always the timeline's. */
+    expect(PIPELINE).toContain("const allClipPaths = scenes.map((_, i) => clipsForScene(i)).flat().filter(Boolean);");
+    expect(PIPELINE).not.toContain("composedUsedClips");
   });
 });

@@ -40,57 +40,49 @@ import { describe, expect, it } from "vitest";
 import {
   pipelineEmergencyFinishMs,
   pipelineRushModeMs,
-  scenePipelineEnabled,
   visualSourcingTurboMs,
 } from "./sourcingPolicy";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
-/** The `if (scenePipelineEnabled())` that splits the two scene paths, and its two halves. */
-function branches(): { p5a: string; sequential: string } {
-  const start = PIPE.indexOf("if (scenePipelineEnabled()) {");
+/**
+ * RONDE 661 — the P5A scene-pipeline branch (ENABLE_SCENE_PIPELINE, never set in production) was
+ * deleted with the old render path. The one scene loop left must still start the clock itself.
+ */
+function sceneLoop(): string {
+  const start = PIPE.indexOf("const chunks = groupScenesIntoChunks(scenes, 60);");
   expect(start).toBeGreaterThan(0);
-  const seqStart = PIPE.indexOf("const chunks = groupScenesIntoChunks(scenes, 60);", start);
-  expect(seqStart).toBeGreaterThan(start);
-  const seqEnd = PIPE.indexOf("const visualLimit = pLimit(perf.sceneParallelism);", seqStart);
-  expect(seqEnd).toBeGreaterThan(seqStart);
-  return { p5a: PIPE.slice(start, seqStart), sequential: PIPE.slice(seqStart, seqEnd) };
+  const end = PIPE.indexOf("const visualLimit = pLimit(perf.sceneParallelism);", start);
+  expect(end).toBeGreaterThan(start);
+  return PIPE.slice(start, end + 2000);
 }
 
-describe("RONDE 172 — both scene paths start the ladder at the visual stage", () => {
-  it("the sequential path resets the clock, as FIX 7 made it", () => {
-    expect(branches().sequential).toContain("visualDedup.pipelineStartedMs = Date.now();");
+describe("RONDE 172 — the scene loop starts the ladder at the visual stage", () => {
+  it("the scene loop resets the clock, as FIX 7 made it", () => {
+    expect(sceneLoop()).toContain("visualDedup.pipelineStartedMs = Date.now();");
   });
 
-  it("the P5A path resets it too — this is the half FIX 7 missed", () => {
-    expect(branches().p5a).toContain("visualDedup.pipelineStartedMs = Date.now();");
+  it("the P5A branch and its switch are gone — there is one scene loop", () => {
+    expect(PIPE).not.toContain("scenePipelineEnabled");
+    expect(PIPE).not.toContain("heartbeatP5A");
   });
 
-  it("each path says so, so a log can tell which clock a render was on", () => {
-    const { p5a, sequential } = branches();
-    expect(p5a).toContain("sourcing-ladder clock started at visual stage (P5A)");
-    expect(sequential).toContain("sourcing-ladder clock started at visual stage");
-    // Both print the render time already spent, which is exactly the amount that used to be
-    // charged to sourcing on the P5A path.
-    expect(p5a).toContain("total elapsed so far");
-    expect(sequential).toContain("total elapsed so far");
+  it("it says so, so a log shows when the clock started", () => {
+    expect(sceneLoop()).toContain("sourcing-ladder clock started at visual stage");
+    expect(sceneLoop()).toContain("total elapsed so far");
   });
 
   it("the reset happens BEFORE the heartbeat that can trigger force-export", () => {
-    /**
-     * The P5A heartbeat calls `ensurePipelineForceExport` every ten seconds. Resetting after it
-     * was created would leave the first ticks reading the render clock — the same bug in a smaller
-     * window, and a much harder one to see.
-     */
-    const { p5a } = branches();
-    const reset = p5a.indexOf("visualDedup.pipelineStartedMs = Date.now();");
-    const heartbeat = p5a.indexOf("const heartbeatP5A = setInterval(");
+    const loop = sceneLoop();
+    const reset = loop.indexOf("visualDedup.pipelineStartedMs = Date.now();");
+    const heartbeat = loop.indexOf("const visualHeartbeat = setInterval(");
     expect(reset).toBeGreaterThan(-1);
     expect(heartbeat).toBeGreaterThan(reset);
+    expect(loop.slice(heartbeat)).toContain("ensurePipelineForceExport(visualDedup);");
   });
 
   it("the render-start initialisation is still there — the reset narrows it, never removes it", () => {
-    // A render that somehow reaches a rung before either branch still has a clock rather than a
+    // A render that somehow reaches a rung before the scene loop still has a clock rather than a
     // zero, which `isPipelineEmergencyFinish` reads as "not started" and skips.
     expect(PIPE).toContain("visualDedup.pipelineStartedMs = pipelineWallStartMs;");
     expect(PIPE).toContain("if (!dedup.pipelineStartedMs) return false;");
@@ -123,12 +115,5 @@ describe("RONDE 172 — the ladder itself is untouched", () => {
     expect(PIPE).toContain("function ensurePipelineForceExport(");
     expect(PIPE).toContain("if (!dedup.forceExportMode) {");
     expect(PIPE).toContain("Force-export mode (≥");
-  });
-
-  it("which branch runs is still the operator's switch, not something this changed", () => {
-    // ENABLE_SCENE_PIPELINE decides; both halves now behave the same about the clock.
-    expect(typeof scenePipelineEnabled()).toBe("boolean");
-    const policy = readFileSync(join(__dirname, "sourcingPolicy.ts"), "utf8");
-    expect(policy).toContain('process.env.ENABLE_SCENE_PIPELINE === "true"');
   });
 });

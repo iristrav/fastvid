@@ -152,16 +152,14 @@ describe("§2 — FINAL_VIDEO is re-proved wherever the cinematic film is delive
 /* ═══════════ §3 — the stale source is still the stale source ═══════════ */
 
 describe("§3 — what the correction exists to overwrite", () => {
-  it("MARKFINALVIDEO IS STILL FED FROM THE COMPOSE MONTAGE", () => {
+  it("FINAL_VIDEO IS MARKED ONLY FROM WHAT THE TIMELINE DELIVERED", () => {
     /**
-     * Unchanged on purpose. On the compose route that list IS the delivered film, and the stage-6
-     * marking is the only FINAL_VIDEO that route ever gets. What was missing was the correction on
-     * the cinematic routes, not a different marking here.
+     * RONDE 661 — the stage-6 marking from the compose montage's clip list is gone with the
+     * compose route. Both delivery paths mark FINAL_VIDEO with `replaceFinalVideo`, from the
+     * delivered (or planned) timeline — nothing else writes it.
      */
-    const at = PIPE.indexOf("const proven = ledger.markFinalVideo(deliveredClips);");
-    expect(at).toBeGreaterThan(-1);
-    const before = PIPE.slice(at - 700, at);
-    expect(before).toContain("composedUsedClips[i]");
+    expect(PIPE).not.toContain("ledger.markFinalVideo(");
+    expect((PIPE.match(/ledger\.replaceFinalVideo\(deliveredPaths\)/g) ?? []).length).toBe(2);
   });
 
   it("and the last gate still reads the ledger, not a second list of its own", () => {

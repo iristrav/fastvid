@@ -174,10 +174,22 @@ function stageIsWritten(stage: string): boolean {
  */
 const STAGES_WITH_NO_PRODUCTION_WRITER: string[] = [];
 
+/**
+ * RONDE 661 — RETIRED, NOT A GAP. Their only writer was the compose route, which is deleted. They
+ * stay in the vocabulary so the lineage of renders made before that still reads; nothing new may
+ * write them, and they are listed apart so the gap list above keeps its floor of zero.
+ */
+const STAGES_RETIRED_WITH_COMPOSE = ["COMPOSED", "COMPOSE_DROPPED", "COMPOSE_INPUT", "COMPOSE_SELECTED"];
+
 describe("the lineage stages production actually writes", () => {
   it("is exactly the vocabulary minus the known gaps", () => {
-    const unwritten = lineageStages().filter((s) => !stageIsWritten(s));
+    const unwritten = lineageStages().filter(
+      (s) => !stageIsWritten(s) && !STAGES_RETIRED_WITH_COMPOSE.includes(s)
+    );
     expect(unwritten.sort()).toEqual([...STAGES_WITH_NO_PRODUCTION_WRITER].sort());
+    for (const s of STAGES_RETIRED_WITH_COMPOSE) {
+      expect(stageIsWritten(s), `${s} was retired with compose and is written again`).toBe(false);
+    }
   });
 
   it("the stages the reports lean on hardest are written", () => {

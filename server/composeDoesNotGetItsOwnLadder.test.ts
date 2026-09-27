@@ -266,7 +266,6 @@ describe("transformation is not sourcing", () => {
     ];
     for (const fn of [
       "adoptBestSimilarBeatClip",
-      "rescueFastShortComposeClips",
       "trySubjectFallbackForBeat",
     ]) {
       const start = PIPELINE.indexOf(`async function ${fn}(`);

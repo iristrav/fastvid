@@ -68,10 +68,6 @@ export function buildFilmGrainVF(sourceKind?: DocGradeSourceKind): string {
   return `,noise=alls=${amount}:allf=t+u`;
 }
 
-export function buildPostGradeVF(sourceKind?: DocGradeSourceKind): string {
-  return `${buildDocumentaryColorGradeVF(sourceKind)},${buildDocumentaryVignetteVF(sourceKind)}${buildFilmGrainVF(sourceKind)}`;
-}
-
 /** Color + vignette only — applied on each montage clip so sources match before xfade. */
 export function buildPerClipDocumentaryGradeVF(sourceKind?: DocGradeSourceKind): string {
   return `${buildDocumentaryColorGradeVF(sourceKind)},${buildDocumentaryVignetteVF(sourceKind)}`;
@@ -535,47 +531,6 @@ export interface TimedOverlay {
   /** Yellow interval label (year/keyword) — small positioned clip. */
   isScreenLabel?: boolean;
   isVideoOverlay?: boolean;
-}
-
-export async function renderNameBadgeOverlay(
-  name: string,
-  sceneIndex: number,
-  workDir: string,
-  ffmpegBin: string,
-  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
-  durationSec = 3.0
-): Promise<TimedOverlay | null> {
-  const trimmed = name.trim();
-  if (!trimmed) return null;
-
-  const safeName = sanitizeForDrawtext(trimmed, 40);
-  const FONT_SIZE = 42;
-  const PAD_X = 28;
-  const PAD_Y = 14;
-  const estTextW = Math.min(safeName.length * FONT_SIZE * 0.55, DOC_STYLE_VIDEO_WIDTH - 200);
-  const boxW = Math.round(estTextW + PAD_X * 2);
-  const boxH = FONT_SIZE + PAD_Y * 2;
-  const boxX = Math.round((DOC_STYLE_VIDEO_WIDTH - boxW) / 2);
-  const boxY = DOC_STYLE_VIDEO_HEIGHT - boxH - 72;
-
-  const pngPath = path.join(workDir, `scene_${sceneIndex}_name_badge.png`);
-  try {
-    await execWithTimeout(
-      `${ffmpegBin} -y ` +
-        `-f lavfi -i "color=c=black@0:size=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:rate=1" ` +
-        `-vf "drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=FF7A00@0.96:t=fill,` +
-        `drawtext=text='${safeName}':fontcolor=black:fontsize=${FONT_SIZE}:x=${boxX + PAD_X}:y=${boxY + PAD_Y}" ` +
-        `-frames:v 1 -pix_fmt rgba "${pngPath}"`,
-      8_000,
-      `Name badge scene ${sceneIndex}`
-    );
-    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
-      return { path: pngPath, startTime: 0.4, endTime: Math.min(durationSec, 3.4), isNameBadge: true, fullFrame: true };
-    }
-  } catch {
-    /* non-fatal */
-  }
-  return null;
 }
 
 export async function renderHighlightCaptionOverlay(

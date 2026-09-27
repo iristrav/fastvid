@@ -28,7 +28,6 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-
 import { checkFileAvSync } from "./avSyncCheck";
 import {
   beatFunnel,
@@ -36,8 +35,11 @@ import {
   noteNotAsked,
   reasonsFor,
 } from "./beatShortlist";
-import { probeVideoStreamDurationSec, repairShortSceneVideo } from "./videoPipeline";
+import {
+  probeVideoStreamDurationSec,
+} from "./videoPipeline";
 import { VisualSourceLedger, formatUsageInconsistencies } from "./visualSourceLineage";
+
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -127,54 +129,6 @@ describe("R198 §2 — the film, not only each scene", () => {
     const before = await checkFileAvSync(film);
     expect(before.findings.map((f) => f.code)).toContain("audio_past_picture");
   }, 300_000);
-
-  it("the repair extends the picture across the sound, and the check then passes", async () => {
-    const film = shortFilm("fix", 6, 12);
-    const before = await checkFileAvSync(film);
-    const soundEnd = Math.max(before.envelope.audioSec ?? 0, before.envelope.lastSoundSec ?? 0);
-    const covered = await repairShortSceneVideo(
-      film, soundEnd, -1, dir, 240_000, "-threads 2", "the assembled film"
-    );
-    expect(covered).not.toBe(film);
-    expect(await probeVideoStreamDurationSec(covered)).toBeGreaterThan(soundEnd - 0.35);
-    const after = await checkFileAvSync(covered);
-    expect(after.findings.map((f) => f.code)).not.toContain("audio_past_picture");
-  }, 300_000);
-
-  it("the film's repair runs BEFORE the export-ready pass, so what ships is validated", () => {
-    const idx = PIPE.indexOf("[FinalCoverage] video ${videoId}: picture ends at");
-    expect(idx).toBeGreaterThan(0);
-    expect(idx).toBeLessThan(PIPE.indexOf("const { path: exportReadyPath, validation: exportValidation }"));
-  });
-
-  it("a repair that produces nothing keeps the composed file and says so", () => {
-    const idx = PIPE.indexOf("[FinalCoverage] video ${videoId}: picture ends at");
-    /**
-     * Bounded by the else-branch this test is about rather than by the enclosing `catch`: a
-     * second repair (the silent-tail trim) now sits between them, and a fixed window would fail
-     * on a change that does not touch what this guards.
-     */
-    const end = PIPE.indexOf("AND THE OTHER DIRECTION", idx);
-    expect(end, "the next repair marks the end of this one").toBeGreaterThan(idx);
-    const block = PIPE.slice(idx, end);
-    expect(block).toContain("repair did not produce a longer picture");
-    expect(block, "the composed file is kept").toContain("shipping as composed");
-  });
-
-  it("nothing is repaired unless the sound really outlasts the picture", () => {
-    const idx = PIPE.indexOf("const soundOutlastsPicture = preExport.findings.some(");
-    expect(idx).toBeGreaterThan(0);
-    const block = PIPE.slice(idx, idx + 600);
-    expect(block).toContain('f.code === "audio_past_picture"');
-    expect(block).toContain("soundOutlastsPicture && soundEnd > pictureEnd");
-  });
-
-  it("the log names what is being repaired instead of inventing a scene number", () => {
-    const idx = PIPE.indexOf("export async function repairShortSceneVideo(");
-    const body = PIPE.slice(idx, idx + 1400);
-    expect(body).toContain("subject = `Scene ${sceneIndex}`");
-    expect(body).not.toContain("[Pipeline] Scene ${sceneIndex}: could not read");
-  });
 });
 
 /* ═════════════ 3. counters that can be compared ═════════════ */

@@ -65,11 +65,11 @@ describe("Final production fix — appendGuaranteedSceneClips now records adopti
     expect(src).toContain("tierOut");
   });
 
-  it("all 5 call sites pass dedup/visualDedup through", () => {
+  it("all 4 call sites pass dedup/visualDedup through", () => {
     const defMarker = "async function appendGuaranteedSceneClips(";
     const occurrences = fullSource.split("appendGuaranteedSceneClips(").length - 1;
-    // 1 definition + 5 call sites
-    expect(occurrences).toBe(6);
+    // 1 definition + 4 call sites (RONDE 661: the fifth was in the deleted P5A scene loop)
+    expect(occurrences).toBe(5);
     const callSiteStarts: number[] = [];
     let searchFrom = fullSource.indexOf(defMarker) + defMarker.length;
     for (;;) {
@@ -78,7 +78,7 @@ describe("Final production fix — appendGuaranteedSceneClips now records adopti
       callSiteStarts.push(next);
       searchFrom = next + "appendGuaranteedSceneClips(".length;
     }
-    expect(callSiteStarts.length).toBe(5);
+    expect(callSiteStarts.length).toBe(4);
     for (const start of callSiteStarts) {
       const closeIdx = fullSource.indexOf(");", start);
       const args = fullSource.slice(start, closeIdx);
@@ -112,77 +112,6 @@ describe("Final production fix — fillBeatVisual emergency-finish guaranteed cl
     // RONDE 50: tier-aware source, see the note on the appendGuaranteedSceneClips test above.
     expect(scoped).toContain("guaranteedAdoptSource(guaranteedTierOut.tier)");
     void marker;
-  });
-});
-
-describe("Final production fix — composeSceneVideoInner's fourth guaranteed-fill site (slot 1001) now recorded", () => {
-  const src = extractFunctionSource("composeSceneVideoInner");
-
-  it("calls recordClipAdopt for the 'alle clips faalden validatie' rescue (slot 1001)", () => {
-    const marker = "alle clips faalden validatie — guaranteed compose fill";
-    const idx = src.indexOf(marker);
-    expect(idx).toBeGreaterThan(-1);
-    const scoped = src.slice(idx, idx + 1200);
-    expect(scoped).toMatch(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*1001,/);
-    expect(scoped).toContain("safeClips.push(adopted)");
-    expect(scoped).toMatch(/recordClipAdopt\(\s*\n?\s*composeOptions\.dedup\.clipAdoptAudit/);
-    // RONDE 50: tier-aware source.
-    expect(scoped).toContain("guaranteedAdoptSource(tierOut.tier)");
-  });
-
-  it("emits a FINAL_VISUAL_MANIFEST line per clip entering the montage", () => {
-    expect(src).toContain("[FINAL_VISUAL_MANIFEST]");
-    expect(src).toContain("audit.find((e) => e.sceneIndex === scene.index && e.basename === basename)");
-  });
-
-  it("all 3 recordClipAdopt(...'fallback') calls from Round 17 + follow-up review remain intact", () => {
-    const count = (src.match(/recordClipAdopt\(\s*\n?\s*composeOptions\.dedup\.clipAdoptAudit/g) ?? []).length;
-    // 3 pre-existing (loop, slot 999, slot 8888) + 1 new (slot 1001) = 4
-    expect(count).toBe(4);
-  });
-});
-
-describe("Final production fix — Path A/B rescue-compose guaranteed clips now recorded", () => {
-  it("Path A: both the first-attempt and retry guaranteed clip are recorded (P5A rescue loop)", () => {
-    const idx = fullSource.indexOf('`P5A composeSceneVideo s${scene.index}`');
-    expect(idx).toBeGreaterThan(-1);
-    // RONDE 32 widened this window: the P5A rescue block now salvages a completed compose
-    // output, keeps the scene's surviving winners and shares one exclusion set across slots,
-    // so the retry branch sits further down. Same property, longer block.
-    const scoped = fullSource.slice(idx, idx + 8000);
-    expect(scoped).toContain('`[Compose] Scene ${scene.index}: guaranteed clip ${si} failed, retrying once:`');
-    const recordCount = (scoped.match(/recordClipAdopt\(\s*\n?\s*visualDedup\.clipAdoptAudit/g) ?? []).length;
-    expect(recordCount).toBe(2);
-  });
-
-  it("Path B: the Stage4 rescue-compose loop records each guaranteed clip", () => {
-    const idx = fullSource.indexOf('`Stage4 composeSceneVideo s${scene.index}`');
-    expect(idx).toBeGreaterThan(-1);
-    // RONDE 32: the call is now multi-line — it also passes the slot's beat text and the
-    // batch-scoped exclusion sets — so match its shape rather than one flat line.
-    const scoped = fullSource.slice(idx, idx + 8000);
-    expect(scoped).toMatch(/generateGuaranteedBeatClip\(\s*scene\.index,\s*si,\s*hold,\s*workDir,/);
-    expect(scoped).toMatch(/recordClipAdopt\(\s*\n?\s*visualDedup\.clipAdoptAudit/);
-  });
-
-  it("Path B last-resort: only records when a NEW clip was generated (no double-count when rescueClips[0] is reused)", () => {
-    const idx = fullSource.indexOf('`Stage4 composeSceneVideo s${scene.index}`');
-    expect(idx).toBeGreaterThan(-1);
-    // RONDE 32 widened this window for the same reason as the two above; RONDE 33 widened it
-    // again (the rescue block now also resolves uncovered beats from the adopt audit).
-    const scoped = fullSource.slice(idx, idx + 14000);
-    expect(scoped).toMatch(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*9999,/);
-    // RONDE 32 (B1): the guard variable is now `reusableLastClip` — it covers a reused rescue
-    // clip AND a surviving winner, where `hadRescueClips` only ever looked at rescueClips.
-    // RONDE 48 (C1): the branch is entered through `lastClip`, which is seeded from
-    // reusableLastClip, so the guard still covers both. The property this test protects
-    // (record only when a NEW clip was generated) is unchanged.
-    expect(scoped).toContain("reusableLastClip");
-    expect(scoped).toContain("let lastClip = reusableLastClip;");
-    expect(scoped).toContain("if (!lastClip)");
-    const recordCount = (scoped.match(/recordClipAdopt\(\s*\n?\s*visualDedup\.clipAdoptAudit/g) ?? []).length;
-    // 1 in the si-loop above + 1 guarded last-resort call.
-    expect(recordCount).toBeGreaterThanOrEqual(1);
   });
 });
 

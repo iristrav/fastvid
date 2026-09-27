@@ -216,17 +216,6 @@ describe("narration running past the picture is reported", () => {
     expect(codes.join(" ")).toMatch(/audio_past_picture\(\+1\.8\ds\)/);
   });
 
-  /** THE WIRING, compose side: the route that delivers when the cinematic render is not used. */
-  it("the compose delivery path measures the file it is about to upload", () => {
-    const at = PIPE.indexOf("const avSync = await checkFileAvSync(finalVideoPath)");
-    expect(at, "the compose-side AV check is gone").toBeGreaterThan(-1);
-    const block = PIPE.slice(at, at + 1200);
-    expect(block).toContain('measuredOn: "compose_montage"');
-    expect(block).toContain("avSyncFindingCodes(avSync)");
-    /** It reports; it does not gate. Same policy as the spot check beside it. */
-    expect(block).not.toContain("throw ");
-  });
-
   /** THE WIRING, cinematic side: the verdict the render job already took on the delivered file. */
   it("the cinematic cutover reads the verdict the render job returned", () => {
     const at = PIPE.indexOf("if (jobOutcome.avSync) {");
@@ -241,25 +230,6 @@ describe("narration running past the picture is reported", () => {
     const worker = readFileSync(path.join(__dirname, "renderJobWorker.ts"), "utf8");
     expect(worker).toContain("const avSync = await checkFileAvSync(outputPath)");
     expect(worker).toContain("avSync,");
-  });
-
-  /**
-   * The rule R190/R191 established and this follows: a number about a file the viewer did not
-   * receive is worse than no number. The compose montage's verdict is REPLACED, never left
-   * standing beside a delivery it does not describe.
-   */
-  it("the delivered verdict overwrites the montage's, rather than sitting beside it", () => {
-    const compose = PIPE.indexOf('measuredOn: "compose_montage"');
-    const delivered = PIPE.indexOf('measuredOn: "delivered_render"');
-    expect(compose).toBeGreaterThan(-1);
-    expect(delivered).toBeGreaterThan(compose);
-    expect((PIPE.match(/qualityReport\.avSync = \{/g) ?? []).length).toBe(2);
-  });
-
-  it("a probe that cannot run is absent, never a pass", () => {
-    const at = PIPE.indexOf("const avSync = await checkFileAvSync(finalVideoPath)");
-    expect(PIPE.slice(at, at + 200)).toContain(".catch(() => null)");
-    expect(PIPE.slice(at, at + 300)).toContain("if (avSync) {");
   });
 });
 
@@ -294,8 +264,8 @@ describe("the findings this round named have since been closed", () => {
     expect(lazy, "the read-time derivation is gone").toBeGreaterThan(-1);
     expect(
       (PIPE.match(/beatRhythmTargets\.set\(/g) ?? []).length,
-      "a third writer appeared — the record must stay one derivation plus one refresh"
-    ).toBe(2);
+      "a second writer appeared — the record is one derivation (RONDE 661: the refresh was P5A's)"
+    ).toBe(1);
   });
 
   it("a render builds a feature matrix, so its invariant can fire", () => {

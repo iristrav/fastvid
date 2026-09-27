@@ -21,18 +21,17 @@
  * ── What this file holds ────────────────────────────────────────────────────────────────────
  *
  * That the two readers can never disagree again, that nothing was loosened in the process, and
- * that every route the pipeline can take still announces itself. The fallback is NOT removed —
- * §16 forbids that and it is the right design — it simply may never be silent.
+ * that every render still announces its route. RONDE 661 later deleted the compose fallback on
+ * the user's explicit instruction: a timeline render that fails now fails the render, with its
+ * reason — still never silently.
  */
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
 import {
-  CINEMATIC_PLAN_ERROR,
   cinematicRenderPathEnabled,
   formatProductionRoute,
-  formatRenderRoute,
 } from "./cinematicProduction";
 import { envFlagIsOn } from "./envFlag";
 import { ROUTE_FLAGS } from "./productionPreflight";
@@ -120,57 +119,33 @@ describe("§14.7 — the render-path flag is read the same way everywhere", () =
     const off = withFlag(undefined, () => formatProductionRoute(7));
     expect(on).toContain("CINEMATIC_RENDER_PATH=on");
     expect(off).toContain("CINEMATIC_RENDER_PATH=off");
-    expect(off).toContain("route=legacy_compose");
+    expect(off).toContain("route=none");
     expect(off).toContain("reason=");
   });
 });
 
-/* ═══════════════ 8. a fallback is allowed, silence is not ═══════════════ */
+/* ═══════════════ 8. a failed render says so, with its reason ═══════════════ */
 
-describe("§14.8 — every legacy delivery says so, with its reason", () => {
-  it("the flag being off is stated as the reason, not inferred from a missing line", () => {
-    const line = formatRenderRoute({ videoId: 572, route: "legacy_compose", planOk: true });
-    expect(line).toContain("RENDER_FALLBACK_USED");
-    expect(line).toContain("reason=CINEMATIC_RENDER_PATH is not enabled");
+describe("§14.8 — every render that did not deliver says so, with its reason", () => {
+  const PIPE = read("videoPipeline.ts");
+
+  it("an unusable plan carries the planner's OWN code, and the render fails with it", () => {
+    /** "the timeline did not validate" and "the flag is off" call for different actions. */
+    expect(PIPE).toContain("`the cinematic plan was not usable: ${outcome.reason}`");
+    expect(PIPE).toContain("route=cinematic_timeline NOT_DELIVERED ");
+    expect(PIPE).toContain("there is no second render to fall back to");
   });
 
-  it("an unusable plan carries the planner's OWN code — CINEMATIC_TIMELINE_INVALID included", () => {
-    /**
-     * Render 571's shape. The reason has to be the planner's code rather than a generic sentence,
-     * because "the timeline did not validate" and "the flag is off" call for different actions.
-     */
-    const line = formatRenderRoute({
-      videoId: 571,
-      route: "legacy_compose",
-      planOk: false,
-      reason: CINEMATIC_PLAN_ERROR.TIMELINE_INVALID,
-    });
-    expect(line).toContain("RENDER_FALLBACK_USED");
-    expect(line).toContain("CINEMATIC_TIMELINE_INVALID");
+  it("the flags being off is stated at the start of the render, not inferred later", () => {
+    expect(PIPE).toContain(
+      "The timeline is FastVid's only render path: CINEMATIC_EDITING_ENGINE and CINEMATIC_RENDER_PATH must both be on"
+    );
   });
 
-  it("every plan-failure code can reach the line — none of them is a silent path", () => {
-    for (const code of Object.values(CINEMATIC_PLAN_ERROR)) {
-      const line = formatRenderRoute({ videoId: 1, route: "legacy_compose", planOk: false, reason: code });
-      expect(line, code).toContain(code);
-      expect(line, code).toContain("RENDER_FALLBACK_USED");
-    }
-  });
-
-  it("the cinematic route names itself and never carries the fallback word", () => {
-    const line = formatRenderRoute({ videoId: 1, route: "cinematic_timeline", planOk: true });
-    expect(line).toContain("route=cinematic_timeline");
-    expect(line).not.toContain("RENDER_FALLBACK_USED");
-  });
-
-  it("the fallback still EXISTS — removing it is not what this round did", () => {
-    /**
-     * §16: the legacy path may not be deleted. A cinematic plan that cannot be built must still
-     * produce a video, and the failure must be visible rather than fatal.
-     */
+  it("the fallback route and its marker are gone — RONDE 661 deleted it", () => {
     const src = read("cinematicProduction.ts");
-    expect(src).toContain('export type RenderRoute = "cinematic_timeline" | "legacy_compose";');
-    expect(src).toContain("RENDER_FALLBACK_USED");
+    expect(src).not.toContain("export type RenderRoute");
+    expect(src).not.toContain("export function formatRenderRoute(");
   });
 });
 

@@ -239,11 +239,6 @@ describe("RONDE 81 §D — a chunk deadline is never below what its scenes may t
     expect(chunkStageTimeoutMs(2_400_000, 2, 35)).toBe(137_143);
     expect(chunkStageTimeoutMs(2_400_000, 2, 35, 20_000, 0)).toBe(137_143);
   });
-
-  it("both production call sites now declare a per-scene deadline", () => {
-    expect(PIPELINE_SRC).toContain("perf.sceneVisualTimeoutMs\n      ),");
-    expect(PIPELINE_SRC).toContain("composeSlotWorstCaseMs(renderBudgetComposeMs, videoLength)");
-  });
 });
 
 /* ═════════════ §G — long videos can degrade too ═════════════ */
@@ -293,85 +288,9 @@ describe("RONDE 81 §G — the escalation ladder exists at every length", () => 
   });
 });
 
-/* ═════════════ §H — a compose deadline degrades, not destroys ═════════════ */
-
-describe("RONDE 81 §H — compose chunk timeout salvage", () => {
-  const start = PIPELINE_SRC.indexOf("} catch (composeChunkErr) {");
-  const salvage = PIPELINE_SRC.slice(start, start + 3200);
-
-  it("the compose chunk timeout is caught, and not re-thrown", () => {
-    expect(start, "no catch around the compose chunk timeout").toBeGreaterThan(-1);
-    // The comment that said a chunk timeout must fail the whole video is gone.
-    expect(PIPELINE_SRC).not.toContain("propagates up and fails the whole\n    // video");
-    // Catching and re-throwing is the same outcome with extra steps — the whole video still
-    // dies for one slow chunk while every other chunk's scenes are already on disk.
-    expect(salvage, "the salvage path must not re-throw").not.toContain("throw composeChunkErr");
-    expect(salvage, "the salvage path must not throw at all").not.toMatch(/\bthrow\b/);
-  });
-
-  it("it contributes exactly one entry per scene in the chunk — index alignment", () => {
-    // This is the constraint the old comment named as the reason not to catch: pushing fewer
-    // than chunkScenes.length entries misaligns every later chunk against scenes[i].
-    expect(salvage).toContain("for (let si = chunk.start; si < chunk.end; si++)");
-    expect(salvage).toContain("salvaged.push(");
-    expect(salvage).toContain("chunkComposed = salvaged;");
-    // Two branches, two pushes: the already-finished scene, and everything else.
-    const pushes = [...salvage.matchAll(/salvaged\.push\(/g)];
-    expect(pushes.length, "every branch must push exactly once").toBe(2);
-    // And neither push is conditional. A `if (rescued) salvaged.push(...)` would silently
-    // produce fewer than chunkScenes.length entries — exactly the misalignment the old
-    // no-catch comment warned about, reintroduced.
-    expect(salvage, "a conditional push breaks index alignment").not.toMatch(/\)\s*salvaged\.push\(/);
-    expect(salvage).toMatch(/\n\s*salvaged\.push\(rescued\);/);
-    expect(salvage).toMatch(/\n\s*salvaged\.push\(done\);/);
-  });
-
-  it("scenes that already finished are kept, by absolute index", () => {
-    expect(salvage).toContain("composedByIndex[si]");
-    expect(PIPELINE_SRC).toContain("composedByIndex[i] = result;");
-    expect(PIPELINE_SRC).toContain("const composedByIndex: (string | undefined)[] = [];");
-  });
-
-  it("it reuses the existing last-resort compose rather than a new fallback system", () => {
-    expect(salvage).toContain("composeLastResortSceneFromClip(");
-    expect(salvage).toContain("usableSurvivorClips(");
-    for (const invented of ["new Promise", "ffmpeg", "spawn(", "exec("]) {
-      expect(salvage, `salvage must not build its own compose (${invented})`).not.toContain(invented);
-    }
-  });
-
-  it("a scene with no output at all becomes a placeholder the concat filter drops", () => {
-    // "" keeps the index; fs.existsSync("") is false, so validScenePaths removes it before
-    // concat and the scene's own voice-over goes with it — no other scene inherits it.
-    expect(salvage).toContain('let rescued = "";');
-    expect(PIPELINE_SRC).toContain("const exists = fs.existsSync(p);");
-    expect(PIPELINE_SRC).toContain('throw pipelineError(PIPELINE_ERROR.NO_SCENES, "No valid composed scene files to concatenate")');
-  });
-
-  it("audio stays with its own scene", () => {
-    // The salvage builds the last-resort scene from audioPaths[si] — the same index as the
-    // scene it stands in for, never a neighbour's.
-    expect(salvage).toContain("audioPaths[si]");
-    expect(salvage).not.toMatch(/audioPaths\[(?!si\])/);
-  });
-});
-
 /* ═════════════ §J — the remontage path is budgeted, not disabled ═════════════ */
 
 describe("RONDE 81 §J — the sync-audit remontage", () => {
-  it("still exists — it is what repairs a scene whose montage drifted from the narration", () => {
-    expect(PIPELINE_SRC).toContain("sync audit failed — remontage with TTS hard-cut");
-    expect(PIPELINE_SRC).toContain("forceTtsHardCutRemontage: true");
-  });
-
-  it("its cost is declared to the chunk deadline instead of being assumed free", () => {
-    const start = PIPELINE_SRC.indexOf("function composeSlotWorstCaseMs(");
-    expect(start).toBeGreaterThan(-1);
-    const body = PIPELINE_SRC.slice(start, PIPELINE_SRC.indexOf("\n}", start));
-    // Long path: two composes plus the audits around them. Short path: one compose, no remontage.
-    expect(body).toContain("perSceneComposeMs * 3");
-    expect(body).toContain("perSceneComposeMs * 1.5");
-  });
 
   it("the declared worst case actually covers two composes", () => {
     for (const len of LENGTHS) {

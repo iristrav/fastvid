@@ -54,7 +54,9 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join, basename } from "path";
-import { plannerClipsForScene, pairClipsToBeats } from "./cinematicPipelineInputs";
+import {
+  pairClipsToBeats,
+} from "./cinematicPipelineInputs";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 const INPUTS = readFileSync(join(__dirname, "cinematicPipelineInputs.ts"), "utf8");
@@ -67,78 +69,9 @@ const scene = (over: Partial<Parameters<typeof plannerClipsForScene>[0]>) =>
     ...over,
   });
 
-/* ═══════════ §1 — an adopted clip survives a montage that did not use it ═══════════ */
-
-describe("§1 — compose's selection no longer decides what the planner can see", () => {
-  it("AN ADOPTED CLIP COMPOSE LEFT OUT REACHES THE PLANNER", () => {
-    const source = scene({
-      canonical: ["/w/yt_o6bV1XdXMdc.mp4", "/w/archive_57387.mp4"],
-      composed: ["/w/archive_57387.mp4"],
-    });
-    expect(source.clipPaths).toContain("/w/yt_o6bV1XdXMdc.mp4");
-    expect(source.canonicalAvailableToPlanner).toBe(2);
-    expect(source.canonicalNotInCompose).toBe(1);
-  });
-
-  it("and render 600's whole scene 2 survives: two adopted YouTube clips, neither composed", () => {
-    const source = scene({
-      canonical: ["/w/yt_6XnsYZxH2nI.mp4", "/w/yt_-Mr4mbLZRbE.mp4", "/w/ia_fy3NVwcDD5g.mp4"],
-      composed: ["/w/ia_fy3NVwcDD5g.mp4"],
-    });
-    expect(source.clipPaths).toEqual([
-      "/w/yt_6XnsYZxH2nI.mp4",
-      "/w/yt_-Mr4mbLZRbE.mp4",
-      "/w/ia_fy3NVwcDD5g.mp4",
-    ]);
-  });
-
-  it("the canonical set leads the list, so an adopted clip outranks compose on a shared beat", () => {
-    const source = scene({
-      canonical: ["/w/adopted.mp4"],
-      composed: ["/w/compose_only.mp4"],
-    });
-    expect(source.clipPaths[0]).toBe("/w/adopted.mp4");
-  });
-});
-
 /* ═══════════ §2 — render 602: nothing is filtered out here ═══════════ */
 
 describe("§2 — the adopted set is assembled, not judged", () => {
-  /**
-   * RENDER 602 IS THIS SECTION'S WHOLE REASON, AND IT REPLACES THE OPPOSITE ASSERTION.
-   *
-   * What stood here required the mistimed probe: "A CLIP THE PREDICATE REFUSES DOES NOT REACH THE
-   * PLANNER". The probe refused thirteen of thirteen adopted clips across three scenes and the
-   * render stored no plan at all, while compose kept twelve of those same files with that same
-   * function minutes earlier. The property was never wrong; running it here was.
-   */
-  it("EVERY ADOPTED CLIP REACHES THE PLANNER, WHATEVER COMPOSE DID WITH IT", () => {
-    const source = scene({
-      canonical: ["/w/a.mp4", "/w/b.mp4", "/w/c.mp4", "/w/d.mp4"],
-      composed: ["/w/a.mp4"],
-    });
-    expect(source.canonicalAvailableToPlanner).toBe(4);
-    expect(source.clipPaths).toHaveLength(4);
-  });
-
-  it("render 602's scene 2 would now reach the planner with all four", () => {
-    const source = scene({
-      canonical: [
-        "/w/scene_2_b0_curated_a57797_still.mp4",
-        "/w/scene_2_slot1_guaranteed.mp4",
-        "/w/scene_2_slot2_guaranteed.mp4",
-        "/w/scene_2_guaranteed_wiki_s103.mp4",
-      ],
-      composed: [
-        "/w/scene_2_b0_curated_a57797_still.mp4",
-        "/w/scene_2_slot1_guaranteed.mp4",
-        "/w/scene_2_slot2_guaranteed.mp4",
-        "/w/scene_2_guaranteed_wiki_s103.mp4",
-      ],
-    });
-    expect(source.canonicalAvailableToPlanner).toBe(4);
-    expect(source.composeOnly).toEqual([]);
-  });
 
   it("A CARD THIS PIPELINE DREW IS STILL REFUSED — BY THE PLANNER, WHERE THE CHECK BELONGS", () => {
     /**
@@ -167,150 +100,17 @@ describe("§2 — the adopted set is assembled, not judged", () => {
   });
 });
 
-/* ═══════════ §3 — what the counts mean now ═══════════ */
-
-describe("§3 — COMPOSE MISSING is reported and removes nothing", () => {
-  it("ABSENCE FROM COMPOSE IS COUNTED, AND COSTS THE CLIP NOTHING", () => {
-    const source = scene({
-      canonical: ["/w/a.mp4", "/w/b.mp4", "/w/c.mp4"],
-      composed: [],
-    });
-    expect(source.canonicalNotInCompose).toBe(3);
-    expect(source.canonicalAvailableToPlanner).toBe(3);
-    expect(source.clipPaths).toHaveLength(3);
-  });
-
-  it("the two counts move independently, so a render can read them apart", () => {
-    const source = scene({
-      canonical: ["/w/in_compose.mp4", "/w/not_in_compose.mp4"],
-      composed: ["/w/in_compose.mp4", "/w/rescue_extra.mp4"],
-    });
-    expect(source.canonicalCount).toBe(2);
-    expect(source.composeCount).toBe(2);
-    expect(source.canonicalNotInCompose).toBe(1);
-    expect(source.canonicalAvailableToPlanner).toBe(2);
-  });
-
-  it("nothing compose found is lost either — a compose-only file is carried, not dropped", () => {
-    const source = scene({
-      canonical: ["/w/adopted.mp4"],
-      composed: ["/w/adopted.mp4", "/w/rescue_extra.mp4"],
-    });
-    expect(source.composeOnly).toEqual(["/w/rescue_extra.mp4"]);
-    expect(source.clipPaths).toEqual(["/w/adopted.mp4", "/w/rescue_extra.mp4"]);
-  });
-
-  it("and a scene with neither source is empty rather than invented", () => {
-    const source = scene({});
-    expect(source.clipPaths).toEqual([]);
-    expect(source.canonicalCount).toBe(0);
-    expect(source.composeCount).toBe(0);
-  });
-});
-
-/* ═══════════ §4 — a longer list cannot double-book a beat ═══════════ */
-
-describe("§4 — the merge and pairClipsToBeats compose safely", () => {
-  it("A COMPOSE ENTRY CANNOT TAKE A BEAT THE ADOPTED CLIP ALREADY HOLDS", () => {
-    const source = scene({
-      canonical: ["/w/adopted_b0.mp4"],
-      composed: ["/w/compose_b0.mp4"],
-    });
-    const pairs = pairClipsToBeats({
-      clipPaths: source.clipPaths,
-      adoptions: [
-        { beatIndex: 0, basename: "adopted_b0.mp4" },
-        { beatIndex: 0, basename: "compose_b0.mp4" },
-      ],
-      beats: [{ index: 0 }],
-      basenameOf: basename,
-    });
-    expect(pairs).toEqual(["/w/adopted_b0.mp4"]);
-  });
-
-  it("and a compose entry DOES fill a beat the adopted set left empty", () => {
-    const source = scene({
-      canonical: ["/w/adopted_b0.mp4"],
-      composed: ["/w/compose_b1.mp4"],
-    });
-    const pairs = pairClipsToBeats({
-      clipPaths: source.clipPaths,
-      adoptions: [
-        { beatIndex: 0, basename: "adopted_b0.mp4" },
-        { beatIndex: 1, basename: "compose_b1.mp4" },
-      ],
-      beats: [{ index: 0 }, { index: 1 }],
-      basenameOf: basename,
-    });
-    expect(pairs).toEqual(["/w/adopted_b0.mp4", "/w/compose_b1.mp4"]);
-  });
-
-  it("the render-600 shape end to end: four adopted YouTube beats keep their own pictures", () => {
-    const source = scene({
-      canonical: ["/w/yt_a.mp4", "/w/yt_b.mp4", "/w/yt_c.mp4", "/w/yt_d.mp4"],
-      composed: ["/w/archive_only.mp4"],
-    });
-    const pairs = pairClipsToBeats({
-      clipPaths: source.clipPaths,
-      adoptions: [
-        { beatIndex: 0, basename: "yt_a.mp4" },
-        { beatIndex: 1, basename: "yt_b.mp4" },
-        { beatIndex: 2, basename: "yt_c.mp4" },
-        { beatIndex: 3, basename: "yt_d.mp4" },
-      ],
-      beats: [{ index: 0 }, { index: 1 }, { index: 2 }, { index: 3 }],
-      basenameOf: basename,
-    });
-    expect(pairs).toEqual(["/w/yt_a.mp4", "/w/yt_b.mp4", "/w/yt_c.mp4", "/w/yt_d.mp4"]);
-  });
-});
-
 /* ═══════════ §5 — the wiring, and the line that is gone ═══════════ */
 
 describe("§5 — the pipeline reads the merge, not one of two lists", () => {
   it("THE TERNARY THAT CHOSE COMPOSE OVER THE ADOPTED SET IS GONE", () => {
     expect(PIPE).not.toContain("usingCompose ? composedForScene : canonicalForScene");
   });
-
-  it("and the planner is fed the merge", () => {
-    expect(PIPE).toContain("clipPaths: plannerSource.clipPaths,");
-    expect(PIPE).toContain("const plannerSource = plannerClipsForScene({");
-  });
-
-  it("THE MISTIMED PROBE IS GONE FROM THE PLANNER'S ASSEMBLY", () => {
-    /**
-     * Render 602: `usableOnly: (clips) => usableSurvivorClips(clips)` ran one stage too late and
-     * refused every adopted clip in the render. `usableSurvivorClips` itself is untouched and
-     * still runs where it always did — inside compose, on files compose is holding.
-     */
-    expect(PIPE).not.toContain("usableOnly:");
-    expect(PIPE).toContain("usableSurvivorClips(sceneVisualResults[i]?.clips ?? [])");
-  });
-
-  it("and the assembly needs no await, so it sits with the rest of the scene", () => {
-    const at = PIPE.indexOf("const plannerSource = plannerClipsForScene({");
-    expect(at).toBeGreaterThan(-1);
-    expect(PIPE.slice(at, PIPE.indexOf("});", at))).not.toContain("await");
-  });
 });
 
 /* ═══════════ §6 — the counts a render is read by ═══════════ */
 
 describe("§6 — what the render says about the planner's input", () => {
-  it("THE COUNTS THAT LET A RENDER CHECK THIS ARE ALL REPORTED", () => {
-    const at = PIPE.indexOf("[CinematicPlannerSource] scene=");
-    expect(at).toBeGreaterThan(-1);
-    const line = PIPE.slice(at, at + 500);
-    for (const field of [
-      "canonicalCount=",
-      "composeCount=",
-      "canonicalNotInCompose=",
-      "canonicalAvailableToPlanner=",
-      "composeOnlyAdded=",
-    ]) {
-      expect(line).toContain(field);
-    }
-  });
 
   it("the counter that named an exclusion is gone with the exclusion", () => {
     expect(PIPE).not.toContain("canonicalExcludedByCompose");
@@ -342,9 +142,5 @@ describe("§7 — the decisions stay with the code that was already making them"
     for (const reason of ["NO_ADOPTED_CLIP", "NOT_REHYDRATABLE", "SCENE_TIME_EXHAUSTED", "NO_DURATION"]) {
       expect(INPUTS_ALL).toContain(reason);
     }
-  });
-
-  it("and compose's own filtered list is still what the divergence report compares against", () => {
-    expect(PIPE).toContain("[CinematicSourceDivergence] scene=");
   });
 });

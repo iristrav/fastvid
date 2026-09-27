@@ -580,28 +580,6 @@ describe("compose says how much of its own invariant it can vouch for", () => {
     return pipe.slice(at, at + 5200);
   };
 
-  it("an input the ledger cannot place is counted, not silently skipped", () => {
-    const b = exitBlock();
-    expect(b).toContain("let unknownToLedger = 0;");
-    expect(b).toContain("if (!opened) unknownToLedger++;");
-  });
-
-  it("and a non-zero count is a warning, with what it means", () => {
-    const b = exitBlock();
-    expect(b).toContain("UNKNOWN_TO_LEDGER=");
-    expect(b).toContain("cannot account for them");
-  });
-
-  /**
-   * The repair is a COUNT and never a repair of the record. Inventing a lineage entry here would
-   * give an asset a provenance it has not got, which is the one thing the ledger exists to prevent.
-   */
-  it("nothing invents a lineage record to make the number look complete", () => {
-    const b = exitBlock();
-    expect(b).not.toContain("createLineage(");
-    expect(b).not.toContain("bindPath(");
-  });
-
   /** The two routes that can produce such a clip are still last-resort, not competing selectors. */
   it("the routes that skip the vision boundary run only when the normal route found nothing", () => {
     const pipe = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");

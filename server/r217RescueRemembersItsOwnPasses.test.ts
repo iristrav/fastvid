@@ -50,7 +50,8 @@ describe("R217 §1 — the rescue remembers what it already tried", () => {
 
   it("it is checked in the ONE wrapper every caller passes through", () => {
     const callers = [...PIPE.matchAll(/recoverSceneClipsIfEmpty\(/g)].length;
-    expect(callers, "the wrapper has no callers — this is measuring nothing").toBeGreaterThan(5);
+    /** RONDE 661 removed the compose-era callers; five remain, counting the definition. */
+    expect(callers, "the wrapper has no callers — this is measuring nothing").toBeGreaterThan(3);
     const check = wrapper.indexOf("const prior = dedup.sceneRecoveryAttempts.get");
     const work = wrapper.indexOf("recoverSceneClipsIfEmptyInner(");
     expect(check).toBeGreaterThan(0);

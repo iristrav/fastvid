@@ -147,19 +147,3 @@ export function stitchSourceFloorSec(requestedSec: number, standaloneFloor: numb
   const wanted = Number.isFinite(requestedSec) && requestedSec > 0 ? requestedSec : standaloneFloor;
   return Math.max(MIN_STITCHABLE_SOURCE_SEC, Math.min(standaloneFloor, wanted));
 }
-
-/** One line about a shortfall, in the same shape everywhere it is reported. */
-export function formatCoverageFillPlan(context: string, plan: CoverageFillPlan): string {
-  if (plan.action === "none") return `[Coverage] ${context}: covered`;
-  const head =
-    `[Coverage] ${context}: short ${plan.shortfallSec.toFixed(2)}s ` +
-    `(would need ${Number.isFinite(plan.uncappedRatio) ? `${plan.uncappedRatio.toFixed(2)}x` : "∞"})`;
-  if (plan.action === "slow") {
-    return `${head} → slowing ${plan.slowdownRatio.toFixed(2)}x, fully covered, no held frame`;
-  }
-  return (
-    `${head} → slowed to the ${MAX_COVERAGE_SLOWDOWN}x cap, ` +
-    `${plan.stillShortSec.toFixed(2)}s STILL UNCOVERED → held frame (last resort) — ` +
-    `this scene is short of footage`
-  );
-}

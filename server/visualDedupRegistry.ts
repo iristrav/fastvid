@@ -73,8 +73,6 @@ export type DedupMatch =
   | "storage_url"
   | "funnel_candidate_id";
 
-export type DedupVerdict = { used: boolean; matchedOn: DedupMatch | null };
-
 import { createHash } from "crypto";
 
 /**
@@ -127,37 +125,6 @@ export function providerAssetIdentityKey(provider: string, id: string): string {
 
 function providerKey(provider: string, id: string): string {
   return providerAssetIdentityKey(provider, id);
-}
-
-/**
- * Has this picture already been used in this video, under ANY of its identities?
- *
- * Order is cheapest-and-most-specific first. `matchedOn` is the identity that answered, which is
- * what makes the rejection line diagnosable: "already used, matched on archive_asset_id" and
- * "already used, matched on storage_url" are two different stories about the archive.
- */
-export function assetUsedInVideo(sets: UsedAssetSets, identity: AssetIdentity): DedupVerdict {
-  const { archiveAssetId, provider, providerAssetId, contentKey, storageUrl, funnelCandidateId } =
-    identity;
-
-  if (archiveAssetId != null && sets.usedCuratedAssetIds.has(archiveAssetId)) {
-    return { used: true, matchedOn: "archive_asset_id" };
-  }
-  if (provider?.trim() && providerAssetId?.trim()) {
-    if (sets.usedProviderKeys.has(providerKey(provider, providerAssetId))) {
-      return { used: true, matchedOn: "provider_asset_id" };
-    }
-  }
-  if (contentKey?.trim() && sets.usedContentKeys.has(contentKey.trim())) {
-    return { used: true, matchedOn: "content_key" };
-  }
-  if (storageUrl?.trim() && sets.usedCuratedStorageUrls.has(storageUrl.trim())) {
-    return { used: true, matchedOn: "storage_url" };
-  }
-  if (funnelCandidateId?.trim() && sets.usedFunnelCandidateIds.has(funnelCandidateId.trim())) {
-    return { used: true, matchedOn: "funnel_candidate_id" };
-  }
-  return { used: false, matchedOn: null };
 }
 
 /**

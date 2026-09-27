@@ -103,8 +103,6 @@ describe("RONDE 113 — the default is no text", () => {
 
 describe("RONDE 113 — every text engine is held off", () => {
   const gates: Array<[string, () => Promise<boolean>]> = [
-    ["visualDirector", async () => (await import("./visualDirector/director")).visualDirectorEnabled()],
-    ["textOverlay", async () => (await import("./textOverlay/planner")).textOverlayEnabled()],
     ["editorialOverlay", async () => (await import("./editorialOverlay/index")).editorialOverlayEnabled()],
     ["editorialGraphics", async () => (await import("./editorialGraphicsEngine")).editorialGraphicsEnabled()],
     ["screenLabels", async () => (await import("./sourcingPolicy")).screenLabelsEnabled()],
@@ -132,51 +130,11 @@ describe("RONDE 113 — every text engine is held off", () => {
       "editorialGraphics",
     ]);
   });
-
-  it("their own env flags still work when text is allowed again", async () => {
-    // The policy must gate these engines, not replace them: with the escape hatch on, the
-    // engine's own default returns.
-    process.env.ALLOW_BURNED_IN_TEXT = "true";
-    const { visualDirectorEnabled } = await import("./visualDirector/director");
-    const { editorialGraphicsEnabled } = await import("./editorialGraphicsEngine");
-    expect(visualDirectorEnabled()).toBe(true);
-    expect(editorialGraphicsEnabled()).toBe(true);
-    // ...and one that was off before stays off, because its own flag still says so.
-    const { textOverlayEnabled } = await import("./textOverlay/planner");
-    expect(textOverlayEnabled()).toBe(false);
-  });
-
-  it("the check sits INSIDE each gate, not at the call sites", () => {
-    /**
-     * The difference matters: a check at the call site is one `if` a future caller can forget,
-     * and there are dozens of call sites. Inside the gate there is one place and it cannot be
-     * routed around.
-     */
-    for (const file of [
-      "sourcingPolicy.ts",
-      "editorialGraphicsEngine.ts",
-      "cinematicEffectsEngine.ts",
-      path.join("visualDirector", "director.ts"),
-      path.join("textOverlay", "planner.ts"),
-      path.join("editorialOverlay", "index.ts"),
-    ]) {
-      const src = fs.readFileSync(path.join(__dirname, file), "utf8");
-      expect(src, file).toContain("burnedInTextAllowed");
-    }
-  });
 });
 
 /* ═══════════ the year badge ═══════════ */
 
 describe("RONDE 113 — the cinematic overlays draw nothing", () => {
-  it("the text builder returns empty before it reaches any renderer", () => {
-    const idx = CINEMATIC.indexOf("export async function buildCinematicOverlays(");
-    expect(idx).toBeGreaterThan(-1);
-    const body = CINEMATIC.slice(idx, idx + 2600);
-    expect(body).toContain("if (!burnedInTextAllowed()) {");
-    // The guard is ahead of the yearsOnly branch, which was the leak.
-    expect(body.indexOf("burnedInTextAllowed")).toBeLessThan(body.indexOf("if (opts.yearsOnly) {"));
-  });
 
   it("the two label builders refuse on their own too, not only at the call site", () => {
     /**
@@ -192,27 +150,10 @@ describe("RONDE 113 — the cinematic overlays draw nothing", () => {
     }
   });
 
-  it("the year badge WAS drawn inside yearsOnly — which is why the flags looked fine", () => {
-    // Documenting the actual defect: `yearsOnly` renders badges and then returns.
-    const idx = CINEMATIC.indexOf("if (opts.yearsOnly) {");
-    const body = CINEMATIC.slice(idx, idx + 500);
-    expect(body).toContain("renderYearBadgeOverlay(");
-  });
-
-  it("the camera flash is not text and was not swept up with it", () => {
-    // It lives in the same builder; the guard returns early rather than disabling the effects
-    // pass, and the flash renderer is still there for when text is allowed.
-    expect(CINEMATIC).toContain("renderCameraFlashOverlay(");
-  });
-
   it("both motion-graphics entry points refuse independently", () => {
     const mg = fs.readFileSync(path.join(__dirname, "motionGraphicsEngine.ts"), "utf8");
     expect(mg).toContain("if (!plan || !motionGraphicsEnabled()) return false;");
     expect(mg).toContain("if (!motionGraphicsEnabled()) return null;");
-  });
-
-  it("a chapter card is a full frame of text and obeys the same rule", () => {
-    expect(PIPELINE).toContain("burnedInTextAllowed() &&\n      process.env.ENABLE_CHAPTER_CARDS");
   });
 });
 
@@ -225,12 +166,6 @@ describe("RONDE 113 — every drawtext module is accounted for", () => {
    * genuinely unreachable from the render.
    */
   const REACHABLE_AND_GATED = [
-    "visualDirector/renderer.ts",
-    "visualDirector/renderers/statHighlight.ts",
-    "visualDirector/renderers/personLabel.ts",
-    "visualDirector/renderers/comparison.ts",
-    "visualDirector/renderers/bulletList.ts",
-    "textOverlay/renderer.ts",
     "editorialOverlay/renderer.ts",
     "editorialGraphicsEngine.ts",
     "motionGraphicsEngine.ts",
@@ -282,24 +217,6 @@ describe("RONDE 113 — every drawtext module is accounted for", () => {
       expect(PIPELINE, file).not.toContain(`from "./${file}"`);
     }
     expect(PIPELINE).not.toContain("professionalRenderEngine");
-  });
-
-  it("motionGraphicsLayer only PLANS overlays — it never renders one", () => {
-    const review = fs.readFileSync(path.join(__dirname, "sceneCriticalReview.ts"), "utf8");
-    expect(review).toContain("planMotionGraphicsScene(");
-    expect(review).toContain("auditMotionGraphicsCoverage(");
-    // No compose step consumes the plan.
-    expect(PIPELINE).not.toContain("planMotionGraphicsScene");
-  });
-
-  it("documentaryStyle's badges are only reachable through the gated builder", () => {
-    // renderNameBadgeOverlay / renderKeywordPillOverlay are called from buildCinematicOverlays,
-    // which now returns before either of them.
-    expect(CINEMATIC).toContain("renderNameBadgeOverlay(");
-    const guard = CINEMATIC.indexOf("if (!burnedInTextAllowed()) {");
-    expect(guard).toBeGreaterThan(-1);
-    expect(CINEMATIC.indexOf("const badge = await renderNameBadgeOverlay(")).toBeGreaterThan(guard);
-    expect(CINEMATIC.indexOf("const pill = await renderKeywordPillOverlay(")).toBeGreaterThan(guard);
   });
 });
 

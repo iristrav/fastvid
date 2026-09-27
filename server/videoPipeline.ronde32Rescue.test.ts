@@ -39,93 +39,6 @@ function writeTestVideo(filePath: string, durationSec: number): void {
   );
 }
 
-describe("RONDE 32 — FIX D: a timed-out compose that finished is never overwritten", () => {
-  let dir: string;
-
-  beforeAll(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-r32-fixd-"));
-  });
-  afterAll(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("variant 1 — accepts an output whose measured duration covers the scene", async () => {
-    const { sceneComposeOutputPath, usableComposeOutputAfterTimeout } = await import("./videoPipeline");
-    const out = sceneComposeOutputPath(0, dir);
-    writeTestVideo(out, 6);
-
-    await expect(usableComposeOutputAfterTimeout(0, dir, 6)).resolves.toBe(out);
-  }, 60_000);
-
-  it("variant 2 — rejects an output that is only ~20% of the scene, so rescue still runs", async () => {
-    const { sceneComposeOutputPath, usableComposeOutputAfterTimeout } = await import("./videoPipeline");
-    const out = sceneComposeOutputPath(1, dir);
-    // A SIGKILL mid-mux leaves a structurally valid but truncated mp4 behind. exists() and even
-    // a decode check both pass on it — only the measured duration exposes it.
-    writeTestVideo(out, 1.2);
-
-    await expect(usableComposeOutputAfterTimeout(1, dir, 6)).resolves.toBeNull();
-  }, 60_000);
-
-  it("rejects a missing file and a non-video file", async () => {
-    const { sceneComposeOutputPath, usableComposeOutputAfterTimeout } = await import("./videoPipeline");
-    await expect(usableComposeOutputAfterTimeout(2, dir, 6)).resolves.toBeNull();
-
-    fs.writeFileSync(sceneComposeOutputPath(3, dir), Buffer.alloc(4096, 0x41));
-    await expect(usableComposeOutputAfterTimeout(3, dir, 6)).resolves.toBeNull();
-  }, 60_000);
-});
-
-describe("RONDE 32 — FIX C: rescue slots inherit the intent of beats that have no picture", () => {
-  it("maps each rescue slot onto an uncovered beat", async () => {
-    const { uncoveredBeatIndicesForRescue, rescueBeatTextForSlot } = await import("./videoPipeline");
-    const beats = [
-      { text: "Hitler in the bunker" },
-      { text: "Berlin in ruins" },
-      { text: "The Red Army closes in" },
-    ] as never as Parameters<typeof rescueBeatTextForSlot>[1];
-
-    // One survivor, standing in for beat 2 — beats 0 and 1 still have nothing.
-    const uncovered = uncoveredBeatIndicesForRescue(3, [2], 1);
-    expect(uncovered).toEqual([0, 1]);
-
-    const slot0 = rescueBeatTextForSlot(0, beats, uncovered);
-    const slot1 = rescueBeatTextForSlot(1, beats, uncovered);
-    expect(slot0).toBe("Hitler in the bunker");
-    expect(slot1).toBe("Berlin in ruins");
-    expect(slot0).not.toBe(slot1);
-  });
-
-  it("does not blindly index beats[si] when there are more rescue slots than beats", async () => {
-    const { uncoveredBeatIndicesForRescue, rescueBeatTextForSlot } = await import("./videoPipeline");
-    const beats = [{ text: "Hitler in the bunker" }, { text: "Berlin in ruins" }] as never as Parameters<
-      typeof rescueBeatTextForSlot
-    >[1];
-    const uncovered = uncoveredBeatIndicesForRescue(2, [], 0);
-    expect(uncovered).toEqual([0, 1]);
-
-    // Render 529 had 7 beats and 12 slots; slot 9 must still resolve to a real beat text.
-    expect(rescueBeatTextForSlot(9, beats, uncovered)).toBe("Berlin in ruins");
-  });
-
-  it("returns null when every beat is already covered or no beat metadata exists", async () => {
-    const { uncoveredBeatIndicesForRescue, rescueBeatTextForSlot } = await import("./videoPipeline");
-    const beats = [{ text: "Hitler in the bunker" }] as never as Parameters<typeof rescueBeatTextForSlot>[1];
-
-    expect(uncoveredBeatIndicesForRescue(1, [0], 1)).toEqual([]);
-    expect(rescueBeatTextForSlot(0, beats, [])).toBeNull();
-    expect(rescueBeatTextForSlot(0, undefined, [0])).toBeNull();
-    // No beat metadata at all -> caller falls back to scene.text, still better than the
-    // video-wide topic query that produced twelve identical searches in render 529.
-    expect(uncoveredBeatIndicesForRescue(0, undefined, 0)).toEqual([]);
-  });
-
-  it("ignores out-of-range clipBeatIndices instead of hiding a real beat", async () => {
-    const { uncoveredBeatIndicesForRescue } = await import("./videoPipeline");
-    expect(uncoveredBeatIndicesForRescue(3, [7, -1, 1], 3)).toEqual([0, 2]);
-  });
-});
-
 describe("RONDE 32 — FIX B: a rescue batch never collects the same curated asset twice", () => {
   let dir: string;
   const prepared: string[] = [];
@@ -232,41 +145,6 @@ describe("RONDE 32 — FIX B: a rescue batch never collects the same curated ass
     // No shared state passed -> both calls start from an empty exclusion, exactly as before.
     expect(a).toBe(b);
   }, 120_000);
-
-  it("TEST E — the rescue exclusion is batch-scoped, not the render-wide dedup set", () => {
-    // A render-wide exclusion here would starve the rescue: this code only runs BECAUSE normal
-    // sourcing already failed, so re-using an asset the video used earlier is strictly better
-    // than falling through to a colour card. Guarded structurally because the wiring, not a
-    // return value, is what encodes the decision.
-    //
-    // ── RONDE 88A: the same claim, made about the calls it was always about ──────────────────
-    //
-    // This used to forbid the render-wide set in EVERY `generateGuaranteedBeatClip` call in the
-    // file, which is wider than the rationale above supports. Three of those calls hand their clip
-    // to `pushClip` — a `pushSceneClip` variant, every one of which refuses on render-wide
-    // `usedContentKeys` before doing anything else. There the render-wide rule is applied to the
-    // clip regardless; withholding the set from the SEARCH only meant the render downloaded and
-    // transcoded footage it had already decided it could not use. Render 568 paid for archive row
-    // ww2:57364 thirty-eight times that way, out of the scene's own budget.
-    //
-    // So the assertion is now made about the rescue-batch calls it was written for, and the calls
-    // it no longer covers are covered — with the opposite requirement, which is the correct one for
-    // them — by duplicatePreparationIsPrevented.test.ts, whose invariant also holds every non-push
-    // call to the batch-scoped rule this test states.
-    const src = fs.readFileSync(REPO_PIPELINE, "utf8");
-    const rescueBlocks = src.match(/const rescueUsedAssetIds = new Set<number>\(\);/g) ?? [];
-    expect(rescueBlocks.length).toBe(2);
-
-    const batchScopedCalls = [...src.matchAll(/generateGuaranteedBeatClip\([\s\S]*?\n\s*\);/g)]
-      .map((m) => m[0])
-      .filter((call) => call.includes("rescueUsedAssetIds"));
-    // One per rescue block at minimum — if these stop existing the test must fail, not pass empty.
-    expect(batchScopedCalls.length).toBeGreaterThanOrEqual(2);
-    for (const call of batchScopedCalls) {
-      expect(call).toContain("rescueUsedStorageUrls");
-      expect(call).not.toMatch(/usedCuratedAssetIds|usedCuratedStorageUrls/);
-    }
-  });
 });
 
 describe("RONDE 32 — FIX A/F: both rescue paths top up the winners instead of replacing them", () => {
@@ -276,35 +154,5 @@ describe("RONDE 32 — FIX A/F: both rescue paths top up the winners instead of 
     // composeSceneVideo(scene, clips, ...) treats `clips` as the COMPLETE set — it opens with
     // clips.filter(...). Passing only the rescue clips is what erased scene 1's five winners.
     expect(src()).not.toMatch(/composeSceneVideo\(\s*\n?\s*scene,\s*rescueClips,/);
-  });
-
-  it("both rescue paths compose the combined survivors + rescue set", () => {
-    const combined = src().match(/scene,\s*\[\.\.\.survivors,\s*\.\.\.rescueClips\]/g) ?? [];
-    expect(combined.length).toBe(2);
-  });
-
-  it("both rescue paths size the rescue loop by what is MISSING, not by minNeeded", () => {
-    const missing = src().match(/const missing = Math\.max\(0, minNeeded - survivors\.length\);/g) ?? [];
-    expect(missing.length).toBe(2);
-    // Render 529: survivors=5, minNeeded=12 -> 7 rescue slots, not 12.
-    expect(Math.max(0, 12 - 5)).toBe(7);
-    // survivors >= minNeeded -> no rescue clips at all, the retry is a pure re-compose.
-    expect(Math.max(0, 12 - 12)).toBe(0);
-    const loops = src().match(/for \(let si = 0; si < missing; si\+\+\)/g) ?? [];
-    expect(loops.length).toBe(2);
-  });
-
-  it("both rescue paths keep beatDurations length-aligned with the combined clip array", () => {
-    // A length mismatch makes composeSceneVideo drop beatDurations entirely and flatten every
-    // clip to effectiveBeatSec(), silently discarding the survivors' real per-beat timing.
-    const aligned =
-      src().match(/\[\.\.\.survivorDurations, \.\.\.rescueClips\.map\(\(\) => archiveVisualBeatSecForVideo\(videoLength\)\)\]/g) ??
-      [];
-    expect(aligned.length).toBe(2);
-  });
-
-  it("both rescue paths check for a salvageable compose output before rescuing (FIX D)", () => {
-    const salvage = src().match(/await usableComposeOutputAfterTimeout\(/g) ?? [];
-    expect(salvage.length).toBe(2);
   });
 });

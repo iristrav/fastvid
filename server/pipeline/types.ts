@@ -14,7 +14,6 @@ import type {
   Scene,
   VisualDedupState,
   PipelinePerfProfile,
-  ComposeSceneOptions,
 } from "../videoPipeline";
 import type { VideoBlueprint } from "../masterDocumentaryDirector";
 import type {
@@ -33,7 +32,6 @@ export type {
   Scene,
   VisualDedupState,
   PipelinePerfProfile,
-  ComposeSceneOptions,
   VideoBlueprint,
   CuratedCandidatePick,
   CuratedBeatContext,
@@ -173,24 +171,6 @@ export type EffectsPlan = {
   shotSequence: OptimizedSequence;
   rhythm: RhythmResult;
 };
-
-// ─── 8. Render Composer ─────────────────────────────────────────────────────
-/** Render Composer wraps the existing compose functions as single units (see Phase 2 plan's
- *  Design Decision #2) — "instructions" here means "everything composeSceneVideoInner needs,"
- *  not a separately-executable command object. True build/execute separation is Phase 3. */
-export type RenderInstructions = {
-  scene: Scene;
-  clips: string[];
-  audioPath: string;
-  duration: number;
-  workDir: string;
-  totalScenes: number;
-  enableSubtitles?: boolean;
-  rescueStockClip?: string | null;
-  beatDurations?: number[];
-  composeOptions?: ComposeSceneOptions;
-};
-export type RenderComposerResult = { outputPath: string };
 
 // ─── 9. Video Renderer ──────────────────────────────────────────────────────
 /** Raw ffmpeg process output — Video Renderer's job is exactly "run the command," so its

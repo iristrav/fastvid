@@ -106,83 +106,8 @@ describe("RONDE 34 #1 — every curated adoption marks the storage URL, not only
     ) ?? [];
     expect(bare).toHaveLength(0);
     const wired = s.match(/curatedStorageUrlForClip\((?:clipPath|extra), dedup\)/g) ?? [];
-    expect(wired.length).toBe(8);
-  });
-});
-
-describe("RONDE 34 #2 — a clip that is known to belong to a beat keeps that mapping", () => {
-  it("a rescue slot reports the beat it was fetched for, not its slot number", async () => {
-    const { rescueBeatIndexForSlot } = await import("./videoPipeline");
-    // Beats 0 and 3 are uncovered; slot 0 stands in for beat 0, slot 1 for beat 3.
-    expect(rescueBeatIndexForSlot(0, [0, 3])).toBe(0);
-    expect(rescueBeatIndexForSlot(1, [0, 3])).toBe(3);
-    // More slots than uncovered beats wraps over the uncovered set, never over all beats.
-    expect(rescueBeatIndexForSlot(2, [0, 3])).toBe(0);
-    // Nothing uncovered -> null, and the caller keeps its old slot-number behaviour.
-    expect(rescueBeatIndexForSlot(0, [])).toBeNull();
-  });
-
-  it("merges survivor and rescue mappings only when every survivor's beat is known", async () => {
-    const { mergedRescueClipBeatIndices } = await import("./videoPipeline");
-    // Full mapping -> a real, index-aligned array for the merged clip list.
-    expect(mergedRescueClipBeatIndices([0, 1], 2, [2, 3])).toEqual([0, 1, 2, 3]);
-    // Survivor mapping missing -> undefined, so the original is passed through untouched.
-    expect(mergedRescueClipBeatIndices(undefined, 2, [2])).toBeUndefined();
-    // Partial mapping -> undefined; completing it would mean inventing the rest.
-    expect(mergedRescueClipBeatIndices([0], 2, [2])).toBeUndefined();
-    // A rescue slot with no known beat -> undefined for the same reason.
-    expect(mergedRescueClipBeatIndices([0, 1], 2, [null])).toBeUndefined();
-    // No survivors at all -> the rescue mapping stands on its own.
-    expect(mergedRescueClipBeatIndices([], 0, [0, 1])).toEqual([0, 1]);
-  });
-
-  it("uncovered beats still resolve from clipBeatIndices, then the audit, then nothing", async () => {
-    const { uncoveredBeatIndicesForRescue } = await import("./videoPipeline");
-    const entry = (sceneIndex: number, beatIndex: number, basename: string) =>
-      ({ sceneIndex, beatIndex, beatText: "", basename, source: "archive" }) as never;
-
-    expect(uncoveredBeatIndicesForRescue(3, [2], 1)).toEqual([0, 1]);
-    expect(
-      uncoveredBeatIndicesForRescue(3, undefined, 2, {
-        sceneIndex: 4,
-        survivors: ["/w/scene_4_b0.mp4", "/w/scene_4_b1.mp4"],
-        audit: [entry(4, 0, "scene_4_b0.mp4"), entry(4, 1, "scene_4_b1.mp4")],
-      })
-    ).toEqual([2]);
-    expect(
-      uncoveredBeatIndicesForRescue(3, [0], 2, {
-        sceneIndex: 4,
-        survivors: ["/w/scene_4_b0.mp4", "/w/scene_4_b2.mp4"],
-        audit: [entry(4, 2, "scene_4_b2.mp4")],
-      })
-    ).toEqual([1]);
-    // duplicate + out-of-range from either source are ignored, never trusted
-    expect(
-      uncoveredBeatIndicesForRescue(3, [7, -1, 1, 1], 4, {
-        sceneIndex: 4,
-        survivors: ["/w/x.mp4"],
-        audit: [entry(4, 99, "x.mp4")],
-      })
-    ).toEqual([0, 2]);
-    // nothing known -> every beat stays a candidate, no clip-i-is-beat-i claim
-    expect(
-      uncoveredBeatIndicesForRescue(3, undefined, 2, {
-        sceneIndex: 4,
-        survivors: ["/w/a.mp4", "/w/b.mp4"],
-        audit: [],
-      })
-    ).toEqual([0, 1, 2]);
-  });
-
-  it("both rescue paths carry the merged mapping into compose", () => {
-    const s = src();
-    expect((s.match(/const mergedBeatIndices = mergedRescueClipBeatIndices\(/g) ?? []).length).toBe(2);
-    expect(
-      (s.match(/mergedBeatIndices \? \{ \.\.\.composeOpts, clipBeatIndices: mergedBeatIndices \} : composeOpts/g) ?? [])
-        .length
-    ).toBe(2);
-    // And neither path records the slot number as the beat any more.
-    expect(s).not.toMatch(/recordClipAdopt\(visualDedup\.clipAdoptAudit, scene\.index, si,/);
+    /** RONDE 661: six — the fast-short compose rescue and the compose backfill are deleted. */
+    expect(wired.length).toBe(6);
   });
 });
 
@@ -263,34 +188,6 @@ describe("RONDE 34 #3 — Wikimedia candidate budget adapts to the exclusions", 
   });
 });
 
-describe("RONDE 34 #4 — only a successful compose reports its clips", () => {
-  it("the clip list is staged and published by the success funnel, not before the encode", () => {
-    const s = src();
-    // Staged where the old code published it...
-    expect(s).toContain("pendingUsedClips = uniqueClipsInOrder(safeClips);");
-    // ...and committed inside returnComposed, which every success path goes through.
-    // RONDE 158 made the funnel async and gave it the scene's own length, so it can check that the
-    // finished picture covers the voice before publishing. The property asserted here is unchanged:
-    // the staged list is committed as the FIRST thing the funnel does, so no path publishes early.
-    expect(s).toMatch(
-      /const returnComposed = async \(composedPath: string, targetDur\?: number\): Promise<string> => \{\s*\n\s*if \(usedClipsOut\) \{\s*\n\s*usedClipsOut\.length = 0;\s*\n\s*usedClipsOut\.push\(\.\.\.pendingUsedClips\);/
-    );
-    // The old unconditional publish is gone.
-    expect(s).not.toMatch(/usedClipsOut\.push\(\.\.\.uniqueClipsInOrder\(safeClips\)\)/);
-  });
-
-  it("a failed attempt therefore contributes nothing downstream", () => {
-    // composedUsedClips[i] = usedClips, and usedClips is only ever filled by returnComposed
-    // (success), the salvage branch (a verified published output) or the last-resort branch
-    // (a clip it actually muxed). Nothing else writes to it.
-    const s = src();
-    const writes = s.match(/usedClips\.push\(/g) ?? [];
-    // salvage x2 (Stage4 + P5A), last-resort x2 (Stage4 + P5A), and the RONDE-34 point-7
-    // parity clip in P5A — which is only pushed after its mux actually returned a path.
-    expect(writes.length).toBe(5);
-  });
-});
-
 describe("RONDE 34 #5, #6, #10 — last-resort phase, survivor scan, probe identity", () => {
   let dir: string;
 
@@ -299,66 +196,6 @@ describe("RONDE 34 #5, #6, #10 — last-resort phase, survivor scan, probe ident
   });
   afterAll(() => {
     fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("#5 the last-resort output path follows the phase it stands in for", async () => {
-    const { composeLastResortSceneFromClip } = await import("./videoPipeline");
-    const clip = path.join(dir, "clip.mp4");
-    writeTestVideo(clip, 4);
-    const audio = path.join(dir, "scene_5_audio.mp3");
-    execFileSync(
-      "ffmpeg",
-      ["-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "5", "-c:a", "libmp3lame", "-b:a", "64k", audio],
-      { stdio: "ignore" }
-    );
-
-    const full = await composeLastResortSceneFromClip(5, 5, clip, audio, dir, "full");
-    expect(full).toBe(path.join(dir, "scene_5_lastresort.mp4"));
-
-    const assembly = await composeLastResortSceneFromClip(6, 5, clip, audio, dir, "assembly");
-    expect(assembly).toBe(path.join(dir, "scene_6_assembly_lastresort.mp4"));
-    expect(assembly).not.toBe(path.join(dir, "scene_6_lastresort.mp4"));
-
-    // Default stays "full" so both existing callers are unchanged.
-    const defaulted = await composeLastResortSceneFromClip(7, 5, clip, audio, dir);
-    expect(defaulted).toBe(path.join(dir, "scene_7_lastresort.mp4"));
-  }, 180_000);
-
-  it("#6 the survivor scan stops at the limit and never loosens the predicate", async () => {
-    const { usableSurvivorClips } = await import("./videoPipeline");
-    const good1 = path.join(dir, "good1.mp4");
-    const good2 = path.join(dir, "good2.mp4");
-    const good3 = path.join(dir, "good3.mp4");
-    for (const p of [good1, good2, good3]) writeTestVideo(p, 3);
-    const missing = path.join(dir, "nope.mp4");
-    const garbage = path.join(dir, "garbage.mp4");
-    fs.writeFileSync(garbage, Buffer.alloc(8192, 0x41));
-    const ownCard = path.join(dir, "scene_9_fallback.mp4");
-    writeTestVideo(ownCard, 3);
-
-    // first candidate already usable -> the rest is never looked at
-    expect(await usableSurvivorClips([good1, good2, good3], 1)).toEqual([good1]);
-    // first two unusable, third usable -> returns the third
-    expect(await usableSurvivorClips([missing, garbage, good2], 1)).toEqual([good2]);
-    // our own fallback card is still rejected under the limit
-    expect(await usableSurvivorClips([ownCard, good3], 1)).toEqual([good3]);
-    // nothing usable
-    expect(await usableSurvivorClips([missing, garbage], 1)).toEqual([]);
-    // no limit -> unchanged full-list behaviour, which the salvage path relies on
-    expect(await usableSurvivorClips([good1, garbage, good2])).toEqual([good1, good2]);
-    // a nonsensical limit is not a way to bypass validation
-    expect(await usableSurvivorClips([good1], 0)).toEqual([]);
-  }, 180_000);
-
-  it("#6 every last-resort call site asks for one survivor only", () => {
-    // RONDE 81 added a third last-resort site: the compose-chunk-deadline salvage, which builds
-    // the same minimal single-clip scene for a scene that never finished. The invariant is that
-    // a call site which caps the scan caps it at ONE — the two uncapped sites are the usedClips
-    // top-ups, which deliberately take everything that survived.
-    const s = src();
-    const capped = s.match(/usableSurvivorClips\([^)]*\?\? \[\], (\d+)\)/g) ?? [];
-    expect(capped.length, "expected three capped last-resort scans").toBe(3);
-    for (const call of capped) expect(call, call).toMatch(/, 1\)$/);
   });
 
   it("#10 a file replaced at the same path with the same size and mtime is re-probed", async () => {

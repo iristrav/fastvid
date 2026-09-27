@@ -346,27 +346,3 @@ describe("RONDE 88 §6/§10/§17/§18 — no guessing anywhere", () => {
     expect(b.persons[0]!.term).toBe("Hitler");
   });
 });
-
-/* ═══════════ §22 — de eerdere rondes staan nog ═══════════ */
-
-describe("RONDE 88 §22 — ranking, concurrency and lineage untouched", () => {
-  it("TEST 20b — the RONDE 83-87 anchors are all still in place", () => {
-    for (const anchor of [
-      "export function scoreCandidateAgainstBeat(",
-      "rankCuratedPicksByBeatContext(ranked, curatedRankCtx)",
-      "export const ARCHIVE_PREPARE_ATTEMPTS_MAX = 6;",
-      "if (queue.length >= prepareCap) break;",
-      "const visualLimit = pLimit(perf.sceneParallelism);",
-      "const beatLimit = pLimit(beatConcurrency);",
-      // RONDE 223 re-anchor — see note above; the limiter still wraps every download.
-      "withGlobalMediaFetch(() =>",
-      "ledger.markFinalVideo(deliveredClips)",
-    ]) {
-      expect(PIPELINE_SRC, anchor).toContain(anchor);
-    }
-    // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
-    // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
-    // technical fallback). A THIRD would still mean a freeze had leaked back in.
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(2);
-  });
-});

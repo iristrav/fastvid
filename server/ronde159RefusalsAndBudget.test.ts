@@ -40,7 +40,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 beforeEach(() => { vi.stubEnv("FAST_SHORT_PATH", "true"); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
-
 import {
   classifyMismatch,
   formatMismatchFeedback,
@@ -351,56 +350,6 @@ describe("RONDE 159 §C — a starved scene may fetch, a thin one may not", () =
     expect(isComposeNetworkBlocked(dedup, 1)).toBe(true);
     // A render-wide decision must not inherit one scene's exemption.
     expect(isComposeNetworkBlocked(dedup)).toBe(true);
-  });
-});
-
-/**
- * RONDE 159 §D — footage that was chosen and then evaporated.
- *
- * Video 552's lineage audit reported twelve VANISHED_WITHOUT_OUTCOME warnings, and the funnel
- * check reported three inconsistencies on a render that was fine.
- */
-describe("RONDE 159 §D — a dropped clip says what became of it", () => {
-  const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-
-  it("both drop branches in the compose filter file an ending", () => {
-    const idx = PIPE.indexOf("async function composeReadySceneClips(");
-    const body = PIPE.slice(idx, idx + 2600);
-    /**
-     * Re-pointed: the gate reason now carries the CHECK that refused, not only the fact that the
-     * barrier did. `montageClipPassesComposeGate` returned a boolean from nine different refusals
-     * and five of them printed nothing, so every one of them arrived here as `compose_gate:s<n>`.
-     * The ending this test guards is still filed at the same place, with strictly more in it.
-     */
-    expect(body).toContain('dropped(clipPath, `compose_gate:${gate.check}:s${sceneIndex}`);');
-    expect(body).toContain('dropped(clipPath, `duplicate_content:s${sceneIndex}`);');
-    expect(body).toContain('lineage?.recordEventForPath(clipPath, "REMOVED"');
-  });
-
-  it("every caller hands it the ledger, or the recording cannot happen", () => {
-    const calls = PIPE.match(/composeReadySceneClips\([^)]*\)/g) ?? [];
-    // The definition plus three call sites.
-    expect(calls.length).toBeGreaterThanOrEqual(3);
-    for (const call of calls) {
-      if (call.startsWith("composeReadySceneClips(clips: string[]")) continue;
-      expect(call, call).toContain("lineage");
-    }
-  });
-
-  it("a placeholder that is not used gets a reason like every other drop", () => {
-    /**
-     * CORRECTED BY RONDE 162, on production evidence.
-     *
-     * This round asserted the opposite — that a placeholder has no lineage record to settle, so
-     * skipping it silently was right. Render 553 disproved it: six `_guaranteed.mp4` clips hold
-     * ADOPTED events and were reported VANISHED_WITHOUT_OUTCOME for exactly this branch's silence.
-     * A card that was made and then not used is an outcome like any other, and the rule this file
-     * exists for — every drop names its reason — never had an exception.
-     */
-    const idx = PIPE.indexOf("async function composeReadySceneClips(");
-    const body = PIPE.slice(idx, idx + 2400);
-    expect(body).toContain("`placeholder_not_used:s${sceneIndex}`");
-    expect(body).not.toContain("A placeholder is not an asset");
   });
 });
 

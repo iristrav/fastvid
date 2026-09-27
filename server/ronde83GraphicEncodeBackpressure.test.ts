@@ -187,43 +187,4 @@ describe("RONDE 83 §D — the rest of the pipeline's concurrency is untouched",
     expect(curated).toContain("const archiveDownloadLimit = pLimit(archiveDownloadConcurrency());");
     expect(curated).toContain("return 5;");
   });
-
-  it("no scene/beat/compose loop was made sequential by this round", () => {
-    // The round must not have "fixed" concurrency by removing it.
-    expect(PIPELINE_SRC).toContain("const visualLimit = pLimit(perf.sceneParallelism);");
-    expect(PIPELINE_SRC).toContain("const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));");
-    expect(PIPELINE_SRC).toContain("const beatLimit = pLimit(beatConcurrency);");
-  });
-});
-
-/* ═════════════ §E — the whole-video passes stay sequential ═════════════ */
-
-describe("RONDE 83 §E — no other whole-video pass fans out", () => {
-  it("text overlays are applied one scene at a time", () => {
-    const src = fs.readFileSync(path.join(__dirname, "textOverlay", "renderer.ts"), "utf8");
-    const start = src.indexOf("export async function applyTextOverlaysToScenes(");
-    expect(start).toBeGreaterThan(-1);
-    const body = src.slice(start, src.indexOf("\n}", start));
-    expect(body).toContain("for (let i = 0; i < scenePaths.length; i++)");
-    expect(body).not.toContain("Promise.all");
-  });
-
-  it("the visual-director pass is applied one scene at a time", () => {
-    const src = fs.readFileSync(path.join(__dirname, "visualDirector", "renderer.ts"), "utf8");
-    expect(src).toContain("for (let i = 0; i < scenePaths.length; i++)");
-    expect(src).not.toContain("Promise.all");
-  });
-
-  it("the render-path ffmpeg modules do not fan out at all", () => {
-    for (const rel of [
-      ["voiceMontageSyncAudit.ts"],
-      ["cinematicMotion", "renderer.ts"],
-      ["editorialOverlay", "renderer.ts"],
-      ["finalVideoGate.ts"],
-      ["postRenderSpotCheck.ts"],
-    ]) {
-      const src = fs.readFileSync(path.join(__dirname, ...rel), "utf8");
-      expect(src, rel.join("/")).not.toMatch(/Promise\.(all|allSettled)\(/);
-    }
-  });
 });

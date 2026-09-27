@@ -54,7 +54,8 @@ const DECIDER = (() => {
 describe("the boundary is the one every picture crosses", () => {
   it("every scene-push variant opens with the gate — five call sites, no exceptions", () => {
     const calls = [...PIPELINE.matchAll(/await beatClipRefusedByRelevanceGate\(/g)];
-    expect(calls.length, "a push route stopped asking the gate").toBe(5);
+    /** RONDE 661: four — the fifth was the deleted compose-montage backfill. */
+    expect(calls.length, "a push route stopped asking the gate").toBe(4);
     /** And every one of them refuses the push on a true answer. */
     for (const m of calls) {
       const line = PIPELINE.slice(m.index!, PIPELINE.indexOf("\n", m.index!));
@@ -130,7 +131,8 @@ describe("§18 — THE SWEEP: no push closure exists outside the invariant", () 
   );
 
   it("there are push closures to check, and every one of them is found", () => {
-    expect(CLOSURES.length, "the push closures moved or were renamed").toBe(6);
+    /** RONDE 661: four — the fast-short compose rescue and the compose backfill are deleted. */
+    expect(CLOSURES.length, "the push closures moved or were renamed").toBe(4);
   });
 
   it("EVERY PUSH CLOSURE REACHES THE ARCHIVE INVARIANT — not archive-backed = 0", () => {
@@ -143,15 +145,6 @@ describe("§18 — THE SWEEP: no push closure exists outside the invariant", () 
       ungated,
       `routes that can place a picture outside the archive invariant: ${ungated.join(", ")}`
     ).toEqual([]);
-  });
-
-  it("and the rescue with its own editorial gate asks the archive question anyway", () => {
-    const rescue = CLOSURES.find((c) => c.name === "rescueFastShortComposeClips");
-    expect(rescue, "rescueFastShortComposeClips is gone").toBeTruthy();
-    /** Its own gate is kept — a different editorial question, correctly so. */
-    expect(rescue!.body).toContain("montageClipPassesComposeGate(");
-    expect(rescue!.body).toContain("await ensureArchiveBackedBeforePush(");
-    expect(rescue!.body).toContain("recordArchivePushRefusal(dedup, clipPath, scene.index, undefined, archived.reason)");
   });
 
   it("EVERY GATE REFUSES IN ONE SPELLING, and the callers are named", () => {
@@ -170,8 +163,6 @@ describe("§18 — THE SWEEP: no push closure exists outside the invariant", () 
     const EXPECTED_CALLERS = [
       /** The universal push gate, for every route that has a beat. */
       "beatClipRefusedByRelevanceGate",
-      /** The fast-short compose rescue, which has its own editorial gate. */
-      "rescueFastShortComposeClips",
       /** The scene rebuild's seeding route — render 595's unlocked door. */
       "seedExistingProvenSceneClips",
     ];

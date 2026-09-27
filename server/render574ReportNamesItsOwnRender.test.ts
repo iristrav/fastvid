@@ -163,38 +163,21 @@ describe("both stores carry the glance, and it names its render", () => {
 
 /* ═══════════════════════ §3 — one rule for what a scene is made of ═══════════════════════ */
 
-describe("compose is a fallback for every reader, not for three of four", () => {
-  const clipsForScene = (): string => {
-    const at = PIPELINE.indexOf("const clipsForScene = (i: number): string[] =>");
-    expect(at, "clipsForScene is gone").toBeGreaterThan(-1);
-    return PIPELINE.slice(at, PIPELINE.indexOf("\n    };", at));
-  };
-
-  it("the rule prefers compose's list and falls back to the selected set", () => {
-    const body = clipsForScene();
-    expect(body).toContain("composedUsedClips[i] ?? []");
-    expect(body).toContain("sceneVisualResults[i]?.clips ?? []");
+describe("one rule for what a scene is made of, for every reader", () => {
+  /** RONDE 661 — compose is gone, so the rule is the scene's selected clips and nothing else. */
+  it("the rule is the scene's selected clips", () => {
+    expect(PIPELINE).toContain("const clipsForScene = (i: number): string[] => sceneVisualResults[i]?.clips ?? [];");
+    expect(PIPELINE).not.toContain("composedUsedClips");
   });
 
-  it("the editor reads it instead of composedUsedClips raw", () => {
-    /** This was the one reader without a fallback: a scene that composed nothing showed as empty. */
+  it("the editor reads it", () => {
     const at = PIPELINE.indexOf("editorScenes = await buildEditorScenesFromPipeline(");
-    const call = PIPELINE.slice(at, at + 320);
-    expect(call).toContain("clipsForScene(i)");
-    expect(call).not.toMatch(/\n\s*composedUsedClips,/);
+    expect(at).toBeGreaterThan(-1);
+    expect(PIPELINE.slice(at, at + 320)).toContain("clipsForScene(i)");
   });
 
-  it("the critical review and the review inputs read the same rule, not their own copies", () => {
-    expect(PIPELINE).toContain("const clipsToReview = clipsForScene(i);");
-    expect(PIPELINE).toContain("sceneReviewInputs(scenes, scenes.map((_, i) => clipsForScene(i)))");
-  });
-
-  it("allClipPaths deliberately does NOT use it", () => {
-    /**
-     * It feeds the quality report's "clips in the video". A scene that composed nothing put no
-     * picture in the montage, so falling back there would turn a missing scene into a full one.
-     * That number has to come from the delivered file — a larger change, and not a fallback.
-     */
-    expect(PIPELINE).toContain("const allClipPaths = composedUsedClips.flat().filter(Boolean);");
+  it("allClipPaths reads it too, and the report is re-counted against the delivered file", () => {
+    expect(PIPELINE).toContain("const allClipPaths = scenes.map((_, i) => clipsForScene(i)).flat().filter(Boolean);");
+    expect(PIPELINE).toContain("recountQualityReportForDeliveredClips(");
   });
 });

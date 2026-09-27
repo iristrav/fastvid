@@ -38,7 +38,6 @@ import os from "os";
 import path from "path";
 import { execSync } from "child_process";
 import {
-  assetUsedInVideo,
   markAssetUsedInVideo,
   providerAssetIdentityKey,
   type UsedAssetSets,
@@ -47,7 +46,6 @@ import {
   providerAssetKey,
   providerAssetAlreadyUsed,
   trimRemoteVideoToClip,
-  montageTailPadFilterChain,
 } from "./videoPipeline";
 import { stillImageMaxSec } from "./stillImagePolicy";
 
@@ -117,20 +115,6 @@ describe("RONDE 135 §4 — the used-asset Set is written and read with the same
     );
     expect(fn).toContain("providerAssetIdentityKey(provider, id)");
     expect(fn, "a second copy of the key is how the two drifted apart").not.toContain("createHash(");
-  });
-
-  it("RONDE 132's case-insensitivity survived the unification", () => {
-    /**
-     * The old registry key lower-cased the provider and the pipeline key did not. Merging them had
-     * to keep the STRICTER behaviour: two routes really do spell a provider differently, and a
-     * dedup set that answers "no" to the same picture under a different capitalisation does not
-     * work.
-     */
-    const sets = emptySets();
-    markAssetUsedInVideo(sets, { provider: "wikimedia", providerAssetId: "File:X.webm" });
-    expect(assetUsedInVideo(sets, { provider: "WIKIMEDIA", providerAssetId: "File:X.webm" }))
-      .toEqual({ used: true, matchedOn: "provider_asset_id" });
-    expect(providerAssetKey("Wikimedia", "File:X.webm")).toBe(providerAssetKey("wikimedia", "File:X.webm"));
   });
 
   it("the exclusion happens BEFORE the download, not after Vision", () => {
@@ -251,44 +235,13 @@ describe("RONDE 135 §3 — no long frozen frame (guarding RONDE 85/111/130)", (
     expect(stillImageMaxSec()).toBeLessThanOrEqual(5);
   });
 
-  it("the tail pad never holds a frame for longer than that limit", () => {
-    /**
-     * A 3-second montage against a 34-second slot is the production shape RONDE 130 measured. The
-     * answer must not be a 31-second freeze.
-     */
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    let chain: string;
-    try {
-      chain = montageTailPadFilterChain(3, 34, "R135 guard");
-    } finally {
-      warn.mockRestore();
-    }
-    const hold = /stop_duration=([0-9.]+)/.exec(chain);
-    if (hold) {
-      expect(Number(hold[1]), "the hold outgrew the still limit").toBeLessThanOrEqual(stillImageMaxSec() + 0.001);
-    } else {
-      // No hold at all — it looped or slowed instead, which is the preferred answer.
-      expect(chain).toMatch(/loop=|setpts=/);
-    }
-  });
-
-  it("a long shortfall is filled by replaying footage, not by stopping on a frame", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    let chain: string;
-    try {
-      chain = montageTailPadFilterChain(3, 34, "R135 guard loop");
-    } finally {
-      warn.mockRestore();
-    }
-    expect(chain).toContain("loop=loop=");
-  });
-
-  it("there are still exactly TWO clone-mode pad sites in the file", () => {
+  it("there are no clone-mode pad sites left in the file", () => {
     /**
      * The guard five earlier rounds put in place: a freeze site must not appear unnoticed. This
      * round adds none, and the count is the proof.
      */
+    /** RONDE 661: zero — both sat in the deleted compose montage's tail pad. None may return. */
     const src = read("server/videoPipeline.ts");
-    expect((src.match(/stop_mode=clone/g) ?? []).length).toBe(2);
+    expect((src.match(/stop_mode=clone/g) ?? []).length).toBe(0);
   });
 });

@@ -80,14 +80,8 @@ export function cinematicPlanningEnabled(): boolean {
 /**
  * Should the cinematic timeline PRODUCE the delivered video?
  *
- * A second, narrower switch, and it is deliberately not the same one. §19 asks for the old compose
- * path to survive only as an explicit, measurable, logged, feature-flagged fallback — and the
- * honest reading of "measurable" is that somebody has measured it. Until a real render has been
- * compared against the old path, this stays off, and a deployment turns it on when it has that
- * comparison.
- *
- * §20's `RENDER_FALLBACK_USED` line is emitted by `formatRenderRoute` below whenever this is off or
- * the plan could not be built, so a render that took the old path always says so.
+ * A second switch beside the editing engine. Since RONDE 661 the timeline is the only render path,
+ * so with this off a render is refused at the start of its outputs rather than falling back.
  *
  * ── RONDE 124 — THE ONE FLAG THAT DECIDES WHAT THE VIEWER GETS WAS READ TWO WAYS ────────────
  *
@@ -590,67 +584,12 @@ export function formatSfxPlan(
   return lines;
 }
 
-/* ═══════════════════════ §20/§25 — which route produced the video ═══════════════════════ */
-
-export type RenderRoute = "cinematic_timeline" | "legacy_compose";
-
-/**
- * Which route delivered this video, and why — one line, always emitted.
- *
- * §20 forbids a silent fallback. The word `RENDER_FALLBACK_USED` is in the line whenever the old
- * compose path produced the file, so a deployment can grep for it and count exactly how many of
- * its renders still take the legacy route. A migration nobody can measure is a migration that
- * never finishes.
- *
- * ── VID-0589: the reason was handed in and thrown away ──────────────────────────────────────
- *
- * `why` used to branch on `planOk` ALONE, and the caller's `reason` was read only in the
- * plan-failed arm. A plan can be perfectly good and the RENDER still fail — which is exactly what
- * render 589 was: the plan validated, the cinematic job ran, one asset would not rehydrate, and
- * `videoPipeline` passed `ASSET_NOT_REHYDRATABLE — clip vc_2c6cad7470` in as `reason`. This
- * function looked at `planOk === true`, took the first arm, and printed
- * `reason=CINEMATIC_RENDER_PATH is not enabled` — while the same deployment's preflight printed
- * `ON CINEMATIC_RENDER_PATH` two hundred lines earlier. The one line built to be grepped was the
- * one line that named the wrong cause.
- *
- * So the rule is on the REASON, which is the thing that knows: a caller that supplies one is
- * telling us what happened and it is printed verbatim. The flag-is-off answer is what remains
- * when there is nothing to report, which is the only case that answer was ever true for — no
- * caller reaches the cinematic route far enough to produce a refusal while the flag is off.
- */
-export function formatRenderRoute(params: {
-  videoId: number;
-  route: RenderRoute;
-  planOk: boolean;
-  reason?: string;
-}): string {
-  if (params.route === "cinematic_timeline") {
-    return `[RenderJob] video=${params.videoId} route=cinematic_timeline`;
-  }
-  const reason = params.reason?.trim();
-  const why = reason
-    ? params.planOk
-      ? reason
-      : `the cinematic plan was not usable: ${reason}`
-    : params.planOk
-      ? "CINEMATIC_RENDER_PATH is not enabled"
-      : "the cinematic plan was not usable: unknown";
-  return `[RenderJob] video=${params.videoId} route=legacy_compose RENDER_FALLBACK_USED reason=${why}`;
-}
-
 /**
  * FINAL VALIDATION §14 — the route and the flags that chose it, at the TOP of every render.
  *
- * ── Why a second route line ─────────────────────────────────────────────────────────────────
- *
- * `formatRenderRoute` above reports the outcome, and it is emitted only inside the
- * `cinematicPlanningEnabled()` branch. So a deployment with the engine switched off — which is what
- * the first real production render was — produces NO route line at all, and the only way to learn
- * which route ran is to notice the absence of `[Graphics]`, `[Captions]` and `[EDL]` lines and
- * infer it. Reading a log by what is missing from it is exactly the guesswork §14 removes.
- *
- * This line is unconditional, it is printed before any work happens, and it names the flag behind
- * every field. A render that takes the legacy route now SAYS so, on line one, with the reason.
+ * One line, printed before any work happens, naming the flag behind every field. Since RONDE 661
+ * the cinematic timeline is the only render path: with either flag off the render is refused at
+ * the start of its outputs, and this line says so on line one rather than leaving it to be inferred.
  *
  * Each value is read from the real predicate rather than from `process.env` here, so the line
  * cannot drift away from the behaviour it claims to describe.
@@ -658,15 +597,13 @@ export function formatRenderRoute(params: {
 export function formatProductionRoute(videoId: number): string {
   const planning = cinematicPlanningEnabled();
   const renderPath = cinematicRenderPathEnabled();
-  /**
-   * The route this render will take if planning succeeds. Both flags are needed: planning alone
-   * stores a timeline the editor can open, but the delivered MP4 still comes from compose.
-   */
-  const route = planning && renderPath ? "cinematic_timeline" : "legacy_compose";
+  /** Both flags are needed; without them there is no render path, and the render is refused. */
+  const route = planning && renderPath ? "cinematic_timeline" : "none";
   const why =
     route === "cinematic_timeline"
       ? ""
-      : ` reason=${!planning ? "CINEMATIC_EDITING_ENGINE is not enabled" : "CINEMATIC_RENDER_PATH is not enabled"}`;
+      : ` reason=${!planning ? "CINEMATIC_EDITING_ENGINE is not enabled" : "CINEMATIC_RENDER_PATH is not enabled"}` +
+        " — the render will be refused";
   const on = (b: boolean) => (b ? "on" : "off");
   /**
    * WHICH SWITCH DECIDED THE RANKING.

@@ -107,12 +107,6 @@ describe("§1 — the wall that could never pay", () => {
       process.env = saved;
     }
   });
-
-  it("the base numbers themselves did not move", () => {
-    expect(SRC).toContain("beatWallWithYoutubeTurn(historicalDoc ? 15_000 : 20_000)");
-    expect(SRC).toContain("? 25_000\n          : 45_000");
-    expect(SRC).toContain("? 20_000\n          : 35_000");
-  });
 });
 
 /* ═══════════ §2 — THE CLAIM THAT MATTERS: no fourth wall ═══════════ */
@@ -278,7 +272,8 @@ describe("§2 — every scope that can reach a turn is sized for one", () => {
     const repaired = scopes.filter(
       (s) => s.ms.includes("beatWallWithYoutubeTurn(") && s.callees.some((c) => reachesTurn(c))
     );
-    expect(repaired.length, "the repaired walls are no longer recognised").toBeGreaterThanOrEqual(3);
+    /** RONDE 661: two remain — the third sat in the deleted compose-readiness sweep. */
+    expect(repaired.length, "the repaired walls are no longer recognised").toBeGreaterThanOrEqual(2);
   });
 });
 

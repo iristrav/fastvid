@@ -4,7 +4,6 @@
  * Hard checks: file exists, video stream, playable size, minimum duration.
  */
 import fs from "fs";
-import path from "path";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
 import { ffmpegSemaphore } from "./_core/semaphore";
@@ -12,7 +11,6 @@ import { exec as execCb } from "child_process";
 import { normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import { spotCheckFinalVideo, isInformationalSpotWarning } from "./postRenderSpotCheck";
 import { resolveLocalVideoPath } from "./storageLocal";
-import { ffmpegThreadFlag } from "./sourcingPolicy";
 
 // Routed through ffmpegSemaphore (previously ungated) — this file is the mandatory final export
 // gate/self-heal reassembly path for every single render.
@@ -32,10 +30,6 @@ export type FinalVideoValidation = {
   /** Soft QA notes (logged, not blocking). */
   softWarnings: string[];
 };
-
-function ffmpegBin(): string {
-  return process.env.FFMPEG_BIN?.trim() || "ffmpeg";
-}
 
 function ffprobeBin(): string {
   return process.env.FFPROBE_PATH?.trim() || process.env.FFPROBE_BIN?.trim() || "ffprobe";
@@ -283,179 +277,6 @@ export async function validateFinalVideoForExport(
     reasons: playable.ok ? [] : [...playable.reasons, ...hard],
     softWarnings,
   };
-}
-
-async function remuxFaststart(inputPath: string, workDir: string, videoId: number): Promise<string | null> {
-  const out = path.join(workDir, `fastvid_${videoId}_remux.mp4`);
-  try {
-    if (fs.existsSync(out)) fs.unlinkSync(out);
-    await exec(
-      `"${ffmpegBin()}" -y -i "${inputPath}" -c copy -movflags +faststart "${out}"`,
-      { timeout: 120_000 }
-    );
-    return fs.existsSync(out) && fs.statSync(out).size > 1000 ? out : null;
-  } catch {
-    return null;
-  }
-}
-
-async function trimTrailingBlack(inputPath: string, workDir: string, videoId: number): Promise<string | null> {
-  const out = path.join(workDir, `fastvid_${videoId}_trimheal.mp4`);
-  try {
-    const { stderr } = await exec(
-      `"${ffmpegBin()}" -y -i "${inputPath}" -vf "blackdetect=d=0.04:pix_th=0.12" -an -f null -`,
-      { timeout: 90_000 }
-    );
-    const text = String(stderr);
-    const starts = [...text.matchAll(/black_start:([\d.]+)/g)].map((m) => parseFloat(m[1]!));
-    const probed = await probeDuration(inputPath);
-    if (!probed || starts.length === 0) return null;
-    const lastStart = starts[starts.length - 1]!;
-    if (lastStart < probed * 0.65 || lastStart >= probed - 0.2) return null;
-    const trimTo = Math.max(1, lastStart - 0.02);
-    await exec(
-      `"${ffmpegBin()}" -y -i "${inputPath}" -t ${trimTo.toFixed(3)} -c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -movflags +faststart "${out}"`,
-      { timeout: 180_000 }
-    );
-    return fs.existsSync(out) && fs.statSync(out).size > 1000 ? out : null;
-  } catch {
-    return null;
-  }
-}
-
-async function injectSilentAudio(
-  inputPath: string,
-  workDir: string,
-  videoId: number,
-  durationSec: number
-): Promise<string | null> {
-  const out = path.join(workDir, `fastvid_${videoId}_audiofix.mp4`);
-  const dur = Math.max(3, durationSec);
-  try {
-    await exec(
-      `"${ffmpegBin()}" -y -i "${inputPath}" -f lavfi -i anullsrc=r=44100:cl=stereo -t ${dur.toFixed(3)} ` +
-        `-c:v copy -c:a aac -b:a 128k -shortest -movflags +faststart "${out}"`,
-      { timeout: 120_000 }
-    );
-    return fs.existsSync(out) && fs.statSync(out).size > 1000 ? out : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Try to fix a failing final render (remux, trim black, inject audio). */
-export async function healFinalVideoForExport(
-  filePath: string,
-  workDir: string,
-  videoId: number,
-  validation: FinalVideoValidation
-): Promise<string | null> {
-  if (validation.reasons.some((r) => /no audio stream/i.test(r))) {
-    const dur = validation.durationSec ?? (await probeDuration(filePath)) ?? 60;
-    const withAudio = await injectSilentAudio(filePath, workDir, videoId, dur);
-    if (withAudio) {
-      console.log(`[FinalVideo] Video ${videoId}: injected silent audio track`);
-      return withAudio;
-    }
-  }
-  if (validation.reasons.some((r) => /appears fully black|trailing black|too small|no video stream/i.test(r))) {
-    const trimmed = await trimTrailingBlack(filePath, workDir, videoId);
-    if (trimmed) {
-      console.log(`[FinalVideo] Video ${videoId}: trimmed trailing black → ${path.basename(trimmed)}`);
-      return trimmed;
-    }
-  }
-  const remuxed = await remuxFaststart(filePath, workDir, videoId);
-  if (remuxed) {
-    console.log(`[FinalVideo] Video ${videoId}: remuxed with faststart`);
-    return remuxed;
-  }
-  return null;
-}
-
-export type EnsureFinalVideoOpts = {
-  filePath: string;
-  workDir: string;
-  videoId: number;
-  videoLength: string;
-  reassemble?: () => Promise<string | null>;
-  /** Plain concat without music — last-resort heal. */
-  reassemblePlain?: () => Promise<string | null>;
-  /** Called after each heal/reassemble attempt so the stall watchdog doesn't kill genuinely-progressing work. */
-  onHeartbeat?: () => void | Promise<void>;
-};
-
-/** Validate → heal → reassemble until playable or attempts exhausted. */
-export async function ensureFinalVideoExportReady(
-  opts: EnsureFinalVideoOpts
-): Promise<{ path: string; validation: FinalVideoValidation }> {
-  let current = opts.filePath;
-  let validation = await validateFinalVideoForExport(current, opts.videoLength);
-
-  for (let attempt = 0; attempt < 6 && !validation.ok; attempt++) {
-    console.warn(
-      `[FinalVideo] Video ${opts.videoId}: export check (attempt ${attempt + 1}): ${validation.reasons.slice(0, 3).join("; ") || validation.softWarnings.slice(0, 2).join("; ")}`
-    );
-    let next: string | null = null;
-    if (attempt >= 4 && opts.reassemblePlain) {
-      next = await opts.reassemblePlain();
-      if (next) console.log(`[FinalVideo] Video ${opts.videoId}: plain concat fallback`);
-    } else if (attempt >= 1 && opts.reassemble) {
-      next = await opts.reassemble();
-      if (next) console.log(`[FinalVideo] Video ${opts.videoId}: reassembled from scene outputs`);
-    } else {
-      next = await healFinalVideoForExport(current, opts.workDir, opts.videoId, validation);
-    }
-    if (next) current = next;
-    validation = await validateFinalVideoForExport(current, opts.videoLength);
-    try {
-      await opts.onHeartbeat?.();
-    } catch {
-      /* heartbeat failures must not abort the heal loop */
-    }
-  }
-
-  if (!validation.ok) {
-    const playable = await validateFinalVideoPlayable(current, opts.videoLength);
-    if (playable.ok) {
-      validation = { ...playable, softWarnings: [...validation.softWarnings, ...playable.softWarnings] };
-    }
-  }
-
-  if (validation.ok) {
-    console.log(
-      `[FinalVideo] Video ${opts.videoId}: export-ready (${validation.durationSec?.toFixed(1)}s, ${Math.round(validation.sizeBytes / 1024 / 1024)}MB)` +
-        (validation.softWarnings.length ? ` [${validation.softWarnings.length} soft QA note(s)]` : "")
-    );
-  } else {
-    console.warn(
-      `[FinalVideo] Video ${opts.videoId}: not playable after heal — ${validation.reasons.join("; ")}`
-    );
-  }
-  return { path: current, validation };
-}
-
-/** Plain concat (no music) — last-resort when mixed final fails QA. */
-export async function plainConcatSceneVideos(
-  scenePaths: string[],
-  workDir: string,
-  videoId: number
-): Promise<string | null> {
-  const valid = scenePaths.filter((p) => p && fs.existsSync(p) && fs.statSync(p).size > 1_000);
-  if (valid.length === 0) return null;
-  const listFile = path.join(workDir, `fastvid_${videoId}_plain_list.txt`);
-  const out = path.join(workDir, `fastvid_${videoId}_plain_final.mp4`);
-  const escaped = valid.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n");
-  fs.writeFileSync(listFile, escaped, "utf-8");
-  try {
-    await exec(
-      `"${ffmpegBin()}" -y -fflags +discardcorrupt -f concat -safe 0 -i "${listFile}" -c copy -movflags +faststart "${out}"`,
-      { timeout: 600_000 }
-    );
-    return fs.existsSync(out) && fs.statSync(out).size > 1_000 ? out : null;
-  } catch {
-    return null;
-  }
 }
 
 /** Resolve a stored video URL to a local file path when possible. */

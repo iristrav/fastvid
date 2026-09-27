@@ -109,7 +109,6 @@ describe("heartbeat — a label set on entry is removed on every exit", () => {
    */
   const SETTERS = [
     { fn: "downloadAndTrimPoolCandidate", end: "/** Stable stock trim" },
-    { fn: "composeSceneVideo", end: "async function composeSceneVideoInner" },
   ] as const;
 
   for (const { fn, end } of SETTERS) {

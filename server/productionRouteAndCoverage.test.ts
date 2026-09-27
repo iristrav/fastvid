@@ -59,21 +59,23 @@ describe("§14 — every render says which route it takes", () => {
     saved.clear();
   });
 
-  it("names the legacy route, and the flag that chose it", () => {
+  /** RONDE 661 — with no render path there is no route: the line says so, and why. */
+  it("names no route when the engine is off, and the flag that is missing", () => {
     setFlag("CINEMATIC_EDITING_ENGINE", undefined);
     setFlag("CINEMATIC_RENDER_PATH", undefined);
     const line = formatProductionRoute(42);
     expect(line).toContain("[ProductionRoute] video=42");
-    expect(line).toContain("route=legacy_compose");
-    expect(line, "the line says legacy but not why").toContain("CINEMATIC_EDITING_ENGINE is not enabled");
+    expect(line).toContain("route=none");
+    expect(line, "the line says none but not why").toContain("CINEMATIC_EDITING_ENGINE is not enabled");
+    expect(line).toContain("the render will be refused");
+    expect(line).not.toContain("legacy_compose");
   });
 
-  /** Planning alone stores a timeline the editor can open — the delivered MP4 still comes from compose. */
-  it("still says legacy when only planning is on, naming the OTHER flag", () => {
+  it("still names no route when only planning is on, naming the OTHER flag", () => {
     setFlag("CINEMATIC_EDITING_ENGINE", "true");
     setFlag("CINEMATIC_RENDER_PATH", undefined);
     const line = formatProductionRoute(42);
-    expect(line).toContain("route=legacy_compose");
+    expect(line).toContain("route=none");
     expect(line).toContain("CINEMATIC_RENDER_PATH is not enabled");
   });
 

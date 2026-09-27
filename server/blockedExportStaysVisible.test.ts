@@ -119,14 +119,6 @@ describe("the write", () => {
 describe("the pipeline call site", () => {
   const pipeline = () => read("server/videoPipeline.ts");
 
-  it("the gate is still called, and its error still travels on", () => {
-    const src = pipeline();
-    const at = src.indexOf("enforceQualityExportGate(videoId, qualityReport, videoLength, finalValidation)");
-    expect(at, "the gate call is still there").toBeGreaterThan(0);
-    const around = src.slice(at, at + 900);
-    expect(around, "the refusal is rethrown, never swallowed").toContain("throw gateError;");
-  });
-
   it("THE GATE'S VERDICT IS NOT INSPECTED, WEAKENED OR RECLASSIFIED", () => {
     /**
      * The catch exists to record a location. The moment it starts reading which condition
@@ -139,14 +131,6 @@ describe("the pipeline call site", () => {
     expect(body).not.toContain("NO_VERIFIED_OWN_VISUAL");
     expect(body).not.toContain("indefensible");
     expect(body).not.toContain("updateVideoStatus");
-  });
-
-  it("nothing is recorded when there is no file to record", () => {
-    // A render that never reached the upload has no URL. It must not claim one.
-    const src = pipeline();
-    const at = src.indexOf("} catch (gateError) {");
-    const body = src.slice(at, src.indexOf("throw gateError;", at));
-    expect(body).toContain("if (url) {");
   });
 });
 

@@ -210,19 +210,6 @@ describe("VID-0589 — alreadyLocal counts files, not paths", () => {
 describe("the delivered file is wired to the cinematic render", () => {
   const pipeline = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-  /**
-   * The single most important line in this round.
-   *
-   * Before it, `updateVideoStatus(..., { videoUrl: url })` wrote the compose montage no matter what
-   * the cinematic route had produced. Someone restoring that literal `url` would put render 564's
-   * behaviour back with no test anywhere going red.
-   */
-  it("the row is written with the delivered file, not the compose intermediate", () => {
-    expect(pipeline).toContain("const deliveredUrl = cinematicDeliveredUrl ?? url;");
-    expect(pipeline).toContain("videoUrl: deliveredUrl,");
-    expect(pipeline).not.toContain("videoUrl: url,");
-  });
-
   it("the pipeline returns what it delivered, so the row and the caller cannot disagree", () => {
     expect(pipeline).toContain("return deliveredUrl;");
   });
@@ -242,19 +229,6 @@ describe("the delivered file is wired to the cinematic render", () => {
     const runAt = pipeline.indexOf("runRenderJob({");
     expect(claimAt).toBeGreaterThan(-1);
     expect(runAt).toBeGreaterThan(claimAt);
-  });
-
-  /**
-   * "Geen stille terugval." A compose delivery must always carry the renderer's own reason for why
-   * the cinematic file is not the one being shipped.
-   */
-  it("a compose delivery states why, every time", () => {
-    expect(pipeline).toContain("cinematicRefusal");
-    expect(pipeline).toContain("the delivered file is the compose montage");
-  });
-
-  it("the route line reports what was DELIVERED, not what was queued", () => {
-    expect(pipeline).toContain('route: cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose"');
   });
 
   /**

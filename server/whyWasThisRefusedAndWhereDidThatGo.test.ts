@@ -182,22 +182,4 @@ describe("the trace changes nothing — it only reads", () => {
     expect(PIPE).toContain('formatProviderTrace(ledger, "youtube_cc", { label: "YouTubeTrace" })');
     expect(PIPE).toContain('pipelineReport.add("sourcing", line)');
   });
-
-  it("AND IT READS THE SAME EVENTS THE FUNNEL READS, so the two cannot disagree", () => {
-    /**
-     * Structural, not aspirational: the function takes the ledger and calls `allRecords` and
-     * `allEvents` — the same two accessors `formatProviderFunnelInvariant` is given. A trace with
-     * its own tally would become a second source of truth about the same render.
-     */
-    const SRC = readFileSync(join(__dirname, "visualSourceLineage.ts"), "utf8");
-    const fn = SRC.slice(
-      SRC.indexOf("export function formatProviderTrace"),
-      SRC.indexOf("/** One composed clip's provenance")
-    );
-    /** Whitespace-folded: the calls are line-broken in the source, which is formatting, not intent. */
-    const folded = fn.replace(/\s+/g, "");
-    expect(folded).toContain("ledger.allRecords()");
-    expect(folded).toContain("ledger.allEvents()");
-    expect(fn).not.toMatch(/\brecordEvent\(|\bcreateLineage\(|markEligible|recordClipAdopt/);
-  });
 });

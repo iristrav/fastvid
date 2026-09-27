@@ -222,25 +222,24 @@ describe("nothing was loosened to make room for it", () => {
 describe("the gate runs after the measurement exists", () => {
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("THE SPOT CHECK IS RECORDED BEFORE THE EXPORT GATE IS ASKED", () => {
+  it("THE SPOT CHECK IS RECORDED BEFORE THE BLANK-PICTURE GATE IS ASKED", () => {
     /**
      * Ordering is the whole fix. `enforceQualityExportGate` reads `qualityReport`, so a spot check
      * written after it would leave the condition permanently invisible — a gate that exists and
      * never fires, which is indistinguishable from not having written it.
      */
+    /**
+     * RONDE 661 — the spot check now arrives with the timeline render, after stage 6's export
+     * gate, so the blank-picture condition is asked again on the delivered file's measurement —
+     * after it is recorded and before the video is marked complete.
+     */
     const recorded = PIPE.indexOf("qualityReport.postRenderSpotCheck = {");
-    const gate = PIPE.indexOf("enforceQualityExportGate(videoId, qualityReport");
+    const gate = PIPE.indexOf('.filter((c) => c.code === "FINAL_PICTURE_IS_BLACK")');
+    const completed = PIPE.indexOf('await updateVideoStatus(videoId, "completed", {', gate);
     expect(recorded).toBeGreaterThan(-1);
     expect(gate).toBeGreaterThan(-1);
     expect(recorded).toBeLessThan(gate);
-  });
-
-  it("and a refused film is still kept where the person who asked for it can see it", () => {
-    /**
-     * RONDE 202's rule, which this gate now also depends on: a blocked export writes `failed` AND
-     * the location of the refused file. A blank render the operator cannot open is a bug report
-     * with the evidence deleted.
-     */
-    expect(PIPE).toContain("recordBlockedExport(videoId, url,");
+    expect(completed).toBeGreaterThan(gate);
+    expect(PIPE.slice(gate, gate + 600)).toContain("PIPELINE_ERROR.QUALITY_GATE");
   });
 });

@@ -1,4 +1,4 @@
-import type { SceneSoundPlan, SoundCategoryId, EmotionTag, VideoSoundPlan } from "./types";
+import type { SceneSoundPlan, SoundCategoryId, EmotionTag } from "./types";
 import { VISUAL_KEYWORD_MAP, EMOTION_KEYWORD_MAP } from "./catalog";
 
 interface SceneMetadata {
@@ -124,11 +124,3 @@ export function planSceneAudio(scene: SceneMetadata, videoTitle = ""): SceneSoun
   };
 }
 
-export function planVideoAudio(
-  scenes: SceneMetadata[],
-  videoTitle = ""
-): VideoSoundPlan {
-  const scenePlans = scenes.map(s => planSceneAudio(s, videoTitle));
-  const totalDurationSec = scenes.reduce((sum, s) => sum + s.duration, 0);
-  return { scenes: scenePlans, totalDurationSec };
-}

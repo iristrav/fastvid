@@ -215,7 +215,8 @@ describe("R199 §5 — tightening the rule without starving the render", () => {
 
   it("every push closure asks first and only then consults the guard", () => {
     const asks = [...PIPE.matchAll(/beatClipRefusedByRelevanceGate\(dedup, clipPath/g)];
-    expect(asks.length).toBeGreaterThanOrEqual(5);
+    /** RONDE 661: four — the fifth was the deleted compose-montage backfill. */
+    expect(asks.length).toBeGreaterThanOrEqual(4);
     for (const m of asks) {
       const after = PIPE.slice(m.index!, m.index! + 400);
       expect(after, "a push route consults the guard without obtaining a verdict first").toContain(

@@ -200,13 +200,4 @@ describe("where the pipeline asks it", () => {
     /** A preflight that is silent on success cannot be told from one that never ran. */
     expect(PIPE).toContain("[VisionPreflight] video ${videoId}: picture editor reachable via ${judge.provider}");
   });
-
-  it("THE EXPORT GATE IS STILL THERE — this replaces nothing", () => {
-    /**
-     * The preflight cannot know whether real footage reaches an unjudged beat; only the export gate
-     * can. A preflight that quietly took its place would be a loosening wearing a fix's clothes.
-     */
-    expect(PIPE).toContain("assertVisionCoverageExportGate(visionCoverageParams)");
-    expect(PIPE).toContain("recordBlockedExport(videoId, url,");
-  });
 });

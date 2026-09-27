@@ -103,24 +103,6 @@ describe("RONDE 64 — a clip whose adoption was never recorded is still identif
     expect(inferClipSourceFromPath("scene_0_b0_ai_fallback.mp4")).toBe("ai");
     expect(inferClipSourceFromPath("scene_0_b0_fallback.mp4")).toBe("fallback");
   });
-
-  it("the manifest says whether the source is proven, and keeps the guess visibly apart", () => {
-    // RONDE 64 wrote this line as recorded-or-inferred, with the filename reading as the last
-    // resort for the OFFICIAL source field. RONDE 87 removed that last resort: a filename says
-    // what a file was called, not where its content came from, and the two stop agreeing the
-    // first time compose renames a clip. The guarantee this test was written for — the reader can
-    // always tell a proven source from a guessed one — is stronger now, because the guess is no
-    // longer eligible to fill the source field at all.
-    const src = PIPELINE();
-    const idx = src.indexOf("[FINAL_VISUAL_MANIFEST]");
-    const block = src.slice(Math.max(0, idx - 1400), idx + 400);
-    expect(block).toContain("const source = lineageRecord?.provider ?? UNVERIFIED_PROVIDER;");
-    expect(block).toContain("providerStatus=${providerStatus}");
-    // The filename reading survives, in its own field, clearly labelled as a hint.
-    expect(block).toContain("diagnosticNameHint=${inferClipSourceFromPath(basename)}");
-    expect(block, "the guess must not be able to fill the source field")
-      .not.toContain('const source = entry?.source ?? (inferred');
-  });
 });
 
 describe("RONDE 64 — 'rescue-tier' was three different things in one number", () => {

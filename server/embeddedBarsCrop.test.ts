@@ -143,32 +143,6 @@ describe("RONDE 660 — a composed scene keeps its voice-over through the crop (
   });
 });
 
-describe("RONDE 660 — the concat refuses a film without its voice", () => {
-  const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-  const fn = SRC.slice(
-    SRC.indexOf("export async function concatenateScenesWithMusic("),
-    SRC.indexOf("\n}\n", SRC.indexOf("export async function concatenateScenesWithMusic("))
-  );
-
-  it("every scene is proven to carry audio before the concat list is written", () => {
-    const check = fn.indexOf("await probeHasAudioStream(p)");
-    const refuse = fn.indexOf("throw pipelineError(", check);
-    const list = fn.indexOf("fs.writeFileSync(listFile");
-    expect(check).toBeGreaterThan(-1);
-    expect(refuse).toBeGreaterThan(check);
-    expect(list).toBeGreaterThan(refuse);
-    expect(fn.slice(check, refuse)).toContain("scenesWithoutAudio");
-  });
-
-  it("a concat without audio is no longer delivered with background music only", () => {
-    expect(fn).not.toContain("using background music only");
-    expect(fn).not.toContain("Background music mixing (no voiceover)");
-    const noAudio = fn.indexOf("Concat has no audio stream");
-    expect(noAudio).toBeGreaterThan(-1);
-    expect(fn.slice(noAudio, noAudio + 400)).toContain("throw pipelineError(PIPELINE_ERROR.CONCAT");
-  });
-});
-
 describe("the wiring", () => {
   it("the pipeline crops before it refuses, and refuses only when the crop was not made", () => {
     const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");

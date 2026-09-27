@@ -37,60 +37,6 @@ const PIPELINE_SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 const SRC = () => PIPELINE_SRC;
 
 describe("RONDE 133 — the stillness audit runs on real renders", () => {
-  it("1. the pipeline calls auditVideoStillness on the finished MP4", () => {
-    const src = SRC();
-    // The defect this round fixed: the module existed and nothing called it.
-    expect(src).toContain("auditVideoStillness({");
-    expect(src).toContain("videoPath: finalVideoPath");
-  });
-
-  it("2. it measures the EXPORTED file, not a scene or a candidate", () => {
-    const src = SRC();
-    const idx = src.indexOf("auditVideoStillness({");
-    expect(idx).toBeGreaterThan(0);
-    // The call's own arguments, and nothing after them.
-    const args = src.slice(idx, src.indexOf("})", idx));
-    expect(args).toContain("videoPath: finalVideoPath");
-    // An audit that trusted the pipeline's own metadata would be asking the suspect for its
-    // alibi — the only input is the exported file's path.
-    expect(args).not.toContain("qualityReport");
-    expect(args).not.toContain("scenePaths");
-  });
-
-  it("3. the verdict is checked against the still-image cap, not a fresh threshold", () => {
-    const src = SRC();
-    const idx = src.indexOf("auditVideoStillness({");
-    const block = src.slice(idx, idx + 900);
-    expect(block).toContain("checkStillnessLimit(stillness, stillImageMaxSec())");
-  });
-
-  it("4. a violation becomes a warning on the report, not a silent pass", () => {
-    const src = SRC();
-    const idx = src.indexOf("auditVideoStillness({");
-    const block = src.slice(idx, idx + 1600);
-    expect(block).toContain("verdict.violations");
-    expect(block).toContain("qualityReport.warnings.push");
-    expect(block).toContain("qualityReport.stillness =");
-  });
-
-  it("5. an audit that cannot run never blocks the export and never reads as a pass", () => {
-    const src = SRC();
-    const idx = src.indexOf("auditVideoStillness({");
-    // The wrapper sits BEFORE the call, so the window has to start above it.
-    // RONDE 156 put a second audit inside the same try, pushing the catch from +1900 to +3133;
-    // the window was measured and widened rather than the assertion being softened.
-    const block = src.slice(idx - 200, idx + 3800);
-    // Wrapped, timed out, and on failure it logs — it does not set `ok: true`.
-    expect(block).toContain("await withTimeout(");
-    // The message names both audits since RONDE 156: the block holds two, and a failure in the
-    // first means the second never ran, so claiming to know which one failed would be a guess.
-    expect(block).toContain("stillness/repeat audit could not run");
-    const catchIdx = block.indexOf("} catch (err) {");
-    expect(catchIdx).toBeGreaterThan(0);
-    // Nothing in the failure path claims the file passed.
-    expect(block.slice(catchIdx)).not.toContain("ok: true");
-    expect(block.slice(catchIdx)).not.toContain("qualityReport.stillness =");
-  });
 
   it("6. the measurement is stored on the quality report so it survives the render", () => {
     const report = readFileSync(join(__dirname, "videoQualityReport.ts"), "utf8");

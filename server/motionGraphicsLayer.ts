@@ -6,15 +6,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { sanitizeForDrawtext } from "./ffmpegSanitize";
 import { ffmpegThreadFlag } from "./sourcingPolicy";
-import {
-  computeVoiceBeatWindows,
-  extractYearsFromText,
-  limitOnScreenText,
-  TYPEWRITER_CHAR_SEC,
-  type BeatLabelInput,
-} from "./cinematicEffectsEngine";
+import { extractYearsFromText, limitOnScreenText, TYPEWRITER_CHAR_SEC, type BeatLabelInput } from "./cinematicEffectsEngine";
 import { DOC_STYLE_VIDEO_HEIGHT, DOC_STYLE_VIDEO_WIDTH } from "./documentaryStyle";
-import { extractVoiceLabelTerms, termStartInBeat } from "./visualBeatTags";
+import { extractVoiceLabelTerms } from "./visualBeatTags";
 
 export const STANDARD_IMAGE_ANIMATION = "slow_zoom_in" as const;
 export const STANDARD_TRANSITION = "crossfade" as const;
@@ -25,8 +19,6 @@ export const MG_OVERLAY_FONT_SIZE = 84;
 export const MG_OVERLAY_MAX_WORDS = 3;
 export const MG_OVERLAY_HOLD_AFTER_TYPE_SEC = 1.5;
 export const MG_OVERLAY_FADE_OUT_SEC = 0.25;
-/** Minimum gap between overlays — keeps usage sparse. */
-export const MG_OVERLAY_MIN_GAP_SEC = 3.5;
 /** @deprecated Use per-text hold timing; kept for tests referencing legacy constant. */
 export const MG_OVERLAY_ON_SCREEN_SEC =
   MG_OVERLAY_HOLD_AFTER_TYPE_SEC + 4 * TYPEWRITER_CHAR_SEC;
@@ -129,11 +121,6 @@ function normalizePercentDisplay(raw: string): string {
 
 function normalizeEuroDisplay(raw: string): string {
   return displayOverlayText(raw.replace(/\s+/g, " ").trim());
-}
-
-function overlayTotalDurationSec(text: string): number {
-  const safe = sanitizeForDrawtext(text, 24);
-  return safe.length * TYPEWRITER_CHAR_SEC + MG_OVERLAY_HOLD_AFTER_TYPE_SEC;
 }
 
 /** Resolve bundled Bebas Neue (or OVERLAY_FONT_PATH) for FFmpeg drawtext. */
@@ -281,118 +268,6 @@ export function extractMotionOverlayCandidates(
   }
 
   return out.sort((a, b) => b.priority - a.priority);
-}
-
-function resolveOverlayTiming(
-  beatText: string,
-  candidate: OverlayCandidate,
-  beatStart: number,
-  beatDur: number
-): { start: number; end: number } {
-  const start = termStartInBeat(beatText, candidate.text, beatStart, beatDur, candidate.trigger_word);
-  const end = start + overlayTotalDurationSec(candidate.text);
-  return { start, end };
-}
-
-function resolveOverlappingOverlays(
-  overlays: MotionOverlayPlan[],
-  timelineEnd: number
-): MotionOverlayPlan[] {
-  const sorted = [...overlays].sort((a, b) => a.start_time - b.start_time);
-  let lastEnd = -Infinity;
-  const out: MotionOverlayPlan[] = [];
-  for (const o of sorted) {
-    let start = o.start_time;
-    if (start < lastEnd + MG_OVERLAY_MIN_GAP_SEC) {
-      start = lastEnd + MG_OVERLAY_MIN_GAP_SEC;
-    }
-    const end = Math.min(timelineEnd - 0.08, start + overlayTotalDurationSec(o.text));
-    if (end <= start + 0.25) continue;
-    out.push({ ...o, start_time: start, end_time: end });
-    lastEnd = end;
-  }
-  return out;
-}
-
-/** Keep only the strongest overlay per beat, then cap count for the scene. */
-function sparseSelectOverlays(
-  overlays: MotionOverlayPlan[],
-  sceneDurationSec: number
-): MotionOverlayPlan[] {
-  const maxOverlays = Math.max(1, Math.min(5, Math.floor(sceneDurationSec / 8)));
-  const sorted = [...overlays].sort((a, b) => {
-    const pri = (k: MotionOverlayKind) =>
-      ({
-        year: 100,
-        percentage: 95,
-        amount: 90,
-        country: 85,
-        statistic: 82,
-        person: 80,
-        event: 75,
-        keyword: 50,
-      })[k] ?? 0;
-    return pri(b.kind) - pri(a.kind) || a.start_time - b.start_time;
-  });
-  const picked: MotionOverlayPlan[] = [];
-  for (const o of sorted) {
-    if (picked.length >= maxOverlays) break;
-    const tooClose = picked.some(
-      (p) => Math.abs(p.start_time - o.start_time) < MG_OVERLAY_MIN_GAP_SEC
-    );
-    if (tooClose) continue;
-    picked.push(o);
-  }
-  return picked.sort((a, b) => a.start_time - b.start_time);
-}
-
-/** Voice-synced overlay plan for one scene (V3: centered white typewriter). */
-export function planMotionGraphicsScene(
-  sceneId: number,
-  sceneStartSec: number,
-  sceneDurationSec: number,
-  beats: BeatLabelInput[],
-  visualDescription?: string
-): MotionGraphicsScenePlan {
-  const overlays: MotionOverlayPlan[] = [];
-  if (beats.length > 0 && sceneDurationSec > 0) {
-    const windows = computeVoiceBeatWindows(beats, sceneDurationSec, 0);
-    for (let i = 0; i < beats.length; i++) {
-      const beat = beats[i]!;
-      const beatStart = windows[i]!.start;
-      const beatDur = windows[i]!.dur;
-      const candidates = extractMotionOverlayCandidates(beat.text, beat);
-      if (candidates.length === 0) continue;
-      const best = candidates[0]!;
-      const { start, end } = resolveOverlayTiming(beat.text, best, beatStart, beatDur);
-      overlays.push({
-        text: best.text,
-        animation: "typewriter",
-        position: "center",
-        trigger_word: best.trigger_word,
-        kind: best.kind,
-        start_time: start,
-        end_time: end,
-      });
-    }
-  }
-
-  const sparse = sparseSelectOverlays(overlays, sceneDurationSec);
-  const localOverlays = resolveOverlappingOverlays(sparse, sceneDurationSec);
-
-  return {
-    scene_id: sceneId,
-    start_time: sceneStartSec,
-    end_time: sceneStartSec + sceneDurationSec,
-    visual_description: visualDescription?.trim() || undefined,
-    image_animation: STANDARD_IMAGE_ANIMATION,
-    transition: STANDARD_TRANSITION,
-    overlays: localOverlays.map((o) => ({
-      ...o,
-      start_time: sceneStartSec + o.start_time,
-      end_time: sceneStartSec + o.end_time,
-    })),
-  };
 }
 
 export function motionGraphicsScenePlansToMetadata(

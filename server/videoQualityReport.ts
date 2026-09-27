@@ -130,15 +130,15 @@ export type VideoQualityReport = {
   /**
    * WHICH FILE THE CLIP FIGURES ABOVE DESCRIBE — and the score, which is computed from four of them.
    *
-   * `compose_montage` is where every report starts, because at stage 6 that is the only finished
-   * film there is. `delivered_render` means the cinematic timeline render produced the file the
-   * viewer received and the figures were re-counted against ITS clip list — see
-   * `recountQualityReportForDeliveredClips`.
+   * `selected_clips` is where every report starts: at stage 6 no film exists yet, so the figures
+   * count the scenes' selected clips. `delivered_render` means they were re-counted against the
+   * delivered file's own clip list — see `recountQualityReportForDeliveredClips`.
+   * `compose_montage` appears only on records written before RONDE 661 removed the compose route.
    *
-   * Absent on a record written before this field existed. Absent is not `compose_montage`: an old
+   * Absent on a record written before this field existed. Absent is not `selected_clips`: an old
    * report cannot say which it was, and guessing on its behalf is how a report starts lying.
    */
-  clipsMeasuredOn?: "compose_montage" | "delivered_render";
+  clipsMeasuredOn?: "selected_clips" | "compose_montage" | "delivered_render";
   /**
    * DELIVERED, MEASURED, EXCLUDED — so an invisible exclusion cannot exist.
    *
@@ -844,8 +844,8 @@ export function buildVideoQualityReport(
     wikimediaCount,
     archiveCount,
     stockCount,
-    /** Stage 6's montage is the only finished film that exists here. See the field's own note. */
-    clipsMeasuredOn: "compose_montage",
+    /** Stage 6 has no finished film yet: these are the scenes' selected clips. See the field's own note. */
+    clipsMeasuredOn: "selected_clips",
     clipAccounting: clipAccountingFor(unique, opts),
     warnings,
     offTopicSuspects,

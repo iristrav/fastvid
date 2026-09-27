@@ -283,7 +283,8 @@ describe("both gates ask, and the diagnostic does not", () => {
   it("every push call site awaits the gate", () => {
     const awaited = [...CODE.matchAll(/await beatClipRefusedByRelevanceGate\(/g)].length;
     const total = [...CODE.matchAll(/[^n] beatClipRefusedByRelevanceGate\(/g)].length;
-    expect(awaited, "the push gate's call sites have moved").toBeGreaterThanOrEqual(5);
+    /** RONDE 661: four — the fifth was the deleted compose-montage backfill. */
+    expect(awaited, "the push gate's call sites have moved").toBeGreaterThanOrEqual(4);
     expect(total, "a call site gates on a Promise, which is always truthy").toBe(awaited);
   });
 

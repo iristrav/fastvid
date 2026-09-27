@@ -262,11 +262,6 @@ describe("RONDE 128 — earlier guarantees intact", () => {
     expect(b).toBeGreaterThan(a2);
   });
 
-  it("the closing tail still moves — RONDE 121 is a deliberate exception, not a still", async () => {
-    const { closingTailZoomExpr } = await import("./closingTail");
-    expect(closingTailZoomExpr(75)).toBe("1+0.06*on/74");
-  });
-
   it("RONDE 124's licence statuses are untouched", async () => {
     const { classifyArchiveLicense } = await import("./youtubeLicenseStatus");
     expect(classifyArchiveLicense(null, null)).toBe("UNVERIFIED");

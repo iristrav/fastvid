@@ -224,10 +224,11 @@ describe("Test 9 — the blue/color fallback is still used once every strategy i
 });
 
 describe("Test 10 — sceneRescueColorFallbackCount is still incremented correctly (unmodified this round)", () => {
-  it("the counter increment call sites are untouched by this patch", () => {
+  it("the counter has no increment left — its rescues are deleted", () => {
     const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    /** RONDE 661: zero — both increments sat in the deleted P5A and stage-4 compose rescues. */
     const count = (src.match(/sceneRescueColorFallbackCount\+\+/g) ?? []).length;
-    expect(count).toBeGreaterThanOrEqual(2);
+    expect(count).toBe(0);
   });
 });
 

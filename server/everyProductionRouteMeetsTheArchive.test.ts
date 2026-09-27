@@ -3,46 +3,32 @@
  *
  * ── The route map this suite exists to cover ────────────────────────────────────────────────
  *
- * Two paths in this codebase end with a viewer receiving a film, and only one of them has a
- * `ProjectTimeline`:
+ * Since RONDE 661 one path ends with a viewer receiving a film:
  *
- *     A  cinematic_timeline   runRenderJob → rehydrate → render → checkRenderedFile
- *                             → deliveryGate → upload → publishEditedVideo
- *                             → cinematicDeliveredUrl → updateVideoStatus("completed")
+ *     cinematic_timeline   runRenderJob → rehydrate → render → checkRenderedFile
+ *                          → deliveryGate → upload → publishEditedVideo
+ *                          → cinematicDeliveredUrl → pipeline final gate → updateVideoStatus
  *
- *     B  legacy_compose       the pipeline composes scene files directly → export gate
- *                             → upload videos/<id>/final.mp4 → updateVideoStatus("completed")
- *
- * Route B never builds a timeline, so it has no `clip.source.archiveAssetId` to read and met no
- * gate at all. An invariant that holds on one of two ways a film reaches a viewer is the exact
- * shape of defect this programme keeps removing, so the pipeline's final gate reads the LINEAGE
- * instead: the records `markFinalVideo` proved out of the input list of the concat that produced
- * the validated output. That is a stronger list than a timeline — what the file is made of, rather
- * than what it was planned to be made of.
+ * The render job gates its timeline; the pipeline's final gate reads the LINEAGE — the records
+ * `replaceFinalVideo` proved against the delivered file's own clip list. The compose route this
+ * suite also covered (route B) was deleted.
  *
  * ── What these tests are, and are not ───────────────────────────────────────────────────────
  *
- * They exercise the DECISION on both routes with real functions and real inputs. They are not a
+ * They exercise the DECISION with real functions and real inputs. They are not a
  * production render: no Railway, no database, no S3. What they prove is what the gate does when it
- * is handed each shape the two routes can produce — and, for route B, that the shape is built from
- * the ledger rather than from a timeline that does not exist there.
+ * is handed each shape the route can produce — and, for the final gate, that the shape is built
+ * from the ledger.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   deliveryGate,
   deliveryClipFactsFromLedger,
-  isFallbackDelivery,
   type DeliveredLineageRecord,
   type DeliveryClipFact,
   type DeliveryGateInput,
 } from "./deliveryGate";
-
-const saved = process.env.ALLOW_LEGACY_COMPOSE_FALLBACK;
-afterEach(() => {
-  if (saved === undefined) delete process.env.ALLOW_LEGACY_COMPOSE_FALLBACK;
-  else process.env.ALLOW_LEGACY_COMPOSE_FALLBACK = saved;
-});
 
 /* ═══════════════════════ route A — the timeline route ═══════════════════════ */
 
@@ -103,16 +89,13 @@ describe("Test B — cinematic route with a clip that has no archive handle", ()
   });
 });
 
-/* ═══════════════════════ Test C — the fallback ═══════════════════════ */
+/* ═══════════════════════ Test C — a failed timeline render ═══════════════════════ */
 
-describe("Test C — legacy compose AFTER a cinematic failure", () => {
+describe("Test C — a cinematic render that failed", () => {
   it("MEASURED: it is refused, whatever its assets look like", () => {
-    delete process.env.ALLOW_LEGACY_COMPOSE_FALLBACK;
     const v = deliveryGate(
       routeA({
-        route: "legacy_compose",
         cinematicRefusal: "the cinematic render threw: ffmpeg exit 1",
-        timelineExists: false,
         /** Perfect assets. The refusal is about WHICH FILM this is, not about its footage. */
         clips: [archivedClip("c1", 57001)],
       })
@@ -123,44 +106,25 @@ describe("Test C — legacy compose AFTER a cinematic failure", () => {
   });
 });
 
-/* ═══════════════════════ Test D — the CONFIGURED legacy route ═══════════════════════ */
+/* ═══════════════════════ Test D — the pipeline's own final gate ═══════════════════════ */
 
 /**
- * §5 D asks whether the archive invariant also holds when compose is the DELIBERATE production
- * route — `CINEMATIC_RENDER_PATH` off, no cinematic attempt, no refusal recorded.
- *
- * It does, and it has to: that deployment publishes real films to real viewers. What must NOT
- * happen is blocking it merely for being compose — that would refuse every render on such a
- * deployment, which is a worse outcome than the one the round is about. So the route is allowed
- * and the ASSETS are still required.
+ * RONDE 661 — the configured compose route this block used to cover is deleted. What remains is
+ * the pipeline's final gate on the delivered clips, which reads the ledger with `assetsOnly`:
+ * the archive invariant and the placeholder rule still apply to it.
  */
-describe("Test D — legacy compose as the configured production route", () => {
-  it("MEASURED: it is NOT blocked merely for being compose", () => {
-    delete process.env.ALLOW_LEGACY_COMPOSE_FALLBACK;
-    const v = deliveryGate({
-      videoId: 10108,
-      route: "legacy_compose",
-      cinematicRefusal: null,
-      timelineExists: false,
-      clips: [archivedClip("c1", 57001)],
-      delivered: null,
-      assetsOnly: true,
-    });
-    expect(v.allow, "a deployment with the cinematic path off could not publish at all").toBe(true);
-  });
-
+describe("Test D — the pipeline's final gate, on the ledger's delivered clips", () => {
   it("MEASURED: but the archive invariant still applies to it", () => {
-    delete process.env.ALLOW_LEGACY_COMPOSE_FALLBACK;
     const v = deliveryGate({
       videoId: 10108,
-      route: "legacy_compose",
+      route: "cinematic_timeline",
       cinematicRefusal: null,
-      timelineExists: false,
+      timelineExists: true,
       clips: [archivedClip("c1", null)],
       delivered: null,
       assetsOnly: true,
     });
-    expect(v.allow, "the configured legacy route published a provider-only clip").toBe(false);
+    expect(v.allow, "the final gate passed a provider-only clip").toBe(false);
     if (v.allow) return;
     expect(v.failures.map((f) => f.code)).toContain("CLIP_WITHOUT_ARCHIVE_ASSET");
   });
@@ -168,9 +132,9 @@ describe("Test D — legacy compose as the configured production route", () => {
   it("MEASURED: and a placeholder still blocks it", () => {
     const v = deliveryGate({
       videoId: 10108,
-      route: "legacy_compose",
+      route: "cinematic_timeline",
       cinematicRefusal: null,
-      timelineExists: false,
+      timelineExists: true,
       clips: [{ ...archivedClip("c1", 57001), isPlaceholder: true }],
       delivered: null,
       assetsOnly: true,
@@ -180,15 +144,11 @@ describe("Test D — legacy compose as the configured production route", () => {
     expect(v.failures.map((f) => f.code)).toContain("PLACEHOLDER_IN_DELIVERY");
   });
 
-  it("MEASURED: the two legacy cases are separated by the refusal, not by the route name", () => {
-    expect(isFallbackDelivery({ route: "legacy_compose", cinematicRefusal: "threw" })).toBe(true);
-    expect(isFallbackDelivery({ route: "legacy_compose", cinematicRefusal: null })).toBe(false);
-  });
 });
 
-/* ═══════════════════════ route B's clip list comes from the ledger ═══════════════════════ */
+/* ═══════════════════════ the final gate's clip list comes from the ledger ═══════════════════════ */
 
-describe("the compose route's clips are read from the lineage, not from a timeline", () => {
+describe("the final gate's clips are read from the lineage", () => {
   const record = (over: Partial<DeliveredLineageRecord> = {}): DeliveredLineageRecord => ({
     lineageId: "L1",
     provider: "wikimedia",
@@ -213,7 +173,7 @@ describe("the compose route's clips are read from the lineage, not from a timeli
     expect(facts[0]?.archiveAssetId).toBeNull();
     expect(facts[0]?.fromArchive).toBe(false);
     const v = deliveryGate({
-      videoId: 1, route: "legacy_compose", cinematicRefusal: null, timelineExists: false,
+      videoId: 1, route: "cinematic_timeline", cinematicRefusal: null, timelineExists: true,
       clips: facts, delivered: null, assetsOnly: true,
     });
     expect(v.allow).toBe(false);
@@ -310,7 +270,7 @@ describe("§6 — the technical failure and the policy failure are different fac
 describe("a gate with no file measurement of its own says so", () => {
   it("MEASURED: assetsOnly skips the file checks rather than inventing them", () => {
     const v = deliveryGate({
-      videoId: 1, route: "legacy_compose", cinematicRefusal: null, timelineExists: false,
+      videoId: 1, route: "cinematic_timeline", cinematicRefusal: null, timelineExists: true,
       clips: [archivedClip("c1", 57001)],
       /** No facts at all — and with assetsOnly that is not a missing-file failure. */
       delivered: null,
@@ -323,7 +283,7 @@ describe("a gate with no file measurement of its own says so", () => {
 
   it("MEASURED: without assetsOnly, a missing file measurement IS a failure", () => {
     const v = deliveryGate({
-      videoId: 1, route: "legacy_compose", cinematicRefusal: null, timelineExists: false,
+      videoId: 1, route: "cinematic_timeline", cinematicRefusal: null, timelineExists: true,
       clips: [archivedClip("c1", 57001)],
       delivered: null,
     });

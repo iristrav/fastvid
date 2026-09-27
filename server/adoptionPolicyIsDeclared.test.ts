@@ -85,7 +85,8 @@ function adoptSourceExpressions(): string[] {
 
 describe("every adoption route says what it is", () => {
   it("finds the call sites the audit counted", () => {
-    expect(adoptSourceExpressions().length).toBeGreaterThanOrEqual(30);
+    /** RONDE 661: 26 — the compose, P5A and stage-4 rescue sites went with the compose route. */
+    expect(adoptSourceExpressions().length).toBeGreaterThanOrEqual(26);
   });
 
   /**

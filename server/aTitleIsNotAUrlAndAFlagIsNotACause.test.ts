@@ -24,16 +24,17 @@
  *
  * ── What these tests hold ───────────────────────────────────────────────────────────────────
  *
- * That the route line reports the reason it is handed; that a Wikimedia identity resolves in both
- * the form the fix writes and the form already stored in every existing timeline; and that the
- * fallback itself is untouched — §16 says the legacy path may not be deleted, and this round did
- * not delete it. It made it stop lying about why it ran.
+ * That the route line reports the reason it is handed, and that a Wikimedia identity resolves in
+ * both the form the fix writes and the form already stored in every existing timeline.
+ *
+ * RONDE 661 deleted the compose fallback, and `formatRenderRoute` with it. A timeline render that
+ * does not deliver now fails the render, and its one route line still carries the render's own
+ * reason — which is what §1 below holds.
  */
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import { formatRenderRoute } from "./cinematicProduction";
 import { sourcePageUrlFor, wikimediaFileTitleFrom } from "./assetIdentity";
 import { rehydrationUrlFor } from "./assetRehydrator";
 
@@ -46,91 +47,27 @@ const RENDER_589_ID =
 
 /* ═══════════════════ 1. the route line reports the cause it was given ═══════════════════ */
 
-describe("VID-0589 §1 — RENDER_FALLBACK_USED names what actually happened", () => {
-  it("a render that failed AFTER a good plan reports the failure, not the flag", () => {
-    /**
-     * Render 589's exact shape: `outcome.ok === true`, and `videoPipeline` passes the renderer's
-     * own refusal as `reason`. The old rule branched on `planOk` alone and never read it.
-     */
-    const line = formatRenderRoute({
-      videoId: 589,
-      route: "legacy_compose",
-      planOk: true,
-      reason: "ASSET_NOT_REHYDRATABLE — clip vc_2c6cad7470: REHYDRATION_DOWNLOAD_FAILED",
-    });
-    expect(line).toContain("RENDER_FALLBACK_USED");
-    expect(line).toContain("ASSET_NOT_REHYDRATABLE");
-    expect(line).toContain("vc_2c6cad7470");
-    expect(line, "the flag was on — saying otherwise is what sent everyone the wrong way").not.toContain(
-      "CINEMATIC_RENDER_PATH is not enabled"
-    );
+describe("VID-0589 §1 — the route line names what actually happened", () => {
+  const PIPE = read("videoPipeline.ts");
+
+  it("a timeline render that did not deliver prints the render's own reason, not a flag", () => {
+    expect(PIPE).toContain("route=cinematic_timeline NOT_DELIVERED ");
+    expect(PIPE).toContain('`reason=${cinematicRefusalForGate ?? "unknown"}`');
   });
 
-  it("a queue refusal is reported as a queue refusal", () => {
-    /**
-     * The other planOk-with-a-reason case that already existed in production: the worker claimed
-     * the job first. It too was reported as a disabled feature flag.
-     */
-    const line = formatRenderRoute({
-      videoId: 589,
-      route: "legacy_compose",
-      planOk: true,
-      reason: "the render job worker claimed job 10 first",
-    });
-    expect(line).toContain("claimed job 10 first");
-    expect(line).not.toContain("is not enabled");
+  it("a plan that was not usable is named as such, with the planner's reason", () => {
+    expect(PIPE).toContain("`the cinematic plan was not usable: ${outcome.reason}`");
   });
 
-  it("the flag answer survives for the one case it was ever true for", () => {
-    /**
-     * Nothing supplies a refusal when the route is switched off — it is not reached. So the
-     * flag-is-off sentence is what remains when there is no reason to report, and it stays.
-     */
-    const line = formatRenderRoute({ videoId: 572, route: "legacy_compose", planOk: true });
-    expect(line).toContain("reason=CINEMATIC_RENDER_PATH is not enabled");
+  it("and that same reason is what the render fails with", () => {
+    const at = PIPE.indexOf("const deliveredUrl = cinematicDeliveredUrl;");
+    expect(at).toBeGreaterThan(-1);
+    expect(PIPE.slice(at, at + 600)).toContain('cinematicRefusalForGate ?? "no reason was recorded"');
   });
 
-  it("an unusable plan still says the plan was unusable, with the planner's code", () => {
-    const line = formatRenderRoute({
-      videoId: 571,
-      route: "legacy_compose",
-      planOk: false,
-      reason: "CINEMATIC_TIMELINE_INVALID",
-    });
-    expect(line).toContain("the cinematic plan was not usable: CINEMATIC_TIMELINE_INVALID");
-  });
-
-  it("a plan failure with nothing to say is still a plan failure", () => {
-    const line = formatRenderRoute({ videoId: 1, route: "legacy_compose", planOk: false });
-    expect(line).toContain("the cinematic plan was not usable: unknown");
-  });
-
-  it("a blank reason is not a reason", () => {
-    /** Whitespace passed as a cause would print `reason=` and read as a truncated line. */
-    const line = formatRenderRoute({ videoId: 1, route: "legacy_compose", planOk: true, reason: "   " });
-    expect(line).toContain("reason=CINEMATIC_RENDER_PATH is not enabled");
-  });
-
-  it("the cinematic route still names itself and carries no fallback word", () => {
-    const line = formatRenderRoute({ videoId: 1, route: "cinematic_timeline", planOk: true, reason: "x" });
-    expect(line).toBe("[RenderJob] video=1 route=cinematic_timeline");
-  });
-
-  it("no route line leaks a URL or a work directory", () => {
-    const line = formatRenderRoute({
-      videoId: 1,
-      route: "legacy_compose",
-      planOk: true,
-      reason: "provider=wikimedia host=commons.wikimedia.org (derived)",
-    });
-    expect(line).not.toMatch(/https?:\/\//);
-    expect(line).not.toContain("/tmp/");
-  });
-
-  it("§16 — the legacy route still exists; this round did not remove the fallback", () => {
-    const src = read("cinematicProduction.ts");
-    expect(src).toContain('export type RenderRoute = "cinematic_timeline" | "legacy_compose";');
-    expect(src).toContain("RENDER_FALLBACK_USED");
+  it("no line claims a fallback that no longer exists", () => {
+    expect(PIPE).not.toContain("formatRenderRoute(");
+    expect(read("cinematicProduction.ts")).not.toContain("export function formatRenderRoute(");
   });
 });
 

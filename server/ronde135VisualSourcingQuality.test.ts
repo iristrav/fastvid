@@ -399,18 +399,6 @@ describe("RONDE 135 — regressions this round must not touch", () => {
     expect(PIPE).toContain("repeatOffenderSources(dedup.mismatchTally)");
   });
 
-  it("34. the stillness audit is still wired (RONDE 133)", () => {
-    expect(PIPE).toContain("auditVideoStillness({");
-    expect(PIPE).toContain("videoPath: finalVideoPath");
-  });
-
-  it("35. the closing tail still seeks on the video stream (RONDE 132)", () => {
-    const tail = readFileSync(join(__dirname, "closingTail.ts"), "utf8");
-    expect(tail).toContain("closingTailFrameSeek");
-    expect(tail).not.toContain("params.lastSceneDurationSec - 0.1");
-    expect(PIPE).toContain("lastSceneVideoDurationSec: lastSceneVideoDur");
-  });
-
   it("36. the still-image rules are untouched (RONDE 128/130)", () => {
     const still = readFileSync(join(__dirname, "stillImagePolicy.ts"), "utf8");
     expect(still).toContain("export const MAX_STILL_IMAGE_DURATION_SEC = 5");
@@ -437,21 +425,9 @@ describe("RONDE 135 — mutation guards", () => {
     expect(FEEDBACK).toContain("new Set([...preference.avoid, ...learnedOffenders])");
   });
 
-  it("M10. the stillness audit cannot be silently unwired", () => {
-    const idx = PIPE.indexOf("auditVideoStillness({");
-    expect(idx).toBeGreaterThan(0);
-    expect(PIPE.slice(idx, idx + 900)).toContain("checkStillnessLimit(stillness, stillImageMaxSec())");
-  });
-
   it("M11. the five-second cap is a constant, not a threshold this round can move", () => {
     const still = readFileSync(join(__dirname, "stillImagePolicy.ts"), "utf8");
     expect(still).toMatch(/MAX_STILL_IMAGE_DURATION_SEC\s*=\s*5\b/);
     expect(still).toContain("Math.min(n, 15)");
-  });
-
-  it("M12. the closing-tail seek cannot fall back to the container duration", () => {
-    const tail = readFileSync(join(__dirname, "closingTail.ts"), "utf8");
-    expect(tail).toContain("videoStreamDurationSec");
-    expect(tail).toContain("-update 1");
   });
 });

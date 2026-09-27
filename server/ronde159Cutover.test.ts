@@ -12,7 +12,6 @@ import {
   cinematicPlanningEnabled,
   cinematicRenderPathEnabled,
   enqueueCinematicRender,
-  formatRenderRoute,
 } from "./cinematicProduction";
 
 const ORIGINAL_ENGINE = process.env.CINEMATIC_EDITING_ENGINE;
@@ -159,9 +158,9 @@ describe("R159 §24 — CINEMATIC_RENDER_PATH activates the new route", () => {
   });
 });
 
-/* ═══════════════════════ §25 — the fallback is never hidden ═══════════════════════ */
+/* ═══════════════════════ §25 — a refusal is never hidden ═══════════════════════ */
 
-describe("R159 §25 — PRIMARY and FALLBACK are always distinguishable", () => {
+describe("R159 §25 — a render that did not deliver is always distinguishable", () => {
   it("planning and rendering are separate switches", () => {
     process.env.CINEMATIC_EDITING_ENGINE = "true";
     delete process.env.CINEMATIC_RENDER_PATH;
@@ -169,18 +168,12 @@ describe("R159 §25 — PRIMARY and FALLBACK are always distinguishable", () => 
     expect(cinematicRenderPathEnabled()).toBe(false);
   });
 
-  it("a legacy render always carries RENDER_FALLBACK_USED and a reason", () => {
-    const flagOff = formatRenderRoute({ videoId: 3, route: "legacy_compose", planOk: true });
-    expect(flagOff).toContain("RENDER_FALLBACK_USED");
-    expect(flagOff).toContain("reason=");
-  });
-
   /**
-   * The specific failure this test guards. When the flag is ON but the queue refused the job, the
-   * video is still delivered by compose — and reporting `route=cinematic_timeline` because the FLAG
-   * was on would make the migration look complete while every video still came from the old path.
+   * The specific failure this test guards. When the flag is ON but the queue refused the job,
+   * reporting `route=cinematic_timeline` as delivered because the FLAG was on would hide a render
+   * that produced nothing. Since RONDE 661 the refusal fails the render, with the queue's reason.
    */
-  it("does NOT claim the cinematic route when the job was not actually queued", async () => {
+  it("does NOT claim a delivery when the job was not actually queued", async () => {
     const q = recordingQueue({ attempt: null });
     const cutover = await enqueueCinematicRender({
       videoId: 3,
@@ -189,30 +182,10 @@ describe("R159 §25 — PRIMARY and FALLBACK are always distinguishable", () => 
       createJob: q.createJob,
     });
     expect(cutover.ok).toBe(false);
-
-    // This mirrors what videoPipeline does with the result.
-    const line = formatRenderRoute({
-      videoId: 3,
-      route: cutover.ok ? "cinematic_timeline" : "legacy_compose",
-      planOk: true,
-      reason: cutover.ok ? undefined : cutover.reason,
-    });
-    expect(line).toContain("legacy_compose");
-    expect(line).toContain("RENDER_FALLBACK_USED");
-  });
-
-  it("a genuine cinematic render says so and carries no fallback marker", () => {
-    const line = formatRenderRoute({ videoId: 3, route: "cinematic_timeline", planOk: true });
-    expect(line).toContain("route=cinematic_timeline");
-    expect(line).not.toContain("RENDER_FALLBACK_USED");
-  });
-
-  it("no route line leaks a URL or a path", () => {
-    for (const route of ["cinematic_timeline", "legacy_compose"] as const) {
-      const line = formatRenderRoute({ videoId: 3, route, planOk: false, reason: "x" });
-      expect(line).not.toMatch(/https?:/);
-      expect(line).not.toContain("/tmp/");
-    }
+    if (cutover.ok) return;
+    expect(cutover.reason.trim().length, "a refusal with no reason").toBeGreaterThan(0);
+    expect(cutover.reason).not.toMatch(/https?:/);
+    expect(cutover.reason).not.toContain("/tmp/");
   });
 });
 

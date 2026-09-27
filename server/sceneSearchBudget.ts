@@ -96,18 +96,3 @@ export function sceneSearchBudgetMs(params: {
   const ceiling = flatMs * SCENE_SEARCH_MAX_FACTOR;
   return Math.round(Math.max(SCENE_SEARCH_MIN_MS, Math.min(wanted, ceiling)));
 }
-
-/** One line, printed only when a scene actually gets more than the flat share. */
-export function formatSceneSearchBudget(
-  sceneIndex: number,
-  flatMs: number,
-  grantedMs: number,
-  sceneDurationSec: number,
-  beatCount?: number
-): string {
-  return (
-    `[SceneBudget] scene ${sceneIndex}: ${(grantedMs / 1000).toFixed(0)}s to find visuals ` +
-    `(flat share ${(flatMs / 1000).toFixed(0)}s) — ${sceneDurationSec.toFixed(1)}s of narration` +
-    (beatCount ? `, ${beatCount} beat(s)` : "")
-  );
-}

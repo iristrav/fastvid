@@ -21,7 +21,6 @@
 import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
-
 import { MAX_JUDGEMENTS_PER_BEAT } from "./beatImageRelevanceGate";
 import {
   admitToShortlist,
@@ -29,7 +28,6 @@ import {
   beatShortlistViolations,
   createBeatShortlistState,
   formatBeatShortlists,
-  isShortlisted,
   maxShortlistPerBeat,
   noteEligible,
   noteNotAsked,
@@ -39,6 +37,7 @@ import {
   reasonsFor,
 } from "./beatShortlist";
 import { adoptionGuardVerdict } from "./adoptionPolicy";
+
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -116,33 +115,6 @@ describe("a beat may put only its shortlist to the picture editor", () => {
     expect(beatFunnel(state, 0, 0).shortlisted).toBe(1);
     expect(admitToShortlist(state, 0, 0, "other", 2).admitted).toBe(true);
     expect(admitToShortlist(state, 0, 0, "third", 2).admitted).toBe(false);
-  });
-
-  /**
-   * A candidate with no content identity is counted against the bound rather than waved past it.
-   * The conservative direction: an unidentifiable asset is exactly the kind that must not get an
-   * unbounded number of free looks.
-   */
-  it("an unidentifiable candidate still spends a slot", () => {
-    const state = createBeatShortlistState();
-    expect(admitToShortlist(state, 0, 0, "", 1).admitted).toBe(true);
-    expect(admitToShortlist(state, 0, 0, "", 1).admitted).toBe(false);
-    expect(isShortlisted(state, 0, 0, "")).toBe(false);
-  });
-
-  it("remembers what it admitted", () => {
-    const state = createBeatShortlistState();
-    admitToShortlist(state, 2, 1, "asset:7", 4);
-    expect(isShortlisted(state, 2, 1, "asset:7")).toBe(true);
-    expect(isShortlisted(state, 2, 1, "asset:8")).toBe(false);
-    expect(isShortlisted(state, 2, 0, "asset:7"), "a slot on one beat is not a slot on another")
-      .toBe(false);
-  });
-
-  /** No state at all is a caller outside a render; it must not silently refuse the pipeline. */
-  it("is inert without a render state", () => {
-    expect(admitToShortlist(undefined, 0, 0, "k").admitted).toBe(true);
-    expect(isShortlisted(undefined, 0, 0, "k")).toBe(false);
   });
 });
 

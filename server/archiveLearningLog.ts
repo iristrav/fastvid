@@ -91,13 +91,6 @@ export function formatNoStrongMatch(facts: {
   );
 }
 
-/** Printed when an asset is added to the semantic index — the write half of the loop. */
-export function formatArchiveLearningIndexed(assetId: number, document: string, model: string): string {
-  return (
-    `[ArchiveLearning] asset=${assetId} indexed model=${model} ` +
-    `document="${document.slice(0, 80).replace(/\s+/g, " ").trim()}"`
-  );
-}
 
 /**
  * Printed once per render: did this render add anything the next one can use?

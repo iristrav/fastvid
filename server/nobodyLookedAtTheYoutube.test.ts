@@ -35,55 +35,6 @@ describe("1. backfill may not fill a beat nobody was asked about", () => {
   const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
   const flat = SRC.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "").replace(/\s+/g, " ");
 
-  it("THE BEAT IS PICKED BEFORE THE EDITOR IS ASKED, NOT AFTER", () => {
-    /**
-     * Both lines already existed; only their order was wrong. The assertion is on the order,
-     * because that is the entire defect and a re-ordering is exactly what could silently return.
-     */
-    const pick = flat.indexOf("const bi = beatIndex ?? pickVoiceBackfillBeatIndex(");
-    /**
-     * Matched without pinning the argument list. Render 579 added a fifth argument here — the
-     * backfill now demands an APPROVAL rather than the absence of a refusal — and an anchor that
-     * spelled out four arguments read that tightening as the question no longer being asked.
-     */
-    const ask = flat.search(
-      /if \(await beatClipRefusedByRelevanceGate\(dedup, clipPath, scene\.index, bi[,)]/
-    );
-    expect(pick, "the backfill still picks a beat").toBeGreaterThan(-1);
-    expect(ask, "and still asks about it").toBeGreaterThan(-1);
-    expect(pick, "and picks it FIRST").toBeLessThan(ask);
-  });
-
-  it("AND THE BACKFILL ASKS FOR A YES, NOT MERELY THE ABSENCE OF A NO", () => {
-    /**
-     * Render 579: assets 57502 and 57526 reached the delivered film through this closure with
-     * `verdict=unknown route=backfill`, while the editor refused every ww2 clip it was shown
-     * (`judged=43 fits=0 accepted=0%`). Picking the beat in time to ask was necessary and not
-     * sufficient — the answer also has to count, and `unknown` is not an approval.
-     */
-    expect(flat).toContain(
-      'if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, bi, "approval"))'
-    );
-  });
-
-  it("the adoption guard is asked about the same beat", () => {
-    expect(flat).toContain("if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, bi))");
-  });
-
-  it("THE RAW ARGUMENT IS NOT WHAT GETS ASKED ABOUT, in this closure", () => {
-    /**
-     * Scoped to the compose backfill's own closure. The four `pushSceneClip` closures name their
-     * OWN parameter `beatIndex` and are required to pass it — they are the routes that always
-     * had a beat. This is about the one closure whose beat arrived optional.
-     */
-    const start = flat.indexOf("const pushClip = async (clipPath: string, holdSec: number, beatIndex?: number)");
-    expect(start, "the backfill closure is still there").toBeGreaterThan(-1);
-    const body = flat.slice(start, flat.indexOf("await backfillArchiveMontageFromPool(", start));
-    expect(body.length).toBeGreaterThan(100);
-    expect(body).not.toContain("beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)");
-    expect(body).not.toContain("adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)");
-  });
-
   it("the beat-blind branch still exists for callers that genuinely have no beat", () => {
     /**
      * `beatClipRefusedByRelevanceGate` is also called by the compose barrier, which legitimately
@@ -106,7 +57,6 @@ describe("1. backfill may not fill a beat nobody was asked about", () => {
  * to spend here and no unscreened admission to record. YouTube is judged once, by the beat gate,
  * on the sentence it will run under. See youtubeIsJudgedWhereItIsUsed.test.ts.
  */
-
 
 describe("3. a query has to name something you could photograph", () => {
   it("RENDER 578: \"standing brink\" IS NO LONGER A SEARCH QUERY", () => {

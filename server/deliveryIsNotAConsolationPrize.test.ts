@@ -11,21 +11,17 @@
  * words. The objection is not to the silence: it is that the video was marked COMPLETE with a
  * composition the planner did not produce, and a viewer had no way to tell.
  *
- * ── The distinction every test here turns on ────────────────────────────────────────────────
+ * ── Since RONDE 661 ─────────────────────────────────────────────────────────────────────────
  *
- * `legacy_compose` is two different things under one name. With `CINEMATIC_RENDER_PATH` switched
- * off it is the CONFIGURED route: no cinematic render is attempted, no refusal is recorded, and
- * blocking it would refuse every render on such a deployment. After an attempted cinematic render
- * that did not deliver it is the FALLBACK. Only the second is blocked, and the evidence that tells
- * them apart — the cinematic refusal — was already being computed and used for a log line only.
+ * The compose route is deleted. A timeline render that did not deliver has nothing to fall back
+ * to, so any recorded refusal blocks — and the old development escape hatch
+ * (`ALLOW_LEGACY_COMPOSE_FALLBACK`) no longer opens anything.
  */
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   deliveryGate,
   formatDeliveryBlock,
-  isFallbackDelivery,
-  legacyFallbackDeliveryAllowed,
   DELIVERY_GATE_FAIL,
   DELIVERY_GATE_PASS,
   type DeliveryClipFact,
@@ -76,11 +72,8 @@ describe("Test 11 — the delivery gate", () => {
     expect(v.lines.join("\n")).toContain(DELIVERY_GATE_PASS);
   });
 
-  it("MEASURED: a cinematic render that failed blocks the compose montage", () => {
-    delete process.env.ALLOW_LEGACY_COMPOSE_FALLBACK;
-    const v = deliveryGate(
-      input({ route: "legacy_compose", cinematicRefusal: "the cinematic render threw: ffmpeg exit 1" })
-    );
+  it("MEASURED: a cinematic render that failed blocks the delivery", () => {
+    const v = deliveryGate(input({ cinematicRefusal: "the cinematic render threw: ffmpeg exit 1" }));
     expect(v.allow, "a film the timeline did not render was delivered anyway").toBe(false);
     if (v.allow) return;
     expect(v.failures.map((f) => f.code)).toContain("AUTHORITATIVE_RENDER_FAILED");
@@ -88,46 +81,21 @@ describe("Test 11 — the delivery gate", () => {
   });
 
   it("MEASURED: the block names the reason, so the failure can be repaired", () => {
-    delete process.env.ALLOW_LEGACY_COMPOSE_FALLBACK;
-    const v = deliveryGate(
-      input({ route: "legacy_compose", cinematicRefusal: "ASSET_NOT_FOUND — clip 3" })
-    );
+    const v = deliveryGate(input({ cinematicRefusal: "ASSET_NOT_FOUND — clip 3" }));
     expect(formatDeliveryBlock(v, 10108)).toContain("AUTHORITATIVE_RENDER_FAILED");
     expect(formatDeliveryBlock(v, 10108)).toContain("ASSET_NOT_FOUND");
   });
 
-  /**
-   * The case that must NOT be blocked. A deployment with the cinematic path switched off attempts
-   * no timeline render, so there is nothing to have failed — and refusing here would stop every
-   * render on that deployment, which is a far worse outcome than the one §10 is about.
-   */
-  it("MEASURED: compose as the CONFIGURED route is not a fallback and is not blocked", () => {
-    delete process.env.ALLOW_LEGACY_COMPOSE_FALLBACK;
-    const v = deliveryGate(input({ route: "legacy_compose", cinematicRefusal: null, timelineExists: false }));
-    expect(v.allow).toBe(true);
+  it("MEASURED: a blank refusal is not a refusal", () => {
+    expect(deliveryGate(input({ cinematicRefusal: "   " })).allow).toBe(true);
+    expect(deliveryGate(input({ cinematicRefusal: null })).allow).toBe(true);
   });
 
-  it("MEASURED: isFallbackDelivery is what separates them", () => {
-    expect(isFallbackDelivery({ route: "legacy_compose", cinematicRefusal: "threw" })).toBe(true);
-    expect(isFallbackDelivery({ route: "legacy_compose", cinematicRefusal: null })).toBe(false);
-    expect(isFallbackDelivery({ route: "legacy_compose", cinematicRefusal: "   " })).toBe(false);
-    expect(isFallbackDelivery({ route: "cinematic_timeline", cinematicRefusal: "threw" })).toBe(false);
-  });
-
-  it("MEASURED: the development escape hatch is off unless explicitly set", () => {
-    delete process.env.ALLOW_LEGACY_COMPOSE_FALLBACK;
-    expect(legacyFallbackDeliveryAllowed()).toBe(false);
-    process.env.ALLOW_LEGACY_COMPOSE_FALLBACK = "yes";
-    expect(legacyFallbackDeliveryAllowed(), "anything truthy switched production delivery").toBe(false);
+  it("MEASURED: the old escape hatch opens nothing — there is no fallback left to let through", () => {
     process.env.ALLOW_LEGACY_COMPOSE_FALLBACK = "true";
-    expect(legacyFallbackDeliveryAllowed()).toBe(true);
-  });
-
-  it("MEASURED: with the hatch set the delivery passes AND says it was allowed to", () => {
-    process.env.ALLOW_LEGACY_COMPOSE_FALLBACK = "true";
-    const v = deliveryGate(input({ route: "legacy_compose", cinematicRefusal: "threw" }));
-    expect(v.allow).toBe(true);
-    expect(v.lines.join("\n")).toContain("LEGACY_FALLBACK_ALLOWED");
+    const v = deliveryGate(input({ cinematicRefusal: "threw" }));
+    expect(v.allow).toBe(false);
+    expect(v.lines.join("\n")).not.toContain("LEGACY_FALLBACK_ALLOWED");
   });
 });
 

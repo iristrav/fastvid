@@ -48,8 +48,3 @@ export interface SceneSoundPlan {
   fadeInMs: number;
   fadeOutMs: number;
 }
-
-export interface VideoSoundPlan {
-  scenes: SceneSoundPlan[];
-  totalDurationSec: number;
-}

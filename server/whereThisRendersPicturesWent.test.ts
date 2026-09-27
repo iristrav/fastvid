@@ -269,10 +269,15 @@ describe("P0-9 §4 — the boundary of this proof", () => {
      */
     const selected = PIPE.match(/recordEvent\([^)]*"SELECTED"/g)?.length ?? 0;
     const adopted = PIPE.match(/recordEvent\([^)]*"ADOPTED"/g)?.length ?? 0;
-    const removed = PIPE.match(/recordEventForPath\([^)]*"REMOVED"/g)?.length ?? 0;
+    /**
+     * RONDE 661 — the literal `recordEventForPath(…"REMOVED"…)` sites were all in compose. A
+     * removal is now filed through `recordAssetOutcome` with a reason whose status is REMOVED.
+     */
+    const removed = PIPE.match(/"extended_removed"|"not_chosen"/g)?.length ?? 0;
     expect(selected, "nothing records SELECTED any more").toBeGreaterThanOrEqual(2);
     expect(adopted, "nothing records ADOPTED any more").toBeGreaterThanOrEqual(2);
     expect(removed, "nothing records REMOVED any more").toBeGreaterThanOrEqual(2);
+    expect(PIPE).toContain("recordAssetOutcome(");
   });
 
   it("and every SELECTED site names the ledger it writes to, never an ambient one", () => {

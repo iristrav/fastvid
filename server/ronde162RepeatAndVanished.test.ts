@@ -66,88 +66,7 @@ const validationBody = (): string => {
   return PIPE.slice(from, to);
 };
 
-describe("RONDE 162 §1 — a scene that loses footage to validation asks for more", () => {
-  it("the shortfall is measured against what the montage needs, not against zero", () => {
-    expect(PIPE).toContain("const lostToValidation = clipsBeforeValidation - safeClips.length;");
-    expect(PIPE).toContain("safeClips.length < requiredMontageClipsForDuration(duration)");
-  });
-
-  it("replacements come from the rescue that already existed, not a new engine", () => {
-    const block = replacementBlock();
-    expect(block).toContain("rescueFastShortComposeClips(");
-    // One rescue, the same one the all-clips-failed branch uses.
-    expect((PIPE.match(/await rescueFastShortComposeClips\(/g) ?? []).length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("a replacement is validated like any other clip before it is used", () => {
-    const block = replacementBlock();
-    expect(block).toContain("await requireValidClip(");
-  });
-
-  it("a replacement that duplicates what is already there is skipped", () => {
-    const block = replacementBlock();
-    expect(block).toContain("if (safeClips.some((c) => clipContentKey(c) === key)) continue;");
-  });
-
-  it("it stops as soon as the scene has what it needs — no forced variety", () => {
-    const block = replacementBlock();
-    expect(block).toContain("if (safeClips.length >= requiredMontageClipsForDuration(duration)) break;");
-  });
-
-  it("no colour card is added to make the count look better", () => {
-    /**
-     * The brief's rule, and the right one: a card is not footage. Padding the montage with one to
-     * avoid a repeat trades a repeat for something worse.
-     */
-    const block = replacementBlock();
-    expect(block).not.toContain("generateGuaranteedBeatClip");
-    expect(block).not.toContain("generateColorFallback");
-    expect(block).toContain("Deliberately not done here: adding a colour card");
-  });
-
-  it("it only runs when something was actually lost", () => {
-    // A scene that passed validation intact must not start a rescue it does not need.
-    const block = replacementBlock();
-    expect(block).toContain("lostToValidation > 0");
-    expect(block).toContain("safeClips.length > 0");
-  });
-
-  it("it respects the compose network block, including RONDE 159's per-scene exemption", () => {
-    const block = replacementBlock();
-    expect(block).toContain("!isComposeNetworkBlocked(composeOptions.dedup, scene.index)");
-  });
-});
-
 describe("RONDE 162 §2 — every drop names its reason", () => {
-  it("all three validation refusals file an outcome", () => {
-    const body = validationBody();
-    expect(body).toContain("`invalid_file:s${sceneIndex}`");
-    expect(body).toContain("`unusable_stream:s${sceneIndex}`");
-    expect(body).toContain("`mostly_black:s${sceneIndex}`");
-    expect(body).toContain('lineage?.recordEventForPath(clipPath, "REMOVED"');
-  });
-
-  it("a placeholder gets a reason too — RONDE 159's assumption was wrong", () => {
-    const body = validationBody();
-    expect(body).toContain("`placeholder_rejected:s${sceneIndex}`");
-    // ...and at the other silent site, the compose filter.
-    expect(PIPE).toContain("`placeholder_not_used:s${sceneIndex}`");
-    expect(PIPE).not.toContain("A placeholder is not an asset; it has no lineage record to settle.");
-  });
-
-  it("the reasons are distinct, so a log says which check refused the clip", () => {
-    const reasons = [
-      "invalid_file:s",
-      "unusable_stream:s",
-      "mostly_black:s",
-      "placeholder_rejected:s",
-      "placeholder_not_used:s",
-      "compose_gate:${gate.check}:s",
-      "duplicate_content:s",
-    ];
-    for (const r of reasons) expect(PIPE, r).toContain(r);
-    expect(new Set(reasons).size).toBe(reasons.length);
-  });
 
   /**
    * The same rule, one level down — and where it had stopped being true.
@@ -190,35 +109,13 @@ describe("RONDE 162 §2 — every drop names its reason", () => {
     expect(body).toContain("return (await montageClipComposeGate(");
     expect(body).toContain(").pass;");
   });
-
-  it("both validation call sites hand over the ledger, or nothing is recorded", () => {
-    const calls = PIPE.match(/await requireValidClip\([\s\S]{0,180}?\)/g) ?? [];
-    expect(calls.length).toBeGreaterThanOrEqual(3);
-    for (const call of calls) {
-      expect(call, call).toContain("lineage");
-    }
-  });
-
-  it("nothing is marked processed to silence the warning", () => {
-    /**
-     * The brief's explicit prohibition. Every reason above corresponds to a real refusal that
-     * really happened; none of them is applied to a clip that survived.
-     */
-    const body = validationBody();
-    // The successful path returns the clip and files nothing.
-    expect(body.trimEnd().endsWith("return clipPath;\n}")).toBe(true);
-  });
 });
 
 describe("RONDE 162 — what this round did not touch", () => {
-  it("RONDE 157's replay and RONDE 158's net are intact", () => {
-    expect(PIPE).toContain("export async function extendMontageForCoverage(");
-    expect(PIPE).toContain("export async function repairShortSceneVideo(");
-    expect(PIPE).toContain('headChain = montageTailPadVF("0:v", montageDur, outDur);');
-  });
 
   it("the hold sites are still the two earlier rounds counted", () => {
-    expect((PIPE.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(2);
+    /** RONDE 661: zero — both sat in the deleted compose montage's tail pad. */
+    expect((PIPE.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(0);
   });
 
   it("the moving-footage target stays where RONDE 161 put it", async () => {

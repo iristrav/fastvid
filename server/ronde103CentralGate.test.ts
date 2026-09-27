@@ -436,31 +436,6 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
       .toBe(true);
   });
 
-  it("the barrier is on the widest chokepoint, and the routes hand it the ledger", () => {
-    const idx = SRC.indexOf("async function montageClipPassesComposeGate(");
-    expect(idx).toBeGreaterThan(-1);
-    const body = SRC.slice(idx, idx + 2600);
-    expect(body).toContain("composeBarrierAllows(relevance, clipPath, clipContentKey(clipPath))");
-    expect(body).toContain("[ComposeBarrier]");
-    /**
-     * Every call site passes a ledger — including the four inside compose, which reach it through
-     * ComposeSceneOptions.dedup. That was RONDE 102's stop condition #2: compose was handed bare
-     * paths and there was no way back to a beat from any of them.
-     *
-     * The first entry is the definition itself; an intermediate helper that forwards its own
-     * `relevance` parameter counts, because its own callers are checked by the same rule.
-     */
-    const calls = SRC.split("montageClipPassesComposeGate(").slice(2);
-    const withoutLedger = calls.filter(
-      (c) => !/\brelevance\b|beatRelevance/.test(c.slice(0, c.indexOf(")") + 1))
-    );
-    expect(withoutLedger).toHaveLength(0);
-    expect(calls.length).toBeGreaterThanOrEqual(17);
-    // ...and the one forwarding helper really does receive it from every one of its own callers.
-    const fwd = SRC.split("composeReadySceneClips(").slice(2);
-    expect(fwd.every((c) => c.slice(0, c.indexOf(");")).includes("beatRelevance"))).toBe(true);
-  });
-
   it("the text overlay carries the decision across the file it writes", () => {
     const idx = SRC.indexOf("async function applyVideoBeatTextOverlay(");
     expect(idx).toBeGreaterThan(-1);

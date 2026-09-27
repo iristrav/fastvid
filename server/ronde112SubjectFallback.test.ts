@@ -26,7 +26,6 @@
 import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
-
 import {
   SUBJECT_FALLBACK_CLAIM,
   SUBJECT_FALLBACK_ROUTE,
@@ -39,7 +38,7 @@ import {
 import { MAX_COVERAGE_SLOWDOWN, planCoverageFill } from "./coverageFillPlan";
 import { buildBeatVisualStatuses, coverageOfAdoptEntry, tallyBeatVisualStatuses } from "./beatVisualStatus";
 import { adoptRouteForSource } from "./clipAdoptAudit";
-import { montageTailPadFilterChain } from "./videoPipeline";
+
 
 const PIPELINE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const SUBJECT = fs.readFileSync(path.join(__dirname, "beatSubjectFallback.ts"), "utf8");
@@ -50,10 +49,6 @@ const HITLER_BEAT = "Hitler died in his bunker in 1945.";
 /* ═══════════ 1. voldoende normale coverage ═══════════ */
 
 describe("RONDE 112 — a covered scene never reaches any of this", () => {
-  it("no shortfall means no filter, no extra search, no fallback", () => {
-    expect(planCoverageFill(20, 20).action).toBe("none");
-    expect(montageTailPadFilterChain(20, 20, "covered")).toBe("");
-  });
 
   it("a scene inside the 2x budget does not pay for extra searching", () => {
     // The header line is emitted and the function returns before any extra round.
@@ -85,11 +80,6 @@ describe("RONDE 112 — short clips are stitched before anything else is tried",
 /* ═══════════ 3 & 4. tekort onder en boven 2× ═══════════ */
 
 describe("RONDE 112 — the 2x cap is absolute", () => {
-  it("a shortfall inside the cap is still just slowed", () => {
-    const chain = montageTailPadFilterChain(12, 20, "inside");
-    expect(chain).toContain("setpts=");
-    expect(chain).not.toContain("tpad");
-  });
 
   it("NO input produces a factor above the cap — swept, not sampled", () => {
     for (let montage = 0.1; montage <= 30; montage += 0.1) {
@@ -100,14 +90,6 @@ describe("RONDE 112 — the 2x cap is absolute", () => {
           `${montage.toFixed(1)}s montage in a ${target}s scene`
         ).toBeLessThanOrEqual(MAX_COVERAGE_SLOWDOWN);
       }
-    }
-  });
-
-  it("the emitted filter string can never carry a factor above 2", () => {
-    for (const [montage, target] of [[1, 20], [2, 30], [3, 60], [0.5, 45]]) {
-      const chain = montageTailPadFilterChain(montage!, target!, "sweep");
-      const m = /setpts=([0-9.]+)\*PTS/.exec(chain);
-      if (m) expect(parseFloat(m[1]!)).toBeLessThanOrEqual(MAX_COVERAGE_SLOWDOWN);
     }
   });
 });
@@ -347,26 +329,6 @@ describe("RONDE 112 — the held frame is last, and never silent", () => {
   it("the exhausted line carries the applied slowdown and the held seconds", () => {
     expect(PIPELINE).toContain("const plan = planCoverageFill(coverage, scene.duration);");
     expect(PIPELINE).toContain("slowdown=${plan.slowdownRatio.toFixed(2)}x held=${plan.stillShortSec.toFixed(1)}s");
-  });
-
-  it("compose still holds only the part slowing could not cover", () => {
-    const chain = montageTailPadFilterChain(2, 20, "exhausted");
-    expect(chain).toContain("setpts=2.000000*PTS");
-    /**
-     * SUPERSEDED BY RONDE 130 — the claim this line made is still true; what happens to the
-     * remainder is not.
-     *
-     * It was written to prove the slowdown stops at the 2x cap instead of absorbing a large
-     * shortfall, and that half is asserted above and below, unchanged. What it also encoded was a
-     * SIXTEEN-SECOND hold — and RONDE 130 measured what that looks like in the finished MP4:
-     * 28.13s of unchanging picture for the production case. The montage plays again now instead,
-     * which is the same judgement RONDE 112 made for extendLastClip one layer up.
-     *
-     * A shortfall inside the still limit is still a plain hold; that case has its own test in
-     * ronde130VisualIntegrity.
-     */
-    expect(chain).toContain("loop=loop=");
-    expect(chain).not.toContain("tpad=stop_mode=clone");
   });
 });
 

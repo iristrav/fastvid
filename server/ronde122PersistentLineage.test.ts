@@ -33,7 +33,6 @@ import {
   parseLineageSnapshot,
   recordDeliveredLineage,
   recordDelivery,
-  snapshotComposeDelivery,
   snapshotLineage,
 } from "./visualLineageSnapshot";
 import { VisualSourceLedger } from "./visualSourceLineage";
@@ -355,7 +354,7 @@ describe("recording a delivery into a snapshot", () => {
 describe("markDelivered writes what was proven and refuses what was not", () => {
   it("a render that never checked its final video claims nothing", () => {
     const ledger = ledgerWithOneDownloadedAsset();
-    expect(ledger.markDelivered("legacy_compose")).toEqual({
+    expect(ledger.markDelivered("cinematic_timeline")).toEqual({
       written: 0,
       refused: "FINAL_VIDEO_NOT_PROVEN",
     });
@@ -366,7 +365,7 @@ describe("markDelivered writes what was proven and refuses what was not", () => 
     /** `markFinalVideo([])` is a real check with a real answer: no clip of ours reached it. */
     const ledger = ledgerWithOneDownloadedAsset();
     ledger.markFinalVideo([]);
-    expect(ledger.markDelivered("legacy_compose").written).toBe(0);
+    expect(ledger.markDelivered("cinematic_timeline").written).toBe(0);
   });
 
   it("exactly the clips proven in the delivered file are marked", () => {
@@ -410,34 +409,6 @@ describe("markDelivered writes what was proven and refuses what was not", () => 
   });
 });
 
-/* ═══════════════ the compose route's own delivery ═══════════════ */
-
-describe("the compose montage records its delivery as the compose montage", () => {
-  it("what was proven and marked is what the record claims", () => {
-    const ledger = ledgerWithOneDownloadedAsset();
-    ledger.markFinalVideo([CLIP]);
-    ledger.markDelivered("legacy_compose");
-    const out = snapshotComposeDelivery(ledger, {
-      videoId: 580,
-      timelineVersion: 0,
-      published: true,
-      now: 5,
-    });
-    expect(out).not.toBeNull();
-    expect(out!.record).toMatchObject({ route: "compose_montage", delivered: 1 });
-    expect(out!.record.jobId).toBeUndefined();
-    expect(out!.snapshot.assets[0]!.deliveredAt).toBe(5);
-  });
-
-  it("a render that delivered nothing of its own writes no delivery record at all", () => {
-    const ledger = ledgerWithOneDownloadedAsset();
-    ledger.markFinalVideo([]);
-    ledger.markDelivered("legacy_compose");
-    expect(
-      snapshotComposeDelivery(ledger, { videoId: 580, timelineVersion: 0, published: true })
-    ).toBeNull();
-  });
-});
 
 /* ═══════════════ the render job's half of the chain, driven end to end ═══════════════ */
 

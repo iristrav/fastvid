@@ -3364,31 +3364,6 @@ export function formatProviderTrace(
   ];
 }
 
-/** One composed clip's provenance, for the compose-time manifest. */
-export function formatLineageLine(record: VisualLineageRecord | null, clipPath: string): string {
-  const basename = path.basename(clipPath);
-  if (!record) {
-    return `[SourceLineage] scene=? beat=? provider=${UNVERIFIED_PROVIDER} providerStatus=UNVERIFIED route=? clip=${basename}`;
-  }
-  const parts = [
-    `lineageId=${record.lineageId}`,
-    `scene=${record.sceneIndex}`,
-    `beat=${record.beatIndex}`,
-    `provider=${record.provider ?? UNVERIFIED_PROVIDER}`,
-    `providerStatus=${record.providerStatus}`,
-    `route=${record.route}`,
-    record.parentLineageId ? `parent=${record.parentLineageId}` : null,
-    record.providerAssetId ? `assetId=${record.providerAssetId}` : null,
-    record.archiveAssetId != null ? `archiveAsset=${record.archiveAssetId}` : null,
-    record.candidateScore != null ? `score=${record.candidateScore}` : null,
-    record.visionScore != null ? `vision=${record.visionScore}` : null,
-    record.query ? `query="${record.query.slice(0, 48)}"` : null,
-    record.originalFilename !== basename ? `from=${record.originalFilename}` : null,
-    `clip=${basename}`,
-  ].filter(Boolean);
-  return `[SourceLineage] ${parts.join(" ")}`;
-}
-
 /* ═══════════════════════ curated archive assets ═══════════════════════ */
 
 /**

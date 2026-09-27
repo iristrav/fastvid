@@ -257,11 +257,14 @@ describe("the render carries the measurement forward", () => {
      * twice after the post-render spot check, once on a delivered-clip recount. A penalty applied
      * at only the first would vanish minutes later without a line in any log.
      */
-    const pipeCalls = (PIPE.match(/computeMeritQualityScore\(\{/g) ?? []).length;
-    const pipeScreenTime = (PIPE.match(/screenTime: qualityReport\.screenTime/g) ?? []).length;
-    expect(pipeCalls, "both post-render re-scores").toBe(2);
-    expect(pipeScreenTime).toBe(pipeCalls);
-    expect(QR, "the delivered-clip recount too").toContain("screenTime: report.screenTime");
+    /**
+     * RONDE 661 — the two pipeline re-scores ran after the compose montage's spot check and went
+     * with it. The one re-score left is the delivered-clip recount, which reads the timeline's
+     * spot check and the same screen-time findings.
+     */
+    expect((PIPE.match(/computeMeritQualityScore\(\{/g) ?? []).length).toBe(0);
+    expect(QR, "the delivered-clip recount").toContain("screenTime: report.screenTime");
+    expect(QR).toContain("postRenderOk: report.postRenderSpotCheck?.ok");
   });
 
   it("the report stores the findings so a later reader can charge for them", () => {

@@ -114,45 +114,13 @@ describe("§3 — legacy compose, pinned so it can only shrink", () => {
     ...PIPELINE.matchAll(/(?<!function )(?<![\w.])composeSceneVideo\(\s*\n/g),
   ].length;
 
-  it("SIX production call sites today — this number is a ratchet", () => {
+  it("NO production call sites are left — this number was a ratchet", () => {
     /**
      * If a migration round removes one, change this number DOWN and say which site went. If it
      * goes up, a new caller was added to the route we are retiring and the test has done its job.
      */
-    expect(productionCallSites).toBe(6);
-  });
-
-  it("the delivered file still prefers the cinematic render and falls back to compose", () => {
-    /** The current truth, stated. `??` is the whole migration in one operator. */
-    expect(PIPELINE).toContain("const deliveredUrl = cinematicDeliveredUrl ?? url;");
-  });
-
-  it("and the fallback is never silent — the route is named on every render", () => {
-    expect(PIPELINE).toContain('route: cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose"');
-    expect(PIPELINE).toContain("RENDER_FALLBACK_USED");
-  });
-
-  it("THE AXLE IS GONE: the planner no longer NEEDS compose to have run", () => {
-    /**
-     * This was the real reason compose could not be deleted. `composedUsedClips[i]` is written BY
-     * the compose stage, so reading only that made compose an INPUT to the cinematic plan rather
-     * than a fallback behind it. The canonical retrieval state became the fallback, which is what
-     * makes a future removal a migration instead of a rewrite.
-     *
-     * RONDE 632 went one step further, and this assertion moves with it: the canonical set is now
-     * the PRIMARY source and compose contributes only what canonical does not already hold. The
-     * axle is not merely spare, it is off the car — compose's list can be empty on every scene and
-     * the planner still has every adopted clip.
-     */
-    expect(PIPELINE).toContain("const canonicalForScene = sceneVisualResults[i]?.clips ?? [];");
-    expect(PIPELINE).toContain("canonical: canonicalForScene,");
-    expect(PIPELINE).toContain("clipPaths: plannerSource.clipPaths,");
-  });
-
-  it("and the divergence between the two is measured on every render", () => {
-    /** The number the removal decision will be made on. */
-    expect(PIPELINE).toContain("[CinematicSourceDecision]");
-    expect(PIPELINE).toContain("[CinematicSourceDivergence]");
+    /** RONDE 661: zero. The route being retired is gone, and this ratchet has reached its floor. */
+    expect(productionCallSites).toBe(0);
   });
 });
 

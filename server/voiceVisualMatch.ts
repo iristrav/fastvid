@@ -4,7 +4,6 @@
 import * as path from "path";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { minClipQualityScore } from "./visualQualityGate";
-import { strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
 import { coverageOfAdoptEntry } from "./beatVisualStatus";
 
 export type VoiceVisualMatchSummary = {
@@ -55,12 +54,6 @@ export function isGuaranteedPipelineClip(filePath: string): boolean {
 
 export function countGuaranteedClipsInPaths(clipPaths: string[]): number {
   return clipPaths.filter((p) => isGuaranteedPipelineClip(p)).length;
-}
-
-/** Min CLIP score for post-compose audits when strict voice↔visual match is on. */
-export function voiceVisualAuditMinScore(): number {
-  if (strictVoiceVisualMatchEnabled()) return minClipQualityScore();
-  return Math.max(6, minClipQualityScore() - 1);
 }
 
 export function buildVoiceVisualMatchSummary(

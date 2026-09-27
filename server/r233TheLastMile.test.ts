@@ -189,32 +189,36 @@ describe("R233 §2 — preparation is render-scoped", () => {
 /* ═══════════ 3. the delivered file is this render's own ═══════════ */
 
 describe("R233 §3 — delivery identity", () => {
-  it("THE DELIVERED URL IS CHOSEN FROM THIS RENDER'S OWN TWO OUTPUTS", () => {
+  it("THE DELIVERED URL IS THIS RENDER'S OWN TIMELINE OUTPUT, OR THE RENDER FAILS", () => {
     /**
-     * `cinematicDeliveredUrl` is set only by the cinematic pass inside this invocation, and `url`
-     * is this invocation's compose output. Neither can name an earlier render: both are locals of
-     * `_runVideoPipelineInner`, and the files they point at live under this render's own workDir.
+     * `cinematicDeliveredUrl` is set only by the cinematic pass inside this invocation. It is a
+     * local of `_runVideoPipelineInner`, so it cannot name an earlier render. Since RONDE 661 there
+     * is no second output to fall back to: a render without it throws.
      */
-    expect(PIPE).toContain("const deliveredUrl = cinematicDeliveredUrl ?? url;");
+    const at = PIPE.indexOf("const deliveredUrl = cinematicDeliveredUrl;");
+    expect(at).toBeGreaterThan(0);
+    const block = PIPE.slice(at, at + 400);
+    expect(block).toContain("if (!deliveredUrl) {");
+    expect(block).toContain("throw pipelineError(");
   });
 
   it("IT IS PERSISTED AGAINST THIS videoId, and nothing else", () => {
-    const at = PIPE.indexOf("const deliveredUrl = cinematicDeliveredUrl ?? url;");
-    expect(at).toBeGreaterThan(0);
-    const block = PIPE.slice(at, at + 700);
-    expect(block).toContain('await updateVideoStatus(videoId, "completed", {');
-    expect(block).toContain("videoUrl: deliveredUrl,");
+    const from = PIPE.indexOf("const deliveredUrl = cinematicDeliveredUrl;");
+    const at = PIPE.indexOf('await updateVideoStatus(videoId, "completed", {', from);
+    expect(at).toBeGreaterThan(from);
+    expect(PIPE.slice(at, at + 200)).toContain("videoUrl: deliveredUrl,");
   });
 
   it("THE ROUTE IS RECORDED, so a delivered file can always name where it came from", () => {
-    const at = PIPE.indexOf("const deliveredUrl = cinematicDeliveredUrl ?? url;");
-    const block = PIPE.slice(at, at + 900);
-    expect(block).toContain('route: cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose"');
-    expect(block).toContain("await writeDeliveredLineage({");
+    const from = PIPE.indexOf("const deliveredUrl = cinematicDeliveredUrl;");
+    const at = PIPE.indexOf('await updateVideoStatus(videoId, "completed", {', from);
+    expect(PIPE.slice(at, at + 700)).toContain("await writeDeliveredLineage({");
+    const fn = PIPE.slice(PIPE.indexOf("export async function writeDeliveredLineage("));
+    expect(fn.slice(0, 600)).toContain('const route = "cinematic_timeline";');
   });
 
-  it("A FALLBACK TO COMPOSE IS NEVER SILENT", () => {
-    expect(PIPE).toContain("RENDER_FALLBACK_USED");
+  it("A RENDER THAT DID NOT DELIVER IS NEVER SILENT", () => {
+    expect(PIPE).toContain("route=cinematic_timeline NOT_DELIVERED ");
   });
 });
 

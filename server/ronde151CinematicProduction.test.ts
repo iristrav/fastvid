@@ -12,7 +12,6 @@ import {
   CINEMATIC_PLAN_ERROR,
   cinematicPlanningEnabled,
   cinematicRenderPathEnabled,
-  formatRenderRoute,
   planAndStoreCinematicTimeline,
 } from "./cinematicProduction";
 import type { SceneFacts } from "./cinematicPipelineInputs";
@@ -252,26 +251,6 @@ describe("RONDE 151 §19/§20 — the two switches, and the line that counts the
     expect(calls).toHaveLength(0);
   });
 
-  it("a legacy render always says RENDER_FALLBACK_USED, with the reason", () => {
-    const flagOff = formatRenderRoute({ videoId: 3, route: "legacy_compose", planOk: true });
-    expect(flagOff).toContain("RENDER_FALLBACK_USED");
-    expect(flagOff).toContain("CINEMATIC_RENDER_PATH is not enabled");
-
-    const planFailed = formatRenderRoute({
-      videoId: 3,
-      route: "legacy_compose",
-      planOk: false,
-      reason: "2 blocking issue(s): overlapping_clips",
-    });
-    expect(planFailed).toContain("RENDER_FALLBACK_USED");
-    expect(planFailed).toContain("overlapping_clips");
-  });
-
-  it("a cinematic render says so and does NOT carry the fallback marker", () => {
-    const line = formatRenderRoute({ videoId: 3, route: "cinematic_timeline", planOk: true });
-    expect(line).toContain("route=cinematic_timeline");
-    expect(line).not.toContain("RENDER_FALLBACK_USED");
-  });
 });
 
 /* ═══════════════════════ §7 — the ledger records the cut ═══════════════════════ */

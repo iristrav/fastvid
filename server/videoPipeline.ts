@@ -31,7 +31,7 @@ import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { providerLimiter } from "./_core/providerLimiters";
-import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, recordBlockedExport, touchVideoProgress, getMediaArchiveAssetById, getCuratedArchiveProvenance, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, getMediaArchiveAssetById, getCuratedArchiveProvenance, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
 import {
   computeScreenTimeShare,
   formatScreenTimeShare,
@@ -46,7 +46,6 @@ import {
 } from "./curatedProvenanceRepair";
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import { personNameForGap } from "./archiveGapNames";
-import { stillImageMaxSec } from "./stillImagePolicy";
 import { formatPreparationCache, preparationKey, resetPreparationScope, runPreparation } from "./preparationCache";
 import {
   BUDGETS,
@@ -95,10 +94,10 @@ import {
   klingBeatFallbackEnabled,
   maxKlingClipsPerVideo,
 } from "./_core/klingVideo";
-import { sanitizeForDrawtext, sanitizeForDrawtextStrict } from "./ffmpegSanitize";
+import { sanitizeForDrawtextStrict } from "./ffmpegSanitize";
 import {
-  buildFitGrayVideoMontageChain,
-  buildPostGradeVF,
+  
+  
   buildSimpleKenBurnsVF,
   buildMatFramedStillVF,
   buildStillEncodeArgs,
@@ -106,7 +105,7 @@ import {
   documentaryStyleEnabled,
   resolveStillCompositionVF,
   stillOutputFrameCount,
-  type TimedOverlay,
+  
 } from "./documentaryStyle";
 import {
   analyzeSceneVisual,
@@ -141,27 +140,7 @@ import {
   recordGateVerdict,
   runWithGateFiringStats,
 } from "./gateFiringStats";
-import {
-  buildCinematicOverlays,
-  planVoiceSyncedScreenLabels,
-  pickVoiceBackfillBeatIndex,
-  finalizeVoiceSyncedMontageDurations,
-  resolveVoiceSyncMontagePlan,
-  computeTtsHardCutMontagePlan,
-  buildFacelessTypewriterDrawtextChain,
-  parseFacelessSubtitleLines,
-  type TtsMontagePlan,
-  burnTimedScreenLabelsDrawtext,
-  buildYearDrawtextFilterChain,
-  planPhotoShutterCues,
-  type TimedYearLabel,
-  buildCinematicSfxAudioFilter,
-  burnFacelessTextOnVideoClip,
-  cinematicEffectsEnabled,
-  overlayUsesFullFrame,
-  planCinematicScene,
-  type CinematicScenePlan,
-} from "./cinematicEffectsEngine";
+import { pickVoiceBackfillBeatIndex, burnFacelessTextOnVideoClip } from "./cinematicEffectsEngine";
 import { PIPELINE_ERROR, matchesAppError, pipelineError } from "@shared/appErrors";
 import { isShortVideoLength, normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
@@ -178,7 +157,7 @@ import {
   BUDGET_EXHAUSTED,
   type TierDecline,
 } from "./centralVisualSourcing";
-import { SOURCING_TIERS, providerTier, tierNumber } from "./sourcingTiers";
+import { SOURCING_TIERS } from "./sourcingTiers";
 import { PIPELINE_PROCESSING_STATUSES } from "@shared/videoQueue";
 import fetch from "node-fetch";
 import { openAiKeyFromEnv } from "./_core/env";
@@ -220,7 +199,7 @@ import {
   resolveBeatScriptVisualAnchor,
   resolveBeatVisualIntent,
 } from "./scriptVisualKeywords";
-import { clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, resetVisionPipelineAvailability, sceneCriticalReviewEnabled, targetClipVisionScore, visionGateCacheHits, visionPipelineIsUnavailable, type VisionGateResult } from "./visualQualityGate";
+import { clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, resetVisionPipelineAvailability, targetClipVisionScore, visionGateCacheHits, visionPipelineIsUnavailable, type VisionGateResult } from "./visualQualityGate";
 import {
   beatVisionContextFromProfile,
   clipEmbeddingIndexEnabled,
@@ -246,7 +225,7 @@ import {
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget, overlayBudgetSkipCount } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, blockExportOnVisualMismatch, allowDegradedVisualExport, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, youtubeSearchPassesPerQuery, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, youtubeFirstPerBeatEnabled, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_FALLBACK_MIN_MS, YOUTUBE_FIRST_PARALLEL_BEATS, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, youtubeSearchPassesPerQuery, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, youtubeFirstPerBeatEnabled, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_PARALLEL_BEATS, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -304,7 +283,7 @@ import {
   formatDeclineCensus,
   createBeatShortlistState,
   formatBeatShortlists,
-  isShortlisted,
+  
   noteEligible as noteBeatShortlistEligible,
   noteNotAsked,
   noteRanked,
@@ -328,11 +307,6 @@ import {
   type VisionEvidence,
   type VisionReviewPoolState,
 } from "./visionAwareSelection";
-import {
-  composeCensusOf,
-  composeCensusViolations,
-  formatComposeCensus,
-} from "./composeCensus";
 import {
   adoptionGuardVerdict,
   adoptionPolicyFor,
@@ -397,14 +371,6 @@ import {
   type StillStyleContext,
 } from "./motionGraphicsEngine";
 import {
-  logPipelineReview,
-  reviewPipelineBeforeEffects,
-  reviewPipelineBeforeExport,
-  type PipelineReviewResult,
-  type SceneReviewInput,
-} from "./pipelineReview";
-import { reviewSceneCritical } from "./sceneCriticalReview";
-import {
   PipelineStepTiming,
   recordPipelineTiming,
   timePipelineStep,
@@ -412,7 +378,7 @@ import {
   isComposeNetworkBlocked,
 } from "./pipelineStepTiming";
 import { breakerVerdictForBatch } from "./providerBreakerVerdict";
-import { clipPassesDocumentaryBeatGate, judgeDocumentaryBeatGate, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
+import { judgeDocumentaryBeatGate, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
 import type { ClipRejectAudit } from "./clipRejectAudit";
 import {
   recordClipReject,
@@ -466,7 +432,7 @@ import {
   formatProviderTrace,
   lifecyclesOf,
   formatLifecycleInvariants,
-  formatLineageLine,
+  
   formatSourceSummary,
   assertNoSelectedClipWithoutOutcome,
   recordAssetOutcome,
@@ -484,8 +450,6 @@ import {
 } from "./youtubeLifecycleTrace";
 import {
   LINEAGE_SNAPSHOT_METADATA_KEY,
-  formatDeliveryRecord,
-  snapshotComposeDelivery,
   snapshotLineage,
 } from "./visualLineageSnapshot";
 import {
@@ -656,11 +620,6 @@ import {
   resetTasteModelScene,
   type TasteModelContext,
 } from "./documentaryTasteModel";
-import { montageTransitionCount } from "./renderContract";
-import {
-  writeSceneCaptionFilter,
-  type CaptionBeat,
-} from "./composeCaptions";
 import {
   editorialGraphicsEnabled,
   planVideoGraphics,
@@ -701,7 +660,7 @@ import {
 import { dbRenderLockStore, dbYoutubeSearchBudgetStore } from "./db";
 import { newRenderId } from "./renderCorrelation";
 import {
-  judgeBeatImage,
+  
   createBeatImageGateState,
   beatImageRelevanceGateEnabled,
   MAX_JUDGEMENTS_PER_BEAT,
@@ -712,7 +671,7 @@ import {
 } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
 import {
-  beatIdentityKey,
+  
   checkBeatRelevance,
   composeBarrierAllows,
   beatAlreadyRefusedPicture,
@@ -752,10 +711,10 @@ import {
   clipPathIsFallbackFile,
   tierIsPlaceholder,
 } from "./placeholderIdentity";
-import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
+import { describeOnScreenTextPolicy } from "./onScreenTextPolicy";
 import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
 import { isNameParticleToken } from "./searchQueryContract";
-import { formatSceneSearchBudget, sceneSearchBudgetMs } from "./sceneSearchBudget";
+import { sceneSearchBudgetMs } from "./sceneSearchBudget";
 import {
   formatYoutubeLicenseLine,
   formatYoutubeUsageReport,
@@ -775,18 +734,10 @@ import {
   type OpenWebUsageEntry,
 } from "./openWebSourcePolicy";
 import {
-  formatArchiveLearningIndexed,
+  
   formatArchiveRetrieval,
   formatNoStrongMatch,
 } from "./archiveLearningLog";
-import {
-  buildClosingTail,
-  closingTailFrameSeek,
-  closingTailSeconds,
-  formatClosingTailPlan,
-  formatClosingTailSeek,
-  trailingBlackTrimReachesClosingTail,
-} from "./closingTail";
 import {
   SUBJECT_FALLBACK_ROUTE,
   formatNoSubjectLine,
@@ -794,13 +745,7 @@ import {
   formatSubjectFallbackLine,
   resolveBeatSubject,
 } from "./beatSubjectFallback";
-import {
-  MAX_COVERAGE_SLOWDOWN,
-  MIN_STITCHABLE_SOURCE_SEC,
-  coverageFloorSec,
-  formatCoverageFillPlan,
-  planCoverageFill,
-} from "./coverageFillPlan";
+import { MAX_COVERAGE_SLOWDOWN, MIN_STITCHABLE_SOURCE_SEC, coverageFloorSec, planCoverageFill } from "./coverageFillPlan";
 import {
   createCandidateSubjectGateState,
   screenCandidateBeforeDownload,
@@ -820,7 +765,7 @@ import {
   type PipelineGlance,
   type PipelineReportCollector,
 } from "./renderPipelineReport";
-import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
+import { pickBeatSegmentStartSec, pickLongVideoStartSec } from "./beatSegmentChoice";
 import { peekYoutubeVideoContext } from "./youtubeVideoContext";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { buildSceneCandidatePool, selectCandidatesFromPool, rankCandidatesByThumbnailClip, type PoolCandidate } from "./scenePool";
@@ -892,16 +837,6 @@ import {
   resetExtendHold,
   type ExtendHoldState,
 } from "./extendHoldBudget";
-import {
-  auditVideoStillness,
-  checkStillnessLimit,
-  formatStillnessReport,
-} from "./videoStillnessAudit";
-import {
-  auditVideoRepeats,
-  checkRepeatLimit,
-  formatRepeatReport,
-} from "./videoRepeatAudit";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { enqueueYoutubePrefetch } from "./youtubePrefetch";
 import { validateAcquiredFile } from "./youtubeAcquisitionValidation";
@@ -914,11 +849,10 @@ import {
   type ArchiveOrigin,
 } from "./youtubeFootageInFilm";
 import {
-  DELIVERY_GATE_FAIL,
+  
   deliveryClipFactsFromLedger,
   deliveryGate,
   formatDeliveryBlock,
-  legacyFallbackDeliveryAllowed,
 } from "./deliveryGate";
 import {
   productionArchiveDeps,
@@ -933,7 +867,7 @@ import {
   type SearchMemoryRecallMetrics,
 } from "./searchMemoryRecall";
 import {
-  assetUsedInVideo,
+  
   providerAssetIdentityKey,
   createVisualDedupStats,
   formatVisualDedupReject,
@@ -948,28 +882,15 @@ import type { CachedCandidate } from "./sceneCandidateCache";
 import {
   buildVideoQualityReport,
   recountQualityReportForDeliveredClips,
-  computeMeritQualityScore,
+  
   formatMontageShortfallWarning,
   logVideoQualityReport,
   assertVisualCoverageExportGate,
   assertVisionCoverageExportGate,
   visionCoverageRefusal,
 } from "./videoQualityReport";
-import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
-import { avSyncFindingCodes, checkFileAvSync, formatAvSync } from "./avSyncCheck";
-import {
-  TARGET_LUFS,
-  formatLoudness,
-  loudnessNeedsAttention,
-  normaliseDeliveredLoudness,
-  type LoudnessResult,
-} from "./audioLoudness";
-import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage, whisperApiKey, whisperApiUrl } from "./voiceBeatAlignment";
-import {
-  auditSceneVoiceMontageSync,
-  summarizeVoiceMontageSyncAudits,
-  type VoiceMontageSyncAuditResult,
-} from "./voiceMontageSyncAudit";
+import { avSyncFindingCodes } from "./avSyncCheck";
+import { alignSceneBeatsToVoiceAudio, whisperApiKey, whisperApiUrl } from "./voiceBeatAlignment";
 import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled, requestVideoGenerationCancel, getActiveVideoId, isVideoGenerationCancelRequested, type RenderRunToken } from "./videoGenerationCancel";
 import { renderCancelGraceMs, watchForAbandonedRender } from "./cancelledRenderRelease";
 import { registerActiveRender, unregisterActiveRender } from "./interruptedRenderRecovery";
@@ -1007,7 +928,6 @@ import {
   type TtsPlannedBeat,
 } from "./voiceTtsAlignment";
 import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate } from "./pipelineSelfHeal";
-import { ensureFinalVideoExportReady, plainConcatSceneVideos } from "./finalVideoGate";
 import { extractTitleGeoPlaceTags, ALL_GEO_SLUGS } from "./worldGeoSlugs";
 import { fetchWikimediaTitlesForVideoGeo, wikimediaGeosearchEnabled } from "./wikimediaGeoSearch";
 import { buildEuropeanaBeatQueries, titleSuggestsEuropeana } from "./europeanaGeo";
@@ -1017,11 +937,11 @@ import {
   isGeoDocumentaryContext,
 } from "./geoDocumentarySources";
 import {
-  buildMontageBranchNormVF,
-  classifyDocGradeSourceKind,
+  
+  
   isAIGeneratedClip,
   isStockVideoClip,
-  type DocGradeSourceKind,
+  
 } from "./documentaryStyle";
 import { fingerprintMediaFile, isNearDuplicateHash } from "./archiveClipDedup";
 
@@ -1375,31 +1295,28 @@ import { AsyncLocalStorage } from "async_hooks";
  *
  * The stage means "the file the viewer receives contains this asset", and nothing before
  * `updateVideoStatus(..., videoUrl)` can say that. The render can still fail, the upload can still
- * be refused, the cinematic job can still lose its claim and fall back to compose. Called from
- * immediately after that write, every one of those paths has already returned or been resolved.
+ * be refused, the cinematic job can still lose its claim. Called from immediately after that
+ * write, every one of those paths has already returned or been resolved.
  *
  * ── It takes no clip list, on purpose ────────────────────────────────────────────────────────
  *
- * `markDelivered` marks exactly the records FINAL_VIDEO was proven for — the compose route proves
- * them from the concat input list, and the cinematic route re-proves them with
- * `replaceFinalVideo` against the delivered file's own clip list. A second list passed in here
+ * `markDelivered` marks exactly the records FINAL_VIDEO was proven for — the timeline route
+ * proves them with `replaceFinalVideo` against the delivered file's own clip list. A second list passed in here
  * could disagree with both, and a delivery claim that disagrees with the proof is the fake
  * delivery event this round exists to make impossible. A ledger whose final video was never
  * verified writes nothing and says so.
  *
  * ── Who persists what ────────────────────────────────────────────────────────────────────────
  *
- * On the cinematic route the render job has ALREADY written the authoritative snapshot, including
- * a delivery record built from its own output; re-writing it from here would replace measured
- * facts with inferred ones, so this route only writes the in-memory ledger. The compose route has
- * no render job, so the pipeline records its own delivery — labelled `compose_montage`, never as a
- * render job that mislaid its id.
+ * The render job has ALREADY written the authoritative snapshot, including a delivery record
+ * built from its own output; re-writing it from here would replace measured facts with inferred
+ * ones, so this only writes the in-memory ledger.
  */
 /**
  * Store this render's lineage beside the qualityReport and the render report.
  *
- * One writer, two callers: the snapshot taken before the render, and the compose route's delivery
- * record afterwards. It is a merge, so nothing else in `videos.metadata` is touched.
+ * Written once, from the snapshot taken before the render. It is a merge, so nothing else in
+ * `videos.metadata` is touched.
  */
 async function persistVisualLineage(
   videoId: number,
@@ -1412,11 +1329,10 @@ async function persistVisualLineage(
 export async function writeDeliveredLineage(params: {
   videoId: number;
   ledger: VisualSourceLedger | null | undefined;
-  route: "cinematic_timeline" | "legacy_compose";
   report?: PipelineReportCollector;
-  timelineVersion?: number;
 }): Promise<{ written: number; persisted: boolean; refused?: string }> {
-  const { videoId, ledger, route } = params;
+  const { videoId, ledger } = params;
+  const route = "cinematic_timeline";
   const say = (line: string) => console.log(params.report ? params.report.add("sourcing", line) : line);
   if (!ledger) return { written: 0, persisted: false, refused: "NO_LEDGER" };
   try {
@@ -1429,17 +1345,8 @@ export async function writeDeliveredLineage(params: {
       return { written: 0, persisted: false, refused: marked.refused };
     }
     say(`[VisualDelivery] video=${videoId} route=${route} deliveredAssets=${marked.written}`);
-    if (route === "cinematic_timeline") return { written: marked.written, persisted: false };
-
-    const outcome = snapshotComposeDelivery(ledger, {
-      videoId,
-      timelineVersion: params.timelineVersion ?? 0,
-      published: true,
-    });
-    if (!outcome) return { written: marked.written, persisted: false, refused: "NOTHING_DELIVERED" };
-    await persistVisualLineage(videoId, outcome.snapshot);
-    say(formatDeliveryRecord(videoId, outcome.record));
-    return { written: marked.written, persisted: true };
+    /** The render job has already written the authoritative snapshot; see the note above. */
+    return { written: marked.written, persisted: false };
   } catch (err) {
     console.warn(
       `[VisualDelivery] video=${videoId} could not record the delivery — the video is unaffected: ` +
@@ -1476,19 +1383,6 @@ type RenderCtx = {
    *  voiceoverSilentFallbackNotes is here: render state must never leak across concurrent
    *  renders sharing one process. */
   elevenLabsQuotaExhausted: boolean;
-  /**
-   * RONDE 203 — HOW MANY TRANSITIONS THIS RENDER ACTUALLY APPLIED.
-   *
-   * The feature matrix used to read `executed` off `planned`, and `planned` was one per scene
-   * join — transitions the compose route never makes, since it joins scenes with `-f concat`.
-   * This is counted where they are emitted instead, by the two functions that emit them.
-   *
-   * On the render context rather than threaded: `buildMontageXfadeFilter` has eight call sites and
-   * `xfadeMergeTwoVideos` is called from several more. A rule eight call sites must remember is
-   * the seam this file has already lost four times; the ambient context is how the sourcing cache
-   * and the adoption intent solved the same problem.
-   */
-  transitionsApplied: number;
   /**
    * RONDE 203 — HOW MUCH OF ITS OWN MONTAGE THE BARRIER COULD NOT JUDGE.
    *
@@ -1566,7 +1460,6 @@ function getRenderCtx(): RenderCtx {
       videoVisualContext: null,
       voiceoverSilentFallbackNotes: [],
       elevenLabsQuotaExhausted: false,
-      transitionsApplied: 0,
       barrierPassedUnjudged: 0,
       barrierChecked: 0,
       sourcingCache: null,
@@ -1597,19 +1490,6 @@ function activeMemoryEntity(): string | undefined {
 
 /** RONDE 173: the render's sourcing cache, for the provider fetchers that were never handed one. */
 function get_activeSourcingCache(): SourcingCache | null { return getRenderCtx().sourcingCache; }
-
-/**
- * RONDE 203 — one writer for the transition tally. See `transitionsApplied`.
- *
- * Writes to the STORED context, never to the fallback literal `getRenderCtx` returns outside a
- * render: a caller with no render scope records nothing, which is the honest outcome and the same
- * rule every other ambient fact in this file follows.
- */
-function noteTransitionsApplied(n: number): void {
-  if (!(n > 0)) return;
-  const ctx = renderCtxStorage.getStore();
-  if (ctx) ctx.transitionsApplied += n;
-}
 
 /** RONDE 203 — one clip past the compose barrier, and whether it had been judged at all. */
 function noteBarrierOutcome(judged: boolean): void {
@@ -1959,16 +1839,6 @@ export const YOUTUBE_TURN_WINDOW_MS = YOUTUBE_SEARCH_TIMEOUT_MS + TRANSFER_RESER
  * judged by the same gates at the same thresholds; if both are refused, both stay out.
  */
 export const YOUTUBE_CANDIDATES_PER_TURN = 2;
-
-/**
- * When silent picture after the narration is long enough to be a fault rather than a breath.
- *
- * Matches `avSyncCheck`'s own EDGE_SILENCE_SEC so the trim fires on exactly what the detector
- * reports — one threshold, not a second opinion about the same second.
- */
-const TRAILING_SILENCE_TRIM_SEC = 2.0;
-/** Kept after the last sound so a final word is never clipped and a fade still has room. */
-const TRAILING_SILENCE_TAIL_SEC = 0.6;
 
 /**
  * RONDE 254 — HOW MANY CANDIDATES A ROUTE THAT IS GOING TO CHOOSE ASKS A PROVIDER FOR.
@@ -2985,32 +2855,6 @@ export const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): 
   }
 };
 
-// Font paths
-// Resolve font paths dynamically — Ubuntu vs Debian have different Noto font locations
-const resolveFontPath = (name: string): string => {
-  const candidates = [
-    `/usr/share/fonts/truetype/noto/${name}`,           // Ubuntu
-    `/usr/share/fonts/noto/${name}`,                    // Debian (fonts-noto)
-    `/usr/share/fonts/truetype/noto-fonts/${name}`,     // some distros
-    `/usr/share/fonts/${name}`,                         // generic fallback
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  // Last resort: try fc-match to find any available font
-  try {
-    const result = execSync(`fc-match --format='%{file}' 'NotoSans:bold'`, { encoding: 'utf8', stdio: ['pipe','pipe','pipe'] }).trim();
-    if (result && fs.existsSync(result)) return result;
-  } catch { /* ignore */ }
-  console.warn(`[Fastvid] Font not found: ${name}, canvas will use default font`);
-  return '';
-};
-const FONT_BOLD = resolveFontPath('NotoSans-Bold.ttf');
-const FONT_REGULAR = resolveFontPath('NotoSans-Regular.ttf');
-
-// Canvas is not used — all rendering is done via FFmpeg (no native dependencies required)
-const CANVAS_AVAILABLE = false; // kept for reference, all functions use FFmpeg-only paths
-
 // Linux/Railway: prefer /var/tmp (survives long runs). Windows/dev: use OS temp dir.
 export const TMP_DIR =
   process.env.FASTVID_TMP_DIR ??
@@ -3144,33 +2988,13 @@ const VIDEO_WIDTH = 1920;
 const VIDEO_HEIGHT = 1080;
 /** Letterbox pad (legacy encode paths) — dark gray, not black. */
 const SCALE_PAD_VF = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`;
-/** Fill 16:9 — center crop (still used for some stock paths). */
-const CROP_FILL_VF =
-  `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
-  `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
-/** Full clip visible on dark gray — fast fit (no gblur). */
-const FIT_GRAY_VF = buildFitGrayVideoMontageChain();
 const FPS_FORMAT_VF = `fps=25,format=yuv420p,setsar=1,setpts=PTS-STARTPTS`;
-/** Montage xfade requires identical size/pixfmt on every branch — never skip scale/pad.
- *  sourceKind (Phase 10) lets the grade differ per clip instead of one fixed look for
- *  every branch; omitting it keeps the original uniform grade. */
-function montageBranchNormVF(sourceKind?: DocGradeSourceKind): string {
-  return buildMontageBranchNormVF(sourceKind);
-}
 const STANDARD_VF = `${SCALE_PAD_VF},${FPS_FORMAT_VF}`;
 /** New clip every ~3–4s; hold up to 7s when narration/visual clearly stay on one subject. */
 const VIDRUSH_CLIP_MIN_SEC = 2.5;
 const VIDRUSH_CLIP_MAX_SEC = 4.0;
 const VIDRUSH_CLIP_HOLD_SEC = 7.0;
 const VIDRUSH_BEAT_SEC = 3.5;
-
-type MontageFilterOpts = {
-  xfadeSec?: number;
-  preserveDurations?: boolean;
-  segmentBeatTexts?: string[];
-  /** Ultrafast x264 on Railway 1-min plain compose. */
-  fastEncode?: boolean;
-};
 
 function pipelineFfmpegThreadFlag(): string {
   return ffmpegThreadFlag(IS_RAILWAY);
@@ -3214,7 +3038,6 @@ function montageXfadeSec(avgClipDur = archiveVisualBeatSec()): number {
   }
   return 0;
 }
-const CHAPTER_CARD_DURATION = 2.5;
 
 /** Wall-clock budgets: short ≤60 min, long ≤90 min (see getPipelinePerfProfile). */
 export interface PipelinePerfProfile {
@@ -7379,32 +7202,6 @@ export function groupScenesIntoChunks(scenes: Scene[], targetChunkSec = 60): Arr
  */
 const CHUNK_DEADLINE_SLACK = 1.15;
 
-/**
- * RONDE 81 — what one compose slot can legitimately cost, worst case.
- *
- * A scene's compose call is capped at renderBudgetComposeMs, but that is not the whole slot. On
- * the long-video path the same slot also runs auditSceneVoiceMontageSync, then
- * spotCheckComposedSceneBeatSync, and when the sync audit fails it composes the scene a SECOND
- * time with forceTtsHardCutRemontage and audits it again.
- *
- * That remontage is not a stale special case and is deliberately kept: the audit catches a scene
- * whose montage has drifted out of sync with the narration — the exact defect the whole visual
- * pipeline exists to prevent — and recutting on the TTS hard cuts is the repair. It is skipped on
- * the 1-minute path only because that path already composes as a hard-cut plain montage
- * (fastShortPlainComposeEnabled), so there is nothing left to recut to.
- *
- * The chunk deadline therefore has to be told the worst case, not the single-compose figure:
- * two composes plus the vision QA around them. The QA passes have no timeout of their own, so
- * they are budgeted as half a compose each rather than assumed free.
- */
-function composeSlotWorstCaseMs(perSceneComposeMs: number, videoLength?: string | null): number {
-  if (perSceneComposeMs <= 0) return 0;
-  // 1-minute path: one compose, one audit, no spot check, no remontage.
-  if (isFastShortVideoLength(videoLength)) return Math.round(perSceneComposeMs * 1.5);
-  // Long path: compose + audit + spot check + remontage compose + audit.
-  return Math.round(perSceneComposeMs * 3);
-}
-
 function chunkStageTimeoutMs(
   totalStageMs: number,
   chunkSceneCount: number,
@@ -10064,7 +9861,6 @@ async function fetchBrollClips(
   }
   return results;
 }
-
 
 // ─── 3b3. Fetch Clips from Pixabay (B-roll + main visual source) ─────────────────────────────
 // Pixabay Video API: free, no attribution required for commercial use.
@@ -12792,10 +12588,6 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
   throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${safeDuration}s, workDir=${workDir})`);
 }
 
-
-
-
-
 /** Return clipPath if ffprobe confirms a video stream; never substitute grey placeholders. */
 /**
  * RONDE 63: compose-time validation verdicts, keyed by clip content.
@@ -12804,66 +12596,9 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
  * another's judgement of a path that has since been rewritten.
  */
 const composeClipValidationMemo = new Map<string, boolean>();
-const COMPOSE_VALIDATION_MEMO_MAX = 500;
 
 export function resetComposeClipValidationMemo(): void {
   composeClipValidationMemo.clear();
-}
-
-/**
- * RONDE 162 — the last place a clip could disappear without saying why.
- *
- * Every drop below is correct: an unreadable file, a stream the montage cannot use, a frame that
- * is nearly all black. What was missing is that the caller filtered the null out and nothing was
- * written down, so the render's own lineage audit reported the asset as VANISHED_WITHOUT_OUTCOME —
- * chosen, adopted, absent from the film, no reason on record. Render 553:
- *
- *     Scene 2: dropping mostly-black clip scene_2_b1_curated_a56087.mp4
- *     Scene 2: dropping mostly-black clip scene_2_b3_curated_a56190.mp4
- *     ...
- *     VANISHED_WITHOUT_OUTCOME  scene_2_b1_curated_a56204.mp4  (and five more)
- *
- * The reason is now filed against the asset, one per drop, naming which check refused it.
- */
-async function requireValidClip(
-  clipPath: string,
-  sceneIndex: number,
-  _duration: number,
-  _workDir: string,
-  lineage?: VisualSourceLedger
-): Promise<string | null> {
-  const dropped = (reason: string): null => {
-    // RONDE 167: by content key too — the curated route registers no path. See recordAssetOutcome.
-    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason, contentKey: clipContentKey(clipPath) });
-    return null;
-  };
-  if (!(await isValidVideoFile(clipPath)) || isPipelineFallbackClip(clipPath)) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: dropping invalid clip ${path.basename(clipPath)}`);
-    /**
-     * A placeholder gets its own reason rather than none. RONDE 159 assumed a placeholder carries
-     * no lineage record; render 553 disproved it — `scene_1_slot2_guaranteed.mp4` and five like it
-     * hold ADOPTED events and were reported VANISHED_WITHOUT_OUTCOME for exactly that reason.
-     */
-    return dropped(
-      isPipelineFallbackClip(clipPath) ? `placeholder_rejected:s${sceneIndex}` : `invalid_file:s${sceneIndex}`
-    );
-  }
-  const meta = await probeVideoStreamMeta(clipPath);
-  if (!meta || !montageStreamMetaUsable(meta, montageClipStartSec(sceneIndex, 0))) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex}: dropping clip with unusable stream ${path.basename(clipPath)}`
-    );
-    return dropped(`unusable_stream:s${sceneIndex}`);
-  }
-  // Compose gate already checked start/center luma for curated archive beats.
-  if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(clipPath) != null) {
-    return clipPath;
-  }
-  if (await isMostlyBlackClip(clipPath)) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: dropping mostly-black clip ${path.basename(clipPath)}`);
-    return dropped(`mostly_black:s${sceneIndex}`);
-  }
-  return clipPath;
 }
 
 // ─── 3c1. Generate Grok Video Clip ──────────────────────────────────────────
@@ -12937,9 +12672,7 @@ async function generateVeoVideoClip(
 
 // ─── 3c4. Generate Higgsfield Text-to-Video Clip ───────────────────────────────
 
-
 // ─── 3c5. Generate Higgsfield Image-to-Video Clip ───────────────────────────────
-
 
 // ─── 3c6. Leonardo AI Image → Video (HIGH QUALITY image gen, replaces Stability AI) ─────
 // Exported only for direct testability (F3-13) — same zero-behavior-change pattern used
@@ -15498,8 +15231,6 @@ export async function searchWebWideVideoClips(
   return results;
 }
 
-
-
 function isSpaceRelatedTopic(...parts: string[]): boolean {
   const text = parts.filter(Boolean).join(" ").toLowerCase();
   return /space|rocket|nasa|esa|spacex|mars|moon|satellite|launch|orbit|astronaut|shuttle|station|tesla|electric vehicle|factory/i.test(text);
@@ -16449,9 +16180,6 @@ function beatDeclineReasonFor(
   });
   return found?.declineCause ? notAskedReasonForDecline(found.declineCause) : undefined;
 }
-
-
-
 
 /**
  * FINAL VALIDATION §4 — every way a YouTube fetch can end, named.
@@ -18022,7 +17750,6 @@ export async function searchYoutubeVideoCandidates(
     .filter((row) => row.rel >= minRelevanceScore)
     .sort((a, b) => b.rel - a.rel);
 }
-
 
 /**
  * RONDE 602 — THE LOOK THAT COMES BEFORE THE DOWNLOAD.
@@ -19810,11 +19537,6 @@ function isVisualOverlayFootageClip(filePath: string): boolean {
     isCuratedPreparedVideoClip(filePath)
   );
 }
-
-function sceneHasVisualOverlayFootage(clips: string[]): boolean {
-  return clips.some((clip) => isVisualOverlayFootageClip(clip));
-}
-
 
 /**
  * DIAGNOSTIC ONLY — a guess at a clip's source from its filename.
@@ -21665,26 +21387,6 @@ function beatMediaSearchQueries(beat: SceneBeat, videoTitle?: string): string[] 
 
 // ─── Beat-level visual matching (narration ↔ footage alignment) ───────────────
 const VO_SCENE_TAIL_SEC = 0.35;
-
-/** True when every montage beat already passed CLIP at adopt time — skip redundant compose QA. */
-function sceneMontageBeatsPassedAdoptVision(
-  sceneIndex: number,
-  clipBeatIndices: number[],
-  dedup: VisualDedupState,
-  minScore = targetClipVisionScore()
-): boolean {
-  if (clipBeatIndices.length === 0) return false;
-  const beats = new Set(clipBeatIndices);
-  for (const beatIdx of beats) {
-    const entry = dedup.clipAdoptAudit.find(
-      (e) => e.sceneIndex === sceneIndex && e.beatIndex === beatIdx
-    );
-    if (!entry || typeof entry.visionScore10 !== "number" || entry.visionScore10 < minScore) {
-      return false;
-    }
-  }
-  return true;
-}
 
 async function applyVoiceAlignmentToBeats(
   beats: SceneBeat[],
@@ -24586,7 +24288,6 @@ export async function cachedProviderSearch<T>(
   return payload;
 }
 
-
 /** Reads this render's cached knowledge about one provider asset (Phase 6). Callers that go on
  *  to reuse cached metadata/license (rather than just checking a cached rejection) additionally
  *  increment their own provider's metadataCacheHits/licenseCacheHits — this function only
@@ -24850,8 +24551,6 @@ function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number 
   return VIDRUSH_BEAT_SEC;
 }
 
-
-
 function estimateMontageDurationSec(durations: number[]): number {
   const n = durations.length;
   if (n === 0) return 0;
@@ -24867,14 +24566,6 @@ function montageClipUsableSec(srcMax: number): number {
   return Math.min(maxClip, Math.max(0.35, srcMax - trimStart - 0.05));
 }
 
-function resolveMontageClipEffectiveDur(dur: number, sourceMaxSec?: number): number {
-  if (!sourceMaxSec || sourceMaxSec <= 0.15) return dur;
-  return Math.min(
-    dur,
-    Math.max(montageMinOnScreenSec(), sourceMaxSec - montageClipStartSec(0, 0) - 0.05)
-  );
-}
-
 /** Montage length when trims are capped to each clip's probed source duration. */
 function effectiveMontageDurationSec(durations: number[], sourceMaxDurs?: number[]): number {
   const capped = durations.map((d, i) => {
@@ -24885,177 +24576,6 @@ function effectiveMontageDurationSec(durations: number[], sourceMaxDurs?: number
     return d;
   });
   return estimateMontageDurationSec(capped);
-}
-
-function uniqueClipsInOrder(clips: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const clip of clips) {
-    const key = clipContentKey(clip);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(clip);
-  }
-  return out;
-}
-
-function montageClipInputs(clips: string[]): string {
-  return clips.map((c) => `-i "${c}"`).join(" ");
-}
-
-/**
- * Tail filler for a montage that came up short against the voice track.
- *
- * RONDE 85 — the picture never stops moving.
- *
- * RONDE 26 replaced a flat grey rectangle with holding the last frame, on the reasoning that a
- * grey box reads as a broken player while a held shot is an ordinary documentary device. Render
- * 536 showed what that costs when the shortfall is large: scene 16 had ONE clip covering 7.0s of
- * a 20.8s scene, the coverage backfill searched for five more and found none, and the export
- * carried a 10.6-second frozen frame. The final video's own QA counted 30 frozen segments.
- *
- * A held frame is now not produced at all. The montage is slowed to fill the gap instead, so the
- * shot the narration is describing stays on screen AND stays in motion. Slowing is not a repeat,
- * so it is also the one filler compatible with strictNoVisualRepeat.
- *
- * RONDE 111 caps the ratio at MAX_COVERAGE_SLOWDOWN.
- *
- * RONDE 85 left it uncapped on purpose, reasoning that a cap would leave a remainder and the only
- * things that could fill a remainder were the two it existed to remove. The reasoning was right
- * about the remainder and wrong about the cure: measured against real ffmpeg, a 10x stretch holds
- * each picture 0.59s — under two new pictures per second, with no interpolation anywhere in the
- * chain to invent the frames in between. That is a slideshow of held frames reached through a
- * different filter, and the render's own freezedetect (2.5s threshold) never reported it.
- *
- * So slowing is a finishing touch, not a source of footage. Past the cap the answer has to come
- * from real pictures, which is why the coverage backfill now spends its extra searches on exactly
- * the scenes that would land here — see ensureArchiveMontageVoiceCoverage. A held frame is what
- * remains when that has genuinely run out, and it says so.
- *
- * MONTAGE_TAIL_PAD=freeze restores RONDE 26's held frame and =grey the original rectangle,
- * either without a redeploy.
- */
-export function montageTailPadFilterChain(montageDur: number, targetDur: number, context: string): string {
-  const mode = process.env.MONTAGE_TAIL_PAD?.trim().toLowerCase();
-  const pad = Math.max(0, targetDur - montageDur);
-  if (mode === "grey") {
-    console.warn(`[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — grey pad`);
-    return `tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,`;
-  }
-  const plan = planCoverageFill(montageDur, targetDur);
-  if (mode === "freeze") {
-    console.warn(
-      `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — holding last frame (MONTAGE_TAIL_PAD=freeze)`
-    );
-    return `tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)},`;
-  }
-  if (plan.action === "none") return "";
-  console.warn(`${formatCoverageFillPlan(context, plan)}`);
-
-  // Ahead of FPS_FORMAT_VF's fps=25, which then resamples the stretched timeline back to a
-  // constant frame rate. FPS_FORMAT_VF's trailing setpts=PTS-STARTPTS only rebases the origin,
-  // so it preserves the spacing this filter just changed.
-  const slow = plan.slowdownRatio > 1 ? `setpts=${plan.slowdownRatio.toFixed(6)}*PTS,` : "";
-  if (plan.action === "slow") return slow;
-
-  /**
-   * RONDE 130 — the last technical fallback, now bounded by the rule the rest of the pipeline
-   * obeys.
-   *
-   * Everything before this has already failed: the beat search, the pool backfill, the targeted
-   * re-search on the neediest beat, the short-clip round, re-using the scene's own footage in
-   * motion, and slowing to the cap. What this used to do about that was
-   *
-   *     a clone-mode tpad whose stop_duration was plan.stillShortSec
-   *
-   * with no ceiling on the duration. Measured on a real MP4, using the production shape of scene
-   * 1 (a 3s source against a 34s target):
-   *
-   *     current chain   34.0s file, longest unchanging picture 28.13s   FAILS the 5s rule
-   *     looping instead 34.0s file, longest unchanging picture  0.00s   167 visual changes
-   *
-   * Twenty-eight seconds of one frame is the thing every round since RONDE 111 has been removing,
-   * and it was still reachable here — capped nowhere, on the one path taken precisely when a
-   * scene is worst off.
-   *
-   * So the montage plays again instead of stopping. Footage the viewer has already seen is an
-   * ordinary documentary device; a frozen frame is a fault. This is the same judgement RONDE 112
-   * made for extendLastClip one layer up, applied at the last place it can still be made.
-   *
-   * The frame budget is the real constraint: `loop` buffers `size` decoded frames, and at 1080p
-   * that is about 3MB each. 300 frames is twelve seconds of source and roughly a gigabyte, which
-   * is the most this may take while scenes compose in parallel. Above it the hold stays, capped,
-   * and the shortfall is reported as the coverage failure it is rather than absorbed silently.
-   */
-  /**
-   * RONDE 130 — one hold site, not three.
-   *
-   * Five earlier rounds (85, 86, 87, 88, 89) count the clone-mode pad sites in this file and
-   * require exactly TWO, as a guard against a freeze site being added unnoticed. That guard is
-   * worth more than the convenience of an early return, so the hold duration is decided here and
-   * emitted once at the bottom — and this note avoids spelling the filter out, because the guard
-   * counts the text rather than the code.
-   */
-  const holdCapSec = stillImageMaxSec();
-  const MAX_LOOP_SOURCE_FRAMES = 300;
-  const srcFrames = Math.max(1, Math.round(montageDur * 25));
-  const perPassSec = Math.max(0.1, montageDur * plan.slowdownRatio);
-  if (plan.stillShortSec > holdCapSec && srcFrames <= MAX_LOOP_SOURCE_FRAMES && perPassSec > 0.1) {
-    const passes = Math.max(2, Math.ceil(targetDur / perPassSec));
-    console.warn(
-      `[Pipeline] ${context}: ${plan.stillShortSec.toFixed(1)}s would exceed the ` +
-        `${holdCapSec.toFixed(1)}s still limit — playing the montage ${passes}x instead of ` +
-        `holding a frame (already-seen footage beats a freeze)`
-    );
-    // loop BEFORE the slowdown: `loop` counts input frames, and setpts changes timestamps rather
-    // than frame count, so ordering it the other way makes `size` mean something else.
-    /**
-     * No trailing `setpts=N/25/TB` here, and that is not an omission: it renumbers every frame at
-     * 25fps, which UNDOES the slowdown applied a moment earlier. Measured — the chain produced a
-     * 17-second file for a 34-second slot, exactly half, because the 2x stretch was renumbered
-     * away. FPS_FORMAT_VF's own `fps=25` resamples the stretched timeline correctly.
-     */
-    return (
-      `loop=loop=${passes - 1}:size=${srcFrames}:start=0,${slow}` +
-      `trim=duration=${targetDur.toFixed(3)},setpts=PTS-STARTPTS,`
-    );
-  }
-
-  /**
-   * The absolute last technical fallback.
-   *
-   * Everything before this has already failed: the beat search, the pool backfill, the targeted
-   * re-search on the neediest beat, the short-clip round, re-using the scene's own footage in
-   * motion, slowing to the cap, and — since RONDE 130 — playing the montage again. What is left
-   * is a hold, and it is bounded by the same limit a photograph obeys.
-   *
-   * When the shortfall is larger than that limit and the montage cannot be looped, the remainder
-   * is a genuine coverage failure and is reported as one rather than absorbed into a longer
-   * freeze. That is the whole change: the freeze can no longer grow to fill any gap.
-   */
-  // The absolute last technical fallback. Bounded now, by the same limit a photograph obeys.
-  const holdSec = Math.min(plan.stillShortSec, holdCapSec);
-  if (plan.stillShortSec > holdCapSec) {
-    console.warn(
-      `[Pipeline] ${context}: COVERAGE FAILURE — ${plan.stillShortSec.toFixed(1)}s uncovered and the ` +
-        `montage is too large to loop (${srcFrames} frames); holding the last frame for the ` +
-        `${holdCapSec.toFixed(1)}s limit only. This scene is genuinely short of footage.`
-    );
-  }
-  return `${slow}tpad=stop_mode=clone:stop_duration=${holdSec.toFixed(3)},`;
-}
-
-export function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
-  const pad = Math.max(0, outDur - montageDur - 0.04);
-  if (pad < 0.08) {
-    return `[${inLabel}]${FPS_FORMAT_VF}[vmont]`;
-  }
-  const chain = montageTailPadFilterChain(
-    montageDur,
-    montageDur + pad,
-    `Montage ${montageDur.toFixed(1)}s vs voice ${outDur.toFixed(1)}s${strictNoVisualRepeat() ? " (strict no-repeat)" : ""}`
-  );
-  return `[${inLabel}]${chain}${FPS_FORMAT_VF}[vmont]`;
 }
 
 function assertMontageClipsUnique(sceneIndex: number, clips: string[]): void {
@@ -25070,99 +24590,6 @@ function assertMontageClipsUnique(sceneIndex: number, clips: string[]): void {
     }
     seen.add(key);
   }
-}
-
-async function prepareStrictUniqueMontage(
-  sceneIndex: number,
-  clips: string[],
-  beatDurations: number[],
-  outDur: number,
-  voiceSync?: {
-    beats: Array<{ text: string; holdSec: number; voiceStartSec?: number; voiceEndSec?: number }>;
-    clipBeatIndices: number[];
-    voiceDur: number;
-  },
-  forceTtsHardCut = false
-): Promise<{
-  montageDurations: number[];
-  sourceMaxDurs: number[];
-  estSec: number;
-  montagePlan?: TtsMontagePlan;
-}> {
-  assertMontageClipsUnique(sceneIndex, clips);
-  // Phase 12: probed once here and reused below — `clips` never changes within this function,
-  // so re-probing after capMontageDurationsToClipFiles (which only adjusts requested durations,
-  // not the clip list) previously spawned the same ffprobe calls 3x for identical results.
-  const sourceMaxDurs = await probeMontageSourceMaxDurs(clips);
-  const defaultXfade = clips.length > 1 ? montageXfadeSec() : 0;
-  let montageDurations: number[];
-  let montagePlan: TtsMontagePlan | undefined;
-
-  if (voiceSync && voiceSync.clipBeatIndices.length === clips.length) {
-    const hardPlan = forceTtsHardCut
-      ? computeTtsHardCutMontagePlan(
-          voiceSync.beats,
-          voiceSync.voiceDur,
-          voiceSync.clipBeatIndices,
-          sceneIndex
-        )
-      : null;
-    const plan =
-      hardPlan ??
-      resolveVoiceSyncMontagePlan(
-        voiceSync.beats,
-        voiceSync.voiceDur,
-        voiceSync.clipBeatIndices,
-        defaultXfade,
-        sceneIndex
-      );
-    montagePlan = plan;
-    montageDurations = plan.durations;
-    const xfade = plan.xfadeSec;
-    montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations, sourceMaxDurs);
-    if (!plan.ttsHardCut) {
-      montageDurations = finalizeVoiceSyncedMontageDurations(
-        montageDurations,
-        voiceSync.voiceDur,
-        sourceMaxDurs,
-        xfade,
-        sceneIndex
-      );
-    }
-    if (plan.ttsHardCut) {
-      montagePlan = {
-        ...plan,
-        durations: montageDurations,
-        cutStartsSec: plan.cutStartsSec.slice(0, montageDurations.length),
-      };
-    }
-  } else {
-    montageDurations = balanceMontageDurationsForVoice(
-      clips.length,
-      outDur,
-      beatDurations,
-      sourceMaxDurs
-    );
-    montageDurations = await capMontageDurationsToClipFiles(clips, montageDurations, sourceMaxDurs);
-    montageDurations = balanceMontageDurationsForVoice(
-      clips.length,
-      outDur,
-      montageDurations,
-      sourceMaxDurs
-    );
-  }
-  const estSec = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
-  if (!strictNoVisualRepeat()) {
-    return { montageDurations, sourceMaxDurs, estSec, montagePlan };
-  }
-  if (estSec < outDur - 0.06) {
-    const minClips = minClipsForBalancedVoice(outDur);
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex}: ${clips.length} clips cover ~${estSec.toFixed(1)}s of ${outDur.toFixed(1)}s ` +
-        `(need ~${minClips} when balanced) — compose will pad`
-    );
-  }
-  return { montageDurations, sourceMaxDurs, estSec, montagePlan };
 }
 
 function archiveTagHintForScene(scene: Scene, videoTitle?: string): string {
@@ -25491,864 +24918,6 @@ async function estimateBalancedMontageCoverageSec(
   return effectiveMontageDurationSec(balanced, sourceMaxDurs);
 }
 
-function composeSceneTimeoutMs(clipCount: number, videoLength?: string, sceneDurationSec = 30): number {
-  const _b2 = get_activeRenderBudget();
-  if (_b2) {
-    // Complexity formula: scene_duration × 3s/s + 2.5s per clip, bounded by budget base
-    const complexity = Math.round(sceneDurationSec * 3_000 + Math.max(0, clipCount) * 2_500);
-    // RONDE 63: the cap has to know that scenes compose side by side.
-    //
-    // basePerSceneComposeMs is (total × 0.55) / scenes — a scene's SHARE of the compose budget,
-    // which is the right number if scenes composed one after another. They do not: composeLimit
-    // runs `composeParallelism` of them at once, so a scene's wall clock is roughly that many
-    // times its solo time. Render 532 measured exactly that, with parallelism 2:
-    //
-    //     scene 0   alone 57.5s   alongside scene 1  101.4s
-    //     scene 1   alone 65.0s   alongside scene 0  148.2s
-    //
-    // Both blew the 88s cap, both were abandoned mid-encode, and both were composed again from
-    // scratch — 250 seconds of finished work thrown away, a quarter of the whole render. And the
-    // discarded attempts kept encoding alongside their own replacements.
-    //
-    // Multiplying the cap by the parallelism restores the arithmetic rather than loosening it:
-    // with P scenes at a time, total wall is (scenes / P) × (base × P) = scenes × base, which is
-    // the budget the formula started from.
-    const parallelism = Math.max(1, composeParallelismForVideo(videoLength, IS_RAILWAY));
-    const cap = _b2.basePerSceneComposeMs * parallelism;
-    return Math.round(Math.min(Math.max(complexity, 45_000), cap));
-  }
-  if (isFastShortVideoLength(videoLength)) return 60_000;
-  if (curatedArchiveOnlyVisuals() && clipCount > 8) return 90_000;
-  return 75_000;
-}
-
-function montageEncodeFlags(montageFilterOpts?: MontageFilterOpts): string {
-  const fast = montageFilterOpts?.fastEncode === true;
-  const preset = fast ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast";
-  const crf = fast ? 22 : 18;
-  return `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${preset} -crf ${crf}`;
-}
-
-function formatFfmpegExecError(err: unknown): string {
-  const e = err as NodeJS.ErrnoException & { stderr?: string };
-  const stderr = typeof e?.stderr === "string" ? e.stderr.trim() : "";
-  if (stderr) {
-    const lines = stderr
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-    const interesting = lines.find((l) =>
-      /invalid|error|failed|no such|could not|unable|corrupt|match/i.test(l)
-    );
-    if (interesting) return interesting.slice(0, 500);
-    const last = lines[lines.length - 1];
-    if (last) return last.slice(0, 500);
-  }
-  const base = e?.message ?? String(err);
-  if (/Command failed:/i.test(base)) return "FFmpeg montage encode failed";
-  return base.slice(0, 500);
-}
-
-export async function logComposePreFlight(
-  sceneIndex: number,
-  clips: string[],
-  outputPath: string,
-  encodeFlags: string
-): Promise<void> {
-  const preset = encodeFlags.match(/-preset\s+(\S+)/)?.[1] ?? "?";
-  const crf = encodeFlags.match(/-crf\s+(\S+)/)?.[1] ?? "?";
-  const codec = encodeFlags.match(/-c:v\s+(\S+)/)?.[1] ?? "?";
-  console.log(
-    `[ComposePreFlight] Scene ${sceneIndex}: codec=${codec} preset=${preset} crf=${crf} ` +
-    `output_wxh=${VIDEO_WIDTH}x${VIDEO_HEIGHT} fps=25 pix_fmt=yuv420p ` +
-    `clips=${clips.length} outputPath=${path.basename(outputPath)}`
-  );
-  const FFPROBE_BIN = process.env.FFPROBE_PATH || "ffprobe";
-  for (const clip of clips.slice(0, 5)) {
-    if (!clip || !fs.existsSync(clip)) {
-      console.warn(`[ComposePreFlight] Scene ${sceneIndex}: clip MISSING ${clip ? path.basename(clip) : "(null)"}`);
-      continue;
-    }
-    const sz = fs.statSync(clip).size;
-    try {
-      const { stdout } = await withSceneFetchTimeout(
-        () => exec(`"${FFPROBE_BIN}" -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,pix_fmt,codec_name -of default=noprint_wrappers=1:nokey=0 "${clip}"`),
-        5_000,
-        `ComposePreFlight probe scene ${sceneIndex}`
-      ).catch(() => ({ stdout: "", stderr: "" }));
-      console.log(`[ComposePreFlight] Scene ${sceneIndex}: clip=${path.basename(clip)} size=${sz} probe=${stdout.replace(/\n/g, " ").trim().slice(0, 200)}`);
-    } catch {
-      console.log(`[ComposePreFlight] Scene ${sceneIndex}: clip=${path.basename(clip)} size=${sz} probe=FAILED`);
-    }
-  }
-}
-
-/**
- * RONDE 157 — give the coverage filler a montage long enough that it never has to hold a frame.
- *
- * montageTailPadFilterChain slows the montage to the MAX_COVERAGE_SLOWDOWN cap and, past that,
- * either loops the picture or holds the last frame. Which one it gets is decided by a frame
- * budget: `loop` buffers `size` DECODED frames, so a montage over 300 frames (12 seconds) is too
- * large to loop at 1080p and falls through to the hold. Video 552's scene 1 is exactly that case —
- * 16.9s of montage, 422 frames, too big to loop — so even with the pad wired in it would still
- * have ended on a held frame.
- *
- * Replaying the FILE has no frame budget at all: `-stream_loop` re-reads the input instead of
- * buffering it. So the montage is extended here, to the shortest length from which the existing
- * 2x slowdown reaches the voice on its own — and the filler is then a slowdown, never a hold.
- *
- * Deliberately the minimum: extending to `outDur / MAX_COVERAGE_SLOWDOWN` and letting the cap do
- * the rest means the least replayed footage that still avoids a freeze. Extending all the way to
- * `outDur` would repeat twice as much picture, and RONDE 156 exists because repetition is its own
- * fault. This trades the smallest amount of repeat for a guarantee against the frozen frame.
- *
- * Fail-safe: any failure returns the montage untouched, so the worst case is the behaviour that
- * was there before rather than a scene with no picture.
- */
-export async function extendMontageForCoverage(
-  montagePath: string,
-  montageDur: number,
-  outDur: number,
-  sceneIndex: number,
-  workDir: string,
-  composeTimeout: number,
-  threadFlag: string
-): Promise<{ path: string; dur: number }> {
-  const unchanged = { path: montagePath, dur: montageDur };
-  if (!(montageDur > 0.4) || !(outDur > 0)) return unchanged;
-  const needed = outDur / MAX_COVERAGE_SLOWDOWN;
-  // Already long enough for the cap to cover the rest by slowing alone.
-  if (montageDur >= needed - 0.05) return unchanged;
-
-  const plays = Math.max(2, Math.ceil(needed / montageDur));
-  const extendedPath = path.join(workDir, `scene_${sceneIndex}_seq_montage_ext.mp4`);
-  try {
-    await withSceneFetchTimeout(
-      () => exec(
-        // -stream_loop counts EXTRA passes, so one fewer than the number of plays.
-        `${FFMPEG_BIN} -y -stream_loop ${plays - 1} -i "${montagePath}" -t ${needed.toFixed(3)} ` +
-          `-an -vsync cfr ${threadFlag} -c:v libx264 ${pipelineFfmpegThreadFlag()} ` +
-          `-preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 20 -pix_fmt yuv420p ` +
-          `-avoid_negative_ts make_zero "${extendedPath}"`
-      ),
-      composeTimeout,
-      `Montage replay for coverage scene ${sceneIndex}`
-    );
-    const extDur = await probeVideoDurationSec(extendedPath);
-    if (extDur > montageDur + 0.05) {
-      console.warn(
-        `[Pipeline] Scene ${sceneIndex}: montage ${montageDur.toFixed(1)}s cannot reach ` +
-          `${outDur.toFixed(1)}s of voice even at the ${MAX_COVERAGE_SLOWDOWN}x cap — playing it ` +
-          `${plays}x to ${extDur.toFixed(1)}s so the filler can slow instead of freeze`
-      );
-      return { path: extendedPath, dur: extDur };
-    }
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex}: montage replay produced ${extDur.toFixed(2)}s — keeping the original`
-    );
-  } catch (err) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex}: montage replay failed — the finished scene is checked ` +
-        `for a short picture and repaired if needed: ${(err as Error)?.message?.slice(0, 140)}`
-    );
-  }
-  return unchanged;
-}
-
-async function composePlainMontageScene(
-  sceneIndex: number,
-  safeClips: string[],
-  montageDurations: number[],
-  sourceMaxDurs: number[],
-  outDur: number,
-  voiceDur: number,
-  safeAudioPath: string,
-  outputPath: string,
-  workDir: string,
-  fadeFilter: string,
-  threadFlag: string,
-  composeTimeout: number,
-  montageFilterOpts?: MontageFilterOpts
-): Promise<boolean> {
-  const encodeFlags = montageEncodeFlags(montageFilterOpts);
-  await logComposePreFlight(sceneIndex, safeClips, outputPath, encodeFlags);
-  const muxMontageWithAudio = async (montageVideoPath: string): Promise<boolean> => {
-    const audioIdx = 1;
-    const gradeChain = montageFilterOpts?.fastEncode
-      ? `[vmont]${FPS_FORMAT_VF}[vout]`
-      : `[vmont]${fadeFilter}[vout]`;
-    /**
-     * RONDE 157 — the montage is filled up to the voice HERE, or the last frame is held.
-     *
-     * This is the route Railway takes: `if (IS_RAILWAY)` renders the montage sequentially and
-     * hands the file to this mux, and the third route falls back to it as well. Both passed the
-     * montage straight through `[0:v]FPS_FORMAT_VF[vmont]` and then asked ffmpeg for
-     * `-t outDur` seconds of it. When the montage is shorter than the narration, that does not
-     * shorten the scene — it writes a file of the full length whose picture stops at the end of
-     * the montage. The viewer sees a frozen frame for the difference.
-     *
-     * Measured on video 552, which carried RONDE 152-156 and still froze:
-     *
-     *     scene 1   montage est 16.9s < voice 42.9s   → 26.0s gap → 27.25s of unchanging picture
-     *     scene 2   montage est  8.5s < voice 21.2s   → 12.7s gap → 12.75s of unchanging picture
-     *
-     * Both violations the render's own stillness audit reported, to the tenth of a second.
-     *
-     * The machinery to prevent this already existed and was already correct — RONDE 85 slows,
-     * RONDE 111 caps the slowdown, RONDE 130 loops past the cap — but only two of the three
-     * routes through this function reached it: the inline xfade route calls montageTailPadVF,
-     * and renderSequentialArchiveMontage pads only its SINGLE-clip branch. A scene with two or
-     * more clips on the Railway route reached no filler at all. That is why every round that
-     * fixed a frozen SOURCE left this frozen picture standing: it is not a source, it is the end
-     * of the montage being held by the muxer.
-     *
-     * The duration is probed rather than estimated, because at this point the file exists and its
-     * real length is the number that decides how much filler is needed. A probe that fails leaves
-     * the chain exactly as it was and says so — an unmeasured montage must not silently skip the
-     * pad.
-     */
-    const probed = await probeVideoDurationSec(montageVideoPath);
-    const extended = await extendMontageForCoverage(
-      montageVideoPath,
-      probed,
-      outDur,
-      sceneIndex,
-      workDir,
-      composeTimeout,
-      threadFlag
-    );
-    const montageVideoIn = extended.path;
-    const montageDur = extended.dur;
-    let headChain = `[0:v]${FPS_FORMAT_VF}[vmont]`;
-    if (montageDur > 0) {
-      headChain = montageTailPadVF("0:v", montageDur, outDur);
-    } else {
-      console.warn(
-        `[Pipeline] Scene ${sceneIndex}: could not probe montage length — tail pad skipped here; ` +
-          `the finished scene is checked for a short picture and repaired if needed`
-      );
-    }
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -i "${montageVideoIn}" -i "${safeAudioPath}" ` +
-          `-filter_complex "${headChain};${gradeChain};` +
-          `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
-          `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-          `-map "[vout]" -map "[aout]" -vsync cfr ` +
-          `-t ${outDur.toFixed(3)} ${threadFlag} ${encodeFlags} -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      `Plain montage+audio scene ${sceneIndex}`
-    );
-    return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000;
-  };
-
-  if (IS_RAILWAY) {
-    try {
-      const montageOnlyPath = path.join(workDir, `scene_${sceneIndex}_seq_montage.mp4`);
-      await renderSequentialArchiveMontage(
-        safeClips,
-        montageDurations,
-        sourceMaxDurs,
-        sceneIndex,
-        outDur,
-        workDir,
-        montageOnlyPath,
-        composeTimeout,
-        threadFlag,
-        montageFilterOpts
-      );
-      if (await muxMontageWithAudio(montageOnlyPath)) return true;
-    } catch (seqErr) {
-      console.warn(
-        `[Pipeline] Scene ${sceneIndex}: sequential plain montage failed:`,
-        (seqErr as Error).message?.slice(0, 160)
-      );
-    }
-  }
-
-  try {
-    const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
-      safeClips.length,
-      outDur,
-      sceneIndex,
-      montageDurations,
-      safeClips,
-      sourceMaxDurs,
-      montageFilterOpts
-    );
-    const inputs = montageClipInputs(safeClips);
-    const estMontage = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
-    const montageOutVF = montageTailPadVF(montageLabel, estMontage, outDur);
-    const audioIdx = safeClips.length;
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-          `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};` +
-          (montageFilterOpts?.fastEncode
-            ? `[vmont]${FPS_FORMAT_VF}[vout];`
-            : `[vmont]${fadeFilter}[vout];`) +
-          `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
-          `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-          `-map "[vout]" -map "[aout]" -vsync cfr ` +
-          `-t ${outDur.toFixed(3)} ${threadFlag} ${encodeFlags} -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      `Plain montage scene ${sceneIndex}`
-    );
-    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) return true;
-  } catch (inlineErr) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex}: inline plain montage failed, trying sequential segments:`,
-      (inlineErr as Error).message?.slice(0, 160)
-    );
-  }
-
-  try {
-    const montageOnlyPath = path.join(workDir, `scene_${sceneIndex}_seq_montage.mp4`);
-    await renderSequentialArchiveMontage(
-      safeClips,
-      montageDurations,
-      sourceMaxDurs,
-      sceneIndex,
-      outDur,
-      workDir,
-      montageOnlyPath,
-      composeTimeout,
-      threadFlag
-    );
-    return await muxMontageWithAudio(montageOnlyPath);
-  } catch (seqErr) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex}: sequential plain montage failed:`,
-      (seqErr as Error).message?.slice(0, 160)
-    );
-  }
-  return false;
-}
-
-const ARCHIVE_MONTAGE_BATCH_SIZE = 4;
-const MONTAGE_SEGMENT_ENCODE_PRESET = IS_RAILWAY ? "ultrafast" : "veryfast";
-
-async function xfadeMergeTwoVideos(
-  leftPath: string,
-  rightPath: string,
-  leftDur: number,
-  rightDur: number,
-  outputPath: string,
-  composeTimeout: number,
-  threadFlag: string,
-  montageFilterOpts?: MontageFilterOpts
-): Promise<void> {
-  const xfade = montageFilterOpts?.xfadeSec ?? montageXfadeSec((leftDur + rightDur) / 2);
-  // Phase 10: grade each branch by its own clip's source instead of applying one fixed
-  // grade to both — an AI-generated/stock clip and a real archive clip sitting side by
-  // side in the same montage no longer get an identical look.
-  const branchNormLeft = `${montageBranchNormVF(classifyDocGradeSourceKind(leftPath))},setpts=PTS-STARTPTS`;
-  const branchNormRight = `${montageBranchNormVF(classifyDocGradeSourceKind(rightPath))},setpts=PTS-STARTPTS`;
-  if (xfade <= 0.001) {
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
-          `-filter_complex "[0:v]${branchNormLeft}[v0];[1:v]${branchNormRight}[v1];` +
-          `[v0][v1]concat=n=2:v=1:a=0[out]" ` +
-          `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      "Concat montage segments (hard cut)"
-    );
-    return;
-  }
-  const offset = Math.max(0, leftDur - xfade);
-  /**
-   * RONDE 203 — the second, and the reason the count lives in one shared function.
-   *
-   * A tally that only watched `buildMontageXfadeFilter` would have replaced one wrong number with
-   * another: this merger joins two montage SEGMENTS, and the branch above it cuts hard. Two
-   * inputs, so one transition — the same arithmetic, asked of the same function.
-   */
-  noteTransitionsApplied(montageTransitionCount(2, xfade));
-  try {
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
-          `-filter_complex "[0:v]${branchNormLeft}[v0];[1:v]${branchNormRight}[v1];` +
-          `[v0][v1]xfade=transition=dissolve:duration=${xfade.toFixed(3)}:offset=${offset.toFixed(3)}[out]" ` +
-          `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      "Merge montage segments"
-    );
-  } catch (xfadeErr) {
-    // xfade can fail when auto_scale can't configure pads (resolution mismatch mid-stream).
-    // Fall back to hard-cut concat which is always safe.
-    console.warn(`[Pipeline] xfade failed (auto_scale error) — retrying as hard-cut concat: ${(xfadeErr as Error).message?.slice(0, 120)}`);
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -i "${leftPath}" -i "${rightPath}" ` +
-          `-filter_complex "[0:v]${branchNormLeft}[v0];[1:v]${branchNormRight}[v1];` +
-          `[v0][v1]concat=n=2:v=1:a=0[out]" ` +
-          `-map "[out]" -an -vsync cfr ${threadFlag} -c:v libx264 -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      "Merge montage segments (hard-cut fallback)"
-    );
-  }
-}
-
-async function renderMontageVideoOnly(
-  clips: string[],
-  montageDurations: number[],
-  sourceMaxDurs: number[],
-  sceneIndex: number,
-  targetDur: number,
-  outputPath: string,
-  composeTimeout: number,
-  threadFlag: string,
-  montageFilterOpts?: MontageFilterOpts
-): Promise<void> {
-  const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
-    clips.length,
-    targetDur,
-    sceneIndex,
-    montageDurations,
-    clips,
-    sourceMaxDurs,
-    montageFilterOpts
-  );
-  const inputs = montageClipInputs(clips);
-  const est = effectiveMontageDurationSec(montageDurations, sourceMaxDurs);
-  const montageOutVF = montageTailPadVF(montageLabel, est, targetDur);
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y ${inputs} -filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}" ` +
-        `-map "[vmont]" -an -vsync cfr -t ${targetDur.toFixed(3)} ${threadFlag} ` +
-        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
-    ),
-    composeTimeout,
-    `Montage video-only scene ${sceneIndex}`
-  );
-}
-
-async function renderBatchedArchiveMontage(
-  clips: string[],
-  montageDurations: number[],
-  sourceMaxDurs: number[],
-  sceneIndex: number,
-  outDur: number,
-  workDir: string,
-  outputPath: string,
-  composeTimeout: number,
-  threadFlag: string,
-  montageFilterOpts?: MontageFilterOpts
-): Promise<void> {
-  if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
-    await renderSequentialArchiveMontage(
-      clips,
-      montageDurations,
-      sourceMaxDurs,
-      sceneIndex,
-      outDur,
-      workDir,
-      outputPath,
-      composeTimeout,
-      threadFlag,
-      montageFilterOpts
-    );
-    return;
-  }
-  const batchSize = ARCHIVE_MONTAGE_BATCH_SIZE;
-  if (clips.length <= batchSize) {
-    await renderMontageVideoOnly(
-      clips,
-      montageDurations,
-      sourceMaxDurs,
-      sceneIndex,
-      outDur,
-      outputPath,
-      composeTimeout,
-      threadFlag,
-      montageFilterOpts
-    );
-    return;
-  }
-
-  const segmentPaths: string[] = [];
-  const segmentDurs: number[] = [];
-  for (let start = 0; start < clips.length; start += batchSize) {
-    const end = Math.min(start + batchSize, clips.length);
-    const batchClips = clips.slice(start, end);
-    const batchDurs = montageDurations.slice(start, end);
-    const batchSrc = sourceMaxDurs.slice(start, end);
-    const batchTarget = effectiveMontageDurationSec(batchDurs, batchSrc);
-    const segPath = path.join(workDir, `scene_${sceneIndex}_mseg_${start}.mp4`);
-    await renderMontageVideoOnly(
-      batchClips,
-      batchDurs,
-      batchSrc,
-      sceneIndex,
-      batchTarget + 0.05,
-      segPath,
-      composeTimeout,
-      threadFlag,
-      montageFilterOpts
-    );
-    segmentPaths.push(segPath);
-    segmentDurs.push((await probeVideoDurationSec(segPath)) || batchTarget);
-  }
-
-  const mergeXfade = montageFilterOpts?.xfadeSec ?? montageXfadeSec();
-  let accPath = segmentPaths[0]!;
-  let accDur = segmentDurs[0]!;
-  for (let i = 1; i < segmentPaths.length; i++) {
-    const nextOut =
-      i === segmentPaths.length - 1
-        ? outputPath
-        : path.join(workDir, `scene_${sceneIndex}_macc_${i}.mp4`);
-    await xfadeMergeTwoVideos(
-      accPath,
-      segmentPaths[i]!,
-      accDur,
-      segmentDurs[i]!,
-      nextOut,
-      composeTimeout,
-      threadFlag,
-      montageFilterOpts
-    );
-    accPath = nextOut;
-    accDur =
-      (await probeVideoDurationSec(accPath)) ||
-      accDur + segmentDurs[i]! - (mergeXfade > 0.001 ? mergeXfade : 0);
-  }
-}
-
-/**
- * Curated archive clip filenames are deterministic (scene+beat+assetId), with no per-call
- * uniqueness token. Different, independently-running beat-fill/backfill passes each track their
- * own local "already used" set rather than one shared across the whole video, so two passes can
- * both pick the same popular asset for what they each think is a still-open beat. Whichever one
- * loses its own internal candidate race deletes "its" losing file — even when that exact
- * deterministic path is the file another, already-completed pass already committed into this
- * scene's clip list. That race can land in the window between composeSceneVideoInner's own
- * existsSync filter and this segment actually reading the file, so re-derive and regenerate it
- * on the spot from the asset ID baked into the filename rather than failing the whole scene.
- */
-async function reviveMissingCuratedMontageClip(
-  clipPath: string,
-  sceneIndex: number,
-  clipIndex: number,
-  holdSec: number
-): Promise<string> {
-  if (fs.existsSync(clipPath) && fs.statSync(clipPath).size > 100) return clipPath;
-  const m = path.basename(clipPath).match(/^scene_(\d+)_b(\d+)_curated_a(\d+)(?:_still)?\.mp4$/i);
-  if (!m) return clipPath;
-  const [, origSceneIndex, beatIndex, assetIdStr] = m;
-  const assetId = Number(assetIdStr);
-  console.warn(
-    `[Pipeline] Scene ${sceneIndex} segment ${clipIndex}: curated clip vanished (asset ${assetId}) — regenerating`
-  );
-  try {
-    const asset = await getMediaArchiveAssetById(assetId);
-    if (!asset) return clipPath;
-    const workDir = path.dirname(clipPath);
-    return await prepareCuratedArchiveClip(
-      asset,
-      workDir,
-      Number(origSceneIndex),
-      Number(beatIndex),
-      holdSec
-    );
-  } catch (err) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex} segment ${clipIndex}: regenerate of asset ${assetId} failed:`,
-      (err as Error).message?.slice(0, 150)
-    );
-    return clipPath;
-  }
-}
-
-async function renderSingleMontageSegment(
-  clipPath: string,
-  sceneIndex: number,
-  clipIndex: number,
-  duration: number,
-  sourceMaxSec: number,
-  outputPath: string,
-  composeTimeout: number,
-  threadFlag: string,
-  segmentBeatText?: string
-): Promise<number> {
-  clipPath = await reviveMissingCuratedMontageClip(clipPath, sceneIndex, clipIndex, duration);
-  let startSec = montageClipStartSec(sceneIndex, clipIndex);
-  if (sourceMaxSec > 0.15) {
-    startSec = Math.min(startSec, Math.max(0, sourceMaxSec - 0.35));
-  }
-  let effectiveDur = duration;
-  if (sourceMaxSec > 0.15) {
-    effectiveDur = resolveMontageClipEffectiveDur(duration, sourceMaxSec);
-    effectiveDur = Math.min(effectiveDur, Math.max(0.35, sourceMaxSec - startSec - 0.05));
-  } else if (sourceMaxSec === 0) {
-    // Duration probe failed after every retry (fork-pressure/corrupt-file case) — this is
-    // "unknown", not "no clamp needed". Trusting the assigned `duration` blindly risks xfade
-    // running out of decodable frames mid-transition and freezing on the last frame. Fall back
-    // to the same conservative floor already used for known-short clips instead.
-    startSec = 0;
-    effectiveDur = Math.min(duration, montageMinOnScreenSec());
-  }
-  effectiveDur = Math.max(0.35, effectiveDur);
-
-  const burnDeferred =
-    deferFacelessSubtitlesToCompose() &&
-    facelessSubtitlesEnabled() &&
-    segmentBeatText?.trim() &&
-    isVisualOverlayFootageClip(clipPath);
-  const lines = burnDeferred ? parseFacelessSubtitleLines(segmentBeatText!) : [];
-
-  const segmentSourceKind = classifyDocGradeSourceKind(clipPath);
-  if (burnDeferred && lines.length > 0) {
-    const chain = buildFacelessTypewriterDrawtextChain("vprep", "vout", lines, effectiveDur, "bottom-left");
-    const filterComplex = `[0:v]${montageBranchNormVF(segmentSourceKind)}[vprep]${chain}`;
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
-          `-filter_complex "${filterComplex}" -map "[vout]" ` +
-          `-an -vsync cfr ${threadFlag} ` +
-          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      `Montage segment+text scene ${sceneIndex} clip ${clipIndex}`
-    );
-  } else {
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -ss ${startSec.toFixed(3)} -i "${clipPath}" -t ${effectiveDur.toFixed(3)} ` +
-          `-vf "${montageBranchNormVF(segmentSourceKind)},setpts=PTS-STARTPTS" -an -vsync cfr ${threadFlag} ` +
-          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      `Montage segment scene ${sceneIndex} clip ${clipIndex}`
-    );
-  }
-  return (await probeVideoDurationSec(outputPath)) || effectiveDur;
-}
-
-/** Encode each montage clip separately then xfade-merge — avoids auto_scale filter-graph failures. */
-async function renderSequentialArchiveMontage(
-  clips: string[],
-  montageDurations: number[],
-  sourceMaxDurs: number[],
-  sceneIndex: number,
-  outDur: number,
-  workDir: string,
-  outputPath: string,
-  composeTimeout: number,
-  threadFlag: string,
-  montageFilterOpts?: MontageFilterOpts
-): Promise<void> {
-  if (clips.length === 0) {
-    throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: no clips for sequential montage`);
-  }
-  const segmentPaths: string[] = new Array(clips.length);
-  const segmentDurs: number[] = new Array(clips.length);
-  const segLimit = pLimit(Math.min(montageSegmentParallelism(IS_RAILWAY), clips.length));
-  await Promise.all(
-    clips.map((clip, i) =>
-      segLimit(async () => {
-        const segPath = path.join(workDir, `scene_${sceneIndex}_seq_${i}.mp4`);
-        const beatText = montageFilterOpts?.segmentBeatTexts?.[i];
-        const dur = await renderSingleMontageSegment(
-          clip,
-          sceneIndex,
-          i,
-          montageDurations[i] ?? effectiveBeatSec(),
-          sourceMaxDurs[i] ?? 0,
-          segPath,
-          composeTimeout,
-          threadFlag,
-          beatText
-        );
-        segmentPaths[i] = segPath;
-        segmentDurs[i] = dur;
-      })
-    )
-  );
-  if (segmentPaths.length === 1) {
-    const est = segmentDurs[0]!;
-    const pad = Math.max(0, outDur - est - 0.04);
-    // RONDE 85: the strictNoVisualRepeat guard is gone from this branch. It was here because the
-    // filler used to be a held frame, and a scene under a strict no-repeat rule was left short
-    // rather than given one. Slowing the clip repeats nothing, so it is allowed under that rule
-    // too — and leaving the scene short of its own voice track was never the better outcome.
-    const padFilter =
-      pad >= 0.08
-        ? montageTailPadFilterChain(est, est + pad, `Scene ${sceneIndex} single-clip montage`)
-        : "";
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -i "${segmentPaths[0]!}" -vf "${padFilter}${FPS_FORMAT_VF}" ` +
-          `-an -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 18 -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      `Sequential single-clip montage scene ${sceneIndex}`
-    );
-    return;
-  }
-  const mergeXfade = montageFilterOpts?.xfadeSec ?? montageXfadeSec();
-  let accPath = segmentPaths[0]!;
-  let accDur = segmentDurs[0]!;
-  for (let i = 1; i < segmentPaths.length; i++) {
-    const nextOut =
-      i === segmentPaths.length - 1
-        ? outputPath
-        : path.join(workDir, `scene_${sceneIndex}_seq_acc_${i}.mp4`);
-    await xfadeMergeTwoVideos(
-      accPath,
-      segmentPaths[i]!,
-      accDur,
-      segmentDurs[i]!,
-      nextOut,
-      composeTimeout,
-      threadFlag,
-      montageFilterOpts
-    );
-    accPath = nextOut;
-    accDur =
-      (await probeVideoDurationSec(accPath)) ||
-      accDur + segmentDurs[i]! - (mergeXfade > 0.001 ? mergeXfade : 0);
-  }
-}
-
-async function renderInlineMontageToFile(
-  sceneIndex: number,
-  composeClips: string[],
-  montageDurations: number[] | undefined,
-  sourceMaxDurs: number[],
-  outDur: number,
-  outputPath: string,
-  composeTimeout: number,
-  threadFlag: string,
-  montageFilterOpts?: MontageFilterOpts
-): Promise<void> {
-  const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
-    composeClips.length,
-    outDur,
-    sceneIndex,
-    montageDurations,
-    composeClips,
-    sourceMaxDurs,
-    montageFilterOpts
-  );
-  const inputs = montageClipInputs(composeClips);
-  const estMontageDur = montageDurations
-    ? effectiveMontageDurationSec(montageDurations, sourceMaxDurs)
-    : effectiveMontageDurationSec(
-        Array.from({ length: composeClips.length }, () =>
-          computeMontageClipDuration(outDur, composeClips.length)
-        ),
-        sourceMaxDurs
-      );
-  const montageOutVF = montageTailPadVF(montageLabel, estMontageDur, outDur);
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y ${inputs} -filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}" ` +
-        `-map "[vmont]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p "${outputPath}"`
-    ),
-    composeTimeout,
-    `Inline montage-only scene ${sceneIndex}`
-  );
-}
-
-async function composeBatchedArchiveSceneWithAudio(
-  sceneIndex: number,
-  composeClips: string[],
-  montageDurations: number[],
-  sourceMaxDurs: number[],
-  outDur: number,
-  voiceDur: number,
-  safeAudioPath: string,
-  outputPath: string,
-  workDir: string,
-  fadeFilter: string,
-  docOverlays: TimedOverlay[],
-  threadFlag: string,
-  composeTimeout: number,
-  skipEffectLayers: boolean,
-  montageFilterOpts?: MontageFilterOpts
-): Promise<void> {
-  const montageOnlyPath = path.join(workDir, `scene_${sceneIndex}_montage_v.mp4`);
-  await renderBatchedArchiveMontage(
-    composeClips,
-    montageDurations,
-    sourceMaxDurs,
-    sceneIndex,
-    outDur,
-    workDir,
-    montageOnlyPath,
-    composeTimeout,
-    threadFlag,
-    montageFilterOpts
-  );
-  const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
-  const voiceAudioFilter =
-    `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
-    `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
-  if (skipEffectLayers || docOverlays.length === 0) {
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -i "${montageOnlyPath}" -i "${safeAudioPath}" ` +
-          `-filter_complex "[0:v]${FPS_FORMAT_VF}[vout];${voiceAudioFilter}" ` +
-          `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      `Batched montage+audio scene ${sceneIndex}`
-    );
-    return;
-  }
-  const videoSrc = montageOnlyPath;
-  const otherOverlays = docOverlays;
-  if (otherOverlays.length > 0) {
-    // Phase 11: this ffmpeg command declares inputs as 0=video, 1=audio, 2+=overlays, so
-    // overlay input indices must start at 2 (baseInputCount=2), matching the audioIdx+1
-    // pattern used elsewhere (e.g. kineticBaseIdx below). This previously passed
-    // baseInputCount=1, generating "[1:v]" for the first overlay — but input 1 is the
-    // audio-only file, which has no video stream, so ffmpeg's filtergraph parse failed and
-    // the whole call fell through to the plain-montage fallback with overlays silently
-    // dropped (year badges/SFX never appear) on the default production compose path.
-    const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
-      "vmont",
-      2,
-      [],
-      otherOverlays,
-      null
-    );
-    const overlayInputs = extraInputs ? ` ${extraInputs}` : "";
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -i "${videoSrc}" -i "${safeAudioPath}"${overlayInputs} ` +
-          `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont]${filterChain};[${finalLabel}]${fadeFilter}[vout];${voiceAudioFilter}" ` +
-          `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout,
-      `Batched montage+overlays scene ${sceneIndex}`
-    );
-    return;
-  }
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y -i "${videoSrc}" -i "${safeAudioPath}" ` +
-        `-filter_complex "[0:v]${FPS_FORMAT_VF}[v];[v]${fadeFilter}[vout];${voiceAudioFilter}" ` +
-        `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-    ),
-    composeTimeout,
-    `Batched montage+labels scene ${sceneIndex}`
-  );
-}
-
 /** Spread voice duration across unique clips without exceeding each source length. */
 function balanceMontageDurationsForVoice(
   clipCount: number,
@@ -26420,54 +24989,6 @@ async function capMontageDurationsToClipFiles(
   return capped;
 }
 
-function normalizeMontageDurations(
-  durations: number[],
-  outDur: number,
-  sourceMaxDurs?: number[]
-): number[] {
-  const n = durations.length;
-  if (n === 0) return durations;
-  const maxClip = effectiveMaxClipSec();
-  const minClip = curatedArchiveOnlyVisuals() ? effectiveMinClipSec() : VIDRUSH_CLIP_MIN_SEC * 0.85;
-  const xfade = n > 1 ? montageXfadeSec() : 0;
-  const capDur = (d: number, i: number) => {
-    let capped = Math.max(minClip, Math.min(maxClip, d));
-    const srcMax = sourceMaxDurs?.[i];
-    if (srcMax && srcMax > 0.15) {
-      capped = Math.min(capped, Math.max(minClip * 0.4, srcMax - 0.05));
-    }
-    return capped;
-  };
-
-  let normalized = durations.map((d, i) => capDur(d, i));
-  let total = estimateMontageDurationSec(normalized);
-  if (total <= 0.1) return normalized;
-
-  if (total < outDur - 0.35) {
-    const scale = outDur / total;
-    normalized = normalized.map((d, i) => capDur(d * scale, i));
-    total = estimateMontageDurationSec(normalized);
-    if (total < outDur - 0.35) {
-      const floor = curatedArchiveOnlyVisuals() ? 2.5 : VIDRUSH_CLIP_MIN_SEC * 0.85;
-      const even = (outDur + (normalized.length - 1) * xfade) / normalized.length;
-      normalized = normalized.map((_, i) => capDur(even, i));
-    }
-  } else if (total > outDur + 0.35) {
-    const scale = outDur / total;
-    normalized = normalized.map((d, i) => capDur(Math.max(minClip * 0.85, d * scale), i));
-  }
-  return normalized;
-}
-
-
-
-
-
-
-
-
-
-
 async function probeMontageSourceMaxDurs(clips: string[]): Promise<number[]> {
   const cache = new Map<string, number>();
   const out: number[] = [];
@@ -26483,240 +25004,6 @@ async function probeMontageSourceMaxDurs(clips: string[]): Promise<number[]> {
   }
   return out;
 }
-
-/**
- * Keep per-beat timing and beat index when compose drops invalid/duplicate clips.
- *
- * ── RONDE 166 (§10) — two places where an array index was standing in for an identity ────────
- *
- * This function exists BECAUSE compose drops clips, so the position of a kept clip is exactly the
- * thing that cannot be trusted to name its beat — and both of its answers used to rely on it.
- *
- *   1. When `beatDurations` was missing or the wrong length, it returned
- *      `keptClips.map((_, i) => i)`: beat index = position in the kept list. One dropped clip and
- *      every clip after it is attributed to the wrong beat, silently.
- *
- *   2. A kept clip whose content key was not in the map got `?? 0` — attributed to the FIRST BEAT
- *      of the scene. That is worse than a shifted index: it is a specific wrong answer that looks
- *      deliberate.
- *
- * The identity that survives a drop is the CONTENT KEY, which this already computed and then only
- * half-trusted. It is now the only thing used: position in `originalClips` supplies the beat when
- * no explicit `clipBeatIndices` was given, because there the position IS the beat, and everything
- * after that is looked up by key. A clip that still cannot be mapped is REPORTED rather than
- * assigned to beat 0.
- */
-function alignMontageMetaWithClips(
-  originalClips: string[],
-  keptClips: string[],
-  beatDurations?: number[],
-  clipBeatIndices?: number[]
-): { beatDurations: number[]; clipBeatIndices: number[]; unmapped: string[] } {
-  const durByKey = new Map<string, number>();
-  const idxByKey = new Map<string, number>();
-  const haveDurations = Boolean(beatDurations?.length) && beatDurations!.length === originalClips.length;
-  for (let i = 0; i < originalClips.length; i++) {
-    const key = clipContentKey(originalClips[i]!);
-    if (!durByKey.has(key)) {
-      durByKey.set(key, haveDurations ? beatDurations![i]! : effectiveBeatSec());
-      /** No explicit mapping means position in the ORIGINAL list, which is the beat it was cut for. */
-      idxByKey.set(key, clipBeatIndices?.[i] ?? i);
-    }
-  }
-  const unmapped: string[] = [];
-  const resolvedIdx = keptClips.map((clip, position) => {
-    const known = idxByKey.get(clipContentKey(clip));
-    if (known != null) return known;
-    /**
-     * A kept clip the originals do not contain. Its position is the only thing left to go on, and
-     * saying so is the difference between a guess and a silent claim — the old code answered 0.
-     */
-    unmapped.push(path.basename(clip));
-    return position;
-  });
-  if (unmapped.length > 0) {
-    console.warn(
-      `[Pipeline] beat mapping: ${unmapped.length} composed clip(s) were not in the source list ` +
-        `and fell back to position — ${unmapped.slice(0, 4).join(", ")}`
-    );
-  }
-  return {
-    beatDurations: keptClips.map(
-      (clip) => durByKey.get(clipContentKey(clip)) ?? effectiveBeatSec()
-    ),
-    clipBeatIndices: resolvedIdx,
-    unmapped,
-  };
-}
-
-/**
- * RONDE 166 (§10) — the same function, exported for its regression test.
- *
- * Exported rather than made public: the production callers keep using the module-private name, and
- * this exists so the beat-identity rules above can be tested against real files with real content
- * keys instead of being asserted about from the outside.
- */
-export const alignMontageMetaWithClipsForTest = alignMontageMetaWithClips;
-
-/** Keep per-beat timing when compose drops invalid/duplicate clips. */
-function alignBeatDurationsWithClips(
-  originalClips: string[],
-  keptClips: string[],
-  beatDurations?: number[]
-): number[] | undefined {
-  if (!beatDurations?.length || beatDurations.length !== originalClips.length) return undefined;
-  if (originalClips.length === keptClips.length && originalClips.every((c, i) => c === keptClips[i])) {
-    return beatDurations;
-  }
-  const durByKey = new Map<string, number>();
-  for (let i = 0; i < originalClips.length; i++) {
-    const key = clipContentKey(originalClips[i]!);
-    if (!durByKey.has(key)) durByKey.set(key, beatDurations[i]!);
-  }
-  const aligned = keptClips.map(
-    (clip) => durByKey.get(clipContentKey(clip)) ?? effectiveBeatSec()
-  );
-  return aligned.length === keptClips.length ? aligned : undefined;
-}
-
-/** Default per-clip duration when beat metadata is missing. */
-function computeMontageClipDuration(sceneDuration: number, clipCount: number): number {
-  if (clipCount <= 0) return effectiveBeatSec();
-  const beatSec = effectiveBeatSec();
-  const ideal = Math.max(1, Math.ceil(sceneDuration / beatSec));
-  if (clipCount >= ideal - 1) return beatSec;
-  const xfade = clipCount > 1 ? montageXfadeSec() : 0;
-  const evenSplit = (sceneDuration + (clipCount - 1) * xfade) / clipCount;
-  return Math.max(effectiveMinClipSec(), Math.min(effectiveMaxClipSec(), evenSplit));
-}
-
-function ensureEvenDim(n: number, min = 2): number {
-  const v = Math.max(min, Math.round(n));
-  return v % 2 === 0 ? v : v + 1;
-}
-
-function montageClipPrepFilter(
-  inputIndex: number,
-  dur: number,
-  sceneIndex: number,
-  smoothTransition: boolean,
-  xfade: number,
-  clipPath?: string,
-  sourceMaxSec?: number
-): string {
-  const preNormalized = clipPath ? /_norm_b\d+\.mp4$/i.test(path.basename(clipPath)) : false;
-  let startSec = preNormalized ? 0 : montageClipStartSec(sceneIndex, inputIndex);
-  if (sourceMaxSec && sourceMaxSec > 0.15) {
-    startSec = Math.min(startSec, Math.max(0, sourceMaxSec - 0.35));
-  }
-  let effectiveDur = dur;
-  if (sourceMaxSec && sourceMaxSec > 0.15) {
-    effectiveDur = resolveMontageClipEffectiveDur(dur, sourceMaxSec);
-    effectiveDur = Math.min(effectiveDur, Math.max(0.35, sourceMaxSec - startSec - 0.05));
-  }
-  effectiveDur = Math.max(0.35, effectiveDur);
-  const start = startSec.toFixed(2);
-  const edgeFade =
-    smoothTransition && xfade > 0.001 ? Math.min(0.08, effectiveDur * 0.05) : 0;
-  const fadeIn = edgeFade;
-  const fadeOut = edgeFade;
-  const fadeOutStart = Math.max(0, effectiveDur - fadeOut - 0.02);
-  const fadeColor = "0x2A2A2A";
-  let chain = `[${inputIndex}:v]trim=start=${start}:duration=${effectiveDur.toFixed(3)},`;
-  chain += montageBranchNormVF(clipPath ? classifyDocGradeSourceKind(clipPath) : undefined);
-  if (fadeIn > 0.05) chain += `,fade=t=in:st=0:d=${fadeIn.toFixed(3)}:color=${fadeColor}`;
-  if (fadeOut > 0.05) chain += `,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOut.toFixed(3)}:color=${fadeColor}`;
-  chain += `,setpts=PTS-STARTPTS[v${inputIndex}]`;
-  return chain;
-}
-
-/** xfade montage — trim in-filter; optional per-beat durations (3–4s, longer when merged). */
-function buildMontageXfadeFilter(
-  clipCount: number,
-  outDur: number,
-  sceneIndex: number,
-  clipDurations?: number[],
-  clipPaths?: string[],
-  sourceMaxDurs?: number[],
-  montageOpts?: { xfadeSec?: number; preserveDurations?: boolean }
-): { scaleFilters: string; mergeFilter: string; montageLabel: string } {
-  const n = Math.max(1, clipCount);
-  const minClip = effectiveMinClipSec();
-  const maxClip = effectiveMaxClipSec();
-  let durs =
-    clipDurations?.length === n
-      ? clipDurations.map((d, i) => {
-          let capped = Math.min(maxClip, Math.max(montageMinOnScreenSec(), d));
-          const srcMax = sourceMaxDurs?.[i] ?? 0;
-          if (srcMax > 0.15) {
-            capped = Math.min(capped, montageClipUsableSec(srcMax));
-          }
-          return capped;
-        })
-      : Array.from({ length: n }, () => computeMontageClipDuration(outDur, n));
-  const presetTotal = effectiveMontageDurationSec(durs, sourceMaxDurs);
-  if (
-    !montageOpts?.preserveDurations &&
-    (!clipDurations?.length || presetTotal > outDur + 0.35)
-  ) {
-    durs = normalizeMontageDurations(durs, outDur, sourceMaxDurs);
-  }
-  durs = durs.map((d, i) => resolveMontageClipEffectiveDur(d, sourceMaxDurs?.[i]));
-  const avgDur = durs.reduce((s, d) => s + d, 0) / n;
-  const xfade = montageOpts?.xfadeSec ?? montageXfadeSec(avgDur);
-  const smooth = curatedArchiveOnlyVisuals() || documentaryStyleEnabled();
-  const clipAt = (i: number) => clipPaths?.[i];
-
-  if (n === 1) {
-    return {
-      scaleFilters: montageClipPrepFilter(0, durs[0], sceneIndex, smooth, xfade, clipAt(0), sourceMaxDurs?.[0]),
-      mergeFilter: "",
-      montageLabel: "v0",
-    };
-  }
-
-  const scaleFilters = Array.from({ length: n }, (_, i) =>
-    montageClipPrepFilter(i, durs[i], sceneIndex, smooth, xfade, clipAt(i), sourceMaxDurs?.[i])
-  ).join(";");
-
-  if (xfade <= 0.001) {
-    const concatInputs = Array.from({ length: n }, (_, i) => `[v${i}]`).join("");
-    return {
-      scaleFilters,
-      mergeFilter: `;${concatInputs}concat=n=${n}:v=1:a=0[montage]`,
-      montageLabel: "montage",
-    };
-  }
-
-  let mergeFilter = "";
-  let prev = "v0";
-  let prevDur = durs[0]!;
-  let offset = prevDur - xfade;
-  for (let i = 1; i < n; i++) {
-    const outLabel = i === n - 1 ? "montage" : `xf${i}`;
-    const xfadeTransition = smooth
-      ? curatedArchiveOnlyVisuals()
-        ? "dissolve"
-        : pickMontageXfadeTransition(sceneIndex, i)
-      : pickStockMontageXfadeTransition(sceneIndex, i);
-    const safeOffset = Math.max(0, Math.min(offset, Math.max(0, prevDur - xfade - 0.01)));
-    mergeFilter += `;[${prev}][v${i}]xfade=transition=${xfadeTransition}:duration=${xfade.toFixed(3)}:offset=${safeOffset.toFixed(3)}[${outLabel}]`;
-    prev = outLabel;
-    prevDur = prevDur + durs[i]! - xfade;
-    offset += durs[i]! - xfade;
-  }
-  /**
-   * RONDE 203 — counted here, where the xfades are actually written into the filter graph.
-   *
-   * The loop above emitted one per join, so this is a record of work done rather than a plan. A
-   * montage with `xfade` at zero never enters the loop and counts nothing, which is right: a hard
-   * cut is not a transition.
-   */
-  noteTransitionsApplied(montageTransitionCount(n, xfade));
-  return { scaleFilters, mergeFilter, montageLabel: "montage" };
-}
-
-
 
 function buildTopicAnchoredQueries(
   scene: Scene,
@@ -26955,8 +25242,6 @@ function buildGeoEventComboAnchors(
     return true;
   }).slice(0, 6);
 }
-
-
 
 /**
  * Same as extractVideoTopicAnchors but also returns the matched topic key
@@ -30250,65 +28535,6 @@ async function recoverSceneClipsIfEmptyInner(
   return { clips, beatDurations };
 }
 
-/**
- * RONDE 159 — this is where chosen footage disappeared without saying why.
- *
- * Video 552's lineage audit reported twelve VANISHED_WITHOUT_OUTCOME warnings, all of them scene
- * 2's: assets that were FOUND, were ADOPTED, and were not in the final video, with no REPLACED,
- * REMOVED or REJECTED event to account for them. The audit rule (RONDE 95 §4) was right; what it
- * detected is this loop. Three `continue` statements drop a clip and record nothing, so every
- * report downstream had to describe an asset that had simply evaporated.
- *
- * Each drop now files the ending it actually is, with the reason that caused it. Nothing about
- * which clips survive changes — only whether the ledger can say what became of the others.
- */
-export async function composeReadySceneClips(
-  clips: string[],
-  sceneIndex: number,
-  /** RONDE 103 phase 17: all three callers hold the render state, so the barrier applies here too. */
-  relevance?: BeatRelevanceLedger,
-  lineage?: VisualSourceLedger
-): Promise<string[]> {
-  const out: string[] = [];
-  const dropped = (clipPath: string, reason: string): void => {
-    // RONDE 167: by content key too — the curated route registers no path. See recordAssetOutcome.
-    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason, contentKey: clipContentKey(clipPath) });
-  };
-  for (const clipPath of clips) {
-    if (!clipPath) continue;
-    if (isPipelineFallbackClip(clipPath)) {
-      /**
-       * RONDE 162 corrects RONDE 159's assumption here. A placeholder was treated as having no
-       * lineage record to settle, and render 553 showed it does: six `_guaranteed.mp4` clips held
-       * ADOPTED events and were reported VANISHED_WITHOUT_OUTCOME because this branch said nothing.
-       * A card that was made and then not used is an outcome like any other.
-       */
-      dropped(clipPath, `placeholder_not_used:s${sceneIndex}`);
-      continue;
-    }
-    /**
-     * The barrier's own answer reaches the ledger, not just its verdict.
-     *
-     * `compose_gate:s<n>` was the reason for all nine of the gate's refusals, five of which print
-     * nothing anywhere. A clip ffprobe could not read and a clip whose opening frame is dark are
-     * opposite problems — a broken download against a real judgement about the footage — and every
-     * asset in every render arrived at the audit with the same word for both.
-     */
-    const gate = await montageClipComposeGate(clipPath, sceneIndex, out.length, relevance);
-    if (!gate.pass) {
-      dropped(clipPath, `compose_gate:${gate.check}:s${sceneIndex}`);
-      continue;
-    }
-    const key = clipContentKey(clipPath);
-    if (out.some((c) => clipContentKey(c) === key)) {
-      dropped(clipPath, `duplicate_content:s${sceneIndex}`);
-      continue;
-    }
-    out.push(clipPath);
-  }
-  return out;
-}
-
 function skipComposeNetworkFetch(
   dedup: VisualDedupState | undefined,
   source: string,
@@ -30377,381 +28603,6 @@ function skipSourcingForBeatlessSlot(
       `there is no sentence behind this slot, so no approval could be earned for anything found`
   );
   return true;
-}
-
-/** Archive → stock rescue when strict 1-min compose would otherwise have zero clips. */
-async function rescueFastShortComposeClips(
-  scene: Scene,
-  workDir: string,
-  videoTitle: string | undefined,
-  dedup: VisualDedupState
-): Promise<string[]> {
-  if (!isFastShortVideoLength(dedup.videoLength)) return [];
-  if (isComposeNetworkBlocked(dedup, scene.index)) {
-    console.warn(`[Pipeline] Scene ${scene.index}: compose rescue skipped (local-only mode)`);
-    return [];
-  }
-  warnComposeTimeNetwork(dedup.stepTiming, "archive+stock rescue", scene.index);
-
-  return timePipelineStep(
-    dedup.stepTiming,
-    "compose_rescue",
-    "Compose-time rescue (archive+stock)",
-    async () => {
-  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const holdSec = archiveVisualBeatSecForVideo(dedup.videoLength);
-  const beat: SceneBeat = {
-    index: 0,
-    text: scene.text.slice(0, 220),
-    searchQuery: stockQueryFromBeatScript(scene.text, scenePersons, scene.text, videoTitle),
-    powerWord: extractPowerWordFromSentence(scene.text.slice(0, 200), scenePersons),
-    keywords: buildRelevanceKeywords(scene, scene.text),
-    holdSec,
-  };
-  const collected: string[] = [];
-  const pushClip = async (clipPath: string, sec = holdSec): Promise<boolean> => {
-    if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
-    if (!(await montageClipPassesComposeGate(clipPath, scene.index, collected.length, dedup.beatRelevance))) return false;
-    /**
-     * THE ONE ROUTE WITH ITS OWN GATE, ASKED THE SAME QUESTION.
-     *
-     * The structural sweep for this round found exactly one push closure that does not pass
-     * `beatClipRefusedByRelevanceGate`: this one. It is a compose-time rescue and it deliberately
-     * uses `montageClipPassesComposeGate` instead — a different editorial question, correctly so.
-     *
-     * But "it has its own editorial gate" is not a reason to be outside the ARCHIVE invariant. A
-     * picture placed here enters the same film as every other picture, and a clip that cannot be
-     * read back from our own storage may not be in it. Same decision, same refusal, same log.
-     */
-    {
-      const archived = await ensureArchiveBackedBeforePush(
-        dedup, clipPath, clipContentKey(clipPath), scene.index, undefined
-      );
-      if (!archived.ok) {
-        recordArchivePushRefusal(dedup, clipPath, scene.index, undefined, archived.reason);
-        return false;
-      }
-    }
-    const key = clipContentKey(clipPath);
-    if (collected.some((c) => clipContentKey(c) === key)) return false;
-    collected.push(clipPath);
-    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
-    dedup.usedContentKeys.add(key);
-    return true;
-  };
-  const rescueVision = fastShortComposeRescueVisionFloor();
-
-  console.warn(`[Pipeline] Scene ${scene.index}: fast compose rescue — similar archive`);
-  const beatForRescue = beat;
-  const pushRescue = async (clipPath: string, sec = holdSec): Promise<boolean> =>
-    withAdoptionIntent("rescue_similar", () => pushClip(clipPath, sec));
-  if (
-    await adoptBestSimilarBeatClip(
-      beatForRescue,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushRescue,
-      holdSec,
-      undefined,
-      null,
-      undefined
-    )
-  ) {
-    return collected;
-  }
-
-  console.warn(`[Pipeline] Scene ${scene.index}: fast compose rescue — relaxed archive (CLIP ≥${rescueVision})`);
-  const archiveClip = await fetchCuratedArchiveBeatClipWithLineage(dedup, scene.index, beat.index, (pickedOut) =>
-    fetchCuratedArchiveBeatClip(
-      beat,
-      scene,
-      workDir,
-      scene.index,
-      holdSec,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      videoTitle,
-      curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup),
-      undefined,
-      {
-        relaxed: true,
-        videoLength: dedup.videoLength,
-        segmentLock: dedup.segmentGeoLock,
-        assetsCache: dedup.archiveAssetsCache,
-        pickedOut,
-      }
-    )
-  );
-  if (archiveClip) {
-    const vision = await beatClipPassesVisionGate(
-      archiveClip,
-      beat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      undefined,
-      "compose_rescue_archive",
-      rescueVision
-    );
-    if (vision.pass) await withAdoptionIntent("rescue_archive", () => pushClip(archiveClip, holdSec));
-  }
-
-  if (collected.length === 0) {
-    await adoptArchiveBeatClipWithBudget(
-      beat,
-      scene,
-      workDir,
-      videoTitle,
-      dedup,
-      pushClip,
-      null,
-      holdSec,
-      undefined,
-      true,
-      undefined,
-      undefined
-    );
-  }
-
-  if (collected.length === 0) {
-    const recovered = await recoverSceneClipsIfEmpty(scene, workDir, videoTitle, dedup);
-    for (let i = 0; i < recovered.clips.length; i++) {
-      const rec = recovered.clips[i]!;
-      const recHold = recovered.beatDurations[i] ?? holdSec;
-      if (await withAdoptionIntent("recovered_scene", () => pushClip(rec, recHold))) break;
-    }
-  }
-
-  if (collected.length === 0 && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
-    console.warn(`[Pipeline] Scene ${scene.index}: fast compose rescue — licensed stock`);
-    warnComposeTimeNetwork(dedup.stepTiming, "Pexels/Pixabay", scene.index);
-    await adoptStockBeatClipFallback(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec);
-  }
-
-  return collected;
-    },
-    scene.index
-  );
-}
-
-/** Prune bad clips and cache all visuals on disk before compose (1-min cache-then-render). */
-async function finalizeLocalClipCacheForScene(
-  scene: Scene,
-  vr: SceneVisualsResult,
-  workDir: string,
-  topicContext: string | undefined,
-  dedup: VisualDedupState,
-  videoLength: string,
-  sceneAudioPath?: string
-): Promise<SceneVisualsResult> {
-  const beatSec = archiveVisualBeatSecForVideo(videoLength);
-  const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
-
-  const applyReady = async (clips: string[], source: SceneVisualsResult): Promise<SceneVisualsResult> => {
-    const ready = await composeReadySceneClips(clips, scene.index, dedup.beatRelevance, dedup.sourcingCache?.lineage);
-    const durations =
-      source.beatDurations?.slice(0, ready.length) ??
-      ready.map(() => beatSec);
-    const beatIndices =
-      source.clipBeatIndices?.slice(0, ready.length) ??
-      ready.map((_, i) => i);
-    return { ...source, clips: ready, beatDurations: durations, clipBeatIndices: beatIndices };
-  };
-
-  let result = await applyReady(vr.clips ?? [], vr);
-  if (result.clips.length >= minNeeded) return result;
-
-  console.warn(
-    `[Pipeline] Scene ${scene.index}: ${result.clips.length}/${minNeeded} compose-ready clips — pre-compose cache fill`
-  );
-
-  /**
-   * RONDE 159 — a scene this short of footage may go and fetch, if the clock allows it.
-   *
-   * Every fill stage below is refused by the local-only block, and video 552 shows what that costs
-   * on a scene that has nothing: 2 of 7 clips, thirteen refusals, and 21.5s of narration carried by
-   * two clips. That shortfall is the gap RONDE 157 and 158 had to paper over with slowed and
-   * replayed picture; here is where it can be prevented instead.
-   *
-   * The block stays for every scene that is merely thinner than planned. The exemption is granted
-   * only below half of what the scene needs, only while the render is genuinely ahead of its
-   * budget, and only to this scene.
-   */
-  const remainingWallClockMs = get_activeBudgetTracker()?.remainingMs?.();
-  if (
-    isComposeNetworkBlocked(dedup, scene.index) &&
-    composeMayFetchForStarvedScene({
-      videoLength: dedup.videoLength,
-      clipsOnDisk: result.clips.length,
-      clipsNeeded: minNeeded,
-      remainingWallClockMs,
-    })
-  ) {
-    dedup.composeFetchExemptScenes.add(scene.index);
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: only ${result.clips.length}/${minNeeded} clips and ` +
-        `${Math.round((remainingWallClockMs ?? 0) / 1000)}s of budget left — allowing this scene ` +
-        `to fetch during compose`
-    );
-  }
-
-  // RONDE 7 (render 518): each fill stage below used to REPLACE `result` with only its own
-  // clips — scene 0 entered this function with 4 compose-ready winners and left with the single
-  // clip the last stage happened to return, so the final scene was 1 clip + gray pad. A fill
-  // stage may only ever ADD clips: merge its output into the union (applyReady re-gates and
-  // dedupes by content key) and keep the previous result when the merge somehow shrinks.
-  const mergeIntoResult = async (extraClips: string[]): Promise<void> => {
-    if (!extraClips.length) return;
-    const union = [...result.clips, ...extraClips];
-    const merged = await applyReady(union, {
-      ...vr,
-      clips: union,
-      beatDurations: union.map(() => beatSec),
-    });
-    if (merged.clips.length > result.clips.length) result = merged;
-  };
-
-  const rescued = await rescueFastShortComposeClips(scene, workDir, topicContext, dedup);
-  await mergeIntoResult(rescued);
-  if (result.clips.length >= minNeeded) return result;
-
-  try {
-    const refilled = await withSceneFetchTimeout(
-      () => refillSceneStrictVoiceMatch(scene, workDir, topicContext, dedup, sceneAudioPath),
-/**
-       * RONDE 622 — a pre-compose wall may host a YouTube turn, so it is wide enough to hold one.
-       *
-       * `recoverSceneClipsIfEmpty` reaches `beatPrimaryFetch` through its own Inner, and
-       * `refillSceneStrictVoiceMatch` reaches it the same way — so a turn can open under both. In
-       * the hurried branch they were 20s and 25s against a price of 24s: one that can never pay
-       * and one that cannot survive a second of its own work. Found by walking every scope in this
-       * file to a `runCentralYoutubeTurn`, after render 598 proved the first wall by measurement;
-       * the other nine narrow walls are provider-specific and cannot host a turn at all.
-       *
-       * The base numbers do not move, and the supplement is zero without YouTube.
-       */
-      beatWallWithYoutubeTurn(
-        (dedup.pipelineStartedMs ?? 0) > 0 && Date.now() - (dedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(dedup.videoLength)
-          ? 25_000
-          : 45_000
-      ),
-      `Scene ${scene.index} pre-compose strict refill`
-    );
-    await mergeIntoResult(refilled.clips);
-    if (result.clips.length >= minNeeded) return result;
-  } catch (err) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: pre-compose strict refill failed:`,
-      (err as Error).message?.slice(0, 80)
-    );
-  }
-
-  try {
-    const recovered = await withSceneFetchTimeout(
-      () => recoverSceneClipsIfEmpty(scene, workDir, topicContext, dedup),
-      beatWallWithYoutubeTurn(
-        (dedup.pipelineStartedMs ?? 0) > 0 &&
-          Date.now() - (dedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(dedup.videoLength)
-          ? 20_000
-          : 35_000
-      ),
-      `Scene ${scene.index} pre-compose recovery`
-    );
-    await mergeIntoResult(recovered.clips);
-  } catch (err) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: pre-compose recovery failed:`,
-      (err as Error).message?.slice(0, 80)
-    );
-  }
-
-  return result;
-}
-
-/** Prune bad clips and last-chance fill before compose on 1-min fast path. */
-async function ensureFastShortScenesReadyForCompose(
-  scenes: Scene[],
-  sceneVisualResults: SceneVisualsResult[],
-  workDir: string,
-  topicContext: string | undefined,
-  visualDedup: VisualDedupState,
-  videoLength: string,
-  audioPaths?: string[]
-): Promise<void> {
-  if (!isFastShortVideoLength(videoLength)) return;
-
-  for (let si = 0; si < scenes.length; si++) {
-    const scene = scenes[si]!;
-    const vr = sceneVisualResults[si] ?? { clips: [], beatDurations: [] };
-    if (composeLocalClipsOnly(videoLength)) {
-      const prevSceneVisual_0 = sceneVisualResults[si];
-      sceneVisualResults[si] = await finalizeLocalClipCacheForScene(
-        scene,
-        vr,
-        workDir,
-        topicContext,
-        visualDedup,
-        videoLength,
-        audioPaths?.[si]
-      );
-      noteSceneClipsResourced(visualDedup, prevSceneVisual_0, sceneVisualResults[si], scenes[si]?.index ?? si, "local_clip_cache");
-      const cached = sceneVisualResults[si]!.clips?.length ?? 0;
-      const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
-      console.log(
-        `[Pipeline] Scene ${scene.index}: ${cached}/${minNeeded} clip(s) cached on disk for compose`
-      );
-      continue;
-    }
-
-    let ready = await composeReadySceneClips(vr.clips ?? [], scene.index, visualDedup.beatRelevance, visualDedup.sourcingCache?.lineage);
-    if (ready.length > 0) {
-      const prevSceneVisual_1 = sceneVisualResults[si];
-      sceneVisualResults[si] = { ...vr, clips: ready, beatDurations: vr.beatDurations?.slice(0, ready.length) };
-      noteSceneClipsResourced(visualDedup, prevSceneVisual_1, sceneVisualResults[si], scenes[si]?.index ?? si, "compose_ready_filter");
-      continue;
-    }
-
-    console.warn(`[Pipeline] Scene ${scene.index}: fast pre-compose — no compose-ready clips`);
-    const rescued = await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup);
-    if (rescued.length > 0) {
-      const prevSceneVisual_2 = sceneVisualResults[si];
-      sceneVisualResults[si] = {
-        ...vr,
-        clips: rescued,
-        beatDurations: rescued.map(() => archiveVisualBeatSecForVideo(videoLength)),
-      };
-      noteSceneClipsResourced(visualDedup, prevSceneVisual_2, sceneVisualResults[si], scenes[si]?.index ?? si, "fast_compose_rescue");
-      continue;
-    }
-
-    try {
-      const recovered = await withSceneFetchTimeout(
-        () => recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
-        beatWallWithYoutubeTurn(
-          (visualDedup.pipelineStartedMs ?? 0) > 0 &&
-            Date.now() - (visualDedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(visualDedup.videoLength)
-            ? 20_000
-            : 35_000
-        ),
-        `Scene ${scene.index} pre-compose recovery`
-      );
-      ready = await composeReadySceneClips(recovered.clips, scene.index, visualDedup.beatRelevance, visualDedup.sourcingCache?.lineage);
-      if (ready.length > 0) {
-        const prevSceneVisual_3 = sceneVisualResults[si];
-        sceneVisualResults[si] = { ...recovered, clips: ready };
-        noteSceneClipsResourced(visualDedup, prevSceneVisual_3, sceneVisualResults[si], scenes[si]?.index ?? si, "pre_compose_recovery");
-      }
-    } catch (err) {
-      console.warn(
-        `[Pipeline] Scene ${scene.index}: pre-compose recovery failed:`,
-        (err as Error).message?.slice(0, 80)
-      );
-    }
-  }
 }
 
 async function polishWeakAdoptBeatsBeforeCompose(
@@ -31876,7 +29727,6 @@ async function researchBeatClipUnifiedInner(
       });
     }
   }
-
 
   if (
     europeanaSourcingEnabled() &&
@@ -35846,8 +33696,6 @@ async function judgeBeatClipRelevance(
   return decision;
 }
 
-
-
 async function preparePooledArchiveClip(
   picked: CuratedCandidatePick,
   beat: SceneBeat,
@@ -39319,8 +37167,6 @@ async function ensureBeatVisualFilled(
   );
 }
 
-
-
 async function backfillArchiveMontageFromPool(
   scene: Scene,
   workDir: string,
@@ -39389,189 +37235,6 @@ async function backfillArchiveMontageFromPool(
     coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
   }
   return added;
-}
-
-async function backfillComposeMontageIfShort(
-  scene: Scene,
-  workDir: string,
-  videoTitle: string | undefined,
-  outDur: number,
-  safeClips: string[],
-  composeBeatDurations: number[],
-  composeClipBeatIndices: number[],
-  seenKeys: Set<string>,
-  dedup: VisualDedupState,
-  montageBeats?: SceneBeat[]
-): Promise<void> {
-  if (!curatedArchiveOnlyVisuals()) return;
-  /**
-   * RONDE 123 — this used to be `if (isFastShortVideoLength(...)) return;`.
-   *
-   * That one line switched off the whole of RONDE 111 and RONDE 112 for short videos: the search
-   * for short stitchable clips, the subject fallback, and the re-use of the scene's own footage in
-   * motion. Everything below it is the ladder a scene climbs before it is allowed to hold a frame,
-   * and for a one-minute video none of it ran.
-   *
-   * Video 544 is what that looks like. Every scene logged `Compose montage backfill: 0ms`, and
-   * scene 1 — 38.1 seconds of narration, one 2.8-second clip — went straight from the search phase
-   * to the compose-time last resort:
-   *
-   *     [Coverage] Scene 1 single-clip montage: short 34.40s (would need 10.88x)
-   *     → slowed to the 2x cap, 30.92s STILL UNCOVERED → held frame (last resort)
-   *
-   * The 2x cap held, exactly as RONDE 111 requires. But the rungs that exist so the ladder rarely
-   * reaches that rung had been skipped entirely, and the render ended with the held frames and the
-   * two frozen segments its own QA then reported.
-   *
-   * The original reason for the skip was time: a one-minute video has a ten-minute wall clock and
-   * these rounds cost searches. That reason is answered by bounding the work rather than removing
-   * it — `fastShort` below caps the number of extra searches instead of refusing them, so a short
-   * render pays for a handful of attempts and still gets the subject fallback and the moving
-   * re-use before anything freezes. Holding a frame is not cheaper than a search; it is the
-   * outcome the searches exist to avoid.
-   */
-  const fastShort = isFastShortVideoLength(dedup.videoLength);
-  const minClipsNeeded = minClipsForBalancedVoice(outDur);
-  const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
-  let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
-  if (coverage >= minCoverage) return;
-
-  const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
-  const beats =
-    montageBeats?.length
-      ? montageBeats
-      : buildSceneBeats(
-          scene,
-          outDur,
-          Math.max(minClipsNeeded + 2, Math.ceil(outDur / effectiveBeatSec())),
-          videoTitle,
-          scenePersons
-        );
-  const beatInputs = beats.map((b) => ({ text: b.text, holdSec: b.holdSec }));
-  const xfade = montageXfadeSec();
-
-  const pushClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
-    /**
-     * THE BEAT IS CHOSEN BEFORE THE EDITOR IS ASKED ABOUT IT, NOT AFTER.
-     *
-     * ── What render 578 delivered ───────────────────────────────────────────────────────────
-     *
-     * Every one of the thirteen clips in the finished film entered through `route=backfill`, and
-     * the render's own selection tally read:
-     *
-     *     [VisionSelection] TOTAL beats=17 reviewPool=19 reviewed=10 FIT=0
-     *
-     * Not one approval in the whole film. Backfill is the last resort and it is allowed to be —
-     * but it is not allowed to fill a beat nobody was asked about, and that is what this closure
-     * did whenever its caller had no beat index to give.
-     *
-     * ── The one line ────────────────────────────────────────────────────────────────────────
-     *
-     * `beatClipRefusedByRelevanceGate` does two different things depending on this argument. With
-     * a beat it calls `ensureVerdictBeforeCompose({ finalSay: true })` — it OBTAINS a verdict for
-     * the picture against the sentence it is about to run under, overruling the spend caps
-     * precisely because this look decides something. With `undefined` it does neither: it only
-     * checks whether a refusal happens to exist already, and a picture nobody judged is not
-     * refused.
-     *
-     * The beat index was available the whole time. It was simply computed fourteen lines lower,
-     * where `composeClipBeatIndices.push(bi)` needs it — after the question that needed it had
-     * already been asked and answered with nothing. `pickVoiceBackfillBeatIndex` reads only the
-     * arrays as they stand before this clip is added, so moving the call up changes which beat
-     * nothing: it is the same function on the same inputs, asked in time to be useful.
-     *
-     * Nothing is loosened and nothing new can refuse a render: a beat that produces no verdict
-     * behaves exactly as it did. What changes is that the picture is now put to the editor.
-     */
-    const bi =
-      beatIndex ??
-      pickVoiceBackfillBeatIndex(beatInputs, outDur, composeClipBeatIndices, composeBeatDurations, xfade);
-    // RONDE 103, second audit: this is an acceptance point like the four pushSceneClip closures,
-    // so it enforces the same refusal. Its own fill routes are gated, but a route reaching it
-    // later must not be able to push a clip this render has already refused.
-    /**
-     * RENDER 579 — THIS ROUTE NEEDS A YES, NOT THE ABSENCE OF A NO.
-     *
-     * Asset 57502 and 57526 reached the delivered film through this closure, `verdict=unknown`,
-     * `route=backfill`, for 8.9s of a 56.9s film about Kylie Jenner — while the editor refused
-     * every ww2 clip it was actually shown (`judged=43 fits=0 accepted=0%`). The barrier let them
-     * pass because `unknown` is not `does_not_fit`.
-     *
-     * A backfill is the one route that places a picture under a sentence nobody chose it for, so
-     * it is the one route where "nobody objected" is not a reason. The verdict is obtained
-     * immediately above with `finalSay: true`, so this bites only when the editor looked and could
-     * not say — render 579's `unclear=4` column.
-     */
-    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, bi, "approval")) return false;
-    if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, bi)) return false;
-    const key = clipContentKey(clipPath);
-    if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
-    let actualHold = holdSec;
-    const probed = await probeVideoDurationSec(clipPath);
-    if (probed > 0.15) actualHold = Math.min(holdSec, probed - 0.04);
-    dedup.usedContentKeys.add(key);
-    seenKeys.add(key);
-    safeClips.push(clipPath);
-    composeBeatDurations.push(actualHold);
-    composeClipBeatIndices.push(bi);
-    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
-    coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
-    return true;
-  };
-
-  await backfillArchiveMontageFromPool(
-    scene,
-    workDir,
-    videoTitle,
-    outDur,
-    safeClips,
-    composeBeatDurations,
-    dedup,
-    pushClip,
-    {
-      logPrefix: `Scene ${scene.index} compose`,
-      maxAttempts: Math.max(14, minClipsNeeded + 6),
-      clipBeatIndices: composeClipBeatIndices,
-    }
-  );
-
-  if (coverage < minCoverage) {
-    // RONDE 123: bounded rather than skipped on the fast path — a short render pays for a
-    // few attempts instead of going straight to a held frame.
-    const roundAAttempts = fastShort ? 3 : 8;
-    for (let attempt = 0; attempt < roundAAttempts && coverage < minCoverage; attempt++) {
-      const beatIdx = pickVoiceBackfillBeatIndex(
-        beatInputs,
-        outDur,
-        composeClipBeatIndices,
-        composeBeatDurations,
-        xfade
-      );
-      const beat = beats[beatIdx] ?? beats[0];
-      if (!beat) break;
-      const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
-      const adopted = await fillBeatVisual(
-        beat,
-        scene,
-        workDir,
-        videoTitle,
-        dedup,
-        (clipPath, holdSec) => pushClip(clipPath, holdSec ?? fillHold, beat.index),
-        undefined,
-        fillHold
-      );
-      if (adopted) {
-        coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
-      }
-    }
-  }
-
-  if (coverage < minCoverage) {
-    const msg =
-      `Scene ${scene.index}: compose backfill still short ` +
-      `(${safeClips.length} clips, ${coverage.toFixed(1)}s / ${outDur.toFixed(1)}s)`;
-    console.warn(`[Pipeline] ${msg} — guaranteed clip fill at compose`);
-  }
 }
 
 /** First successful beat adopter wins (pushClip dedup prevents double-adopt). */
@@ -44270,778 +41933,6 @@ async function fetchSceneVisualsInner(
   return { clips: usable, beatDurations: beatDurations.slice(0, usable.length) };
 }
 
-// ─── 3e. Extract Key Words for Kinetic Typography ───────────────────────────
-// Extracts 3-5 impactful keywords from narration text without an LLM call.
-// Strategy: remove stopwords, pick longest/most-impactful words.
-function extractKeywords(text: string, count: number = 4): string[] {
-  const STOP_WORDS = new Set([
-    "the","a","an","and","or","but","in","on","at","to","for","of","with",
-    "by","from","is","are","was","were","be","been","being","have","has",
-    "had","do","does","did","will","would","could","should","may","might",
-    "shall","can","this","that","these","those","it","its","we","they","he",
-    "she","you","i","my","our","their","his","her","your","as","so","if",
-    "not","no","up","out","about","into","than","then","when","where","who",
-    "which","what","how","all","each","more","most","also","just","very",
-    "over","after","before","through","during","between","while","because",
-    "since","even","only","still","now","here","there","some","any","every",
-  ]);
-
-  // Clean text: remove punctuation, lowercase, split into words.
-  //
-  // RONDE 88A: Unicode-aware, and deliberately NOT folded. These words are drawn on screen, so
-  // "Führerbunker" must stay "Führerbunker" — folding would put "Fuhrerbunker" in front of the
-  // viewer. The old ASCII class was the worst of both: it put "hrerbunker" there.
-  const words = text
-    .replace(/[^\p{L}\s]/gu, " ")
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(w => w.length >= 4 && !STOP_WORDS.has(w));
-
-  // Deduplicate while preserving order
-  const seen = new Set<string>();
-  const unique: string[] = [];
-  for (const w of words) {
-    if (!seen.has(w)) {
-      seen.add(w);
-      unique.push(w);
-    }
-  }
-
-  // Score: prefer longer words (more impactful), pick first `count` unique ones
-  // Sort by length descending, then take top `count`, then re-sort by original order
-  const topByLength = [...unique].sort((a, b) => b.length - a.length).slice(0, count * 2);
-  // Restore original order among top candidates
-  const topSet = new Set(topByLength);
-  const ordered = unique.filter(w => topSet.has(w)).slice(0, count);
-
-  // Capitalize first letter of each word for display
-  return ordered.map(w => w.charAt(0).toUpperCase() + w.slice(1));
-}
-
-// ─── 3f. Render Kinetic Typography Frames ────────────────────────────────────
-// Renders each keyword as a PNG overlay image for FFmpeg overlay.
-// Returns array of { path, startTime, endTime } for each keyword.
-export interface KineticFrame {
-  path: string;
-  startTime: number;
-  endTime: number;
-}
-
-async function renderKineticFrames(
-  keywords: string[],
-  sceneDuration: number,
-  sceneIndex: number,
-  workDir: string,
-  overrideStartTime?: number,
-  overrideEndTime?: number
-): Promise<KineticFrame[]> {
-  if (keywords.length === 0) return [];
-
-  // FFmpeg-only implementation: render yellow pill with black text as PNG
-  // No canvas dependency required — works in all environments
-
-  const frames: KineticFrame[] = [];
-  // Distribute keywords evenly across the scene duration (or use override timing)
-  const slotDuration = sceneDuration / keywords.length;
-  const showDuration = Math.max(1.5, slotDuration - 0.3);
-
-  for (let i = 0; i < keywords.length; i++) {
-    const keyword = keywords[i];
-    const startTime = overrideStartTime !== undefined ? overrideStartTime : i * slotDuration + 0.15;
-    const endTime = overrideEndTime !== undefined ? overrideEndTime : Math.min(startTime + showDuration, sceneDuration - 0.2);
-
-    const OVERLAY_H = 160;
-    const FONT_SIZE = 72;
-    const pngPath = path.join(workDir, `scene_${sceneIndex}_kword_${i}.png`);
-    const safeKw = sanitizeForDrawtext(keyword.toUpperCase(), 40);
-
-    // Estimate pill width: ~0.6 * fontSize per char + padding
-    const estTextW = Math.min(safeKw.length * FONT_SIZE * 0.6, VIDEO_WIDTH - 200);
-    const pillW = Math.round(estTextW + 80);
-    const pillH = FONT_SIZE + 40;
-    const pillX = Math.round((VIDEO_WIDTH - pillW) / 2);
-    const pillY = Math.round((OVERLAY_H - pillH) / 2);
-
-    try {
-      // Generate yellow pill PNG using FFmpeg lavfi + drawbox + drawtext
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y ` +
-          `-f lavfi -i "color=c=black@0:size=${VIDEO_WIDTH}x${OVERLAY_H}:rate=1" ` +
-          `-vf "drawbox=x=${pillX}:y=${pillY}:w=${pillW}:h=${pillH}:color=FFD200@0.97:t=fill,` +
-          `drawtext=text='${safeKw}':fontcolor=black:fontsize=${FONT_SIZE}:x=(w-text_w)/2:y=(h-text_h)/2" ` +
-          `-frames:v 1 -pix_fmt rgba "${pngPath}"`
-        ),
-        8_000, `Kinetic PNG scene ${sceneIndex} word ${i}`
-      );
-    } catch (err) {
-      console.warn(`[Pipeline] Kinetic PNG failed for scene ${sceneIndex} word ${i}:`, err);
-      continue;
-    }
-
-    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
-      frames.push({ path: pngPath, startTime, endTime });
-    }
-  }
-
-  return frames;
-}
-
-// ─── 4a2. Chapter Card Renderer (Vox/Wendover style) ──────────────────────────────────
-// Renders a 1.5s black-background title card with:
-//   - Thin horizontal accent line above the title
-//   - Large ALL CAPS white title text (bold, centered)
-//   - Thin horizontal accent line below the title
-//   - Hard cut in, hard cut out (no fade) — like reference video
-async function renderChapterCard(
-  chapterTitle: string,
-  chapterIndex: number,
-  workDir: string
-): Promise<string> {
-  const CARD_DURATION = 1.5; // seconds
-  const outputPath = path.join(workDir, `chapter_card_${chapterIndex}.mp4`);
-
-  // FFmpeg-only: yellow background with black bold text (no canvas dependency)
-  const safeTitle = sanitizeForDrawtext(chapterTitle.toUpperCase(), 50);
-  const centerY = VIDEO_HEIGHT / 2;
-  const lineY1 = centerY - 80;
-  const lineY2 = centerY + 70;
-  const lineX1 = Math.round(VIDEO_WIDTH * 0.15);
-  const lineX2 = Math.round(VIDEO_WIDTH * 0.85);
-
-  try {
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y ` +
-        `-f lavfi -i "color=c=FFD700:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-        `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-        `-filter_complex "[0:v]` +
-        `drawbox=x=${lineX1}:y=${lineY1}:w=${lineX2 - lineX1}:h=3:color=black@0.4:t=fill,` +
-        `drawbox=x=${lineX1}:y=${lineY2}:w=${lineX2 - lineX1}:h=3:color=black@0.4:t=fill,` +
-        `drawtext=text='${safeTitle}':fontcolor=black:fontsize=80:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10` +
-        `[vout]" ` +
-        `-map "[vout]" -map "1:a" ` +
-        `-t ${CARD_DURATION} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
-      ),
-      15_000, `Chapter card ${chapterIndex}`
-    );
-    console.log(`[Pipeline] Chapter card ${chapterIndex}: "${chapterTitle}" rendered (FFmpeg)`);
-  } catch (err) {
-    console.warn(`[Pipeline] Chapter card ${chapterIndex} failed (non-fatal):`, (err as Error).message);
-  }
-  return outputPath;
-}
-
-// ─── 4b. Branded Intro Title Card ────────────────────────────────────────────
-
-
-
-
-//// ─── 4c. Branded Outro Card ────────────────────────────────────────────
-
-
-
-
-type ComposePhase = "assembly" | "effects" | "full";
-
-function buildCinematicOverlayOpts(enableSubtitles: boolean): {
-  yearsOnly: boolean;
-  videoTextOnly: boolean;
-  facelessSubs: boolean;
-  docOverlays: boolean;
-} {
-  const faceless = facelessSubtitlesEnabled();
-  const yearsOnly = yearsOnlyOnScreen();
-  return {
-    yearsOnly,
-    // Per-beat text is burned onto each clip — no full-frame scene text on black.
-    videoTextOnly: faceless,
-    facelessSubs: !faceless && enableSubtitles,
-    docOverlays: !yearsOnly && !faceless,
-  };
-}
-
-export type ComposeSceneOptions = {
-  phase?: ComposePhase;
-  assemblyPath?: string;
-  dedup?: VisualDedupState;
-  videoTitle?: string;
-  /** Cumulative seconds before this scene in the final timeline (for 30s label ticks). */
-  sceneStartSec?: number;
-  /** Beats from visual fetch — keeps labels/clips aligned to voiceover sentences. */
-  montageBeats?: SceneBeat[];
-  clipBeatIndices?: number[];
-  /** Filled after montage plan is resolved (TTS hard-cut audit). */
-  composeMetaOut?: {
-    montageDurations: number[];
-    clipBeatIndices: number[];
-    montagePlan?: TtsMontagePlan;
-  };
-  /** Re-compose montage with TTS hard-cut after sync audit failure. */
-  forceTtsHardCutRemontage?: boolean;
-  /** Per-scene compose timeout derived from RenderBudget; overrides composeSceneTimeoutMs(). */
-  sceneTimeoutMs?: number;
-};
-
-/** Alpha fade-in/fade-out duration for an on-screen overlay (year/place label, stat callout,
- *  kinetic keyword, caption-style card) given its visible window. Phase 10: these previously
- *  hard-cut on/off via the FFmpeg `overlay=...:enable=between(t,start,end)` gate alone — this
- *  keeps that same gate but ramps the overlay's own alpha channel across a short window at
- *  each edge so it eases in/out instead of popping. Scales down for very short windows so the
- *  fade never eats the whole visible duration. */
-export function overlayFadeDurationSec(startTime: number, endTime: number): number {
-  const span = Math.max(0, endTime - startTime);
-  return Math.max(0.08, Math.min(0.35, span / 4));
-}
-
-function buildOverlayFilterChain(
-  baseLabel: string,
-  baseInputCount: number,
-  kineticFrames: KineticFrame[],
-  docOverlays: TimedOverlay[],
-  statCalloutFrame: { path: string; startTime: number; endTime: number } | null,
-  kineticY = 80
-): { extraInputs: string; filterChain: string; finalLabel: string } {
-  const allOverlays: Array<{ path: string; startTime: number; endTime: number; isStatCallout?: boolean }> = [
-    ...kineticFrames,
-    ...docOverlays,
-    ...(statCalloutFrame ? [{ ...statCalloutFrame, isStatCallout: true }] : []),
-  ];
-  if (allOverlays.length === 0) {
-    return { extraInputs: "", filterChain: "", finalLabel: baseLabel };
-  }
-  const extraInputs = allOverlays.map((f) => `-i "${f.path}"`).join(" ");
-  let chain = "";
-  let prevLabel = baseLabel;
-  allOverlays.forEach((frame, idx) => {
-    const inputIdx = baseInputCount + idx;
-    const outLabel = idx === allOverlays.length - 1 ? "kfinal" : `kf${idx}`;
-    const timed = frame as TimedOverlay;
-    const enable = `enable='between(t,${frame.startTime.toFixed(2)},${frame.endTime.toFixed(2)})'`;
-    const ovlLabel = `ov${idx}`;
-    const fadeDur = overlayFadeDurationSec(frame.startTime, frame.endTime);
-    const fadeOutStart = Math.max(frame.startTime, frame.endTime - fadeDur);
-    const alphaFade =
-      `,fade=t=in:st=${frame.startTime.toFixed(2)}:d=${fadeDur.toFixed(2)}:alpha=1` +
-      `,fade=t=out:st=${fadeOutStart.toFixed(2)}:d=${fadeDur.toFixed(2)}:alpha=1`;
-    if (timed.overlayX != null && timed.overlayY != null) {
-      const ow = ensureEvenDim(timed.overlayW ?? VIDEO_WIDTH);
-      const oh = ensureEvenDim(timed.overlayH ?? VIDEO_HEIGHT);
-      // Phase 11: previously only isVideoOverlay clips scaled to their own overlayW/overlayH;
-      // small positioned image overlays with known dimensions (e.g. year badges) fell through
-      // to full-frame scaling, stretching a ~250x108 PNG to 1920x1080 and compositing that
-      // giant image at the badge's small x/y — a visibly broken smeared fragment on screen.
-      // Scale to the overlay's own known size whenever it has one; only fall back to
-      // full-frame scale when no dimensions were provided at all.
-      const scale =
-        timed.overlayW && timed.overlayH
-          ? `scale=${ow}:${oh}:flags=fast_bilinear,format=yuva420p`
-          : `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuva420p`;
-      chain += `;[${inputIdx}:v]${scale}${alphaFade}[${ovlLabel}];` +
-        `[${prevLabel}][${ovlLabel}]overlay=x=${timed.overlayX}:y=${timed.overlayY}:${enable}[${outLabel}]`;
-    } else if (overlayUsesFullFrame(timed) || (frame as { isStatCallout?: boolean }).isStatCallout) {
-      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuva420p${alphaFade}[${ovlLabel}];` +
-        `[${prevLabel}][${ovlLabel}]overlay=x=0:y=0:${enable}[${outLabel}]`;
-    } else {
-      chain += `;[${inputIdx}:v]scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:flags=fast_bilinear,format=yuva420p${alphaFade}[${ovlLabel}];` +
-        `[${prevLabel}][${ovlLabel}]overlay=x=0:y=${kineticY}:${enable}[${outLabel}]`;
-    }
-    prevLabel = outLabel;
-  });
-  return { extraInputs, filterChain: chain, finalLabel: "kfinal" };
-}
-
-async function prepareSceneEffectLayers(
-  scene: Scene,
-  duration: number,
-  workDir: string,
-  enableSubtitles: boolean,
-  probedVoiceDur?: number,
-  sceneClips: string[] = [],
-  /**
-   * RONDE 201 — the scene's beats, so the subtitle switch can finally do something.
-   *
-   * Passed in rather than read from a global: this function is called from two places and neither
-   * owns the render's dedup state. The beats come from `sceneBeatsBySceneIndex`, the record RENDER
-   * 562 created precisely so a clip-list rebuild cannot lose them.
-   */
-  captionBeats: readonly CaptionBeat[] = []
-): Promise<{
-  kineticFrames: KineticFrame[];
-  docOverlays: TimedOverlay[];
-  statCalloutFrame: { path: string; startTime: number; endTime: number } | null;
-  sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }>;
-  fadeFilter: string;
-  voiceDur: number;
-  outDur: number;
-}> {
-  const voiceDur = probedVoiceDur || Math.max(0.5, duration - 0.35);
-  const outDur = voiceDur + 0.12;
-  const yearsOnly = yearsOnlyOnScreen();
-  let kineticFrames: KineticFrame[] = [];
-  let docOverlays: TimedOverlay[] = [];
-  let cinematicPlan: CinematicScenePlan | null = null;
-  const sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }> = [];
-
-  try {
-    if (cinematicEffectsEnabled()) {
-      // Schedule against outDur (the real, TTS-probed clip length this scene will actually be
-      // cut to) instead of the pre-TTS planning estimate `duration` — narration speed routinely
-      // differs from the plan, so overlays scheduled against the plan get cut off early or all
-      // bunch into the first portion of the clip while real narration runs longer/shorter.
-      cinematicPlan = planCinematicScene(scene, outDur);
-      const cinematicOverlays = await buildCinematicOverlays(
-        cinematicPlan,
-        scene,
-        outDur,
-        workDir,
-        FFMPEG_BIN,
-        (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl),
-        buildCinematicOverlayOpts(enableSubtitles)
-      );
-      docOverlays.push(...cinematicOverlays);
-
-      if (!yearsOnly) {
-        const sfxCache = new Map<string, string>();
-        for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
-          if (!sfxCache.has(cue.type)) {
-            sfxCache.set(cue.type, await generateSFX(cue.type, workDir));
-          }
-          sfxCueFiles.push({
-            path: sfxCache.get(cue.type)!,
-            timeSec: cue.timeSec,
-            volume: cue.volume,
-          });
-        }
-      }
-    }
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${scene.index}: effect layers failed (non-fatal):`, err);
-    kineticFrames = [];
-    docOverlays = [];
-  }
-
-  const statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
-
-  const colorGrade = documentaryStyleEnabled()
-    ? buildPostGradeVF()
-    : `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02,vignette=angle=0.6:mode=forward`;
-  /**
-   * RONDE 201 — THE SWITCH THAT COULD NOT AFFECT A FRAME.
-   *
-   * This was `enableSubtitles ? "" : ""` — both branches the same empty string — and the line under
-   * it dropped the fragment again whenever the documentary look was on. Two dead ends in adjacent
-   * lines, for a switch stored per video and offered to the operator in the UI.
-   *
-   * RONDE 113's burned-in-text policy exempts subtitles in writing ("a per-video switch the
-   * operator ticks themselves"), so this is the one kind of text the render is meant to draw.
-   * `composeCaptions` builds the file from the beats' MEASURED voice windows; a beat the TTS
-   * alignment never measured gets no caption rather than a guessed one.
-   */
-  const captions = enableSubtitles
-    ? writeSceneCaptionFilter({
-        beats: captionBeats,
-        sceneOutSec: outDur,
-        sceneIndex: scene.index,
-        workDir,
-        frameHeight: VIDEO_HEIGHT,
-      })
-    : null;
-  if (enableSubtitles) {
-    console.log(
-      `[Captions] scene ${scene.index}: ${captions ? captions.plan.cues.length : 0} cue(s)` +
-        (captions
-          ? ` unmeasured=${captions.plan.skippedUnmeasured} outOfRange=${captions.plan.skippedOutOfRange}`
-          : " — no beat carried a measured voice window, so none was drawn")
-    );
-  }
-  const subtitleDrawtext = captions?.filter ?? "";
-  /**
-   * And the documentary look no longer swallows them. The grade and the subtitles are different
-   * things: one is how the picture is coloured, the other is what the viewer reads.
-   */
-  const fadeFilter = `${colorGrade}${subtitleDrawtext}`;
-
-  return {
-    kineticFrames,
-    docOverlays,
-    statCalloutFrame,
-    sfxCueFiles,
-    fadeFilter,
-    voiceDur,
-    outDur,
-  };
-}
-
-async function applySceneEffectsPass(
-  assemblyPath: string,
-  scene: Scene,
-  duration: number,
-  workDir: string,
-  enableSubtitles: boolean,
-  sceneClips: string[] = [],
-  /** RONDE 201: forwarded to the layer builder so this route draws subtitles too. */
-  captionBeats: readonly CaptionBeat[] = []
-): Promise<string> {
-  const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
-  if (!fs.existsSync(assemblyPath) || fs.statSync(assemblyPath).size < 1000) {
-    throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index}: assembly missing for effects pass`);
-  }
-
-  const probedDur = await probeVideoDurationSec(assemblyPath);
-  const layers = await prepareSceneEffectLayers(
-    scene,
-    duration,
-    workDir,
-    enableSubtitles,
-    probedDur || undefined,
-    sceneClips,
-    captionBeats
-  );
-  const threadFlag = pipelineFfmpegThreadFlag();
-  const kineticY = 80;
-  const { extraInputs, filterChain, finalLabel } = buildOverlayFilterChain(
-    "0:v",
-    1,
-    layers.kineticFrames,
-    layers.docOverlays,
-    layers.statCalloutFrame,
-    kineticY
-  );
-  const hasOverlays =
-    layers.kineticFrames.length > 0 || layers.docOverlays.length > 0 || layers.statCalloutFrame !== null;
-  const overlayCount =
-    layers.kineticFrames.length + layers.docOverlays.length + (layers.statCalloutFrame ? 1 : 0);
-  const sfxBaseIdx = 1 + overlayCount;
-  const sfxInputStr = layers.sfxCueFiles.map((s) => `-i "${s.path}"`).join(" ");
-  const sfxMeta = layers.sfxCueFiles.map((s, i) => ({
-    inputIndex: sfxBaseIdx + i,
-    timeSec: s.timeSec,
-    volume: s.volume,
-  }));
-  const audioFadeOutStart = Math.max(0, layers.voiceDur - 0.15);
-  const audioFilter =
-    sfxMeta.length > 0
-      ? `[0:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,asetpts=PTS-STARTPTS[voiceFaded];` +
-        buildCinematicSfxAudioFilter("voiceFaded", sfxMeta, layers.voiceDur, "aout")
-      : `[0:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
-        `atrim=0:${layers.voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
-  const overlayChainRaw = filterChain.startsWith(";") ? filterChain.slice(1) : filterChain;
-  const gradedBase = "graded";
-  const videoChain = hasOverlays
-    ? `[0:v]${layers.fadeFilter}[${gradedBase}];${overlayChainRaw.replace(/\[0:v\]/g, `[${gradedBase}]`)};[kfinal]${FPS_FORMAT_VF}[vout]`
-    : `[0:v]${FPS_FORMAT_VF},${layers.fadeFilter}[vout]`;
-
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y -i "${assemblyPath}"${extraInputs ? ` ${extraInputs}` : ""}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
-        `-filter_complex "${videoChain};${audioFilter}" ` +
-        `-map "[vout]" -map "[aout]" -vsync cfr ` +
-        `-t ${layers.outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-    ),
-    120_000,
-    `Effects pass scene ${scene.index}`
-  );
-
-  for (const frame of layers.kineticFrames) {
-    try { fs.unlinkSync(frame.path); } catch { /* ignore */ }
-  }
-  for (const overlay of layers.docOverlays) {
-    try { fs.unlinkSync(overlay.path); } catch { /* ignore */ }
-  }
-
-  if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
-    throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index}: effects pass produced no output`);
-  }
-  return outputPath;
-}
-
-function sceneReviewInputs(
-  scenes: Scene[],
-  clipPathsPerScene: string[][]
-): SceneReviewInput[] {
-  return scenes.map((scene, i) => ({
-    index: scene.index,
-    text: scene.text,
-    duration: scene.duration,
-    clipPaths: clipPathsPerScene[i] ?? [],
-    visualCue: scene.visualCue,
-    pexelsQuery: scene.pexelsQuery,
-  }));
-}
-
-// ─── 5. Compose Scene Video (Vidrush-style hard-cut montage) ───────────────
-
-/**
- * RONDE 32 (FIX D): the "full"-phase output path composeSceneVideoInner writes to, mirrored
- * here so a timed-out compose attempt can be checked for a finished file before its rescue
- * replaces it. Kept next to composeSceneVideo so the two stay in sync — see the `outputPath`
- * assignment at the top of composeSceneVideoInner.
- */
-export function sceneComposeOutputPath(sceneIndex: number, workDir: string): string {
-  return path.join(workDir, `scene_${sceneIndex}_composed.mp4`);
-}
-
-/**
- * "FINISHED" WAS A STOPWATCH READING, AND IT READ AS A RESULT.
- *
- * `[Compose] Scene 2 finished (18.4s) — active=1, queued=0, done=3/5` says how long the task took
- * and how busy the pool is. It says nothing about what the task produced, and that is exactly how
- * it was read: render 593's investigation spent a pass on whether a scene reported finished while
- * `scene_2_composed.mp4` was absent from disk, because the line gave no other way to tell. It was
- * not a false success — the compose had published under a different name, the concat verifies
- * every scene file and logs `Concat: scene file MISSING` for any that is not there — but nothing
- * between the two lines said so.
- *
- * This is the missing half of the sentence, and only that: the file the compose returned, its
- * size, and whether it is on disk AT THE MOMENT it is reported. Nothing is inferred from the
- * name, no verdict is issued, and a compose that returns nothing says `out=none` rather than
- * going quiet. The concat's own check is unchanged and remains the thing that decides.
- */
-function formatComposeOutcome(result: unknown): string {
-  const p = typeof result === "string" ? result.trim() : "";
-  if (!p) return "out=none";
-  try {
-    const st = fs.statSync(p);
-    return `out=${path.basename(p)} bytes=${st.size}`;
-  } catch {
-    return `out=${path.basename(p)} bytes=ABSENT`;
-  }
-}
-
-/**
- * Minimum share of the scene's voice duration a salvaged compose output must actually cover.
- *
- * withSceneFetchTimeout rejects the CALLER without cancelling the work: hardAbortScope SIGKILLs
- * the registered ffmpeg children, but the surrounding async chain keeps running and can still
- * reach a later step. So a compose that "failed" may still have published its output, and the
- * salvage check below exists for that case.
- *
- * What the file's presence does NOT tell you is whether it is complete. Render 529 shows the
- * shape of the failure: scene 1's compose was killed at 14:44:48 while concatenating
- * scene_1_seq_montage.mp4, three ffmpeg steps short of muxing its output — so nothing was
- * published, and the rescue's own 1-clip compose was the only thing that ever wrote
- * scene_1_composed.mp4. A SIGKILL landing one step later, mid-mux, would instead have left a
- * truncated but structurally valid mp4 behind. Only a MEASURED duration that actually covers
- * the voice proves the compose ran to completion, which is why the ratio below is the gate and
- * existsSync is not.
- */
-const COMPOSE_SALVAGE_MIN_DURATION_RATIO = 0.95;
-
-/**
- * RONDE 32 (FIX D): returns the scene's already-finished compose output, or null.
- *
- * Deliberately strict, in this order: exists → non-trivial size → decodable → MEASURED duration
- * covering at least COMPOSE_SALVAGE_MIN_DURATION_RATIO of the expected voice length. An unknown
- * duration (ffprobe reports 0 when it cannot determine one) counts as unusable here rather than
- * as "probably fine" — this function only ever runs on a compose that already timed out, so the
- * safe default is to let the rescue run, not to ship a file we cannot measure.
- */
-export async function usableComposeOutputAfterTimeout(
-  sceneIndex: number,
-  workDir: string,
-  expectedDurationSec: number
-): Promise<string | null> {
-  const outputPath = sceneComposeOutputPath(sceneIndex, workDir);
-  try {
-    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) return null;
-  } catch {
-    return null;
-  }
-  if (!(await isValidVideoFile(outputPath))) return null;
-  const meta = await probeVideoStreamMeta(outputPath);
-  const probed = meta?.durationSec ?? 0;
-  if (!Number.isFinite(probed) || probed <= 0) return null;
-  if (expectedDurationSec > 0 && probed < expectedDurationSec * COMPOSE_SALVAGE_MIN_DURATION_RATIO) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex}: timed-out compose left a ${probed.toFixed(1)}s output for ` +
-        `${expectedDurationSec.toFixed(1)}s voice — too short to salvage, running rescue`
-    );
-    return null;
-  }
-  return outputPath;
-}
-
-/**
- * RONDE 32 (FIX C): which beats of this scene no surviving clip is standing in for.
- *
- * The rescue loop used to be a pure slot counter, so every slot searched the same video-wide
- * topic query and the curated archive answered every one of them with its single highest-scoring
- * asset. Mapping each rescue slot onto a beat that actually has no picture restores the
- * beat-specific tier in generateGuaranteedBeatClip's escalation ladder without touching the
- * ladder itself. `clipBeatIndices` is the mapping the compose stage already carries.
- */
-export function uncoveredBeatIndicesForRescue(
-  beatCount: number,
-  clipBeatIndices: number[] | undefined,
-  survivorCount: number,
-  /**
-   * RONDE 33: a second, independent source for the same clip→beat question.
-   *
-   * `clipBeatIndices` is the explicit mapping and stays authoritative, but it is not always
-   * populated (and can be shorter than the clip list), in which case every beat looked
-   * uncovered and the rescue drifted back toward searching beat `slot`. The adopt audit records
-   * the beat each clip was adopted for at the moment it was adopted, keyed by scene + basename,
-   * so it can fill exactly those gaps. It is only ever used to ADD coverage that was really
-   * recorded — never to invent a clip-index-equals-beat-index mapping.
-   */
-  auditMapping?: {
-    sceneIndex: number;
-    survivors: readonly string[];
-    audit: readonly ClipAdoptEntry[];
-  }
-): number[] {
-  if (beatCount <= 0) return [];
-  const covered = new Set<number>();
-  for (const bi of (clipBeatIndices ?? []).slice(0, Math.max(0, survivorCount))) {
-    if (Number.isInteger(bi) && bi >= 0 && bi < beatCount) covered.add(bi);
-  }
-  if (auditMapping) {
-    const { sceneIndex, survivors, audit } = auditMapping;
-    for (const clipPath of survivors.slice(0, Math.max(0, survivorCount))) {
-      const basename = path.basename(clipPath);
-      const entry =
-        audit.find((e) => e.sceneIndex === sceneIndex && e.basename === basename) ??
-        audit.find((e) => e.basename === basename);
-      const bi = entry?.beatIndex;
-      if (typeof bi === "number" && Number.isInteger(bi) && bi >= 0 && bi < beatCount) covered.add(bi);
-    }
-  }
-  const uncovered: number[] = [];
-  for (let b = 0; b < beatCount; b++) {
-    if (!covered.has(b)) uncovered.push(b);
-  }
-  // Nothing could be established as covered while clips clearly exist: the mapping is genuinely
-  // unknown, so every beat stays a candidate. That is not the same as claiming clip i covers
-  // beat i — it deliberately claims nothing, and the batch-scoped curated dedup keeps two slots
-  // from answering an overlapping search with the same asset.
-  return uncovered;
-}
-
-/**
- * RONDE 32 (B1/B2): the subset of a scene's already-selected clips that is still usable as a
- * standalone compose input right now.
- *
- * The predicate is deliberately the one this file already applies to a single reused clip — the
- * rescueStockClip guard inside composeSceneVideoInner: it must exist, be more than a stub, not be
- * one of our own fallback cards, and actually decode. Nothing is copied, renamed or re-encoded;
- * this only reads.
- */
-export async function usableSurvivorClips(
-  clips: readonly string[],
-  /**
-   * RONDE 34: stop after this many usable clips. The last-resort path only ever reads [0], so
-   * validating the whole list there spent one ffprobe per remaining survivor on a code path that
-   * is already handling a failure. The predicate below is unchanged — this only decides how far
-   * the scan runs, never what counts as usable.
-   */
-  limit = Number.POSITIVE_INFINITY
-): Promise<string[]> {
-  const usable: string[] = [];
-  if (limit <= 0) return usable;
-  for (const p of clips) {
-    if (!p) continue;
-    try {
-      if (!fs.existsSync(p) || fs.statSync(p).size <= 100) continue;
-    } catch {
-      continue;
-    }
-    if (isPipelineFallbackClip(p)) continue;
-    if (!(await isValidVideoFile(p))) continue;
-    usable.push(p);
-    if (usable.length >= limit) break;
-  }
-  return usable;
-}
-
-/**
- * RONDE 32 (B1): the minimal single-clip + voiceover scene output the Stage4 last-resort path has
- * always built, lifted verbatim so the P5A path can reuse a real clip instead of dropping straight
- * to a colour card. Same ffmpeg invocation, same silent-audio substitution, same size check and
- * same thrown error as before — this is a move, not a rewrite.
- */
-export async function composeLastResortSceneFromClip(
-  sceneIndex: number,
-  sceneDurationSec: number,
-  clipPath: string,
-  audioPath: string,
-  workDir: string,
-  /**
-   * RONDE 34: which compose phase this last resort stands in for. Previously the helper silently
-   * assumed "full" by writing scene_N_lastresort.mp4 regardless of what the failing compose had
-   * been producing, so an assembly-phase failure would have published a file the assembly stage
-   * does not look for. Both current callers are full-phase, which is why nothing broke — the
-   * assumption is now stated instead of hidden.
-   */
-  phase: ComposePhase = "full"
-): Promise<string> {
-  const outputPath = path.join(
-    workDir,
-    phase === "assembly" ? `scene_${sceneIndex}_assembly_lastresort.mp4` : `scene_${sceneIndex}_lastresort.mp4`
-  );
-  const audioValid = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100;
-  let safeAudioPath = audioPath;
-  if (!audioValid) {
-    safeAudioPath = path.join(workDir, `scene_${sceneIndex}_lastresort_silent.mp3`);
-    try {
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${sceneDurationSec} -c:a libmp3lame -b:a 64k "${safeAudioPath}"`
-        ),
-        10_000, `Last-resort silent audio scene ${sceneIndex}`
-      );
-    } catch {
-      fs.writeFileSync(safeAudioPath, Buffer.from([0xff, 0xfb, 0x90, 0x00, ...Array(413).fill(0)]));
-    }
-  }
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y -i "${clipPath}" -i "${safeAudioPath}" ` +
-        `-filter_complex "[0:v]trim=duration=${sceneDurationSec.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
-        `[1:a]atrim=0:${sceneDurationSec.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-        `-map "[vout]" -map "[aout]" -vsync cfr -t ${sceneDurationSec.toFixed(3)} ` +
-        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-    ),
-    90_000,
-    `Last-resort compose scene ${sceneIndex}`
-  );
-  if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
-    throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: compose failed — all rescue paths exhausted`);
-  }
-  return outputPath;
-}
-
-/**
- * RONDE 34 (point 2): the beat a rescue slot is standing in for, when that is actually known.
- *
- * The rescue loop already picks an uncovered beat to search for; recording the SLOT number as the
- * beat index (which is what recordClipAdopt was given) put a wrong mapping into the adopt audit —
- * the same audit uncoveredBeatIndicesForRescue now reads back. Returning null when there is no
- * uncovered beat keeps the caller on the old slot-number behaviour rather than inventing one.
- */
-export function rescueBeatIndexForSlot(slot: number, uncoveredBeatIndices: number[]): number | null {
-  if (uncoveredBeatIndices.length === 0) return null;
-  return uncoveredBeatIndices[slot % uncoveredBeatIndices.length] ?? null;
-}
-
-/**
- * RONDE 34 (point 2): clipBeatIndices for the merged survivors+rescue clip array, or undefined.
- *
- * composeSceneVideo only trusts this array when it is index-aligned with the clip list, so it can
- * only be produced when EVERY survivor's beat is known — a partially known list would have to
- * invent the rest. Undefined means "pass the original through unchanged", which is what the
- * rescue did before this round.
- */
-export function mergedRescueClipBeatIndices(
-  survivorBeatIndices: number[] | undefined,
-  survivorCount: number,
-  rescueBeatIndices: readonly (number | null)[]
-): number[] | undefined {
-  if (!survivorBeatIndices || survivorBeatIndices.length !== survivorCount) return undefined;
-  if (rescueBeatIndices.some((bi) => bi === null)) return undefined;
-  return [...survivorBeatIndices, ...(rescueBeatIndices as number[])];
-}
-
 /**
  * RONDE 32 (FIX C): beat text for rescue slot `slot`, or null when there is nothing
  * beat-specific left to say (every beat already covered, or no beat metadata at all). The
@@ -45073,1679 +41964,6 @@ export function sceneSentenceForSlot(sceneText: string, slot: number, maxLen = 2
   if (sentences.length <= 1) return (sceneText ?? "").slice(0, maxLen);
   const picked = sentences[Math.abs(slot) % sentences.length]!;
   return picked.slice(0, maxLen);
-}
-
-export function rescueBeatTextForSlot(
-  slot: number,
-  beats: SceneBeat[] | undefined,
-  uncoveredBeatIndices: number[]
-): string | null {
-  if (!beats?.length || uncoveredBeatIndices.length === 0) return null;
-  const beatIndex = uncoveredBeatIndices[slot % uncoveredBeatIndices.length];
-  const text = beatIndex == null ? undefined : beats[beatIndex]?.text;
-  return text && text.trim().length > 3 ? text : null;
-}
-
-// Thin wrapper so composeSceneVideoInner's heartbeat entry is cleared on every exit path,
-// including a thrown error — the inner function only cleared it on its normal return points.
-async function composeSceneVideo(
-  scene: Scene,
-  clips: string[],
-  audioPath: string,
-  duration: number,
-  workDir: string,
-  totalScenes: number,
-  enableSubtitles = false,
-  rescueStockClip?: string | null,
-  beatDurations?: number[],
-  usedClipsOut?: string[],
-  composeOptions?: ComposeSceneOptions
-): Promise<string> {
-  const heartbeatLabel = `composeSceneVideo s${scene.index} clips=${clips.length}`;
-  setWorkerHeartbeat(heartbeatLabel);
-  try {
-    return await composeSceneVideoInner(
-      scene, clips, audioPath, duration, workDir, totalScenes, enableSubtitles,
-      rescueStockClip, beatDurations, usedClipsOut, composeOptions
-    );
-  } finally {
-    clearWorkerHeartbeat(heartbeatLabel);
-  }
-}
-
-export async function composeSceneVideoInner(
-  scene: Scene,
-  clips: string[],
-  audioPath: string,
-  duration: number,
-  workDir: string,
-  totalScenes: number,
-  enableSubtitles = false,  // Subtitles disabled by default
-  rescueStockClip?: string | null,
-  beatDurations?: number[],
-  usedClipsOut?: string[],
-  composeOptions?: ComposeSceneOptions
-): Promise<string> {
-  const _csvT0 = Date.now();
-  console.log(`[Hang] composeSceneVideo ENTER s${scene.index} clips=${clips.length} dur=${duration.toFixed(2)}s phase=${composeOptions?.phase ?? "full"}`);
-  if (composeOptions?.phase === "effects" && composeOptions.assemblyPath) {
-    const r = await applySceneEffectsPass(
-      composeOptions.assemblyPath,
-      scene,
-      duration,
-      workDir,
-      enableSubtitles,
-      clips,
-      /** RONDE 201: the render's own beat record — see `sceneBeatsBySceneIndex`. */
-      composeOptions?.dedup?.sceneBeatsBySceneIndex?.get(scene.index) ?? []
-    );
-    console.log(`[Hang] composeSceneVideo EXIT s${scene.index} effects-pass total=${Date.now()-_csvT0}ms`);
-    /** composeSceneVideo's own `finally` clears this scene's label — see the note there. */
-    return r;
-  }
-
-  const phase = composeOptions?.phase ?? "full";
-  const stepTiming = composeOptions?.dedup?.stepTiming;
-  const finishSceneTiming = () => stepTiming?.summarizeScene(scene.index);
-  // RONDE 33 (atomic compose output): ffmpeg no longer writes to the scene's final path.
-  //
-  // Every ffmpeg invocation below used `-y` straight onto scene_N_composed.mp4, so a compose
-  // that was abandoned mid-write (withSceneFetchTimeout rejects the caller and SIGKILLs the
-  // children, but the surrounding chain keeps running) could truncate — or, together with the
-  // rescue retry, race — the file another attempt had already finished. Composing into a
-  // per-attempt temp file and renaming only on success makes the final path appear atomically
-  // and never in a half-written state. rename(2) within one directory is atomic on every
-  // platform this runs on, and the temp file lives in the same workDir so it is a plain
-  // in-directory move, not a copy.
-  // The temp suffix goes BEFORE the extension, never after it: ffmpeg picks its muxer from the
-  // filename, so a "...composed.mp4.tmp-xyz" target fails to encode at all.
-  const outputBase = phase === "assembly" ? `scene_${scene.index}_assembly` : `scene_${scene.index}_composed`;
-  const finalOutputPath = path.join(workDir, `${outputBase}.mp4`);
-  const outputPath = path.join(
-    workDir,
-    `${outputBase}.tmp-${process.pid.toString(36)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.mp4`
-  );
-  // RONDE 34 (point 4): staged clip list, published only on a successful return.
-  let pendingUsedClips: string[] = [];
-  /**
-   * RONDE 158 — the one place every compose route leaves through, so the one place to check that
-   * the scene's picture actually covers its sound.
-   *
-   * `targetDur` is the scene's own length. Omitted means "not known here", and the check is then
-   * skipped rather than run against a guess.
-   */
-  const returnComposed = async (composedPath: string, targetDur?: number): Promise<string> => {
-    if (usedClipsOut) {
-      usedClipsOut.length = 0;
-      usedClipsOut.push(...pendingUsedClips);
-    }
-    /**
-     * ASSIGNED → COMPOSE, AT THE ONE DOOR EVERY COMPOSE ROUTE LEAVES THROUGH.
-     *
-     * ── Why here, and not at each internal filter ───────────────────────────────────────────
-     *
-     * `composeSceneVideoInner` is forty pages long and drops clips in many places — a gate, a
-     * duplicate, a decode failure, a rescue that rebuilds the list. Instrumenting each of those
-     * means finding all of them and remembering the next one, which is the seam this codebase has
-     * split on fourteen times.
-     *
-     * This function is already documented as the single exit, and both sides of the question are
-     * in scope here: `clips` is exactly what compose was handed, `pendingUsedClips` is exactly
-     * what it kept. The difference is what it dropped — by construction, with nothing to forget.
-     *
-     * ── Where the reason comes from ─────────────────────────────────────────────────────────
-     *
-     * Not from here. A diff knows THAT a clip went, never WHY. The gates that refused it already
-     * file terminal outcomes on the ledger — the compose gate, the duplicate check, the validation
-     * swap all call `recordAssetOutcome` — so a clip with an ending already recorded keeps that
-     * ending and its own reason. Only a clip that left with nothing recorded gets `UNKNOWN`, which
-     * is the honest answer and the one worth chasing in the next render. No reason is invented.
-     */
-    const composeLedger = composeOptions?.dedup?.sourcingCache?.lineage;
-    if (composeLedger) {
-      const kept = new Set(pendingUsedClips);
-      /**
-       * R194 §12 — the same picture offered twice is not two mysteries.
-       *
-       * Compose is regularly handed one asset under two paths (a trim, a text overlay, a padded
-       * copy) or the same path twice by two routes that both filled a slot. The second occurrence
-       * can only ever be dropped, and the reason is known here with certainty rather than guessed:
-       * this content key was already accounted for in this same call. `duplicate_content` is the
-       * existing reason for exactly that, so this adds a spelling to nothing.
-       */
-      const seenContentKeys = new Set<string>();
-      /** R197 — a clip the ledger never saw yields no COMPOSE_INPUT, so the sum below would hold
-       *  while a real picture went unaccounted. Counted, never repaired — see r197's own file. */
-      let unknownToLedger = 0;
-      for (const clipPath of clips) {
-        const contentKey = clipContentKey(clipPath);
-        const opened = composeLedger.recordEventForPath(clipPath, "COMPOSE_INPUT", { status: "OK", contentKey });
-        if (!opened) unknownToLedger++;
-        if (kept.has(clipPath)) {
-          seenContentKeys.add(contentKey);
-          composeLedger.recordEventForPath(clipPath, "COMPOSE_SELECTED", { status: "OK", contentKey });
-          continue;
-        }
-        /** Already explained by whoever refused it — that reason is better than anything here. */
-        if (composeLedger.hasOutcomeFor(clipPath, contentKey)) continue;
-        const duplicate = seenContentKeys.has(contentKey);
-        seenContentKeys.add(contentKey);
-        composeLedger.recordEventForPath(clipPath, "COMPOSE_DROPPED", {
-          status: "REJECTED",
-          /** UNKNOWN only where it is true. A reason the code can establish is never guessed. */
-          reason: duplicate ? "duplicate_content" : "UNKNOWN",
-          contentKey,
-        });
-      }
-      const dropped = clips.length - pendingUsedClips.length;
-      console.log(
-        `[ComposeBeatSummary] scene=${scene.index} composeInputs=${clips.length} ` +
-          `composeSelected=${pendingUsedClips.length} composeDropped=${Math.max(0, dropped)} ` +
-          `phase=${phase}` +
-          /** Only when non-zero: on a healthy scene this adds nothing but noise. */
-          (unknownToLedger > 0 ? ` unknownToLedger=${unknownToLedger}` : "")
-      );
-      if (unknownToLedger > 0) {
-        console.warn(
-          `[ComposeLifecycle] scene=${scene.index} UNKNOWN_TO_LEDGER=${unknownToLedger} — ` +
-            `these clips reached compose with no lineage record, so the render-level compose ` +
-            `invariant cannot account for them`
-        );
-      }
-    }
-    if (targetDur != null && targetDur > 0 && composedPath === outputPath) {
-      const covered = await repairShortSceneVideo(
-        composedPath,
-        targetDur,
-        scene.index,
-        workDir,
-        90_000,
-        pipelineFfmpegThreadFlag()
-      );
-      if (covered !== composedPath) {
-        // The repair wrote a new file; it becomes the compose output so the rename below publishes
-        // it under the name the caller expects.
-        try {
-          fs.rmSync(outputPath, { force: true });
-          fs.renameSync(covered, outputPath);
-        } catch (err) {
-          console.warn(
-            `[Pipeline] Scene ${scene.index}: could not swap in the repaired scene: ` +
-              `${(err as Error)?.message?.slice(0, 120)}`
-          );
-        }
-      }
-    }
-    // Only the compose output itself is published atomically; a caller that hands back some
-    // other path (there is none today) is returned unchanged rather than renamed blindly.
-    let published = composedPath;
-    if (composedPath === outputPath) {
-      fs.renameSync(outputPath, finalOutputPath);
-      published = finalOutputPath;
-    }
-    console.log(`[Hang] composeSceneVideo EXIT s${scene.index} out=${published.slice(-30)} total=${Date.now()-_csvT0}ms`);
-    finishSceneTiming();
-    return published;
-  };
-  /** Remove the temp output if this attempt never published it — no orphans in workDir. */
-  const discardUnpublishedComposeTemp = (): void => {
-    try {
-      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-    } catch {
-      /* best effort — a leftover temp file must never mask the real failure */
-    }
-  };
-  // The `finally` at the very end of this function is the only cleanup hook: it deletes THIS
-  // attempt's temp file by its exact name, so a concurrent attempt on the same scene (compose
-  // and its rescue retry can overlap) can never have its own in-flight temp swept away. The
-  // body below is deliberately left at its original indentation — this wrapper adds no
-  // formatting churn to ~1000 lines of working code.
-  try {
-
-  // Real stock only — no grey placeholders, no duplicate clips in this video.
-  let existingClips = clips.filter(
-    (p) => p && fs.existsSync(p) && fs.statSync(p).size > 100 && !isPipelineFallbackClip(p)
-  );
-  if (curatedArchiveOnlyVisuals()) {
-    existingClips = existingClips.filter((p) => {
-      if (curatedClipPathAssetId(p) != null) return true;
-      // Archive-first: keep licensed-stock + Wikimedia fallbacks adopted during beat fetch
-      if (
-        archivePexelsFallbackEnabled() &&
-        fs.existsSync(p) &&
-        !isPipelineFallbackClip(p) &&
-        !isAIGeneratedClip(p)
-      ) {
-        return true;
-      }
-      console.warn(
-        `[Pipeline] Scene ${scene.index}: rejecting clip ${path.basename(p)} (not archive or licensed fallback)`
-      );
-      return false;
-    });
-  }
-  const validClips: string[] = [];
-  const seenKeys = new Set<string>();
-  /**
-   * RONDE 95 (§1) — the clips this scene chose and this stage is dropping.
-   *
-   * A clip can leave the scene here for two reasons — it failed the compose gate, or an identical
-   * one is already in — and until now both were a console.warn and nothing else. The ledger showed
-   * the clip ADOPTED and then simply absent from FINAL_VIDEO, with no event saying why, which is
-   * indistinguishable from an instrumentation hole.
-   *
-   * They are collected rather than recorded immediately because the right event depends on what
-   * happens next: if a substitute takes the scene over, each of these was REPLACED by it; if the
-   * scene keeps other clips, each was merely REMOVED. The difference matters — one is a swap the
-   * audit must be able to follow, the other is a scene trimming its own surplus.
-   */
-  const droppedClips: Array<{ path: string; reason: string }> = [];
-  const lineage = composeOptions?.dedup?.sourcingCache?.lineage;
-  for (const clipPath of existingClips) {
-    if (!(await montageClipPassesComposeGate(clipPath, scene.index, validClips.length, composeOptions?.dedup?.beatRelevance))) {
-      console.warn(`[Pipeline] Scene ${scene.index}: skipping bad clip ${path.basename(clipPath)}`);
-      droppedClips.push({ path: clipPath, reason: "compose_gate_failed" });
-      continue;
-    }
-    const key = clipContentKey(clipPath);
-    if (seenKeys.has(key)) {
-      console.warn(`[Pipeline] Scene ${scene.index}: skipping duplicate clip ${path.basename(clipPath)}`);
-      droppedClips.push({ path: clipPath, reason: "duplicate_content_key" });
-      continue;
-    }
-    seenKeys.add(key);
-    validClips.push(clipPath);
-  }
-
-  /**
-   * RONDE 95 (§1) — one call, whatever substituted for the dropped clips.
-   *
-   * `substitute` is null when nothing took their place, which is the REMOVED case. Recording
-   * happens exactly once per dropped clip: `recorded` guards the three branches below, any of
-   * which can run for the same scene, so a rescue followed by a guaranteed fill cannot file two
-   * REPLACED events for one asset.
-   */
-  let dropsRecorded = false;
-  const settleDroppedClips = (substitute: string | null, reason: string): void => {
-    if (dropsRecorded || !lineage || droppedClips.length === 0) return;
-    dropsRecorded = true;
-    for (const dropped of droppedClips) {
-      if (substitute) {
-        lineage.recordReplacement(dropped.path, substitute, `${reason}:${dropped.reason}`, {
-          originalContentKey: clipContentKey(dropped.path),
-          replacementContentKey: clipContentKey(substitute),
-        });
-      } else {
-        lineage.recordEventForPath(dropped.path, "REMOVED", {
-          status: "REMOVED",
-          reason: dropped.reason,
-          // RONDE 167: the curated route is reachable only by content key.
-          contentKey: clipContentKey(dropped.path),
-        });
-      }
-    }
-  };
-
-  if (
-    validClips.length === 0 &&
-    rescueStockClip &&
-    fs.existsSync(rescueStockClip) &&
-    !isPipelineFallbackClip(rescueStockClip) &&
-    (await isValidVideoFile(rescueStockClip))
-  ) {
-    validClips.push(rescueStockClip);
-    settleDroppedClips(rescueStockClip, "rescue_stock_clip");
-  }
-
-  // The scene still has clips of its own, so anything dropped above was surplus or unusable — a
-  // removal, not a swap. Guarded by the same `dropsRecorded` flag, so a scene that DID substitute
-  // has already filed its replacements and this is a no-op.
-  if (validClips.length > 0) settleDroppedClips(null, "removed");
-
-  if (validClips.length === 0) {
-    if (canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
-      console.warn(`[Pipeline] Scene ${scene.index}: geen bruikbare clips — guaranteed compose fill`);
-      const minNeeded = Math.max(1, minClipsForBalancedVoice(duration + 0.15));
-      const holdSec = Math.max(3, duration / minNeeded);
-      for (let i = 0; i < minNeeded; i++) {
-        const tierOut: GuaranteedTierOut = {};
-        const clip = await generateGuaranteedBeatClip(
-          scene.index, i, holdSec, workDir, undefined, undefined, undefined, tierOut,
-          composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
-        );
-        if (await montageClipPassesComposeGate(clip, scene.index, i, composeOptions?.dedup?.beatRelevance)) {
-          validClips.push(clip);
-          // RONDE 95 (§1): a generated placeholder standing in for the scene's real clips is the
-          // most important replacement to be able to see, not the least.
-          settleDroppedClips(clip, "guaranteed_fill");
-          // Round 17: this proactive guaranteed-fill path (composeSceneVideo finding zero usable
-          // clips from upstream search) previously never called recordClipAdopt, so it was
-          // invisible to both assertVisualCoverageExportGate's fallbackBeats/beatsFilled ratio
-          // and to canAddGuaranteedFallbackClip's own per-video fallback cap (countFallbackAdopts
-          // reads the same audit array) — a scene could fall back to guaranteed/placeholder clips
-          // here with neither signal ever detecting it. Recording with the same "fallback" source
-          // label the beat-level rescue ladder already uses (ensureBeatVisualFilled) makes this
-          // path visible to both, additively, without changing which clip is selected or used.
-          if (composeOptions?.dedup) {
-            recordClipAdopt(
-              composeOptions.dedup.clipAdoptAudit, scene.index, i, scene.text, clip,
-              guaranteedAdoptSource(tierOut.tier)
-            );
-          }
-        }
-      }
-    } else {
-      console.warn(
-        `[Pipeline] Scene ${scene.index}: geen bruikbare clips — strict voice↔visual, geen guaranteed fill`
-      );
-      if (
-        strictVoiceVisualMatchEnabled() &&
-        composeOptions?.dedup &&
-        !isComposeNetworkBlocked(composeOptions.dedup) &&
-        composeOptions.montageBeats?.length
-      ) {
-        const recovered: string[] = [];
-        const seenRecover = new Set<string>();
-        const title = coerceVisionString(composeOptions.videoTitle);
-        for (const beat of composeOptions.montageBeats) {
-          await ensureBeatVisualFilled(
-            beat,
-            scene,
-            workDir,
-            title,
-            composeOptions.dedup,
-            async (clipPath, holdSec) => {
-              const key = clipContentKey(clipPath);
-              if (seenRecover.has(key)) return false;
-              if (!(await montageClipPassesComposeGate(clipPath, scene.index, recovered.length, composeOptions?.dedup?.beatRelevance))) {
-                return false;
-              }
-              seenRecover.add(key);
-              recovered.push(clipPath);
-              return true;
-            },
-            undefined,
-            beat.holdSec
-          );
-        }
-        for (const clipPath of recovered) {
-          const key = clipContentKey(clipPath);
-          if (seenKeys.has(key)) continue;
-          seenKeys.add(key);
-          validClips.push(clipPath);
-        }
-      }
-    }
-  }
-
-  if (validClips.length === 0 && canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
-    const tierOut: GuaranteedTierOut = {};
-    const clip = await generateGuaranteedBeatClip(
-      scene.index, 999, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
-      composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
-    );
-    validClips.push(clip);
-    // Round 17: same audit gap as the guaranteed-fill loop above — see its comment.
-    if (composeOptions?.dedup) {
-      recordClipAdopt(
-        composeOptions.dedup.clipAdoptAudit, scene.index, 999, scene.text, clip,
-        guaranteedAdoptSource(tierOut.tier)
-      );
-    }
-  }
-
-  let safeClips = validClips;
-
-  const verifiedClips: string[] = [];
-  await timePipelineStep(
-    stepTiming,
-    "image_processing",
-    "Compose clip validation (ffprobe)",
-    async () => {
-      // RONDE 63: validate the clips side by side, and remember the verdicts.
-      //
-      // This was a plain sequential for-loop, and the step is not the cheap ffprobe its label
-      // suggests: requireValidClip also runs isMostlyBlackClip, which decodes frames. Render 532
-      // spent 201 seconds here — scene 1 alone 64.5s for fourteen clips — with one core busy and
-      // the rest of the machine idle, inside the very compose timeout the scene then blew.
-      //
-      // The check is per-clip and independent, so it parallelises exactly. And it is a pure
-      // function of the clip's content, so the second compose of a scene re-derives verdicts it
-      // already had: render 532 composed scenes 0 and 1 twice and paid for this twice.
-      const limit = pLimit(Math.max(2, montageSegmentParallelism(IS_RAILWAY) * 2));
-      const results = await Promise.all(
-        safeClips.map((clip) =>
-          limit(async () => {
-            const key = clipContentKey(clip);
-            const cached = composeClipValidationMemo.get(key);
-            if (cached !== undefined) return cached ? clip : null;
-            const ok = await requireValidClip(
-              clip, scene.index, duration, workDir, composeOptions?.dedup?.sourcingCache?.lineage
-            );
-            if (composeClipValidationMemo.size >= COMPOSE_VALIDATION_MEMO_MAX) {
-              const oldest = composeClipValidationMemo.keys().next();
-              if (!oldest.done) composeClipValidationMemo.delete(oldest.value);
-            }
-            composeClipValidationMemo.set(key, ok != null);
-            return ok;
-          })
-        )
-      );
-      for (const ok of results) if (ok) verifiedClips.push(ok);
-    },
-    scene.index
-  );
-  const clipsBeforeValidation = safeClips.length;
-  safeClips = verifiedClips.filter((clip, i, arr) => {
-    const key = clipContentKey(clip);
-    return arr.findIndex((c) => clipContentKey(c) === key) === i;
-  });
-  /**
-   * RONDE 162 — validation may take footage away, and the scene has to be told to go and replace
-   * it, not just carry on with half a montage.
-   *
-   * There was a rescue for "every clip failed" and none at all for "some did", so a scene that
-   * lost part of its footage here simply composed with what was left. Render 553's scene 2:
-   *
-   *     Scene 2: dropping mostly-black clip scene_2_b1_curated_a56087.mp4
-   *     Scene 2: dropping mostly-black clip scene_2_b3_curated_a56190.mp4
-   *     Scene 2: only 2/7 unique clips for 21.9s voice
-   *     Scene 2: montage 8.0s cannot reach 21.9s of voice … playing it 2x
-   *
-   * Four clips became two, the montage came out at 8.0s against 21.9s of narration, and RONDE
-   * 157's replay put those two pictures on screen twice. That is where the render's 24.8%
-   * repetition comes from — measured at 59s/74s and 61s/77s, both inside scene 2 — and it is not
-   * a dedup failure at all: the sourcing dedup never saw a second use, because there was not one.
-   * The scene was simply short.
-   *
-   * The two drops were right; more archive candidates for that scene existed and went unused
-   * (#56042, #56176, #56168, #56212 were all found and scored for its beats). So the fix is to
-   * ask for replacements, through the rescue that was already there for the all-failed case.
-   *
-   * Deliberately not done here: adding a colour card to pad the count. A card is not footage and
-   * would trade a repeat for something worse.
-   */
-  const lostToValidation = clipsBeforeValidation - safeClips.length;
-  if (
-    safeClips.length > 0 &&
-    lostToValidation > 0 &&
-    safeClips.length < requiredMontageClipsForDuration(duration) &&
-    isFastShortVideoLength(composeOptions?.dedup?.videoLength) &&
-    composeOptions?.dedup &&
-    !isComposeNetworkBlocked(composeOptions.dedup, scene.index)
-  ) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: validation dropped ${lostToValidation} clip(s), ` +
-        `${safeClips.length}/${requiredMontageClipsForDuration(duration)} left — looking for replacements`
-    );
-    const replacements = await rescueFastShortComposeClips(
-      scene,
-      workDir,
-      coerceVisionString(composeOptions.videoTitle),
-      composeOptions.dedup
-    );
-    for (const clipPath of replacements) {
-      const key = clipContentKey(clipPath);
-      if (safeClips.some((c) => clipContentKey(c) === key)) continue;
-      const ok = await requireValidClip(
-        clipPath, scene.index, duration, workDir, composeOptions.dedup.sourcingCache?.lineage
-      );
-      if (ok) safeClips.push(ok);
-      if (safeClips.length >= requiredMontageClipsForDuration(duration)) break;
-    }
-    console.log(
-      `[Pipeline] Scene ${scene.index}: after replacement ${safeClips.length}/` +
-        `${requiredMontageClipsForDuration(duration)} clip(s)`
-    );
-  }
-  if (safeClips.length === 0) {
-    if (canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
-      console.warn(`[Pipeline] Scene ${scene.index}: alle clips faalden validatie — guaranteed compose fill`);
-      const tierOut: GuaranteedTierOut = {};
-      const clip = await generateGuaranteedBeatClip(
-        scene.index, 1001, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
-        composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
-      );
-      const ok = await requireValidClip(
-        clip, scene.index, duration, workDir, composeOptions?.dedup?.sourcingCache?.lineage
-      );
-      const adopted = ok ?? clip;
-      safeClips.push(adopted);
-      // Audit-gap fix, fourth site in this function (same class as Round 17 + the two
-      // follow-up fixes above): this "every previously-valid clip failed ffprobe re-validation"
-      // rescue also used a successfully generated guaranteed clip without recording it.
-      if (composeOptions?.dedup) {
-        recordClipAdopt(
-          composeOptions.dedup.clipAdoptAudit, scene.index, 1001, scene.text, adopted,
-          guaranteedAdoptSource(tierOut.tier)
-        );
-      }
-    } else {
-      const fastShort = isFastShortVideoLength(composeOptions?.dedup?.videoLength);
-      if (fastShort && composeOptions?.dedup && !isComposeNetworkBlocked(composeOptions.dedup)) {
-        const rescued = await rescueFastShortComposeClips(
-          scene,
-          workDir,
-          coerceVisionString(composeOptions.videoTitle),
-          composeOptions.dedup
-        );
-        for (const clipPath of rescued) {
-          const key = clipContentKey(clipPath);
-          if (seenKeys.has(key)) continue;
-          seenKeys.add(key);
-          safeClips.push(clipPath);
-        }
-      }
-      if (safeClips.length === 0) {
-        const beats = composeOptions?.montageBeats;
-        const rescueBeat = beats?.[0];
-        if (rescueBeat && composeOptions?.dedup && !isComposeNetworkBlocked(composeOptions.dedup)) {
-          await adoptBestSimilarBeatClip(
-            rescueBeat,
-            scene,
-            workDir,
-            coerceVisionString(composeOptions.videoTitle),
-            composeOptions.dedup,
-            async (clipPath, sec = rescueBeat.holdSec) => {
-              const key = clipContentKey(clipPath);
-              if (seenKeys.has(key)) return false;
-              if (!(await montageClipPassesComposeGate(clipPath, scene.index, safeClips.length, composeOptions?.dedup?.beatRelevance))) {
-                return false;
-              }
-              seenKeys.add(key);
-              safeClips.push(clipPath);
-              return true;
-            },
-            rescueBeat.holdSec,
-            undefined,
-            null,
-            undefined
-          );
-        }
-      }
-      if (safeClips.length === 0) {
-        const localOnly = isComposeNetworkBlocked(composeOptions?.dedup);
-        throw pipelineError(
-          PIPELINE_ERROR.FFMPEG,
-          localOnly
-            ? `Scene ${scene.index}: no local clips cached before compose — visual stage must finish sourcing first`
-            : `Scene ${scene.index}: no valid clips and strict voice↔visual match forbids grey fallback`
-        );
-      }
-    }
-  }
-  if (validClips.length < existingClips.length) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: compose kept ${validClips.length}/${existingClips.length} fetched clips`
-    );
-  }
-
-  // Final visual manifest — one compact line per clip that is about to enter the ffmpeg
-  // montage for this scene, so a Railway render's exact composition is reconstructable after
-  // the fact without re-deriving it from dozens of scattered search/adoption log lines. Looks
-  // up each clip's source/fallback status in the same clipAdoptAudit the audit-gap fixes above
-  // now populate completely; a clip with no matching entry (e.g. pre-existing input clips
-  // adopted upstream before this scene's compose stage, whose own adopt call already logged
-  // them elsewhere) is reported as source=unknown rather than guessed at.
-  if (composeOptions?.dedup) {
-    const audit = composeOptions.dedup.clipAdoptAudit;
-    for (const clipPath of safeClips) {
-      const basename = path.basename(clipPath);
-      // RONDE 51: fall back to content identity when the exact basename no longer matches.
-      // A clip is renamed after it is adopted — "_still" is appended by the still-to-video step,
-      // "_transformed" by the transform step, and a padded clip is republished as
-      // "pad_combined_sNbM_<ts>.mp4" — so the basename recorded at adoption time is not the
-      // basename that reaches the montage. In render 530 that broke the lookup for 14 of 19
-      // clips, every one of which printed "beat=? source=unknown" even though its adoption HAD
-      // been recorded. clipContentKey already normalises those renames for dedup; using it here
-      // makes the manifest and the audit agree on what a clip is.
-      const key = clipContentKey(clipPath);
-      /**
-       * THE SECOND PLACE A KEY WAS RE-DERIVED FROM A BASENAME — found by the census this round.
-       *
-       * `clipContentKey(e.basename)` asks a different question than `clipContentKey(clipPath)`
-       * above: three of the resolver's rungs read the file, and a bare filename resolves to
-       * nothing on disk. So for exactly the clips this fallback exists to rescue — stills, and
-       * anything with no curated or provider tag — the two sides could not match, and the RONDE 51
-       * repair silently did not apply. `entry.contentKey` is the answer adoption already recorded
-       * with the full path in hand, so both sides now hold the same string.
-       *
-       * The basename spelling stays last, so an audit built before that field existed keeps the
-       * behaviour it had.
-       */
-      const keyOf = (e: ClipAdoptEntry): string => e.contentKey ?? clipContentKey(e.basename);
-      const entry =
-        audit.find((e) => e.sceneIndex === scene.index && e.basename === basename) ??
-        audit.find((e) => e.basename === basename) ??
-        audit.find((e) => e.sceneIndex === scene.index && keyOf(e) === key) ??
-        audit.find((e) => keyOf(e) === key);
-      /**
-       * RONDE 87 — the manifest reports the LEDGER, and the filename guess is diagnostic only.
-       *
-       * RONDE 64 made this line fall back to inferClipSourceFromPath when the audit had no entry,
-       * so a clip named `scene_0_b0_curated_a55995.mp4` was reported as source=curated. That is a
-       * content family read off a filename, presented in the same field as a real provider, and it
-       * is exactly what §"ABSOLUTE REGEL" forbids. The official field is now the lineage's proven
-       * provider or UNVERIFIED; `diagnosticNameHint` keeps the old guess visible for debugging,
-       * clearly labelled as a hint and never counted.
-       */
-      const lineageRecord = composeOptions.dedup.sourcingCache.lineage.resolve(clipPath, key);
-      const source = lineageRecord?.provider ?? UNVERIFIED_PROVIDER;
-      const providerStatus = lineageRecord?.providerStatus ?? "UNVERIFIED";
-      const fallback = lineageRecord
-        ? lineageRecord.route === "fallback"
-        : entry
-          ? entry.source === "fallback" || entry.source === "rescue_placeholder"
-          : isPipelineFallbackClip(clipPath);
-      console.log(
-        `[FINAL_VISUAL_MANIFEST] scene=${scene.index} beat=${lineageRecord?.beatIndex ?? entry?.beatIndex ?? "?"} ` +
-          `source=${source} providerStatus=${providerStatus} fallback=${fallback} ` +
-          `diagnosticNameHint=${inferClipSourceFromPath(basename)} clip=${basename}`
-      );
-      console.log(formatLineageLine(lineageRecord, clipPath));
-      if (lineageRecord) {
-        composeOptions.dedup.sourcingCache.lineage.recordEvent(lineageRecord.lineageId, "COMPOSED", {
-          status: "OK",
-          currentPath: clipPath,
-        });
-      }
-    }
-  }
-
-  let composeBeatDurations =
-    alignBeatDurationsWithClips(clips, safeClips, beatDurations) ??
-    safeClips.map(() => effectiveBeatSec());
-  let composeClipBeatIndices = composeOptions?.clipBeatIndices;
-  if (beatDurations?.length === clips.length && clips.length > 0) {
-    const aligned = alignMontageMetaWithClips(
-      clips,
-      safeClips,
-      beatDurations,
-      composeOptions?.clipBeatIndices
-    );
-    composeBeatDurations = aligned.beatDurations;
-    composeClipBeatIndices = aligned.clipBeatIndices;
-  }
-  if (!composeClipBeatIndices || composeClipBeatIndices.length !== safeClips.length) {
-    composeClipBeatIndices = safeClips.map((_, i) => i);
-  }
-
-  // Validate audio
-  const audioValid = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100;
-  let safeAudioPath = audioPath;
-  if (!audioValid) {
-    safeAudioPath = path.join(workDir, `scene_${scene.index}_silent.mp3`);
-    try {
-      await withSceneFetchTimeout(
-        () => exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${safeAudioPath}"`),
-        10_000, `Silent fallback scene ${scene.index}`
-      );
-    } catch {
-      fs.writeFileSync(safeAudioPath, Buffer.from([0xff, 0xfb, 0x90, 0x00, ...Array(413).fill(0)]));
-    }
-  }
-
-  const voiceDurEarly =
-    (audioValid ? (await probeVideoDurationSec(safeAudioPath)) : 0) ||
-    Math.max(0.5, duration - 0.35);
-  const outDurEarly = voiceDurEarly + 0.12;
-  const montageBeats = composeOptions?.montageBeats;
-  if (composeOptions?.dedup) {
-    await timePipelineStep(
-      stepTiming,
-      "compose_rescue",
-      "Compose montage backfill",
-      () =>
-        backfillComposeMontageIfShort(
-          scene,
-          workDir,
-          composeOptions.videoTitle,
-          outDurEarly,
-          safeClips,
-          composeBeatDurations,
-          composeClipBeatIndices,
-          seenKeys,
-          composeOptions.dedup!,
-          montageBeats
-        ),
-      scene.index
-    );
-  }
-  if (
-    montageBeats?.length &&
-    composeClipBeatIndices?.length === safeClips.length &&
-    outDurEarly > 0
-  ) {
-    const plan = resolveVoiceSyncMontagePlan(
-      montageBeats.map((b) => ({
-        text: b.text,
-        holdSec: b.holdSec,
-        voiceStartSec: b.voiceStartSec,
-        voiceEndSec: b.voiceEndSec,
-      })),
-      outDurEarly,
-      composeClipBeatIndices,
-      safeClips.length > 1 ? montageXfadeSec() : 0,
-      scene.index
-    );
-    composeBeatDurations = plan.durations;
-  }
-  const composeTimeout = composeOptions?.sceneTimeoutMs
-    ?? composeSceneTimeoutMs(safeClips.length, composeOptions?.dedup?.videoLength, duration);
-
-  // Phase 12: renderSubtitleOverlay used to run here, but its output PNG was never passed as an
-  // ffmpeg input or composited into any filter chain — only unlinked at cleanup below (grep
-  // confirmed subtitlePath has no other reads). Real captions are handled separately via
-  // renderFacelessSubtitleOverlay (cinematicEffectsEngine.ts); this was a wasted ffmpeg exec per
-  // scene. subtitlePath stays declared (always null now) since the cleanup below still guards
-  // on it.
-  const subtitlePath: string | null = null;
-  const skipEffectLayers = phase === "assembly";
-
-  // Cinematic + documentary overlays (years bottom-left, stats, keywords, particles, SFX)
-  let kineticFrames: KineticFrame[] = [];
-  let docOverlays: TimedOverlay[] = [];
-  let yearLabels: TimedYearLabel[] = [];
-  let cinematicPlan: CinematicScenePlan | null = null;
-  const sfxCueFiles: Array<{ path: string; timeSec: number; volume: number }> = [];
-
-  if (!skipEffectLayers) {
-  try {
-    const yearsOnly = yearsOnlyOnScreen();
-    if (cinematicEffectsEnabled() && !yearsOnly) {
-      // outDurEarly (computed above from the real, probed voiceover) reflects what this scene
-      // will actually be cut to — scheduling against the raw planning `duration` instead risks
-      // overlays cut off early or bunched into the front when narration length differs.
-      cinematicPlan = planCinematicScene(scene, outDurEarly);
-      const cinematicOverlays = await buildCinematicOverlays(
-        cinematicPlan,
-        scene,
-        outDurEarly,
-        workDir,
-        FFMPEG_BIN,
-        (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl),
-        buildCinematicOverlayOpts(enableSubtitles)
-      );
-      docOverlays.push(...cinematicOverlays);
-
-      const sfxCache = new Map<string, string>();
-      for (const cue of cinematicPlan.audioCues.slice(0, 12)) {
-        if (!sfxCache.has(cue.type)) {
-          sfxCache.set(cue.type, await generateSFX(cue.type, workDir));
-        }
-        sfxCueFiles.push({
-          path: sfxCache.get(cue.type)!,
-          timeSec: cue.timeSec,
-          volume: cue.volume,
-        });
-      }
-      if (cinematicPlan.years.length > 0) {
-        console.log(
-          `[Cinematic] Scene ${scene.index}: years [${cinematicPlan.years.join(", ")}] + ${sfxCueFiles.length} SFX cues`
-        );
-      }
-    }
-
-    const shouldShowKinetic = false;
-    if (shouldShowKinetic) {
-      const legacyWords = (scene.highlightWords || []).filter((w) => w && w.trim().length > 0);
-      const keywords = legacyWords.length > 0 ? legacyWords.slice(0, 2) : extractKeywords(scene.text, 1);
-      if (keywords.length > 0) {
-        // Show each word for 2s, distributed across the scene
-        const wordDuration = 2.0;
-        const gap = 0.4; // gap between words
-        const totalWordTime = keywords.length * (wordDuration + gap);
-        const startOffset = Math.max(0.5, (duration - totalWordTime) / 2);
-        const allFrames: KineticFrame[] = [];
-        for (let wi = 0; wi < keywords.length; wi++) {
-          const wordStart = startOffset + wi * (wordDuration + gap);
-          const wordEnd = Math.min(wordStart + wordDuration, duration - 0.3);
-          if (wordStart >= duration - 0.5) break;
-          const frames = await renderKineticFrames(
-            [keywords[wi]],
-            duration,
-            scene.index,
-            workDir,
-            wordStart,
-            wordEnd
-          );
-          allFrames.push(...frames);
-        }
-        kineticFrames = allFrames;
-        console.log(`[Pipeline] Scene ${scene.index}: kinetic words: [${keywords.join(', ')}] (${legacyWords.length > 0 ? 'LLM' : 'fallback'})`);
-      }
-    }
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${scene.index}: documentary overlays failed (non-fatal):`, err);
-    kineticFrames = [];
-    docOverlays = [];
-  }
-  }
-
-  // Stat callouts + keyword pills handled in buildCinematicOverlays.
-  const statCalloutFrame: { path: string; startTime: number; endTime: number } | null = null;
-
-  // On Railway, limit FFmpeg threads to reduce memory usage
-  const threadFlag = pipelineFfmpegThreadFlag();
-  // Kinetic text position: upper-center area
-  const kineticY = 80;
-  // Cinematic color grading (documentaryStyle module when enabled)
-  const colorGrade = documentaryStyleEnabled()
-    ? buildPostGradeVF()
-    : `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02,vignette=angle=0.6:mode=forward`;
-  /**
-   * RONDE 201 — the same switch, the same silence, on the full compose path.
-   *
-   * Here it was not even a ternary: an empty string with no branch at all, and the documentary
-   * look dropping it a second time. Both routes now draw the same subtitles from the same beats;
-   * they are mutually exclusive (`phase === "effects"` returns above), so a scene is never
-   * captioned twice.
-   */
-  const composeCaptions = enableSubtitles
-    ? writeSceneCaptionFilter({
-        beats: composeOptions?.dedup?.sceneBeatsBySceneIndex?.get(scene.index) ?? [],
-        sceneOutSec: outDurEarly,
-        sceneIndex: scene.index,
-        workDir,
-        frameHeight: VIDEO_HEIGHT,
-      })
-    : null;
-  if (enableSubtitles) {
-    console.log(
-      `[Captions] scene ${scene.index}: ${composeCaptions ? composeCaptions.plan.cues.length : 0} cue(s)` +
-        (composeCaptions
-          ? ` unmeasured=${composeCaptions.plan.skippedUnmeasured}` +
-            ` outOfRange=${composeCaptions.plan.skippedOutOfRange}`
-          : " — no beat carried a measured voice window, so none was drawn")
-    );
-  }
-  const subtitleDrawtext = composeCaptions?.filter ?? "";
-  const fadeFilter = `${colorGrade}${subtitleDrawtext}`;
-
-  // Helper: build the full overlay chain (shared with effects pass)
-  function buildKineticChain(
-    baseLabel: string,
-    baseInputCount: number
-  ): { extraInputs: string; filterChain: string; finalLabel: string } {
-    return buildOverlayFilterChain(
-      baseLabel,
-      baseInputCount,
-      kineticFrames,
-      docOverlays,
-      statCalloutFrame,
-      kineticY
-    );
-  }
-
-  // Final existence check before compose — log clearly if something is missing
-  for (const clip of safeClips) {
-    if (!fs.existsSync(clip)) {
-      console.error(`[Pipeline] Scene ${scene.index}: clip file MISSING before compose: ${clip}`);
-    }
-  }
-  if (!fs.existsSync(safeAudioPath)) {
-    console.error(`[Pipeline] Scene ${scene.index}: audio file MISSING before compose: ${safeAudioPath}`);
-  }
-
-  const voiceDur = voiceDurEarly;
-  const outDur = outDurEarly;
-
-  const voiceSync =
-    montageBeats?.length && composeClipBeatIndices?.length === safeClips.length
-      ? {
-          beats: montageBeats.map((b) => ({
-            text: b.text,
-            holdSec: b.holdSec,
-            voiceStartSec: b.voiceStartSec,
-            voiceEndSec: b.voiceEndSec,
-          })),
-          clipBeatIndices: composeClipBeatIndices,
-          voiceDur: outDurEarly,
-        }
-      : undefined;
-
-  const prepared = await prepareStrictUniqueMontage(
-    scene.index,
-    safeClips,
-    composeBeatDurations,
-    outDur,
-    voiceSync,
-    composeOptions?.forceTtsHardCutRemontage === true
-  );
-  let montageDurations = prepared.montageDurations;
-  let sourceMaxDurs = prepared.sourceMaxDurs;
-  const montagePlan = prepared.montagePlan;
-  const segmentBeatTexts =
-    facelessSubtitlesEnabled() &&
-    montageBeats?.length &&
-    composeClipBeatIndices?.length
-      ? composeClipBeatIndices.map((bi) => montageBeats[bi]?.text ?? "")
-      : undefined;
-  const montageFilterOpts: MontageFilterOpts | undefined = montagePlan?.ttsHardCut
-    ? { xfadeSec: 0, preserveDurations: true, segmentBeatTexts }
-    : segmentBeatTexts?.length && deferFacelessSubtitlesToCompose()
-      ? { segmentBeatTexts }
-      : undefined;
-  if (montagePlan?.ttsHardCut) {
-    console.log(
-      `[Pipeline] Scene ${scene.index}: TTS hard-cut montage (${montageDurations.length} clips on voiceStartSec)`
-    );
-  }
-  if (composeOptions?.composeMetaOut) {
-    composeOptions.composeMetaOut.montageDurations = [...montageDurations];
-    composeOptions.composeMetaOut.clipBeatIndices = [...(composeClipBeatIndices ?? [])];
-    composeOptions.composeMetaOut.montagePlan = montagePlan;
-  }
-  const composeClips = safeClips;
-  // RONDE 34 (point 4): the clip list this attempt INTENDS to use. It is not published to
-  // usedClipsOut here — an attempt that fails after this line (the ffmpeg montage, the mux, a
-  // timeout) would otherwise leave its clips reported as successfully used, and the caller's
-  // last-resort/rescue bookkeeping would inherit them. returnComposed commits it, so only an
-  // attempt that actually produced an output contributes to composedUsedClips, allClipPaths and
-  // the quality report.
-  pendingUsedClips = uniqueClipsInOrder(safeClips);
-  const estBeforeCompose = prepared.estSec;
-  const minClipsNeeded = requiredMontageClipsForDuration(outDur);
-  if (safeClips.length < minClipsNeeded) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: only ${safeClips.length}/${minClipsNeeded} unique clips for ${outDur.toFixed(1)}s voice`
-    );
-  }
-  if (estBeforeCompose < outDur - 0.08 && !strictNoVisualRepeat()) {
-    // RONDE 8: register the gray pad on the render's dedup state so the export gate can report
-    // it — a gray PAD is not a fallback CLIP, so it was invisible to every quality metric.
-    if (composeOptions?.dedup && !composeOptions.dedup.grayPadScenes.includes(scene.index)) {
-      composeOptions.dedup.grayPadScenes.push(scene.index);
-    }
-    /**
-     * RONDE 132 §10 — the shortfall, as a number.
-     *
-     * The render report said "the tail may be filled by holding the last frame" and stopped there:
-     * no seconds, no clip count, and a "may" that left the reader unable to tell whether anything
-     * actually froze. A shortfall of 0.3s is a rounding artefact; the same warning covering 12s is
-     * a visible defect, and they read identically.
-     *
-     * Recorded on the render state so the end-of-render warning can name the worst scene rather
-     * than only listing which ones were short.
-     */
-    const shortBySec = outDur - estBeforeCompose;
-    if (composeOptions?.dedup) {
-      composeOptions.dedup.montageShortfalls.push({
-        sceneIndex: scene.index,
-        shortBySec,
-        uniqueClips: safeClips.length,
-        neededClips: minClipsNeeded,
-      });
-    }
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ` +
-        `${outDur.toFixed(1)}s — short by ${shortBySec.toFixed(1)}s ` +
-        `(uniqueClips=${safeClips.length} needed=${minClipsNeeded})`
-    );
-  }
-
-  if (fastShortPlainComposeEnabled(composeOptions?.dedup?.videoLength)) {
-    const fastMontageOpts: MontageFilterOpts = {
-      xfadeSec: 0,
-      preserveDurations: true,
-      fastEncode: true,
-      ...(segmentBeatTexts?.length ? { segmentBeatTexts } : {}),
-    };
-    console.log(`[Pipeline] Scene ${scene.index}: fast 1-min plain compose (hard cuts, no cinematic pass)`);
-    if (
-      await timePipelineStep(
-        stepTiming,
-        "scene_composition",
-        "Composition (plain FFmpeg)",
-        () =>
-          composePlainMontageScene(
-            scene.index,
-            composeClips,
-            montageDurations,
-            sourceMaxDurs,
-            outDur,
-            voiceDur,
-            safeAudioPath,
-            outputPath,
-            workDir,
-            FPS_FORMAT_VF,
-            threadFlag,
-            composeTimeout,
-            fastMontageOpts
-          ),
-        scene.index
-      )
-    ) {
-      return await returnComposed(outputPath, outDur);
-    }
-    console.warn(`[Pipeline] Scene ${scene.index}: fast plain compose failed — trying full compose path`);
-  }
-
-  if (!skipEffectLayers && screenLabelsEnabled() && sceneHasVisualOverlayFootage(safeClips) && cinematicEffectsEnabled()) {
-    try {
-      const sceneStartSec = composeOptions?.sceneStartSec ?? 0;
-      const fetchBeats = composeOptions?.montageBeats;
-      const sceneBeats =
-        fetchBeats?.length
-          ? fetchBeats
-          : buildSceneBeats(
-              scene,
-              outDur,
-              Math.max(safeClips.length, 8),
-              composeOptions?.videoTitle
-            );
-      const beatInputs = sceneBeats.map((b) => ({
-        text: b.text,
-        holdSec: b.holdSec,
-      }));
-      yearLabels = planVoiceSyncedScreenLabels(beatInputs, outDur, sceneStartSec, montageDurations);
-      if (yearLabels.length > 0) {
-        console.log(
-          `[Cinematic] Scene ${scene.index}: ${yearLabels.length} voice-synced label(s) drawtext [${yearLabels.map((y) => y.displayText).join(" | ")}]`
-        );
-      }
-    } catch (err) {
-      console.warn(`[Pipeline] Scene ${scene.index}: year label plan failed (non-fatal):`, err);
-    }
-  }
-  if (!skipEffectLayers && cinematicEffectsEnabled() && montageDurations?.length === safeClips.length) {
-    try {
-      const photoCues = planPhotoShutterCues(
-        safeClips,
-        montageDurations,
-        (clipPath) => isStillPhotoClip(clipPath) || isCuratedPreparedStillClip(clipPath)
-      );
-      const photoSfxCache = new Map<string, string>();
-      for (const cue of photoCues) {
-        if (!photoSfxCache.has(cue.type)) {
-          photoSfxCache.set(cue.type, await generateSFX(cue.type, workDir));
-        }
-        sfxCueFiles.push({
-          path: photoSfxCache.get(cue.type)!,
-          timeSec: cue.timeSec,
-          volume: cue.volume,
-        });
-      }
-      if (photoCues.length > 0) {
-        console.log(
-          `[Cinematic] Scene ${scene.index}: ${photoCues.length} photo shutter cue(s) on still clips`
-        );
-      }
-    } catch (err) {
-      console.warn(`[Pipeline] Scene ${scene.index}: photo shutter SFX failed (non-fatal):`, err);
-    }
-  }
-
-  const composeFfmpegT0 = Date.now();
-  try {
-    if (!skipEffectLayers && yearLabels.length > 0) {
-      const montageOnlyPath = path.join(workDir, `scene_${scene.index}_montage_v.mp4`);
-      const useBatchedMontage =
-        IS_RAILWAY && curatedArchiveOnlyVisuals() && composeClips.length > 4;
-      if (useBatchedMontage) {
-        await renderBatchedArchiveMontage(
-          composeClips,
-          montageDurations,
-          sourceMaxDurs,
-          scene.index,
-          outDur,
-          workDir,
-          montageOnlyPath,
-          composeTimeout,
-          threadFlag,
-          montageFilterOpts
-        );
-      } else {
-        await renderInlineMontageToFile(
-          scene.index,
-          composeClips,
-          montageDurations,
-          sourceMaxDurs,
-          outDur,
-          montageOnlyPath,
-          composeTimeout,
-          threadFlag,
-          montageFilterOpts
-        );
-      }
-      const labeledPath = path.join(workDir, `scene_${scene.index}_labeled.mp4`);
-      await burnTimedScreenLabelsDrawtext(
-        montageOnlyPath,
-        labeledPath,
-        yearLabels,
-        FFMPEG_BIN,
-        (cmd, ms, lbl) => withSceneFetchTimeout(() => exec(cmd), ms, lbl)
-      );
-      const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
-      const voiceAudioFilter =
-        `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
-        `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
-      const sfxInputStr = sfxCueFiles.map((s) => `-i "${s.path}"`).join(" ");
-      const sfxBaseIdx = 2;
-      const sfxMeta = sfxCueFiles.map((s, i) => ({
-        inputIndex: sfxBaseIdx + i,
-        timeSec: s.timeSec,
-        volume: s.volume,
-      }));
-      const audioFilter =
-        sfxMeta.length > 0
-          ? `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,asetpts=PTS-STARTPTS[voiceFaded];` +
-            buildCinematicSfxAudioFilter("voiceFaded", sfxMeta, voiceDur, "aout")
-          : voiceAudioFilter;
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y -i "${labeledPath}" -i "${safeAudioPath}"${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
-            `-filter_complex "[0:v]${FPS_FORMAT_VF}[v];[v]${fadeFilter}[vout];${audioFilter}" ` +
-            `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-            `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        composeTimeout,
-        `Scene ${scene.index} labels+audio`
-      );
-      if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
-        throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} label compose produced no output`);
-      }
-      return await returnComposed(outputPath, outDur);
-    }
-
-    if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
-      await composeBatchedArchiveSceneWithAudio(
-        scene.index,
-        composeClips,
-        montageDurations,
-        sourceMaxDurs,
-        outDur,
-        voiceDur,
-        safeAudioPath,
-        outputPath,
-        workDir,
-        fadeFilter,
-        docOverlays,
-        threadFlag,
-        composeTimeout,
-        skipEffectLayers,
-        montageFilterOpts
-      );
-    } else {
-    const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-      buildMontageXfadeFilter(
-        composeClips.length,
-        outDur,
-        scene.index,
-        montageDurations,
-        composeClips,
-        sourceMaxDurs,
-        montageFilterOpts
-      );
-    const inputs = montageClipInputs(composeClips);
-    const durs =
-      montageDurations ??
-      Array.from({ length: composeClips.length }, () => computeMontageClipDuration(outDur, composeClips.length));
-    const montageLabel = xfadeLabel;
-    const padFilter = "";
-    const estMontageDur = montageDurations
-      ? effectiveMontageDurationSec(montageDurations, sourceMaxDurs)
-      : effectiveMontageDurationSec(
-          Array.from({ length: safeClips.length }, () =>
-            computeMontageClipDuration(outDur, safeClips.length)
-          ),
-          sourceMaxDurs
-        );
-    const montageOutVF = montageTailPadVF(montageLabel, estMontageDur, outDur);
-
-    const audioIdx = composeClips.length;
-    const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
-    const voiceAudioFilter =
-      `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
-      `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]`;
-
-    if (skipEffectLayers) {
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-            `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF};${voiceAudioFilter}" ` +
-            `-map "[vmont]" -map "[aout]" -vsync cfr ` +
-            `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        composeTimeout,
-        `Assembly scene ${scene.index}`
-      );
-    } else {
-    const kineticBaseIdx = audioIdx + 1;
-    const { extraInputs: kExtraInputs, filterChain: kChain, finalLabel: kFinalLabel } =
-      buildKineticChain("vmont", kineticBaseIdx);
-
-    const kineticInput = kExtraInputs ? ` ${kExtraInputs}` : "";
-    const kineticChainStr = kChain ? kChain : "";
-    const hasOverlays = kineticFrames.length > 0 || docOverlays.length > 0 || statCalloutFrame !== null;
-    const yearDrawChain =
-      yearLabels.length > 0 && docOverlays.length === 0 && ffmpegSupportsDrawtext()
-        ? buildYearDrawtextFilterChain("vgraded", "vout", yearLabels)
-        : "";
-    const videoGradeChain = yearDrawChain
-      ? `;[vmont]${fadeFilter}[vgraded]${yearDrawChain}`
-      : hasOverlays
-        ? `${kineticChainStr};[${kFinalLabel}]${fadeFilter}[vout]`
-        : `;[vmont]${fadeFilter}[vout]`;
-    const overlayCount =
-      kineticFrames.length + docOverlays.length + (statCalloutFrame ? 1 : 0);
-    const sfxBaseIdx = kineticBaseIdx + overlayCount;
-    const sfxInputStr = sfxCueFiles.map((s) => `-i "${s.path}"`).join(" ");
-    const sfxMeta = sfxCueFiles.map((s, i) => ({
-      inputIndex: sfxBaseIdx + i,
-      timeSec: s.timeSec,
-      volume: s.volume,
-    }));
-    const audioFilter =
-      sfxMeta.length > 0
-        ? `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,asetpts=PTS-STARTPTS[voiceFaded];` +
-          buildCinematicSfxAudioFilter("voiceFaded", sfxMeta, voiceDur, "aout")
-        : voiceAudioFilter;
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kineticInput}${sfxInputStr ? ` ${sfxInputStr}` : ""} ` +
-        `-filter_complex "${scaleFilters}${mergeFilter};${montageOutVF}${yearDrawChain ? "" : kineticChainStr}${videoGradeChain};` +
-        `${audioFilter}" ` +
-        `-map "[vout]" -map "[aout]" -vsync cfr ` +
-        `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-      ),
-      composeTimeout, `Compose multi-clip scene ${scene.index}`
-    );
-    }
-    }
-  } catch (composeErr) {
-    console.warn(`[Pipeline] Scene ${scene.index}: compose failed, trying simplified compose:`, composeErr);
-    try {
-      if (
-        await composePlainMontageScene(
-          scene.index,
-          composeClips,
-          montageDurations,
-          sourceMaxDurs,
-          outDur,
-          voiceDur,
-          safeAudioPath,
-          outputPath,
-          workDir,
-          fadeFilter,
-          threadFlag,
-          composeTimeout,
-          montageFilterOpts
-        )
-      ) {
-        console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose succeeded (years/SFX skipped)`);
-        return await returnComposed(outputPath, outDur);
-      }
-    } catch (plainErr) {
-      console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose failed:`, plainErr);
-    }
-    if (sfxCueFiles.length > 0) {
-      try {
-        const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-          buildMontageXfadeFilter(
-            composeClips.length,
-            outDur,
-            scene.index,
-            montageDurations,
-            composeClips,
-            sourceMaxDurs,
-            montageFilterOpts
-          );
-        const inputs = montageClipInputs(composeClips);
-        const montageLabel = xfadeLabel;
-        const audioIdx = composeClips.length;
-        const kineticBaseIdx2 = audioIdx + 1;
-        const { extraInputs: kExtraInputs2, filterChain: kChain2, finalLabel: kFinalLabel2 } =
-          buildKineticChain(montageLabel, kineticBaseIdx2);
-        const preGradeLabel2 = kChain2 ? kFinalLabel2 : montageLabel;
-        const audioFadeOutStart2 = Math.max(0, voiceDur - 0.15);
-        await withSceneFetchTimeout(
-          () => exec(
-            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}"${kExtraInputs2 ? ` ${kExtraInputs2}` : ""} ` +
-              `-filter_complex "${scaleFilters}${mergeFilter}${kChain2};` +
-              `[${preGradeLabel2}]${FPS_FORMAT_VF}[vtimed];[vtimed]${fadeFilter}[vout];` +
-              `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart2.toFixed(3)}:d=0.12,` +
-              `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-              `-map "[vout]" -map "[aout]" -vsync cfr ` +
-              `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          composeTimeout,
-          `Compose without SFX scene ${scene.index}`
-        );
-        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-          return await returnComposed(outputPath, outDur);
-        }
-      } catch (noSfxErr) {
-        console.warn(`[Pipeline] Scene ${scene.index}: compose without SFX failed:`, noSfxErr);
-      }
-    }
-    if (docOverlays.length > 0 || statCalloutFrame) {
-      try {
-        const { scaleFilters, mergeFilter, montageLabel: xfadeLabel } =
-          buildMontageXfadeFilter(
-            composeClips.length,
-            outDur,
-            scene.index,
-            montageDurations,
-            composeClips,
-            sourceMaxDurs,
-            montageFilterOpts
-          );
-        const inputs = montageClipInputs(composeClips);
-        const montageLabel = xfadeLabel;
-        const audioIdx = composeClips.length;
-        await withSceneFetchTimeout(
-          () => exec(
-            `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-              `-filter_complex "${scaleFilters}${mergeFilter};[${montageLabel}]${FPS_FORMAT_VF}[vtimed];[vtimed]${fadeFilter}[vout];` +
-              `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
-              `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-              `-map "[vout]" -map "[aout]" -vsync cfr ` +
-              `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          composeTimeout,
-          `Compose without overlays scene ${scene.index}`
-        );
-        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-          if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
-          for (const frame of kineticFrames) { try { fs.unlinkSync(frame.path); } catch { /* ignore */ } }
-          for (const overlay of docOverlays) { try { fs.unlinkSync(overlay.path); } catch { /* ignore */ } }
-          return await returnComposed(outputPath, outDur);
-        }
-      } catch (noOverlayErr) {
-        console.warn(`[Pipeline] Scene ${scene.index}: compose without overlays failed:`, noOverlayErr);
-      }
-    }
-    try {
-      const rescueDurs =
-        montageDurations ??
-        balanceMontageDurationsForVoice(safeClips.length, outDur, composeBeatDurations, sourceMaxDurs);
-      const { scaleFilters, mergeFilter, montageLabel } = buildMontageXfadeFilter(
-        composeClips.length,
-        outDur,
-        scene.index,
-        rescueDurs,
-        composeClips,
-        sourceMaxDurs,
-        montageFilterOpts
-      );
-      const inputs = montageClipInputs(composeClips);
-      const estRescue = effectiveMontageDurationSec(rescueDurs, sourceMaxDurs);
-      const rescuePad = montageTailPadVF(montageLabel, estRescue, outDur);
-      const audioIdx = composeClips.length;
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y ${inputs} -i "${safeAudioPath}" ` +
-            `-filter_complex "${scaleFilters}${mergeFilter};${rescuePad};[vmont]${fadeFilter}[vout];` +
-            `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
-            `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-            `-map "[vout]" -map "[aout]" -vsync cfr ` +
-            `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        composeTimeout,
-        `Rescue montage+pad scene ${scene.index}`
-      );
-    } catch (rescueErr) {
-      console.warn(`[Pipeline] Scene ${scene.index}: rescue montage failed:`, rescueErr);
-      try {
-        const seqMontagePath = path.join(workDir, `scene_${scene.index}_rescue_seq.mp4`);
-        await renderSequentialArchiveMontage(
-          composeClips,
-          montageDurations ?? composeBeatDurations,
-          sourceMaxDurs,
-          scene.index,
-          outDur,
-          workDir,
-          seqMontagePath,
-          composeTimeout,
-          threadFlag
-        );
-        const audioFadeOutStart = Math.max(0, voiceDur - 0.15);
-        await withSceneFetchTimeout(
-          () => exec(
-            `${FFMPEG_BIN} -y -i "${seqMontagePath}" -i "${safeAudioPath}" ` +
-              `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont];[vmont]${fadeFilter}[vout];` +
-              `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${audioFadeOutStart.toFixed(3)}:d=0.12,` +
-              `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-              `-map "[vout]" -map "[aout]" -vsync cfr ` +
-              `-t ${outDur.toFixed(3)} ${threadFlag} -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-          ),
-          composeTimeout,
-          `Sequential rescue scene ${scene.index}`
-        );
-        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-          return await returnComposed(outputPath, outDur);
-        }
-      } catch (seqRescueErr) {
-        console.warn(`[Pipeline] Scene ${scene.index}: sequential rescue failed:`, seqRescueErr);
-      }
-      const detail = formatFfmpegExecError(rescueErr);
-      throw pipelineError(
-        PIPELINE_ERROR.FFMPEG,
-        `Scene ${scene.index}: compose failed — ${detail}`
-      );
-    }
-  }
-
-  recordPipelineTiming(
-    stepTiming,
-    "scene_composition",
-    "Composition (FFmpeg montage)",
-    Date.now() - composeFfmpegT0,
-    scene.index
-  );
-
-  if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
-    console.warn(`[Pipeline] Scene ${scene.index}: compose empty — guaranteed clip rescue`);
-    const tierOut: GuaranteedTierOut = {};
-    const clip = await generateGuaranteedBeatClip(
-      scene.index, 8888, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
-      composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
-    );
-    // Round 17 audit-gap fix, third site: same class of gap as the two guaranteed-fill blocks
-    // above (composeSceneVideoInner) — this compose-empty rescue path also used a successfully
-    // generated guaranteed clip without ever recording it, making it invisible to both
-    // assertVisualCoverageExportGate's fallbackBeats/beatsFilled ratio and
-    // canAddGuaranteedFallbackClip's per-video fallback cap. Additive bookkeeping only, same
-    // "fallback" source label, no change to which clip is used or how it's rendered.
-    if (composeOptions?.dedup) {
-      recordClipAdopt(
-        composeOptions.dedup.clipAdoptAudit, scene.index, 8888, scene.text, clip,
-        guaranteedAdoptSource(tierOut.tier)
-      );
-    }
-    try {
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y -i "${clip}" -i "${safeAudioPath}" ` +
-            `-filter_complex "[0:v]${FPS_FORMAT_VF}[vout];` +
-            `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
-            `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-            `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-            `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        composeTimeout,
-        `Guaranteed rescue scene ${scene.index}`
-      );
-    } catch (guaranteedErr) {
-      console.warn(`[Pipeline] Scene ${scene.index}: guaranteed rescue failed:`, (guaranteedErr as Error).message);
-    }
-  }
-  if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
-    throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
-  }
-
-  const skipBlackRescue = strictNoVisualRepeat();
-  if (
-    !skipBlackRescue &&
-    (await isMostlyBlackClip(outputPath)) &&
-    rescueStockClip &&
-    fs.existsSync(rescueStockClip)
-  ) {
-    console.warn(`[Pipeline] Scene ${scene.index}: composed output mostly black — retry with rescue clip`);
-    try {
-      const rescueProbed = await probeVideoDurationSec(rescueStockClip);
-      const playDur = Math.min(outDur, rescueProbed > 0.2 ? rescueProbed - 0.05 : outDur);
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y -ss 0.3 -i "${rescueStockClip}" -i "${safeAudioPath}" ` +
-            `-filter_complex "[0:v]trim=duration=${playDur.toFixed(3)},setpts=PTS-STARTPTS,${FPS_FORMAT_VF}[vout];` +
-            `[1:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
-            `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
-            `-map "[vout]" -map "[aout]" -vsync cfr -t ${outDur.toFixed(3)} ${threadFlag} ` +
-            `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -c:a aac -b:a 320k -pix_fmt yuv420p "${outputPath}"`
-        ),
-        90_000,
-        `Rescue recompose scene ${scene.index}`
-      );
-    } catch (err) {
-      console.warn(`[Pipeline] Scene ${scene.index}: rescue recompose failed:`, (err as Error).message);
-    }
-  }
-
-  if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
-  // Clean up kinetic frame PNGs
-  for (const frame of kineticFrames) {
-    try { fs.unlinkSync(frame.path); } catch { /* ignore */ }
-  }
-  for (const overlay of docOverlays) {
-    try { fs.unlinkSync(overlay.path); } catch { /* ignore */ }
-  }
-  return await returnComposed(outputPath, outDur);
-  } finally {
-    discardUnpublishedComposeTemp();
-  }
-}
-
-// ─── 6. Ambient Documentary Background Music ─────────────────────────────────
-// Generates a rich ambient documentary track inspired by Vox/Wendover/Kurzgesagt style:
-// - Layered harmonic pads (root, fifth, octave, minor seventh) for emotional depth
-// - Subtle rhythmic pulse via amplitude modulation for forward momentum
-// - Noise-based hi-hat texture for organic feel
-// - Deep sub-bass foundation
-// - Long reverb tails for spacious, cinematic atmosphere
-// Mixed at -20dB relative to voiceover (ducked further by sidechaincompress in final mix)
-async function generateBackgroundMusic(duration: number, workDir: string, fast = false): Promise<string> {
-  const outputPath = path.join(workDir, "bg_music.mp3");
-  if (fast) {
-    try {
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y -f lavfi -i "sine=frequency=110:duration=${duration}" ` +
-            `-f lavfi -i "sine=frequency=165:duration=${duration}" ` +
-            `-filter_complex "[0]volume=0.25,lowpass=f=200[a];[1]volume=0.15,lowpass=f=280[b];[a][b]amix=inputs=2:duration=first,lowpass=f=900" ` +
-            `-c:a libmp3lame -b:a 128k "${outputPath}"`
-        ),
-        25_000,
-        "Fast background music"
-      );
-      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 400) return outputPath;
-    } catch (err) {
-      console.warn("[Pipeline] Fast background music failed:", (err as Error).message?.slice(0, 80));
-    }
-  }
-  try {
-    // Root: A2 (110Hz) — warm, serious documentary tone
-    // Fifth: E3 (165Hz) — harmonic stability
-    // Octave: A3 (220Hz) — brightness
-    // Minor seventh: G3 (196Hz) — slight tension, modern feel
-    // Sub-bass: A1 (55Hz) — foundation
-    // Pulse: 2Hz AM on root for subtle rhythmic breathing
-    // Hi-hat texture: bandpass-filtered white noise at very low volume
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y ` +
-        // Root pad — A2, warm and central
-        `-f lavfi -i "sine=frequency=110:duration=${duration}" ` +
-        // Perfect fifth — E3
-        `-f lavfi -i "sine=frequency=165:duration=${duration}" ` +
-        // Octave — A3
-        `-f lavfi -i "sine=frequency=220:duration=${duration}" ` +
-        // Minor seventh — G3 (adds modern tension)
-        `-f lavfi -i "sine=frequency=196:duration=${duration}" ` +
-        // Sub-bass — A1
-        `-f lavfi -i "sine=frequency=55:duration=${duration}" ` +
-        // Second harmonic of root — A4 (330Hz, very quiet shimmer)
-        `-f lavfi -i "sine=frequency=330:duration=${duration}" ` +
-        // White noise for hi-hat texture
-        `-f lavfi -i "anoisesrc=r=44100:color=white:duration=${duration}" ` +
-        `-filter_complex "` +
-          // Root pad: volume + long echo reverb + gentle 2Hz AM pulse (aeval) + lowpass
-          `[0]volume=0.40,aecho=0.97:0.94:400:0.65,aeval='val(0)*(0.82+0.18*sin(2*PI*2*t))',lowpass=f=180[root];` +
-          // Fifth: volume + echo + lowpass for warmth
-          `[1]volume=0.28,aecho=0.95:0.92:300:0.55,lowpass=f=250[fifth];` +
-          // Octave: quieter, echo, lowpass
-          `[2]volume=0.18,aecho=0.92:0.88:200:0.45,lowpass=f=350[oct];` +
-          // Minor seventh: very quiet, adds modern color
-          `[3]volume=0.12,aecho=0.90:0.86:250:0.40,lowpass=f=300[seventh];` +
-          // Sub-bass: deep, slow 1Hz AM pulse for breathing feel
-          `[4]volume=0.30,aecho=0.98:0.96:600:0.70,aeval='val(0)*(0.75+0.25*sin(2*PI*1*t))',lowpass=f=100[sub];` +
-          // High shimmer: very quiet
-          `[5]volume=0.06,aecho=0.88:0.84:150:0.35,lowpass=f=500[shimmer];` +
-          // Hi-hat: bandpass 6kHz-12kHz, very quiet, adds organic texture
-          `[6]volume=0.04,highpass=f=6000,lowpass=f=12000[hihat];` +
-          // Mix all layers
-          `[root][fifth][oct][seventh][sub][shimmer][hihat]amix=inputs=7:duration=first:dropout_transition=3,` +
-          // Global EQ: remove rumble below 30Hz, gentle high shelf cut above 1kHz
-          `highpass=f=30,lowpass=f=1200,` +
-          // Subtle room reverb on the full mix
-          `aecho=0.75:0.72:500:0.20,` +
-          // Final volume
-          `volume=0.50[music]` +
-        `" ` +
-        `-map "[music]" -c:a libmp3lame -b:a 320k "${outputPath}"`
-      ),
-      45_000, "Background music generation"
-    );
-    console.log(`[Pipeline] Background music generated: ${(fs.statSync(outputPath).size / 1024).toFixed(0)}KB`);
-    return outputPath;
-  } catch (err) {
-    console.warn("[Pipeline] Music generation failed, using silence:", err);
-    await exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${duration} -c:a libmp3lame -b:a 64k "${outputPath}"`).catch((e) => { console.error('[Pipeline] Music silence fallback failed:', e); });
-    return outputPath;
-  }
-}
-
-
-// ─── 6b. Sound Effects (SFX) Generation ──────────────────────────────────────
-// Generates camera shutter, whoosh, and impact sounds using FFmpeg lavfi synthesis.
-// These are mixed into the final audio at low volume for Vidrush-style energy.
-async function generateSFX(
-  type: 'shutter' | 'whoosh' | 'impact',
-  workDir: string
-): Promise<string> {
-  const outputPath = path.join(workDir, `sfx_${type}.mp3`);
-  try {
-    let cmd = '';
-    if (type === 'shutter') {
-      // Camera shutter: short high-freq click (2kHz, 0.05s) + mechanical thud (200Hz, 0.08s)
-      cmd = `${FFMPEG_BIN} -y ` +
-        `-f lavfi -i "sine=frequency=2000:duration=0.05" ` +
-        `-f lavfi -i "sine=frequency=200:duration=0.08" ` +
-        `-filter_complex "[0]volume=0.6,aecho=0.8:0.3:10:0.2[click];[1]volume=0.4,lowpass=f=400[thud];[click][thud]amix=inputs=2:duration=longest[sfx]" ` +
-        `-map "[sfx]" -c:a libmp3lame -b:a 128k "${outputPath}"`;
-    } else if (type === 'whoosh') {
-      // Whoosh: swept sine 200Hz→2000Hz over 0.2s for transition sound
-      cmd = `${FFMPEG_BIN} -y ` +
-        `-f lavfi -i "sine=frequency=200:duration=0.2" ` +
-        `-f lavfi -i "sine=frequency=2000:duration=0.2" ` +
-        `-filter_complex "[0]volume=0.5,aecho=0.7:0.5:20:0.3[low];[1]volume=0.3,aecho=0.7:0.5:15:0.2[high];[low][high]amix=inputs=2:duration=longest,atempo=1.5[sfx]" ` +
-        `-map "[sfx]" -c:a libmp3lame -b:a 128k "${outputPath}"`;
-    } else {
-      // Impact: low thud (80Hz, 0.15s) with decay
-      cmd = `${FFMPEG_BIN} -y ` +
-        `-f lavfi -i "sine=frequency=80:duration=0.15" ` +
-        `-filter_complex "[0]volume=0.7,aecho=0.9:0.6:30:0.4,lowpass=f=300[sfx]" ` +
-        `-map "[sfx]" -c:a libmp3lame -b:a 128k "${outputPath}"`;
-    }
-    await withSceneFetchTimeout(() => exec(cmd), 10_000, `SFX generation: ${type}`);
-    return outputPath;
-  } catch (err) {
-    console.warn(`[Pipeline] SFX generation failed for ${type}:`, err);
-    // Return empty audio as fallback
-    await exec(`${FFMPEG_BIN} -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 0.1 -c:a libmp3lame -b:a 64k "${outputPath}"`).catch(() => {});
-    return outputPath;
-  }
 }
 
 export async function probeVideoDurationSec(filePath: string): Promise<number> {
@@ -46815,100 +42033,6 @@ export async function probeVideoStreamDurationSec(filePath: string): Promise<num
   return 0;
 }
 
-/**
- * RONDE 158 — the net under every compose route: a scene whose picture is shorter than its sound.
- *
- * RONDE 157 fixed the route production takes by measuring the montage before muxing it. Five other
- * pad sites cannot do that — they build the montage inline in one filter graph, so there is no file
- * to measure and they pass an ESTIMATE of its length instead. An estimate that runs long makes the
- * pad too small and leaves a shortfall, and video 552 shows it running long:
- *
- *     scene 1   gap predicted from the estimate 26.0s, gap actually measured 27.25s
- *     scene 2   gap predicted from the estimate 12.7s, gap actually measured 12.75s
- *
- * so scene 1's real montage was about 1.25s shorter than the estimate believed. Small, and still a
- * frozen second of film.
- *
- * This runs after compose, on the finished scene, where the real length can simply be read. It is
- * deliberately the LAST check rather than a sixth pad site: whatever the cause upstream — an
- * estimate that ran long, a montage replay that failed, a filter that silently did nothing — the
- * symptom is the same and is visible here. It also covers the one thing RONDE 157 could not: that
- * round's replay falls back to the old behaviour when it fails, and this catches that fallback.
- *
- * Repairs by stretching the picture across the sound with the same chain everything else uses.
- * The audio is copied untouched, so the voice keeps its timing and only the picture is adjusted.
- */
-export async function repairShortSceneVideo(
-  scenePath: string,
-  targetDur: number,
-  sceneIndex: number,
-  workDir: string,
-  composeTimeout: number,
-  threadFlag: string,
-  /** R198: the assembled film uses this too, and "Scene -1" would be a lie in the log. */
-  subject = `Scene ${sceneIndex}`
-): Promise<string> {
-  if (!(targetDur > 0) || !fs.existsSync(scenePath)) return scenePath;
-  const videoDur = await probeVideoStreamDurationSec(scenePath);
-  if (videoDur <= 0) {
-    console.warn(
-      `[Pipeline] ${subject}: could not read the picture's length — cannot tell whether ` +
-        `it covers the voice`
-    );
-    return scenePath;
-  }
-  // One frame of tolerance: a scene may legitimately end a frame short of its container.
-  const shortfall = targetDur - videoDur;
-  if (shortfall <= 0.12) return scenePath;
-
-  console.warn(
-    `[Pipeline] ${subject}: picture ends at ${videoDur.toFixed(2)}s but must run ` +
-      `${targetDur.toFixed(2)}s — ${shortfall.toFixed(2)}s would be a held frame; repairing`
-  );
-  // ascii-safe: a temp FILENAME, not search text — nothing is looked up by this string.
-  const repaired = path.join(
-    workDir,
-    `covered_${subject.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}_${Date.now()}.mp4`
-  );
-  const chain = montageTailPadFilterChain(
-    videoDur,
-    targetDur,
-    `${subject} finished picture ${videoDur.toFixed(1)}s vs ${targetDur.toFixed(1)}s`
-  );
-  try {
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -i "${scenePath}" ` +
-          `-filter_complex "[0:v]${chain}${FPS_FORMAT_VF}[vout]" ` +
-          `-map "[vout]" -map "0:a?" -c:a copy -vsync cfr -t ${targetDur.toFixed(3)} ${threadFlag} ` +
-          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} ` +
-          `-crf 20 -pix_fmt yuv420p "${repaired}"`
-      ),
-      composeTimeout,
-      `${subject} coverage repair`
-    );
-    const fixedDur = await probeVideoStreamDurationSec(repaired);
-    if (fixedDur > videoDur + 0.05 && fs.statSync(repaired).size > 1000) {
-      console.log(
-        `[Pipeline] ${subject}: picture now runs ${fixedDur.toFixed(2)}s of ` +
-          `${targetDur.toFixed(2)}s`
-      );
-      return repaired;
-    }
-    console.warn(
-      `[Pipeline] ${subject}: repair produced ${fixedDur.toFixed(2)}s — keeping the original`
-    );
-  } catch (err) {
-    // The scene itself is fine as footage; only its tail is short. Losing it would be worse.
-    console.warn(
-      `[Pipeline] ${subject}: coverage repair failed, the tail will hold a frame: ` +
-        `${(err as Error)?.message?.slice(0, 140)}`
-    );
-  }
-  try { fs.unlinkSync(repaired); } catch { /* ignore */ }
-  return scenePath;
-}
-
 /** Trim leading/trailing silence so scenes concatenate without dead air. */
 async function trimVoiceoverSilence(audioPath: string): Promise<number> {
   if (!fs.existsSync(audioPath)) return 0;
@@ -46938,400 +42062,7 @@ async function trimVoiceoverSilence(audioPath: string): Promise<number> {
   return probed > 0 ? probed : 0;
 }
 
-/** Pad with last-frame hold so 2-min tests reliably hit 118s (no black tail). */
-async function ensureFinalVideoDuration(
-  inputPath: string,
-  workDir: string,
-  videoId: number,
-  targetSec: number
-): Promise<string> {
-  let working = inputPath;
-  const trimmed = path.join(workDir, `fastvid_${videoId}_trimtail.mp4`);
-
-  /**
-   * RONDE 122 — the closing hold is not trailing black to be tidied away.
-   *
-   * This trimmer exists for a real problem: a scene that ends on black leaves a dead patch at the
-   * end of the film, and it cuts back to where the picture stops. It decides that by asking
-   * `blackdetect` where the last dark run begins, which was safe as long as everything at the end
-   * of the file was accidental.
-   *
-   * RONDE 121 put something deliberate there. The closing hold is the film's own last image, and
-   * documentaries end on dark images all the time — a bunker interior, a night shot, a fade in the
-   * source footage. `blackdetect` cannot tell "the picture the editor chose to end on" from
-   * "leftover black", so on any dark ending it would report the tail as a black run reaching the
-   * end of the file, and this would cut off exactly the three seconds that were just added.
-   *
-   * The tail's own file is the evidence that one was appended — the concat writes it under this
-   * same videoId, and its duration is the real length rather than what the env asked for, so a
-   * CLOSING_TAIL_SEC of 5 is protected as five. When it is absent (the tail failed to build, or is
-   * switched off) this whole block is skipped and the trimmer behaves exactly as it always did.
-   */
-  let closingTailSec = 0;
-  try {
-    const tailPath = path.join(workDir, `fastvid_${videoId}_tail.mp4`);
-    if (fs.existsSync(tailPath)) {
-      const probedTail = await probeVideoDurationSec(tailPath);
-      if (probedTail > 0) closingTailSec = probedTail;
-    }
-  } catch {
-    // No tail information is the same as no tail: the trimmer keeps its original behaviour.
-  }
-
-  try {
-    const detectCmd =
-      `"${FFMPEG_BIN}" -y -i "${working}" -vf "blackdetect=d=0.04:pix_th=0.12" -an -f null -`;
-    const { stderr } = await withSceneFetchTimeout(() => exec(detectCmd), 60_000, "Final blackdetect trim");
-    const out = typeof stderr === "string" ? stderr : String(stderr ?? "");
-    const starts = [...out.matchAll(/black_start:([\d.]+)/g)].map((m) => parseFloat(m[1]));
-    const ends = [...out.matchAll(/black_end:([\d.]+)/g)].map((m) => parseFloat(m[1]));
-    // P0 fix 4: single probe of `working`, reused for all three checks below — `working` is
-    // unchanged across this block (it only becomes `trimmed` further down, after the last read
-    // of this value), so the prior 3 separate probeVideoDurationSec calls always measured the
-    // exact same, already-unchanged file.
-    const workingDurationSec = await probeVideoDurationSec(working);
-    let trimTo = workingDurationSec;
-    if (starts.length > 0 && ends.length > 0) {
-      const lastBlackStart = starts[starts.length - 1];
-      const lastBlackEnd = ends[ends.length - 1];
-      const probedBeforeTrim = workingDurationSec;
-      /**
-       * RONDE 122: where the closing hold begins, and the line this trimmer may not cross.
-       *
-       * A trailing black run only counts as leftover if it starts BEFORE the tail. Anything from
-       * here on is the deliberate closing image, however dark it happens to be.
-       */
-      const blackReachesTail = trailingBlackTrimReachesClosingTail({
-        lastBlackEndSec: lastBlackEnd,
-        videoDurationSec: probedBeforeTrim,
-        closingTailSec,
-      });
-      if (blackReachesTail) {
-        console.log(
-          `[ClosingTail] trailing-black trim skipped — the last ${closingTailSec.toFixed(1)}s are ` +
-            `the closing hold, not leftover black (blackdetect saw ${lastBlackStart.toFixed(2)}s–` +
-            `${lastBlackEnd.toFixed(2)}s of a ${probedBeforeTrim.toFixed(1)}s film)`
-        );
-      }
-      // Only trim trailing black in the last ~25% — avoid chopping mid-video on dark grading.
-      if (
-        !blackReachesTail &&
-        probedBeforeTrim > 0 &&
-        lastBlackStart >= probedBeforeTrim * 0.72 &&
-        lastBlackEnd >= trimTo - 0.25 &&
-        lastBlackStart < trimTo - 0.15
-      ) {
-        trimTo = Math.max(1, lastBlackStart - 0.02);
-      }
-    }
-    const probed = workingDurationSec;
-    if (trimTo < probed - 0.4) {
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y -i "${working}" -t ${trimTo.toFixed(3)} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 ` +
-          `-c:a aac -b:a 320k -movflags +faststart "${trimmed}"`
-        ),
-        90_000,
-        "Trim trailing black from final"
-      );
-      working = trimmed;
-      console.log(`[Pipeline] Trimmed trailing black: ${probed.toFixed(1)}s → ${trimTo.toFixed(1)}s`);
-    }
-  } catch (err) {
-    console.warn("[Pipeline] Final black trim skipped (non-fatal):", (err as Error).message);
-  }
-
-  let dur = await probeVideoDurationSec(working);
-  if (dur >= targetSec - 0.3) return working;
-  // Never clone-pad the last frame — voice-led length is authoritative for documentary mode.
-  console.log(
-    `[Pipeline] Final ${dur.toFixed(1)}s < target ${targetSec}s — keeping voice length (no freeze pad)`
-  );
-  return working;
-}
-
 // ─── 7. Final Concatenation + Music Mix ───────────────────────────────────────
-/** Does the file carry an audio stream? null when no ffprobe could answer. */
-async function probeHasAudioStream(file: string): Promise<boolean | null> {
-  for (const probePath of FFPROBE_PATHS()) {
-    try {
-      const { stdout } = await withSceneFetchTimeout(
-        () => exec(`${probePath} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${file}"`),
-        10_000,
-        "ffprobe scene audio check"
-      );
-      return stdout.trim().includes("audio");
-    } catch { /* try next */ }
-  }
-  return null;
-}
-
-export async function concatenateScenesWithMusic(
-  scenePaths: string[],
-  workDir: string,
-  videoId: number,
-  totalDuration: number,
-  videoTitle: string,
-  customMusicPath?: string | null,
-  videoLength?: string,
-  concatTimeoutMs = 120_000,
-  musicMixTimeoutMs = 180_000,
-  cinematicAmbientPath?: string | null,
-  dominantEmotion?: string
-): Promise<string> {
-  const fastShort = isFastShortVideoLength(videoLength);
-  const listFile = path.join(workDir, "concat_list.txt");
-  const concatPath = path.join(workDir, `fastvid_${videoId}_concat.mp4`);
-  const outputPath = path.join(workDir, `fastvid_${videoId}_final.mp4`);
-
-  const validScenePaths = scenePaths.filter(p => {
-    try {
-      const exists = fs.existsSync(p);
-      const size = exists ? fs.statSync(p).size : 0;
-      if (!exists) console.error(`[Pipeline] Concat: scene file MISSING: ${p}`);
-      else if (size <= 100) console.error(`[Pipeline] Concat: scene file too small (${size} bytes): ${p}`);
-      return exists && size > 100;
-    } catch { return false; }
-  });
-  if (validScenePaths.length === 0) {
-    throw pipelineError(PIPELINE_ERROR.NO_SCENES, "No valid composed scene files to concatenate");
-  }
-
-  /**
-   * RONDE 660 — video 608: every scene carries the voice-over, proven before the concat. The concat
-   * demuxer takes its stream layout from the FIRST file, so one scene without sound (608: scene 0,
-   * after the bar crop dropped it) made the whole film silent, and the pipeline then delivered it
-   * with background music only. A scene without an audio stream now stops the render by name.
-   */
-  const scenesWithoutAudio: string[] = [];
-  for (const p of validScenePaths) {
-    const has = await probeHasAudioStream(p);
-    if (has === false) scenesWithoutAudio.push(path.basename(p));
-    else if (has === null) console.error(`[Pipeline] Concat: audio of ${path.basename(p)} could not be probed`);
-  }
-  if (scenesWithoutAudio.length > 0) {
-    console.error(`[Pipeline] Concat refused — scene(s) without voice-over audio: ${scenesWithoutAudio.join(", ")}`);
-    throw pipelineError(
-      PIPELINE_ERROR.CONCAT,
-      `Scene(s) without voice-over audio: ${scenesWithoutAudio.join(", ")} — the film would have no voice`
-    );
-  }
-
-  const allClips = [...validScenePaths];
-
-  /**
-   * RONDE 121 — three seconds of picture after the last word.
-   *
-   * Appended here, as one more segment in the concat list, rather than by lengthening the last
-   * scene. That keeps it out of every stage that reasons about scenes: the beat coverage, the
-   * vision gate, the overlay scheduler and the per-scene voice trim all still see exactly the
-   * scenes they saw before, and the tail is a thing that happens after them.
-   *
-   * It is deliberately the LAST thing added and the first thing dropped: `buildClosingTail`
-   * returns null on any problem and the concat proceeds without it. A closing hold must never be
-   * able to cost a finished render.
-   */
-  const tailSec = closingTailSeconds();
-  let closingTailSec = 0;
-  if (tailSec > 0 && allClips.length > 0) {
-    const lastScene = allClips[allClips.length - 1]!;
-    const lastSceneDur = await probeVideoDurationSec(lastScene);
-    /**
-     * RONDE 132 — the picture's own length, not the file's.
-     *
-     * probeVideoDurationSec reads `format=duration`, which is the maximum over every stream. On a
-     * composed scene that is the voiceover, and it outlives the last video frame by however long
-     * its tail and fade run. Production video 546 measured 21.400 against a final picture at
-     * 21.160, and the frame grab at 21.297 returned nothing at all.
-     *
-     * probeVideoStreamMeta already reads `stream=duration` on v:0, so the right number was one
-     * call away the whole time.
-     */
-    const lastSceneVideoDur = (await probeVideoStreamMeta(lastScene))?.durationSec ?? null;
-    if (lastSceneDur > 0.2) {
-      const built = await buildClosingTail({
-        lastScenePath: lastScene,
-        outputPath: path.join(workDir, `fastvid_${videoId}_tail.mp4`),
-        framePath: path.join(workDir, `fastvid_${videoId}_tailframe.jpg`),
-        ffmpegBin: FFMPEG_BIN,
-        run: (cmd, ms, label) => withSceneFetchTimeout(() => exec(cmd), ms, label),
-        lastSceneDurationSec: lastSceneDur,
-        lastSceneVideoDurationSec: lastSceneVideoDur,
-        tailSec,
-        widthPx: VIDEO_WIDTH,
-        heightPx: VIDEO_HEIGHT,
-        encodeArgs: `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${fastShort ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast"} -crf ${fastShort ? 22 : 18}`,
-        fileExists: (p) => {
-          try { return fs.existsSync(p) && fs.statSync(p).size > 1000; } catch { return false; }
-        },
-      });
-      if (built) {
-        allClips.push(built.path);
-        closingTailSec = built.plan.tailSec;
-        console.log(
-          formatClosingTailSeek(
-            closingTailFrameSeek({
-              containerDurationSec: lastSceneDur,
-              videoStreamDurationSec: lastSceneVideoDur,
-            }),
-            lastSceneDur
-          )
-        );
-        console.log(formatClosingTailPlan(built.plan, VIDEO_WIDTH, VIDEO_HEIGHT));
-      } else {
-        console.warn("[ClosingTail] could not be built — the video ends on the last word, as before");
-      }
-    }
-  }
-
-  const listContent = allClips.map(p => `file '${p}'`).join("\n");
-  fs.writeFileSync(listFile, listContent, "utf-8");
-
-  // The music track has to cover the tail too, or the last three seconds fall silent.
-  const totalWithCards = totalDuration + closingTailSec;
-
-  const concatPreset = fastShort ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast";
-  const concatCrf = fastShort ? 22 : 18;
-  const concatPromise = withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y -fflags +discardcorrupt -f concat -safe 0 -i "${listFile}" -vsync cfr ` +
-        `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${concatPreset} -crf ${concatCrf} -c:a aac -b:a 320k -movflags +faststart "${concatPath}"`
-    ),
-    concatTimeoutMs,
-    "Scene concatenation"
-  );
-
-  const musicPath =
-    customMusicPath && fs.existsSync(customMusicPath) && fs.statSync(customMusicPath).size > 100
-      ? customMusicPath
-      : await generateBackgroundMusic(totalWithCards + 5, workDir, fastShort);
-
-  if (customMusicPath && musicPath === customMusicPath) {
-    console.log(`[Pipeline] Using custom background music: ${path.basename(customMusicPath)}`);
-  }
-
-  await concatPromise;
-
-  // Verify concat output exists before music mixing
-  if (!fs.existsSync(concatPath) || fs.statSync(concatPath).size < 1000) {
-    throw pipelineError(PIPELINE_ERROR.CONCAT, "Concat failed: output file missing or empty");
-  }
-  console.log(`[Pipeline] Concat output: ${(fs.statSync(concatPath).size / 1024 / 1024).toFixed(1)}MB`);
-
-  // Check if concat video has an audio stream
-  // Try multiple probe methods; if all fail, assume audio IS present to avoid silent videos
-  let concatHasAudio = true; // default: assume audio present
-  try {
-    let probed = false;
-    for (const probePath of FFPROBE_PATHS()) {
-      try {
-        const { stdout: probeOut } = await withSceneFetchTimeout(
-          () => exec(`${probePath} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${concatPath}"`),
-          10000,
-          "ffprobe audio stream check"
-        );
-        concatHasAudio = probeOut.trim().includes('audio');
-        probed = true;
-        console.log(`[Pipeline] Audio probe (${probePath}): hasAudio=${concatHasAudio}`);
-        break;
-      } catch { /* try next */ }
-    }
-    if (!probed) {
-      console.warn('[Pipeline] All ffprobe paths failed — assuming audio present to avoid silent video');
-      concatHasAudio = true;
-    }
-  } catch {
-    console.warn('[Pipeline] Audio probe completely failed — assuming audio present');
-    concatHasAudio = true;
-  }
-  console.log(`[Pipeline] Concat has audio: ${concatHasAudio}`);
-
-  if (concatHasAudio) {
-    // Normal path: mix voiceover audio with background music (+ optional cinematic ambient)
-    const hasAmbient = cinematicAmbientPath && fs.existsSync(cinematicAmbientPath);
-
-    if (hasAmbient) {
-      // 3-layer mix: voice + music + cinematic ambient with sidechain ducking
-      const { buildCinematicAudioFilter } = await import("./cinematicAudio/index");
-      const ambientFilter = buildCinematicAudioFilter(dominantEmotion ?? "neutral");
-      try {
-        await withSceneFetchTimeout(
-          () => exec(
-            `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" -i "${cinematicAmbientPath}" ` +
-            `-filter_complex "${ambientFilter}" ` +
-            `-map "0:v" -map "[aout]" ` +
-            `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
-          ),
-          musicMixTimeoutMs,
-          "Cinematic audio mixing"
-        );
-        console.log("[CinematicAudio] 3-layer mix complete (voice + music + ambient)");
-      } catch (err) {
-        console.warn("[CinematicAudio] 3-layer mix failed, falling back to 2-layer:", (err as Error).message?.slice(0, 100));
-        try {
-          await withSceneFetchTimeout(
-            () => exec(
-              `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-              `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
-              `-map "0:v" -map "[aout]" -c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
-            ),
-            musicMixTimeoutMs,
-            "Background music mixing (fallback)"
-          );
-        } catch { /* handled below */ }
-      }
-    } else {
-      // Standard 2-layer mix: voice + music with sidechain ducking
-      try {
-        await withSceneFetchTimeout(
-          () => exec(
-            `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-            `-filter_complex "[0:a]volume=1.0,asplit=2[voice][voicedet];[1:a]volume=0.22,aloop=loop=-1:size=2e+09[musicloop];[musicloop][voicedet]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=200:makeup=1[music_ducked];[voice][music_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
-            `-map "0:v" -map "[aout]" ` +
-            `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
-          ),
-          musicMixTimeoutMs,
-          "Background music mixing"
-        );
-      } catch (err) {
-        console.warn("[Pipeline] Audio mixing failed, trying without aloop:", err);
-        try {
-          await withSceneFetchTimeout(
-            () => exec(
-              `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-              `-filter_complex "[0:a]volume=1.0[voice];[1:a]volume=0.12[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=3[aout]" ` +
-              `-map "0:v" -map "[aout]" ` +
-              `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
-            ),
-            musicMixTimeoutMs,
-            "Background music mixing (no loop)"
-          );
-        } catch (err2) {
-          console.warn("[Pipeline] Audio mixing failed completely, copying video:", err2);
-          await withSceneFetchTimeout(
-            () => exec(`${FFMPEG_BIN} -y -i "${concatPath}" -c copy -movflags +faststart "${outputPath}"`),
-            Math.round(musicMixTimeoutMs * 0.3), "Copy concat as output"
-          );
-        }
-      }
-    }
-  } else {
-    /**
-     * RONDE 660 — no silent fallback: a film without its voice-over is not delivered with music
-     * only (video 608). Every scene was proven to carry audio above, so this is the concat itself
-     * losing it, and the render stops here with that said.
-     */
-    console.error("[Pipeline] Concat has no audio stream — refusing to deliver a film without its voice-over");
-    throw pipelineError(PIPELINE_ERROR.CONCAT, "Concat output has no audio stream — the film would have no voice");
-  }
-
-  try {
-    fs.unlinkSync(concatPath);
-    fs.unlinkSync(musicPath);
-  } catch { /* ignore */ }
-
-  return outputPath;
-}
 
 // ─── Main Pipeline ────────────────────────────────────────────────────────────
 export async function runVideoPipeline(
@@ -47349,8 +42080,6 @@ export async function runVideoPipeline(
     watchdog: null,
     renderBudget: null,
     budgetTracker: null,
-    /** RONDE 203: counted by the two functions that emit a transition — see `transitionsApplied`. */
-    transitionsApplied: 0,
     barrierPassedUnjudged: 0,
     barrierChecked: 0,
     videoTopic: null,
@@ -48548,664 +43277,26 @@ async function _runVideoPipelineInner(
     }
 
     // ── Shared outputs from Stage 3 + Stage 4 (hoisted for P5A pipeline mode) ─
-    let sceneVisualResults: SceneVisualsResult[] = new Array(scenes.length);
-    let composedScenes: string[] = [];
     /**
-     * RONDE 81: every scene's composed output, keyed by its absolute index in `scenes`.
-     * Written by the Stage 4 closure as each scene finishes. On a chunk deadline the Promise.all
-     * never resolves and its per-scene results would be lost with it; this is what lets the
-     * salvage path below keep the finished ones instead of failing the whole video.
+     * RONDE 661 — ONE RENDER PATH.
+     *
+     * The timeline render is the only way FastVid makes a video. The compose montage it replaced —
+     * scene compose, concat, music mix, heal, audits, upload — has been removed. A deployment
+     * with the timeline switched off has no renderer at all, so it is refused here, before any
+     * money is spent, rather than after half an hour of sourcing.
      */
-    const composedByIndex: (string | undefined)[] = [];
-    let composedUsedClips: string[][] = scenes.map(() => []);
-    let sceneStartSecs: number[] = [];
-    let voiceMontageSyncResults: Array<{ sceneIndex: number; audit: VoiceMontageSyncAuditResult }> = [];
-
-    if (scenePipelineEnabled()) {
-      /**
-       * RONDE 172 — the degradation ladder's clock starts HERE on this path too.
-       *
-       * ── The gap ────────────────────────────────────────────────────────────────────────────
-       *
-       * `visualDedup.pipelineStartedMs` is initialised to `pipelineWallStartMs` (the render's own
-       * start) far above, and RONDE 5 / FIX 7 resets it to the visual stage — but that reset lives
-       * in the SEQUENTIAL branch below and this branch never had one. So on the P5A path the whole
-       * ladder measured RENDER time: script generation, TTS, the blueprint, the archive-pool warm
-       * and the CLIP prewarm all counted against budgets meant for sourcing.
-       *
-       * FIX 7 already wrote down exactly what that costs, for the reason it was made:
-       *
-       *     "It used to measure from videoRow.generationStartedAt, which meant (a) script + TTS +
-       *      archive-pool warm + CLIP prewarm all counted against the sourcing budgets, and (b) a
-       *      stall-recovery RETRY inherited the first attempt's clock wholesale — render 517
-       *      attempt 2 started with 12s beat budgets 34 seconds in."
-       *
-       * That fix was applied to one of the two branches. This is the other one.
-       *
-       * ── What it changes ────────────────────────────────────────────────────────────────────
-       *
-       * All three rungs read this field — turbo at 25% of the wall clock, rush at 35%, force-export
-       * at 45%. On a 1-minute video that is 5 / 7 / 9 minutes. Every minute spent before the scene
-       * loop was a minute taken off all three.
-       *
-       * Render 555 fired force-export at 9m28s measured from its work directory's own timestamp,
-       * and its research pass was refused for the rest of the render. Whether that render took this
-       * branch cannot be read from its log — both branch-announcing lines fall in the truncated
-       * first seven minutes — so this is not offered as that render's diagnosis. It is a hole in
-       * the clock that is visible in the code either way, and it can only make the ladder fire
-       * early, never late.
-       *
-       * The 45% fraction itself is NOT touched. One render is not evidence about a threshold that
-       * governs every render, and firing later risks the hard wall-clock cap it exists to avoid.
-       */
-      visualDedup.pipelineStartedMs = Date.now();
-      console.log(
-        `[Pipeline] video=${videoId} sourcing-ladder clock started at visual stage (P5A) ` +
-        `(total elapsed so far: ${Math.round((Date.now() - pipelineWallStartMs) / 1000)}s)`
-      );
-      // ── P5A: Scene Processing Pipeline ──────────────────────────────────────
-      // Producer/Consumer: each scene runs fetch → per-scene recovery → compose
-      // as a unit. Scene N+1 composes while Scene N+2 is still fetching.
-      // Two separate pLimit instances decouple retrieval concurrency from compose
-      // concurrency so neither gate blocks the other.
-      // Aggregate polish steps (polishWeakAdoptBeats, ensureFastShortScenesReady)
-      // that need all scenes to be finished are skipped in this mode.
-      let pipelineTimelineSec = 0;
-      sceneStartSecs = scenes.map((s) => {
-        const start = pipelineTimelineSec;
-        pipelineTimelineSec += s.duration;
-        return start;
-      });
-      composedUsedClips = scenes.map(() => []);
-      voiceMontageSyncResults = [];
-      if (composeLocalClipsOnly(videoLength)) {
-        visualDedup.composeNetworkBlocked = true;
-      }
-
-      const retrieveLimit = pLimit(perf.sceneParallelism);
-      const pipelineComposeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
-      let completedPipelineVisuals = 0;
-      let completedPipelineCompose = 0;
-      const t2p = Date.now();
-      profiler.recordStageEnd("retrieval", t2p);
-      profiler.recordStageStart("compose", t2p);
-      const composeStartMs: number[] = new Array(scenes.length).fill(0);
-      const composeElapsedMs: number[] = new Array(scenes.length).fill(0);
-      const composeWaitMs: number[] = new Array(scenes.length).fill(0);
-      let activeComposes = 0;
-      let queuedComposes = 0;
-
-      const cpuCount = (() => { try { return require("os").cpus().length; } catch { return "?"; } })();
-      const composePar = composeParallelismForVideo(videoLength, IS_RAILWAY);
-      const p5aPreset = process.env.FFMPEG_PRESET ?? "veryfast";
-      console.log(
-        `[Compose] P5A startup — CPU cores: ${cpuCount}, compose parallelism: ${composePar}, ` +
-        `retrieve parallelism: ${perf.sceneParallelism}, montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
-        `max concurrent ffmpeg (compose×montage): ~${composePar * montageSegmentParallelism(IS_RAILWAY)}, ` +
-        `encoder preset: ${p5aPreset}`
-      );
-      if (p5aPreset !== "veryfast" && p5aPreset !== "superfast" && p5aPreset !== "ultrafast") {
-        console.warn(`[Compose] Slow encoder preset "${p5aPreset}" — set FFMPEG_PRESET=veryfast for 2–5x speedup`);
-      }
-
-      const heartbeatP5A = setInterval(() => {
-        try {
-          ensurePipelineForceExport(visualDedup);
-          assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
-          onProgress?.({
-            stage: `Scene pipeline (${completedPipelineVisuals} retrieved, ${completedPipelineCompose}/${scenes.length} composed)...`,
-            percent: 20 + Math.round(((completedPipelineVisuals + completedPipelineCompose) / (scenes.length * 2)) * 45),
-          });
-          // Log any scene compose running >120s (potential FFmpeg hang)
-          const nowMs = Date.now();
-          for (let si = 0; si < scenes.length; si++) {
-            if (composeStartMs[si] > 0 && composeElapsedMs[si] === 0) {
-              const runningMs = nowMs - composeStartMs[si];
-              if (runningMs > 120_000) {
-                console.warn(
-                  `[Compose] Scene ${scenes[si]?.index} SLOW: running ${(runningMs / 1000).toFixed(0)}s — ` +
-                  `clips=${sceneVisualResults[si]?.clips?.length ?? 0}, ` +
-                  `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
-                );
-              }
-            }
-          }
-        } catch (err) {
-          // assertPipelineWithinBudget() intentionally throws once the render exceeds its wall-
-          // clock budget — but a synchronous throw inside a raw setInterval callback is never
-          // caught by the try/finally around the main await chain below (this callback is a
-          // separate timer invocation, not part of that promise chain), so it was becoming an
-          // uncaught exception that crashed the entire worker process (all concurrent jobs on
-          // it too) instead of just failing this one render. Route it through the same
-          // cancellation signal the 3-hour job watchdog already uses (videoQueue.ts) so the
-          // render unwinds on its own exec()/throwIfActiveRenderCancelled() checks instead.
-          clearInterval(heartbeatP5A);
-          console.error(`[Compose] video=${videoId} heartbeat check failed — cancelling render:`, (err as Error).message);
-          requestVideoGenerationCancel(videoId);
-        }
-      }, 10_000);
-
-      // ── P5A core: retrieve slot released BEFORE entering compose queue ────────
-      // Each scene: retrieveLimit(fetch+recover) → release slot → pipelineComposeLimit(compose)
-      // This is the key producer/consumer property: retrieve concurrency and compose
-      // concurrency are truly independent — a scene in the compose queue does NOT hold
-      // a retrieve slot, so the next scene can start fetching immediately.
-      try {
-        const pipelineOut = await withSceneFetchTimeout(
-          () => Promise.all(scenes.map((scene, i) => {
-            // ── Retrieval phase — retrieve slot released when visuals are ready ─
-            const svrReady = retrieveLimit(async () => {
-              const retrieveStartMs = Date.now();
-              gantt(`Scene ${scene.index} retrieve START`, t2p);
-              let svr: SceneVisualsResult;
-              try {
-                svr = await timePipelineStep(
-                  pipelineStepTiming, "image_search",
-                  `Scene ${scene.index} visuals (all beats)`,
-                  () => withSceneFetchTimeout(
-                    () => fetchSceneVisuals(
-                      scene, workDir, topicContext, visualDedup,
-                      (beatIdx, beatTotal, phase) => {
-                        onProgress?.({
-                          stage: phase === "backfill"
-                            ? `Scene ${i + 1}/${scenes.length}: backfill ${beatIdx}/${beatTotal}...`
-                            : `Finding visuals (scene ${i + 1}/${scenes.length}, beat ${beatIdx}/${beatTotal})...`,
-                          percent: 20 + Math.round(((i / scenes.length) + (beatIdx / Math.max(1, beatTotal)) / scenes.length) * 22),
-                        });
-                      },
-                      audioPaths[i], prefetchPools, prefetchFunnels
-                    ),
-                    sceneSearchBudgetMs({
-                      flatMs: perf.sceneVisualTimeoutMs,
-                      // Beats are derived later (buildSceneBeats), so duration is the honest
-                      // signal available at the moment this budget has to be set.
-                      sceneDurationSec: scene.duration,
-                    }),
-                    `Scene ${scene.index} visuals`
-                  ),
-                  scene.index
-                );
-              } catch (sceneErr) {
-                console.warn(`[Pipeline] P5A Scene ${scene.index}: fetch failed — recovering:`, (sceneErr as Error).message);
-                visualDedup.lock = Promise.resolve();
-                svr = await recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup);
-                if (svr.clips.length === 0) throw sceneErr;
-              }
-
-              // Per-scene empty recovery (mirrors post-Stage-3 loop)
-              const usable = (svr.clips ?? []).filter((c) => c && !isPipelineFallbackClip(c));
-              if (usable.length === 0) {
-                console.warn(`[Pipeline] P5A Scene ${scene.index}: empty — recovery sweep`);
-                svr = await recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup);
-                if (svr.clips.length === 0) {
-                  if (strictVoiceVisualMatchEnabled() && !isFastShortVideoLength(videoLength)) {
-                    svr = await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]);
-                  } else {
-                    const clips: string[] = [];
-                    const beatDurations: number[] = [];
-                    await appendGuaranteedSceneClips(
-                      scene, workDir, clips, beatDurations,
-                      minClipsForBalancedVoice(scene.duration + 0.15),
-                      visualDedup
-                    );
-                    svr = { clips, beatDurations };
-                  }
-                }
-              } else if (strictVoiceVisualMatchEnabled() && !isFastShortVideoLength(videoLength)) {
-                const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
-                if (usable.length < minNeeded) {
-                  console.warn(`[Pipeline] P5A Scene ${scene.index}: ${usable.length}/${minNeeded} clips — strict refill`);
-                  svr = applyRefillMayNotTradeDown(
-                    visualDedup,
-                    svr,
-                    await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]),
-                    scene.index
-                  );
-                }
-              }
-              const prevSceneVisual_4 = sceneVisualResults[i];
-              sceneVisualResults[i] = svr;
-              noteSceneClipsResourced(visualDedup, prevSceneVisual_4, sceneVisualResults[i], scenes[i]?.index ?? i, "scene_sourcing_result");
-              completedPipelineVisuals++;
-              gantt(`Scene ${scene.index} retrieve END  (${svr.clips.length} clips)`, t2p);
-              profiler.recordSceneRetrieve(i, scene.index, scene.duration, retrieveStartMs, Date.now(), 0, svr.clips.length);
-              // retrieve slot released here — scene joins compose queue independently
-              return svr;
-            });
-
-            // ── Compose phase — queues in pipelineComposeLimit without holding retrieve slot ──
-            return svrReady.then((svr) => {
-              const enqueueMs = Date.now();
-              queuedComposes++;
-              gantt(`Scene ${scene.index} compose QUEUED (active=${activeComposes} queued=${queuedComposes})`, t2p);
-              return pipelineComposeLimit(async () => {
-                queuedComposes--;
-                activeComposes++;
-                composeWaitMs[i] = Date.now() - enqueueMs;
-                composeStartMs[i] = Date.now();
-                gantt(`Scene ${scene.index} compose START  (waited ${(composeWaitMs[i] / 1000).toFixed(1)}s, active=${activeComposes})`, t2p);
-                console.log(
-                  `[Compose] Scene ${scene.index} started (waited ${(composeWaitMs[i] / 1000).toFixed(1)}s in queue) — ` +
-                  `clips=${svr?.clips?.length ?? 0}, duration=${scene.duration.toFixed(1)}s, ` +
-                  `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
-                );
-
-                // ── Editorial Reorder: AI final-editor pass for this scene ──
-                if (svr && editorialReorderEnabled() && (svr.clips?.length ?? 0) >= 2) {
-                  try {
-                    const ro = await editorialReorderScene(
-                      scene.index, scene.text, topicContext ?? "", scene.duration,
-                      svr.clips, svr.beatDurations, svr.clipBeatIndices, svr.beats
-                    );
-                    svr = { ...svr, clips: ro.clips, beatDurations: ro.beatDurations, clipBeatIndices: ro.clipBeatIndices };
-                  } catch { /* keep original order */ }
-                }
-
-                // ── Shot Sequence Optimizer: deterministic shot-type variety pass ──
-                if (svr && shotSequenceOptimizerEnabled() && (svr.clips?.length ?? 0) >= 2) {
-                  const sso = optimizeShotSequence(
-                    scene.index, svr.clips, svr.beatDurations, svr.clipBeatIndices, svr.beats
-                  );
-                  if (sso.changes > 0) {
-                    svr = { ...svr, clips: sso.clips, beatDurations: sso.beatDurations, clipBeatIndices: sso.clipBeatIndices };
-                  }
-                }
-
-                // ── Visual Rhythm Engine: adjust beat durations to narration energy ──
-                if (svr && visualRhythmEngineEnabled() && (svr.beatDurations?.length ?? 0) >= 2) {
-                  const beatTexts = (svr.beats ?? []).map((b) => b.text);
-                  if (beatTexts.length > 0) {
-                    const rr = applyVisualRhythm(scene.index, beatTexts, svr.beatDurations);
-                    svr = { ...svr, beatDurations: rr.beatDurations };
-                    /**
-                     * Store per-beat motion bands. R195: the whole band, not a midpoint — and
-                     * `adoptClip` no longer depends on this write, because it happens after that
-                     * scene's retrieval. It fills the map itself when a beat is first ranked; this
-                     * keeps the record in step for any re-source that follows a coverage repair.
-                     */
-                    rr.profile.motionTargets.forEach((band, bi) => {
-                      visualDedup.beatRhythmTargets.set(`s${scene.index}b${bi}`, band);
-                    });
-                  }
-                }
-
-                const usedClips: string[] = [];
-                const composeMeta: NonNullable<ComposeSceneOptions["composeMetaOut"]> = {
-                  montageDurations: [],
-                  clipBeatIndices: [],
-                };
-                const composeOpts: ComposeSceneOptions = {
-                  dedup: visualDedup,
-                  videoTitle: topicContext,
-                  sceneStartSec: sceneStartSecs[i],
-                  montageBeats: svr?.beats,
-                  clipBeatIndices: svr?.clipBeatIndices,
-                  composeMetaOut: composeMeta,
-                  sceneTimeoutMs: renderBudgetComposeMs,
-                };
-                let result: string;
-                try {
-                  try {
-                    result = await timePipelineStep(
-                      pipelineStepTiming, "scene_composition",
-                      `Scene ${scene.index} compose (total)`,
-                      () => withSceneFetchTimeout(
-                        () => composeSceneVideo(
-                          scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-                          enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
-                          composeOpts
-                        ),
-                        renderBudgetComposeMs,
-                        `P5A composeSceneVideo s${scene.index}`
-                      ),
-                      scene.index
-                    );
-                  } catch (composeErr) {
-                    console.warn(
-                      `[Compose] Scene ${scene.index} FAILED (${((Date.now() - composeStartMs[i]) / 1000).toFixed(1)}s) — rescue:`,
-                      (composeErr as Error).message?.slice(0, 120)
-                    );
-                    // RONDE 32 (FIX D): mirror of the Stage4 path — a compose that timed out may
-                    // still have finished writing. Verify it (exists + decodable + measured
-                    // duration covers the voice) and keep it rather than composing over it.
-                    const salvaged = await usableComposeOutputAfterTimeout(
-                      scene.index,
-                      workDir,
-                      scene.duration
-                    );
-                    if (salvaged) {
-                      console.warn(
-                        `[Compose] Scene ${scene.index}: compose timed out but produced a complete ` +
-                          `output — keeping it, skipping rescue`
-                      );
-                      result = salvaged;
-                      // RONDE 32 (B2): mirror of the Stage4 salvage — report the clips this
-                      // scene is actually made of, so composedUsedClips[i] is not an empty array
-                      // for a scene that has real footage.
-                      usedClips.push(...(await usableSurvivorClips(svr?.clips ?? [])));
-                    } else {
-                    // RONDE 32 (FIX A): keep the winners this scene already has and only top the
-                    // set up — composeSceneVideo treats its `clips` argument as the complete set,
-                    // so handing it just the rescue clips silently dropped every survivor.
-                    const survivors = svr?.clips ?? [];
-                    const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
-                    const missing = Math.max(0, minNeeded - survivors.length);
-                    let rescueClips =
-                      missing > 0 &&
-                      isFastShortVideoLength(videoLength) &&
-                      !isComposeNetworkBlocked(visualDedup)
-                        ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
-                        : [];
-                    const hold = Math.max(3, scene.duration / minNeeded);
-                    // RONDE 34 (point 2): mirror of the Stage4 path — see the note there.
-                    const rescueBeatIndices: (number | null)[] = [];
-                    if (missing > 0 && rescueClips.length === 0) {
-                      // RONDE 32 (FIX B): batch-scoped exclusion sets shared by every slot below,
-                      // so the curated archive cannot answer each slot with the same top-scoring
-                      // asset. Not visualDedup.usedCuratedAssetIds — see the Stage4 mirror.
-                      const rescueUsedAssetIds = new Set<number>();
-                      const rescueUsedStorageUrls = new Set<string>();
-                      // RONDE 32 (FIX C): each slot inherits the intent of a beat with no picture.
-                      const rescueBeats = svr?.beats;
-                      const uncoveredBeats = uncoveredBeatIndicesForRescue(
-                        rescueBeats?.length ?? 0,
-                        svr?.clipBeatIndices,
-                        survivors.length,
-                        {
-                          sceneIndex: scene.index,
-                          survivors,
-                          audit: visualDedup.clipAdoptAudit,
-                        }
-                      );
-                      for (let si = 0; si < missing; si++) {
-                        const slotBeatText =
-                          rescueBeatTextForSlot(si, rescueBeats, uncoveredBeats) ?? scene.text;
-                        const slotBeatIndex = rescueBeatIndexForSlot(si, uncoveredBeats);
-                        const slotTierOut: GuaranteedTierOut = {};
-                        try {
-                          const rescueClip = await generateGuaranteedBeatClip(
-                            scene.index, si, hold, workDir, slotBeatText,
-                            rescueUsedAssetIds, rescueUsedStorageUrls, slotTierOut,
-                            { dedup: visualDedup, scene, videoTitle, beatIndex: slotBeatIndex ?? si }
-                          );
-                          rescueClips.push(rescueClip);
-                          rescueBeatIndices.push(slotBeatIndex);
-                          // Audit-gap fix (same class as Round 17 + follow-up fixes): these
-                          // rescue-compose-retry clips flow into composeSceneVideo's `clips`
-                          // input and reach validClips via the normal path (their "_guaranteed"
-                          // filename isn't caught by isPipelineFallbackClip's "_fallback" check),
-                          // so they were never recorded anywhere. Additive only.
-                          // RONDE 34 (point 2): record the beat, not the slot number.
-                          // RONDE 50: source names the rung that answered — real archive or
-                          // Commons media no longer inflates fallbackBeats.
-                          recordClipAdopt(
-                            visualDedup.clipAdoptAudit, scene.index, slotBeatIndex ?? si,
-                            scene.text, rescueClip, guaranteedAdoptSource(slotTierOut.tier)
-                          );
-                        } catch (guaranteedErr) {
-                          // A single failure here is often transient (fork pressure, a one-off
-                          // ffmpeg spawn error) rather than permanent — retry the same slot once
-                          // before giving up on it, so a thin/under-filled scene isn't the default
-                          // outcome of one bad subprocess call.
-                          console.warn(
-                            `[Compose] Scene ${scene.index}: guaranteed clip ${si} failed, retrying once:`,
-                            (guaranteedErr as Error).message?.slice(0, 150)
-                          );
-                          const retryTierOut: GuaranteedTierOut = {};
-                          try {
-                            const retryClip = await generateGuaranteedBeatClip(
-                              scene.index, si, hold, workDir, slotBeatText,
-                              rescueUsedAssetIds, rescueUsedStorageUrls, retryTierOut,
-                              { dedup: visualDedup, scene, videoTitle, beatIndex: slotBeatIndex ?? si }
-                            );
-                            rescueClips.push(retryClip);
-                            rescueBeatIndices.push(slotBeatIndex);
-                            recordClipAdopt(
-                              visualDedup.clipAdoptAudit, scene.index, slotBeatIndex ?? si,
-                              scene.text, retryClip, guaranteedAdoptSource(retryTierOut.tier)
-                            );
-                          } catch (retryErr) {
-                            // Even this can exhaust every color-fallback retry under severe fork
-                            // pressure. This whole chain runs inside a Promise.all over every scene
-                            // — an uncaught throw here would fail the ENTIRE batch, not just this
-                            // scene. Skip the slot; composeSceneVideo below still gets whatever
-                            // clips the other slots produced (or falls to the black-fill path if
-                            // that ends up empty too).
-                            console.error(
-                              `[Compose] Scene ${scene.index}: guaranteed clip ${si} totally unavailable, skipping:`,
-                              (retryErr as Error).message?.slice(0, 150)
-                            );
-                          }
-                        }
-                      }
-                    }
-                    composeMeta.montageDurations = [];
-                    composeMeta.clipBeatIndices = [];
-                    composeMeta.montagePlan = undefined;
-                    usedClips.length = 0;
-                    // Length-aligned with the combined clip array — composeSceneVideo ignores
-                    // beatDurations whose length does not match and flattens everything to
-                    // effectiveBeatSec(), which would discard the survivors' real timing.
-                    const survivorDurations =
-                      svr?.beatDurations?.length === survivors.length
-                        ? [...(svr!.beatDurations as number[])]
-                        : survivors.map(() => hold);
-                    try {
-                      // RONDE 34 (point 2): see the Stage4 mirror.
-                      const mergedBeatIndices = mergedRescueClipBeatIndices(
-                        svr?.clipBeatIndices, survivors.length, rescueBeatIndices
-                      );
-                      result = await composeSceneVideo(
-                        scene, [...survivors, ...rescueClips], audioPaths[i], scene.duration, workDir, scenes.length,
-                        enableSubtitles, visualDedup.lastMuskStockClip,
-                        [...survivorDurations, ...rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength))],
-                        usedClips,
-                        mergedBeatIndices ? { ...composeOpts, clipBeatIndices: mergedBeatIndices } : composeOpts
-                      );
-                    } catch (rescueErr) {
-                      // Rescue compose also failed — use a guaranteed black-fill path so the
-                      // pLimit slot is released and the rest of the pipeline can continue.
-                      console.error(
-                        `[Compose] Scene ${scene.index} RESCUE FAILED — using black-fill:`,
-                        (rescueErr as Error).message?.slice(0, 120)
-                      );
-                      // RONDE 32 (B1): mirror of the Stage4 last-resort — before writing this
-                      // scene off as a colour card, reuse a rescue clip or one of the scene's
-                      // own surviving winners. FIX A leaves rescueClips empty precisely when
-                      // survivors already meet minNeeded, so this branch is reachable with real
-                      // footage on disk. Only when there is genuinely nothing to reuse does the
-                      // original colour-card path below run, unchanged.
-                      const lastResortSurvivors = await usableSurvivorClips(svr?.clips ?? [], 1);
-                      const reusableLastClip = rescueClips[0] ?? lastResortSurvivors[0];
-                      if (reusableLastClip) {
-                        result = await composeLastResortSceneFromClip(
-                          scene.index,
-                          scene.duration,
-                          reusableLastClip,
-                          audioPaths[i],
-                          workDir,
-                          composeOpts.phase ?? "full"
-                        );
-                        usedClips.push(reusableLastClip);
-                      } else {
-                        // RONDE 34 (point 7): fallback parity with Stage4.
-                        //
-                        // With nothing to reuse, Stage4 generates a guaranteed beat clip — which
-                        // still runs the topical archive + Wikimedia ladder and often returns REAL
-                        // footage — and muxes it with the voiceover. P5A dropped straight to a
-                        // silent colour card. Nothing in either comment or in the call contracts
-                        // justifies the difference: the Stage4 last-resort predates it and P5A
-                        // simply never gained it. Two things followed from that. The scene lost
-                        // its last chance at real footage, and it lost its audio track, while
-                        // every other scene output carries one.
-                        //
-                        // The colour card is kept as the final answer for when even that fails,
-                        // and the counter still fires only then — a scene that ends up with a
-                        // real clip is not a colour rescue.
-                        let parityClip: string | null = null;
-                        const parityTierOut: GuaranteedTierOut = {};
-                        try {
-                          parityClip = await generateGuaranteedBeatClip(
-                            scene.index, 9999, Math.max(3, scene.duration), workDir, scene.text,
-                            undefined, undefined, parityTierOut,
-                            { dedup: visualDedup, scene, videoTitle }
-                          );
-                        } catch (guaranteedErr) {
-                          console.warn(
-                            `[Compose] Scene ${scene.index}: last-resort guaranteed clip failed:`,
-                            (guaranteedErr as Error).message?.slice(0, 120)
-                          );
-                        }
-                        if (parityClip) {
-                          recordClipAdopt(
-                            visualDedup.clipAdoptAudit, scene.index, 9999, scene.text, parityClip,
-                            guaranteedAdoptSource(parityTierOut.tier)
-                          );
-                        }
-                        let parityResult: string | null = null;
-                        if (parityClip) {
-                          try {
-                            parityResult = await composeLastResortSceneFromClip(
-                              scene.index, scene.duration, parityClip, audioPaths[i], workDir,
-                              composeOpts.phase ?? "full"
-                            );
-                            usedClips.push(parityClip);
-                          } catch (lastResortErr) {
-                            console.warn(
-                              `[Compose] Scene ${scene.index}: last-resort compose failed:`,
-                              (lastResortErr as Error).message?.slice(0, 120)
-                            );
-                          }
-                        }
-                        if (parityResult) {
-                          result = parityResult;
-                        } else {
-                          // Problem 10 (production render finding): this scene has now exhausted
-                          // composeSceneVideo, the rescue-compose retry, AND every per-slot
-                          // guaranteed-clip attempt — the whole scene is about to become one static
-                          // color card. Counted so the final export validation can fail the render
-                          // explicitly instead of silently shipping it as "successful".
-                          visualDedup.sceneRescueColorFallbackCount++;
-                          result = await generateColorFallback(scene.index, scene.duration, workDir);
-                        }
-                      }
-                    }
-                    }
-                  }
-                } finally {
-                  // CRITICAL: always release slot so pLimit queue doesn't deadlock.
-                  activeComposes--;
-                  completedPipelineCompose++;
-                  composeElapsedMs[i] = Date.now() - composeStartMs[i];
-                }
-                composedUsedClips[i] = usedClips;
-
-                // Voice montage sync audit (mirrors Stage 4 audit + remontage retry)
-                if (svr?.beats?.length && composeMeta.montageDurations.length > 0 && !isFastShortVideoLength(videoLength)) {
-                  const voiceSec = Math.max(0.5, scene.duration - VO_SCENE_TAIL_SEC);
-                  const auditXfade = composeMeta.montagePlan?.xfadeSec ?? montageXfadeSec();
-                  const adoptVisionOk = sceneMontageBeatsPassedAdoptVision(scene.index, composeMeta.clipBeatIndices, visualDedup);
-                  const adoptVisionByBeat = new Map<number, number>();
-                  for (const entry of visualDedup.clipAdoptAudit) {
-                    if (entry.sceneIndex === scene.index && typeof entry.visionScore10 === "number" && entry.visionScore10 > 0) {
-                      adoptVisionByBeat.set(entry.beatIndex, entry.visionScore10);
-                    }
-                  }
-                  const beatsForSyncAudit = svr.beats.map((b) => ({
-                    text: b.text, holdSec: b.holdSec,
-                    voiceStartSec: b.voiceStartSec, voiceEndSec: b.voiceEndSec,
-                    visualDescription: beatGateVisualDescription(b, undefined) ?? b.visualDescription,
-                    searchQuery: b.searchQuery,
-                  }));
-                  let audit = await auditSceneVoiceMontageSync(
-                    result, beatsForSyncAudit, composeMeta.montageDurations, composeMeta.clipBeatIndices,
-                    voiceSec, workDir, scene.index, topicContext, composeMeta.montagePlan, adoptVisionByBeat
-                  );
-                  const spot = (isFastShortVideoLength(videoLength) || adoptVisionOk)
-                    ? { ok: true, warnings: [] as string[] }
-                    : await spotCheckComposedSceneBeatSync(
-                        result, svr.beats, composeMeta.montageDurations, composeMeta.clipBeatIndices,
-                        workDir, scene.index, topicContext, auditXfade, { skipClipScoring: false }
-                      );
-                  if (!spot.ok) {
-                    audit = { ...audit, ok: false, warnings: [...audit.warnings, ...spot.warnings.map((w) => `spot: ${w}`)] };
-                  }
-                  if (!audit.ok && !adoptVisionOk && !composeMeta.montagePlan?.ttsHardCut && !isFastShortVideoLength(videoLength)) {
-                    console.warn(`[Compose] Scene ${scene.index}: sync audit failed — remontage with TTS hard-cut`);
-                    composeMeta.montageDurations = [];
-                    composeMeta.clipBeatIndices = [];
-                    composeMeta.montagePlan = undefined;
-                    usedClips.length = 0;
-                    result = await composeSceneVideo(
-                      scene, svr?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-                      enableSubtitles, visualDedup.lastMuskStockClip, svr?.beatDurations, usedClips,
-                      { ...composeOpts, composeMetaOut: composeMeta, forceTtsHardCutRemontage: true }
-                    );
-                    composedUsedClips[i] = usedClips;
-                    audit = await auditSceneVoiceMontageSync(
-                      result, beatsForSyncAudit, composeMeta.montageDurations, composeMeta.clipBeatIndices,
-                      voiceSec, workDir, scene.index, topicContext, composeMeta.montagePlan, adoptVisionByBeat
-                    );
-                  }
-                  voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });
-                }
-
-                // activeComposes--, completedPipelineCompose++, composeElapsedMs[i] set in finally above.
-                profiler.recordSceneCompose(i, scene.index, composeWaitMs[i], composeStartMs[i], Date.now());
-                gantt(`Scene ${scene.index} compose END   (${(composeElapsedMs[i] / 1000).toFixed(1)}s, active=${activeComposes})`, t2p);
-                console.log(
-                  `[Compose] Scene ${scene.index} finished (${(composeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
-                  `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length} ` +
-                  `${formatComposeOutcome(result)}`
-                );
-                if (composeElapsedMs[i] > 60_000) {
-                  void diagnoseSlowCompose(
-                    i, scene.index, scene.duration, result,
-                    svr?.clips ?? [], composeElapsedMs[i], composeStartMs[i], t2p
-                  );
-                }
-                onProgress?.({
-                  stage: `Scene pipeline (${completedPipelineCompose}/${scenes.length} composed)...`,
-                  percent: 47 + Math.round((completedPipelineCompose / scenes.length) * 18),
-                });
-                return result;
-              });
-            });
-          })),
-          // Budget: retrieval cap + compose cap (stages overlap, so add both)
-          visualStageTimeoutMs(videoLength, perf) +
-            (isFastShortVideoLength(videoLength) ? pipelineEmergencyFinishMs(videoLength) : 2_400_000),
-          "P5A scene pipeline"
+    {
+      const { cinematicPlanningEnabled, cinematicRenderPathEnabled } = await import("./cinematicProduction");
+      if (!(cinematicPlanningEnabled() && cinematicRenderPathEnabled())) {
+        throw pipelineError(
+          PIPELINE_ERROR.GENERIC,
+          "The timeline is FastVid's only render path: CINEMATIC_EDITING_ENGINE and CINEMATIC_RENDER_PATH must both be on"
         );
-        composedScenes = pipelineOut;
-      } finally {
-        clearInterval(heartbeatP5A);
       }
+    }
 
-      // Compose timing summary
-      const finishedComposeTimes = composeElapsedMs.filter((ms) => ms > 0);
-      const sortedComposeTimes = [...finishedComposeTimes].sort((a, b) => b - a);
-      const avgComposeMs = finishedComposeTimes.length > 0
-        ? finishedComposeTimes.reduce((s, v) => s + v, 0) / finishedComposeTimes.length : 0;
-      const p95ComposeMs = sortedComposeTimes[Math.floor(sortedComposeTimes.length * 0.05)] ?? 0;
-      const totalWaitMs = composeWaitMs.reduce((s, v) => s + v, 0);
-      console.log(
-        `[Compose] P5A summary — scenes=${scenes.length}, ` +
-        `avg=${(avgComposeMs / 1000).toFixed(1)}s, P95=${(p95ComposeMs / 1000).toFixed(1)}s, ` +
-        `total_queue_wait=${(totalWaitMs / 1000).toFixed(1)}s, ` +
-        `slowest top-3: [${sortedComposeTimes.slice(0, 3).map((ms) => `${(ms / 1000).toFixed(1)}s`).join(", ")}]`
-      );
-      const slowScenes = scenes.filter((_, i) => composeElapsedMs[i] > 60_000);
-      if (slowScenes.length > 0) {
-        console.warn(`[Compose] Scenes >60s: ${slowScenes.map((s) => `Scene ${s.index}(${(composeElapsedMs[scenes.indexOf(s)] / 1000).toFixed(0)}s)`).join(", ")}`);
-      }
-      console.log(`[Pipeline] P5A scene pipeline: ${scenes.length} scenes in ${((Date.now() - t2p) / 1000).toFixed(1)}s`);
-      profiler.recordStageEnd("compose", Date.now());
-      pipelineStepTiming.summarizeAll();
-      // Phase 20: sourcing counters alongside the existing timing summary. Synchronous,
-      // try/catch-wrapped, no awaits — it can never delay or fail the render.
-      logSourcingMetrics(visualDedup.sourcingCache, videoId);
-    } else {
+    let sceneVisualResults: SceneVisualsResult[] = new Array(scenes.length);
+
     // ── Sequential: Stage 3 (visuals) then Stage 4 (compose), chunked ~60s at a time ──
     // Long videos are processed in small batches through the exact SAME per-scene Stage
     // 3/4 code the 1-minute path already uses, instead of firing every scene in the whole
@@ -49249,8 +43340,8 @@ async function _runVideoPipelineInner(
           percent: 20 + Math.round((beatsDone / beatTotal) * 25),
         });
       } catch (err) {
-        // Same fix as heartbeatP5A above — assertPipelineWithinBudget()'s intentional throw
-        // must not escape a raw setInterval callback uncaught (see comment there).
+        // assertPipelineWithinBudget()'s intentional throw must not escape a raw setInterval
+        // callback uncaught — an uncaught throw there would crash the worker process.
         clearInterval(visualHeartbeat);
         console.error(`[Pipeline] video=${videoId} visual heartbeat check failed — cancelling render:`, (err as Error).message);
         requestVideoGenerationCancel(videoId);
@@ -49258,38 +43349,8 @@ async function _runVideoPipelineInner(
     }, 10_000);
     sceneVisualResults = new Array(scenes.length);
 
-    // ── Stage 4 bookkeeping that spans the whole video — sized once here, filled in
-    // per chunk inside the loop below (composeSceneVideo/rescue logic is unchanged). ──
-    const composeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
-    let completedCompose = 0;
-    composedUsedClips = scenes.map(() => []);
-    let timelineSec = 0;
-    sceneStartSecs = scenes.map((s) => {
-      const start = timelineSec;
-      timelineSec += s.duration;
-      return start;
-    });
-    voiceMontageSyncResults = [];
-    const seqComposePar = composeParallelismForVideo(videoLength, IS_RAILWAY);
-    const seqCpuCount = (() => { try { return require("os").cpus().length; } catch { return "?"; } })();
-    const seqPreset = process.env.FFMPEG_PRESET ?? "veryfast";
-    console.log(
-      `[Compose] Stage 4 startup — CPU cores: ${seqCpuCount}, compose parallelism: ${seqComposePar}, ` +
-      `montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
-      `max concurrent ffmpeg (compose×montage): ~${seqComposePar * montageSegmentParallelism(IS_RAILWAY)}, ` +
-      `encoder preset: ${seqPreset}`
-    );
-    if (seqPreset !== "veryfast" && seqPreset !== "superfast" && seqPreset !== "ultrafast") {
-      console.warn(`[Compose] Slow encoder preset "${seqPreset}" — set FFMPEG_PRESET=veryfast for 2–5x speedup`);
-    }
-    const seqComposeStartMs: number[] = new Array(scenes.length).fill(0);
-    const seqComposeElapsedMs: number[] = new Array(scenes.length).fill(0);
-    let seqActiveComposes = 0;
-    let seqQueuedComposes = scenes.length; // all scenes queued at start
     const t3 = Date.now();
     profiler.recordStageEnd("retrieval", t3);
-    profiler.recordStageStart("compose", t3);
-    get_activeBudgetTracker()?.stageStart("compose", (get_activeRenderBudget()?.basePerSceneComposeMs ?? 90_000) * scenes.length);
 
     try {
     for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
@@ -49596,16 +43657,6 @@ async function _runVideoPipelineInner(
       videoLength
     );
 
-    await ensureFastShortScenesReadyForCompose(
-      scenes,
-      sceneVisualResults,
-      workDir,
-      topicContext,
-      visualDedup,
-      videoLength,
-      audioPaths
-    );
-
     // ── Editorial Reorder: AI final-editor pass — optimise montage order per scene ──
     if (editorialReorderEnabled()) {
       const reorderT0 = Date.now();
@@ -49676,505 +43727,6 @@ async function _runVideoPipelineInner(
       );
     }
 
-    // ── Stage 4: Compose scenes — clips, voice, year badges (final output) ───
-    assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
-    onProgress?.({ stage: `${STAGE_LABELS.assembly} (chunk ${chunkIdx + 1}/${chunks.length})`, percent: 47 });
-
-    let chunkComposed: string[];
-    try {
-    chunkComposed = await withTimeout(
-      Promise.all(
-        chunkScenes.map((scene, ci) => {
-          const i = chunk.start + ci;
-          return composeLimit(async () => {
-          seqQueuedComposes--;
-          seqActiveComposes++;
-          seqComposeStartMs[i] = Date.now();
-          console.log(
-            `[Compose] Scene ${scene.index} started — ` +
-            `clips=${sceneVisualResults[i]?.clips?.length ?? 0}, duration=${scene.duration.toFixed(1)}s, ` +
-            `active=${seqActiveComposes}, queued=${seqQueuedComposes}, done=${completedCompose}/${scenes.length}`
-          );
-          const hangCheck = setInterval(() => {
-            const runningMs = Date.now() - seqComposeStartMs[i];
-            if (runningMs > 120_000) {
-              console.warn(
-                `[Compose] Scene ${scene.index} SLOW: ${(runningMs / 1000).toFixed(0)}s — ` +
-                `clips=${sceneVisualResults[i]?.clips?.length ?? 0}, active=${seqActiveComposes}, queued=${seqQueuedComposes}`
-              );
-            }
-          }, 30_000);
-          const usedClips: string[] = [];
-          const composeMeta: NonNullable<ComposeSceneOptions["composeMetaOut"]> = {
-            montageDurations: [],
-            clipBeatIndices: [],
-          };
-          const composeOpts: ComposeSceneOptions = {
-            dedup: visualDedup,
-            videoTitle: topicContext,
-            sceneStartSec: sceneStartSecs[i],
-            montageBeats: sceneVisualResults[i]?.beats,
-            clipBeatIndices: sceneVisualResults[i]?.clipBeatIndices,
-            composeMetaOut: composeMeta,
-            sceneTimeoutMs: renderBudgetComposeMs,
-          };
-          let result: string;
-          try { // outer try/finally guarantees slot release + clearInterval(hangCheck)
-          try {
-            result = await timePipelineStep(
-              pipelineStepTiming,
-              "scene_composition",
-              `Scene ${scene.index} compose (total)`,
-              () => withSceneFetchTimeout(
-                () => composeSceneVideo(
-                  scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-                  enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
-                  composeOpts
-                ),
-                renderBudgetComposeMs,
-                `Stage4 composeSceneVideo s${scene.index}`
-              ),
-              scene.index
-            );
-          } catch (composeErr) {
-            console.warn(
-              `[Pipeline] Scene ${scene.index}: compose failed — rescue retry:`,
-              (composeErr as Error).message?.slice(0, 120)
-            );
-            let rescueClips: string[] = [];
-            // RONDE 32 (FIX D): withSceneFetchTimeout rejects the caller without cancelling the
-            // work, so the compose that "failed" above may have finished writing its output a
-            // few seconds later. Accepting a verified-complete file here is the difference
-            // between shipping the five real clips it composed and overwriting them with a
-            // rescue montage — exactly what happened to scene 1 of render 529.
-            const salvaged = await usableComposeOutputAfterTimeout(
-              scene.index,
-              workDir,
-              scene.duration
-            );
-            if (salvaged) {
-              console.warn(
-                `[Pipeline] Scene ${scene.index}: compose timed out but produced a complete output — ` +
-                  `keeping it, skipping rescue`
-              );
-              result = salvaged;
-              // RONDE 32 (B2): a salvaged scene must report the clips it is actually made of.
-              // Skipping the compose leaves usedClips empty, and composedUsedClips[i] feeds the
-              // quality report (allClipPaths) and buildEditorScenesFromPipeline, neither of which
-              // falls back to sceneVisualResults — so the scene would show up as having no
-              // footage at all. The clips the salvaged output was composed from are this scene's
-              // selected set; usableSurvivorClips applies the same existence/decodability rule
-              // composeSceneVideo would have applied to them.
-              usedClips.push(...(await usableSurvivorClips(sceneVisualResults[i]?.clips ?? [])));
-            } else {
-            try {
-              // The first compose attempt above was time-boxed by withSceneFetchTimeout; this
-              // rescue path (re-fetching clips, then a full compose retry) was not — a hang
-              // anywhere inside it (e.g. rescueFastShortComposeClips) had no outer ceiling and
-              // could block this scene's compose slot indefinitely, which is exactly what we
-              // saw in production: scenes "active" for 2+ hours instead of erroring out to the
-              // last-resort path below. Wrapping it means a hang here now surfaces the same way
-              // a real compose failure already did.
-              result = await withSceneFetchTimeout(
-                async () => {
-                  // RONDE 32 (FIX A): the clips this scene already won are kept. The rescue
-                  // used to hand composeSceneVideo its own array as the COMPLETE clip set, and
-                  // composeSceneVideo treats its `clips` argument as exactly that — so every
-                  // surviving winner silently disappeared. Rescue now only tops the set up.
-                  const survivors = sceneVisualResults[i]?.clips ?? [];
-                  const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
-                  const missing = Math.max(0, minNeeded - survivors.length);
-                  rescueClips =
-                    missing > 0 &&
-                    isFastShortVideoLength(videoLength) &&
-                    !isComposeNetworkBlocked(visualDedup)
-                      ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
-                      : [];
-                  const hold = Math.max(3, scene.duration / minNeeded);
-                  // RONDE 34 (point 2): the beat each rescue slot is standing in for, kept so the
-                  // merged clip list can carry a real clipBeatIndices array into compose.
-                  const rescueBeatIndices: (number | null)[] = [];
-                  if (missing > 0 && rescueClips.length === 0) {
-                    // RONDE 32 (FIX B): one exclusion set for the whole rescue batch, so slot 1
-                    // cannot re-pick what slot 0 just took. Deliberately batch-scoped rather
-                    // than visualDedup.usedCuratedAssetIds: this code only runs because normal
-                    // sourcing already failed, and a render-wide exclusion here would starve the
-                    // rescue into the colour-card path instead of feeding it.
-                    const rescueUsedAssetIds = new Set<number>();
-                    const rescueUsedStorageUrls = new Set<string>();
-                    // RONDE 32 (FIX C): map each rescue slot onto a beat that has no picture yet.
-                    const rescueBeats = sceneVisualResults[i]?.beats;
-                    const uncoveredBeats = uncoveredBeatIndicesForRescue(
-                      rescueBeats?.length ?? 0,
-                      sceneVisualResults[i]?.clipBeatIndices,
-                      survivors.length,
-                      {
-                        sceneIndex: scene.index,
-                        survivors,
-                        audit: visualDedup.clipAdoptAudit,
-                      }
-                    );
-                    for (let si = 0; si < missing; si++) {
-                      const slotBeatIndex = rescueBeatIndexForSlot(si, uncoveredBeats);
-                      const slotTierOut: GuaranteedTierOut = {};
-                      const rescueClip = await generateGuaranteedBeatClip(
-                        scene.index,
-                        si,
-                        hold,
-                        workDir,
-                        rescueBeatTextForSlot(si, rescueBeats, uncoveredBeats) ?? scene.text,
-                        rescueUsedAssetIds,
-                        rescueUsedStorageUrls,
-                        slotTierOut,
-                        { dedup: visualDedup, scene, videoTitle, beatIndex: slotBeatIndex ?? si }
-                      );
-                      rescueClips.push(rescueClip);
-                      // RONDE 50 (point 8): the beat mapping is published only once the clip it
-                      // describes actually exists — the P5A mirror already did it in this order.
-                      // Pushing before the await left an index with no clip behind it if the
-                      // generation threw; nothing observed that today, but the two arrays are
-                      // index-aligned by contract and the asymmetry was one refactor away from
-                      // silently shifting every beat in the merged mapping.
-                      rescueBeatIndices.push(slotBeatIndex);
-                      // Audit-gap fix (same class as Round 17 + follow-up fixes, Path B mirror
-                      // of the Path A fix above): these Stage4 rescue-compose-retry clips reach
-                      // validClips via composeSceneVideo's normal path with no bookkeeping.
-                      // RONDE 34 (point 2): record the beat this slot was fetched FOR, not the
-                      // slot number — the audit is read back as a clip->beat mapping.
-                      recordClipAdopt(
-                        visualDedup.clipAdoptAudit, scene.index, slotBeatIndex ?? si,
-                        scene.text, rescueClip, guaranteedAdoptSource(slotTierOut.tier)
-                      );
-                    }
-                  }
-                  composeMeta.montageDurations = [];
-                  composeMeta.clipBeatIndices = [];
-                  composeMeta.montagePlan = undefined;
-                  usedClips.length = 0;
-                  // Beat durations must stay index-aligned with the clip array: composeSceneVideo
-                  // only trusts `beatDurations` when its length matches (see the
-                  // alignBeatDurationsWithClips / alignMontageMetaWithClips pair), and silently
-                  // flattens every clip to effectiveBeatSec() otherwise — which would throw away
-                  // the survivors' real per-beat timing.
-                  const survivorDurations =
-                    sceneVisualResults[i]?.beatDurations?.length === survivors.length
-                      ? [...(sceneVisualResults[i]!.beatDurations as number[])]
-                      : survivors.map(() => hold);
-                  // RONDE 34 (point 2): survivors keep the beat they were adopted for and the
-                  // rescue clips carry the beat they were fetched for, so the merged array is a
-                  // real mapping. It is only built when every survivor's beat is known —
-                  // otherwise the original is passed through untouched rather than half-invented.
-                  const mergedBeatIndices = mergedRescueClipBeatIndices(
-                    sceneVisualResults[i]?.clipBeatIndices, survivors.length, rescueBeatIndices
-                  );
-                  return composeSceneVideo(
-                    scene, [...survivors, ...rescueClips], audioPaths[i], scene.duration, workDir, scenes.length,
-                    enableSubtitles, visualDedup.lastMuskStockClip,
-                    [...survivorDurations, ...rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength))],
-                    usedClips,
-                    mergedBeatIndices ? { ...composeOpts, clipBeatIndices: mergedBeatIndices } : composeOpts
-                  );
-                },
-                renderBudgetComposeMs,
-                `Stage4 rescue-compose s${scene.index}`
-              );
-            } catch (rescueComposeErr) {
-              // Last resort so one scene's persistent compose failure doesn't abort the whole
-              // video: build a minimal single-clip+audio output directly, bypassing montage logic.
-              console.warn(
-                `[Pipeline] Scene ${scene.index}: rescue compose also failed — last-resort minimal compose:`,
-                (rescueComposeErr as Error).message?.slice(0, 120)
-              );
-              // Problem 10: same "whole scene became one static fallback card" outcome as the
-              // sibling rescue path above — only when there was no real clip to reuse.
-              //
-              // RONDE 32 (B1): "no real clip to reuse" now includes the scene's own surviving
-              // winners. FIX A leaves rescueClips EMPTY whenever survivors already meet
-              // minNeeded, which is exactly the case where the scene has good footage — so
-              // reaching for a freshly generated fallback card here would destroy real clips
-              // that are sitting on disk. Rescue clips keep first claim (unchanged precedence);
-              // a survivor is consulted before anything new is generated.
-              const lastResortSurvivors = await usableSurvivorClips(sceneVisualResults[i]?.clips ?? [], 1);
-              const reusableLastClip = rescueClips[0] ?? lastResortSurvivors[0];
-              // RONDE 48 (C1): count the OUTCOME, not the intent.
-              //
-              // This used to increment the moment there was nothing to reuse — before
-              // generateGuaranteedBeatClip had even run. That call escalates through the topical
-              // archive and Wikimedia before it ever reaches a placeholder tier, so it usually
-              // comes back with real footage, which is then muxed with the voice-over. The scene
-              // was fine and the render was rejected anyway: assertVisualCoverageExportGate
-              // throws on ANY non-zero count.
-              //
-              // P5A (RONDE 34 point 7) already counts this way — only when nothing usable could
-              // be produced at all. Stage4 now matches it. The two paths still differ in what
-              // follows: P5A degrades to a colour card, Stage4 lets the failure propagate, so
-              // this increment records a render that is already lost rather than causing one.
-              let lastClip = reusableLastClip;
-              const lastTierOut: GuaranteedTierOut = {};
-              if (!lastClip) {
-                try {
-                  lastClip = await generateGuaranteedBeatClip(
-                    scene.index, 9999, Math.max(3, scene.duration), workDir,
-                    undefined, undefined, undefined, lastTierOut,
-                    { dedup: visualDedup, scene, videoTitle }
-                  );
-                } catch (guaranteedErr) {
-                  visualDedup.sceneRescueColorFallbackCount++;
-                  throw guaranteedErr;
-                }
-                // Audit-gap fix: only record here when this call actually generated a NEW clip —
-                // a reused rescue clip or survivor was already recorded where it was adopted, and
-                // recording it again would double-count.
-                recordClipAdopt(
-                  visualDedup.clipAdoptAudit, scene.index, 9999, scene.text, lastClip,
-                  guaranteedAdoptSource(lastTierOut.tier)
-                );
-              }
-              result = await composeLastResortSceneFromClip(
-                scene.index,
-                scene.duration,
-                lastClip,
-                audioPaths[i],
-                workDir,
-                composeOpts.phase ?? "full"
-              );
-              usedClips.push(lastClip);
-            }
-            }
-          }
-          composedUsedClips[i] = usedClips;
-          const vr = sceneVisualResults[i];
-          if (
-            vr?.beats?.length &&
-            composeMeta.montageDurations.length > 0 &&
-            !isFastShortVideoLength(videoLength)
-          ) {
-            const voiceSec = Math.max(0.5, scene.duration - VO_SCENE_TAIL_SEC);
-            const auditXfade = composeMeta.montagePlan?.xfadeSec ?? montageXfadeSec();
-            const adoptVisionOk = sceneMontageBeatsPassedAdoptVision(
-              scene.index,
-              composeMeta.clipBeatIndices,
-              visualDedup
-            );
-            const coverage = validateMontageVoiceCoverage(
-              composeMeta.montageDurations,
-              voiceSec,
-              auditXfade
-            );
-            if (!coverage.ok) {
-              console.warn(
-                `[Pipeline] Scene ${scene.index} voice coverage: ${coverage.warnings.join("; ")}`
-              );
-            }
-            const adoptVisionByBeat = new Map<number, number>();
-            for (const entry of visualDedup.clipAdoptAudit) {
-              if (
-                entry.sceneIndex === scene.index &&
-                typeof entry.visionScore10 === "number" &&
-                entry.visionScore10 > 0
-              ) {
-                adoptVisionByBeat.set(entry.beatIndex, entry.visionScore10);
-              }
-            }
-            const beatsForSyncAudit = vr.beats.map((b) => ({
-              text: b.text,
-              holdSec: b.holdSec,
-              voiceStartSec: b.voiceStartSec,
-              voiceEndSec: b.voiceEndSec,
-              visualDescription:
-                beatGateVisualDescription(b, undefined) ?? b.visualDescription,
-              searchQuery: b.searchQuery,
-            }));
-            let audit = await auditSceneVoiceMontageSync(
-              result,
-              beatsForSyncAudit,
-              composeMeta.montageDurations,
-              composeMeta.clipBeatIndices,
-              voiceSec,
-              workDir,
-              scene.index,
-              topicContext,
-              composeMeta.montagePlan,
-              adoptVisionByBeat
-            );
-            const spot =
-              isFastShortVideoLength(videoLength) || adoptVisionOk
-                ? { ok: true, warnings: [] as string[] }
-                : await spotCheckComposedSceneBeatSync(
-              result,
-              vr.beats,
-              composeMeta.montageDurations,
-              composeMeta.clipBeatIndices,
-              workDir,
-              scene.index,
-              topicContext,
-              auditXfade,
-              { skipClipScoring: false }
-            );
-            if (!spot.ok) {
-              audit = {
-                ...audit,
-                ok: false,
-                warnings: [...audit.warnings, ...spot.warnings.map((w) => `spot: ${w}`)],
-              };
-            }
-            if (
-              !audit.ok &&
-              !adoptVisionOk &&
-              !composeMeta.montagePlan?.ttsHardCut &&
-              !isFastShortVideoLength(videoLength)
-            ) {
-              console.warn(
-                `[Pipeline] Scene ${scene.index}: sync audit failed — remontage with TTS hard-cut`
-              );
-              composeMeta.montageDurations = [];
-              composeMeta.clipBeatIndices = [];
-              composeMeta.montagePlan = undefined;
-              usedClips.length = 0;
-              result = await composeSceneVideo(
-                scene, sceneVisualResults[i]?.clips ?? [], audioPaths[i], scene.duration, workDir, scenes.length,
-                enableSubtitles, visualDedup.lastMuskStockClip, sceneVisualResults[i]?.beatDurations, usedClips,
-                {
-                  dedup: visualDedup,
-                  videoTitle: topicContext,
-                  sceneStartSec: sceneStartSecs[i],
-                  montageBeats: sceneVisualResults[i]?.beats,
-                  clipBeatIndices: sceneVisualResults[i]?.clipBeatIndices,
-                  composeMetaOut: composeMeta,
-                  forceTtsHardCutRemontage: true,
-                }
-              );
-              composedUsedClips[i] = usedClips;
-              audit = await auditSceneVoiceMontageSync(
-                result,
-                beatsForSyncAudit,
-                composeMeta.montageDurations,
-                composeMeta.clipBeatIndices,
-                voiceSec,
-                workDir,
-                scene.index,
-                topicContext,
-                composeMeta.montagePlan,
-                adoptVisionByBeat
-              );
-            }
-            voiceMontageSyncResults.push({ sceneIndex: scene.index, audit });
-          }
-          } finally {
-            // CRITICAL: always release slot + clear interval so pipeline never deadlocks.
-            seqActiveComposes--;
-            completedCompose++;
-            seqComposeElapsedMs[i] = Date.now() - seqComposeStartMs[i];
-            clearInterval(hangCheck);
-          }
-          profiler.recordSceneRetrieve(i, scene.index, scene.duration, t2, t3, 0, sceneVisualResults[i]?.clips?.length ?? 0);
-          profiler.recordSceneCompose(i, scene.index, 0, seqComposeStartMs[i], Date.now());
-          console.log(
-            `[Compose] Scene ${scene.index} finished (${(seqComposeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
-            `active=${seqActiveComposes}, queued=${seqQueuedComposes}, done=${completedCompose}/${scenes.length} ` +
-            `${formatComposeOutcome(result)}`
-          );
-          if (seqComposeElapsedMs[i] > 60_000) {
-            void diagnoseSlowCompose(
-              i, scene.index, scene.duration, result,
-              sceneVisualResults[i]?.clips ?? [], seqComposeElapsedMs[i], seqComposeStartMs[i], t3
-            );
-          }
-          onProgress?.({
-            stage: `${STAGE_LABELS.assembly} (${completedCompose}/${scenes.length})`,
-            percent: 47 + Math.round((completedCompose / scenes.length) * 18),
-          });
-          // RONDE 81: record by ABSOLUTE scene index, so a chunk that misses its deadline can
-          // still keep every scene that did finish — and keep them at the right index.
-          composedByIndex[i] = result;
-          return result;
-        });
-        })
-      ),
-      // Scenes compose sequentially on Railway (composeLimit=1), so this is a sum over every
-      // scene's archive lookup + ffmpeg work, not a per-scene budget — a fixed 600s kept being
-      // too tight as soon as a video had more than a handful of scenes. Tie the fast-short case
-      // to the same emergency-finish budget the rest of the pipeline already uses for that video
-      // length, so it can never be the thing that fails a video the wall-clock budget allowed.
-      // Portioned to this chunk's share of scenes, same reasoning as the Stage 3 chunk timeout.
-      // RONDE 81: never below what the scenes in this chunk are each allowed to take. A long
-      // video's scene may compose TWICE (the sync-audit remontage below), and both composes plus
-      // their audits sit inside this one slot — so the per-scene figure handed over is the full
-      // worst case, not a single compose. See composeSlotWorstCaseMs.
-      chunkStageTimeoutMs(
-        isFastShortVideoLength(videoLength) ? pipelineEmergencyFinishMs(videoLength) : 2400_000,
-        chunkScenes.length,
-        scenes.length,
-        20_000,
-        composeSlotWorstCaseMs(renderBudgetComposeMs, videoLength)
-      ),
-      `Scene compose stage chunk ${chunkIdx + 1}/${chunks.length}`
-    );
-    } catch (composeChunkErr) {
-      // RONDE 81 — a compose chunk deadline degrades the video, it does not destroy it.
-      //
-      // This used to have no catch at all, so one slow chunk failed the whole render even though
-      // every OTHER chunk had already produced finished scenes. The stated reason was index
-      // alignment: swallowing the error would push fewer than chunkScenes.length entries and
-      // every later chunk's composedScenes[i] would then line up against the wrong scenes[i].
-      //
-      // That is a real constraint and it is what this block satisfies rather than ignores. The
-      // chunk contributes EXACTLY chunkScenes.length entries, in order:
-      //   1. the scene's own composed output when it finished before the deadline
-      //      (composedByIndex, written by the closure above);
-      //   2. otherwise the existing minimal single-clip + voice-over compose
-      //      (composeLastResortSceneFromClip — the same helper Stage 4's own per-scene last
-      //      resort uses), built from a clip that scene already has on disk;
-      //   3. otherwise an empty-string placeholder, which keeps the index aligned and is dropped
-      //      later by the existing validScenePaths filter before concat.
-      // A scene's audio lives inside its own composed file, so a scene dropped at (3) takes its
-      // own voice-over with it and no other scene inherits it.
-      console.warn(
-        `[Pipeline] Compose chunk ${chunkIdx + 1}/${chunks.length} hit its deadline — ` +
-          `salvaging finished scenes:`,
-        (composeChunkErr as Error).message?.slice(0, 160)
-      );
-      visualDedup.lock = Promise.resolve();
-      const salvaged: string[] = [];
-      for (let si = chunk.start; si < chunk.end; si++) {
-        const done = composedByIndex[si];
-        if (done && fs.existsSync(done)) {
-          salvaged.push(done);
-          continue;
-        }
-        const scene = scenes[si]!;
-        let rescued = "";
-        try {
-          const survivors = await usableSurvivorClips(sceneVisualResults[si]?.clips ?? [], 1);
-          if (survivors[0] && audioPaths[si]) {
-            rescued = await composeLastResortSceneFromClip(
-              scene.index,
-              scene.duration,
-              survivors[0],
-              audioPaths[si]!,
-              workDir
-            );
-          }
-        } catch (lastResortErr) {
-          console.warn(
-            `[Pipeline] Scene ${scene.index}: last-resort compose after chunk deadline failed:`,
-            (lastResortErr as Error).message?.slice(0, 120)
-          );
-        }
-        if (!rescued) {
-          console.warn(
-            `[Pipeline] Scene ${scene.index}: no composed output after chunk deadline — dropped from the cut`
-          );
-        }
-        salvaged.push(rescued);
-      }
-      chunkComposed = salvaged;
-      console.warn(
-        `[Pipeline] Compose chunk ${chunkIdx + 1}/${chunks.length} salvage: ` +
-          `${salvaged.filter(Boolean).length}/${salvaged.length} scenes kept`
-      );
-    }
-    composedScenes.push(...chunkComposed);
     } // end for (chunk of chunks)
     } finally {
       clearInterval(visualHeartbeat);
@@ -50207,168 +43759,19 @@ async function _runVideoPipelineInner(
       });
     }
 
-    const seqFinished = seqComposeElapsedMs.filter((ms) => ms > 0);
-    const seqSorted = [...seqFinished].sort((a, b) => b - a);
-    const seqAvgMs = seqFinished.length > 0 ? seqFinished.reduce((s, v) => s + v, 0) / seqFinished.length : 0;
-    const seqP95Ms = seqSorted[Math.floor(seqSorted.length * 0.05)] ?? 0;
-    console.log(
-      `[Compose] Stage 4 summary — avg=${(seqAvgMs / 1000).toFixed(1)}s, P95=${(seqP95Ms / 1000).toFixed(1)}s, ` +
-      `slowest top-3: [${seqSorted.slice(0, 3).map((ms) => `${(ms / 1000).toFixed(1)}s`).join(", ")}]`
-    );
-    const seqSlowScenes = scenes.filter((_, i) => seqComposeElapsedMs[i] > 60_000);
-    if (seqSlowScenes.length > 0) {
-      console.warn(`[Compose] Scenes >60s: ${seqSlowScenes.map((s, si) => `Scene ${s.index}(${(seqComposeElapsedMs[scenes.indexOf(s)] / 1000).toFixed(0)}s)`).join(", ")}`);
-    }
-    get_activeBudgetTracker()?.stageEnd("compose");
-    console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
-    profiler.recordStageEnd("compose", Date.now());
     pipelineStepTiming.summarizeAll();
     logSourcingMetrics(visualDedup.sourcingCache, videoId);
-    } // end else (sequential Stage 3 + Stage 4)
 
-    // ── Stage 5: Critical scene review — multi-frame vision QA ─────────────────
     /**
-     * WHAT A SCENE IS MADE OF, WITHOUT NEEDING COMPOSE TO HAVE RUN — one rule, one spelling.
-     *
-     * §19 established that the compose stage must be a fallback the cinematic route can live
-     * without, not an axle it hangs from. Three readers had already been given this rule inline —
-     * the critical review, the review inputs and the planner — each writing it out again. One had
-     * not: `buildEditorScenesFromPipeline`, which reads `composedUsedClips` raw. A scene that
-     * composed nothing therefore reaches the editor with no footage at all, and the comment at the
-     * salvage path above says exactly that, as a hazard it has to work around rather than a rule
-     * it can rely on.
-     *
-     * Compose's list stays PREFERRED and that is deliberate: it has had unusable files filtered
-     * out of it, so it is the more accurate of the two whenever it exists. This is about what
-     * happens when it does not.
-     *
-     * `allClipPaths` deliberately does NOT use this. It feeds the quality report's "clips in the
-     * video", and a scene that composed nothing put no picture in the compose montage — reporting
-     * its selected clips there would turn a missing scene into a full one. That number needs to
-     * come from the DELIVERED file, which is a larger change than this one and not a fallback.
+     * WHAT A SCENE IS MADE OF — one rule, one spelling: the clips its sourcing selected. The
+     * editor, the planner and the quality report all read it from here. The report's figures are
+     * re-counted against the delivered file once the timeline render has produced it.
      */
-    const clipsForScene = (i: number): string[] => {
-      const composed = composedUsedClips[i] ?? [];
-      return composed.length > 0 ? composed : (sceneVisualResults[i]?.clips ?? []);
-    };
-    onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 66 });
-    const sceneCriticalFailed: number[] = [];
-    if (sceneCriticalReviewEnabled(videoLength)) {
-    for (let i = 0; i < scenes.length; i++) {
-      const vr = sceneVisualResults[i];
-      if (!vr?.beats?.length) continue;
-      const clipsToReview = clipsForScene(i);
-      const beatIndices = vr.clipBeatIndices ?? clipsToReview.map((_, ci) => ci);
-      const adoptVisionByBeat = new Map<number, number>();
-      for (const entry of visualDedup.clipAdoptAudit) {
-        if (
-          entry.sceneIndex === scenes[i]!.index &&
-          typeof entry.visionScore10 === "number" &&
-          entry.visionScore10 > 0
-        ) {
-          adoptVisionByBeat.set(entry.beatIndex, entry.visionScore10);
-        }
-      }
-      const beatsForReview = vr.beats.map((b) => ({
-        ...b,
-        visualDescription:
-          beatGateVisualDescription(b, undefined) ?? b.visualDescription ?? b.text.slice(0, 220),
-      }));
-      const critical = await reviewSceneCritical(
-        scenes[i]!.index,
-        scenes[i]!.duration,
-        clipsToReview,
-        beatIndices,
-        beatsForReview,
-        workDir,
-        topicContext,
-        adoptVisionByBeat
-      );
-      if (!critical.ok) {
-        sceneCriticalFailed.push(scenes[i]!.index);
-        const msg = `Scene ${scenes[i]!.index} critical review: ${critical.summary}`;
-        /**
-         * RONDE 620 — THIS LINE READ THE FLAG THAT DOES NOT DECIDE.
-         *
-         * Render 597 printed, and then delivered the film:
-         *
-         *     [Pipeline] Scene 0 critical review: 1/4 clip(s) failed critical review
-         *                — blocks export (strict voice↔visual)
-         *
-         * It did not block. Two different flags, and the message asked the wrong one:
-         *
-         *     strictVoiceVisualMatchEnabled()   default ON     ← what this line read
-         *     blockExportOnVisualMismatch()     default FALSE  ← what actually decides
-         *
-         * The second returns the first, but only after `allowDegradedVisualExport()`, which is
-         * `beatVisualRescueEnabled()`, which defaults ON. So in the shipped configuration the
-         * export gate treats a failed critical review as non-blocking while this line called it
-         * fatal — and a reader watching the log had no way to know the film was about to ship.
-         *
-         * A log that claims an effect the configuration prevents is the same fault as a counter
-         * that reports a refusal it never made. NOTHING about the gate changes here: the flags,
-         * the thresholds and the export decision are exactly what they were. The line now asks the
-         * flag that owns the answer, and when it is not blocking it says WHY, so the remedy is
-         * visible instead of having to be traced through three functions.
-         */
-        const blocks = blockExportOnVisualMismatch();
-        if (blocks) {
-          console.error(`[Pipeline] ${msg} — blocks export (strict voice↔visual)`);
-        } else {
-          console.warn(
-            `[Pipeline] ${msg} — NOT blocking export in this configuration ` +
-              `(strictVoiceVisual=${strictVoiceVisualMatchEnabled()} ` +
-              `degradedVisualExportAllowed=${allowDegradedVisualExport()}) — ` +
-              `the film ships with this scene as it is`
-          );
-        }
-      }
-    }
-    }
-
-    // ── Stage 5b: QA — visuals match narration + montage timing ──────────────
-    // P6: when asyncQaEnabled(), fire reviews as background promises that run
-    // concurrently with the final concat/music stage (~30-60s FFmpeg headroom).
-    // They are awaited (with timeout) just before enforceQualityExportGate.
+    const clipsForScene = (i: number): string[] => sceneVisualResults[i]?.clips ?? [];
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 68 });
-    let composeReview: PipelineReviewResult = { ok: true, summary: "skipped (fast 1-min)", issues: [] };
-    let finalReview: PipelineReviewResult = { ok: true, summary: "skipped (fast 1-min)", issues: [] };
-    let composeReviewPromise: Promise<PipelineReviewResult> | null = null;
-    let finalReviewPromise: Promise<PipelineReviewResult> | null = null;
-    if (!isFastShortVideoLength(videoLength)) {
-    const reviewInputs = sceneReviewInputs(scenes, scenes.map((_, i) => clipsForScene(i)));
-    if (asyncQaEnabled()) {
-      // Fire both reviews concurrently; they complete during concat (free headroom)
-      const skipResult: PipelineReviewResult = { ok: true, summary: "async (running during concat)", issues: [] };
-      composeReview = skipResult;
-      finalReview = skipResult;
-      composeReviewPromise = reviewPipelineBeforeEffects(reviewInputs, composedScenes, videoTitle)
-        .catch(() => ({ ok: true, summary: "async review failed (non-fatal)", issues: [] } satisfies PipelineReviewResult));
-      finalReviewPromise = reviewPipelineBeforeExport(reviewInputs, composedScenes)
-        .catch(() => ({ ok: true, summary: "async review failed (non-fatal)", issues: [] } satisfies PipelineReviewResult));
-      console.log("[Pipeline] P6: reviews fired async (running during concat)");
-    } else {
-    composeReview = await reviewPipelineBeforeEffects(
-      reviewInputs,
-      composedScenes,
-      videoTitle
-    );
-    logPipelineReview("na samenstellen", composeReview);
-    if (!composeReview.ok) {
-      console.warn(`[Pipeline] Visual QA: ${composeReview.summary} — doorgaan met export`);
-    }
 
-    // ── Stage 6: Final review before export ──────────────────────────────────
-    onProgress?.({ stage: STAGE_LABELS.finalReview, percent: 74 });
-    finalReview = await reviewPipelineBeforeExport(reviewInputs, composedScenes);
-    logPipelineReview("eindcontrole", finalReview);
-    if (!finalReview.ok) {
-      console.warn(`[Pipeline] Final review: ${finalReview.summary} — continuing export (self-heal)`);
-    }
-    }
-    }
-
-    const allClipPaths = composedUsedClips.flat().filter(Boolean);
+    /** RONDE 661 — with no compose, the video's clips are each scene's selected clips. */
+    const allClipPaths = scenes.map((_, i) => clipsForScene(i)).flat().filter(Boolean);
     /**
      * RONDE 106 — collect the render's own reports so they can be stored with the video.
      *
@@ -50473,7 +43876,6 @@ async function _runVideoPipelineInner(
       adoptAudit: visualDedup.clipAdoptAudit,
       archiveOnly: curatedArchiveOnlyVisuals(),
       fastShort: isFastShortVideoLength(videoLength),
-      sceneCriticalFailed,
       // RONDE 86/87: the report reads the ledger and nothing else. A clip whose origin cannot be
       // proven comes back null here and is counted as UNVERIFIED — never re-derived from its name.
       resolveSource: (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath),
@@ -50834,17 +44236,6 @@ async function _runVideoPipelineInner(
       qualityReport.hasSilentVoiceover = true;
     }
     logVideoQualityReport(videoId, qualityReport);
-    if (voiceMontageSyncResults.length > 0) {
-      qualityReport.voiceMontageSync = summarizeVoiceMontageSyncAudits(voiceMontageSyncResults);
-      for (const w of qualityReport.voiceMontageSync.warnings.slice(0, 10)) {
-        qualityReport.warnings.push(`VoiceSync: ${w}`);
-      }
-      if (!qualityReport.voiceMontageSync.ok) {
-        console.warn(
-          `[Pipeline] Voice montage sync: ${qualityReport.voiceMontageSync.failedScenes.length}/${qualityReport.voiceMontageSync.sceneCount} scene(s) with issues`
-        );
-      }
-    }
     /**
      * RONDE 106 — the pipeline's account of itself is stored with the video.
      *
@@ -51016,414 +44407,12 @@ async function _runVideoPipelineInner(
       );
     }
 
-    /**
-     * RONDE 661 — ONE RENDER PATH.
-     *
-     * With the cinematic route on, the timeline render is what the viewer receives, and every
-     * successful video since 24 September was delivered by it. The compose montage built below
-     * was assembled, mixed, healed, audited and uploaded anyway — and then thrown away. Worse, it
-     * could still end the render: video 608 failed in the montage's music mix before the timeline
-     * render ever started, and in 8 of the 9 renders where the timeline failed, the montage itself
-     * carried a placeholder and could not have been delivered either.
-     *
-     * So with the timeline delivering, the montage's assembly (overlays, concat, music, heal),
-     * its audits and its upload are not run, and the adopted clips stay on disk for the timeline
-     * render instead of being deleted and fetched back. The export gates still run. A timeline
-     * render that does not deliver fails the video by name — there is no second render behind it.
-     */
-    const timelineDelivers = await (async () => {
-      const { cinematicPlanningEnabled, cinematicRenderPathEnabled } = await import("./cinematicProduction");
-      return cinematicPlanningEnabled() && cinematicRenderPathEnabled();
-    })().catch(() => false);
-    if (timelineDelivers) {
-      console.log(
-        pipelineReport.add(
-          "summary",
-          `[RenderPath] video=${videoId} route=cinematic_timeline_only — the compose montage is not assembled`
-        )
-      );
-    }
-
-    // Cleanup intermediates — only when the montage is the delivery; the timeline render reads these.
-    if (!timelineDelivers) {
-      for (let i = 0; i < scenes.length; i++) {
-        try { fs.unlinkSync(audioPaths[i]); } catch { /* ignore */ }
-        for (const clip of sceneVisualResults[i]?.clips ?? []) {
-          try { if (clip !== composedScenes[i]) fs.unlinkSync(clip); } catch { /* ignore */ }
-        }
-      }
-    }
-
-    // ── Stage 4b: Text overlays (cinematic headlines + documentary labels) ──
-    try {
-      const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, applyTextOverlaysToScenes } = await import("./textOverlay/index");
-      if (!timelineDelivers && textOverlayEnabled()) {
-        const overlayStyle = textOverlayStyle();
-        const textPlan = planVideoTextOverlays(
-          scenes.map((s, i) => ({
-            index: i,
-            text: s.text ?? "",
-            visualCue: (s as any).visualCue ?? "",
-            pexelsQuery: (s as any).pexelsQuery ?? "",
-            chapterTitle: (s as any).chapterTitle ?? "",
-            sectionTitle: (s as any).sectionTitle ?? "",
-            duration: s.duration,
-            beats: (s as any).beats ?? [],
-          })),
-          overlayStyle,
-          videoTitle
-        );
-        const hasAnyOverlay = textPlan.scenes.some(sp => sp.overlays.length > 0);
-        if (hasAnyOverlay) {
-          onProgress?.({ stage: STAGE_LABELS.assembling, percent: 75 });
-          const overlaid = await applyTextOverlaysToScenes(composedScenes, textPlan.scenes, workDir);
-          for (let i = 0; i < overlaid.length; i++) {
-            composedScenes[i] = overlaid[i];
-          }
-          console.log(`[TextOverlay] Applied ${overlayStyle} overlays to ${composedScenes.length} scenes`);
-        }
-      }
-    } catch (err) {
-      console.warn("[TextOverlay] Overlay pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
-    }
-
-    // ── Stage 4b2: Visual Director (intelligent motion graphics) ────────────
-    try {
-      const { visualDirectorEnabled, directVideo, applyVideoDirective } = await import("./visualDirector/index");
-      if (!timelineDelivers && visualDirectorEnabled()) {
-        const sceneMetas = scenes.map((s, i) => ({
-          index: i,
-          text: s.text ?? "",
-          visualCue: (s as any).visualCue ?? "",
-          pexelsQuery: (s as any).pexelsQuery ?? "",
-          duration: s.duration,
-          beats: (s as any).beats ?? [],
-        }));
-        const vd = directVideo(sceneMetas, videoTitle);
-        const hasAny = vd.scenes.some(sd => sd.directives.length > 0);
-        if (hasAny) {
-          const overlaid = await applyVideoDirective(composedScenes, vd, workDir);
-          for (let i = 0; i < overlaid.length; i++) composedScenes[i] = overlaid[i];
-        }
-      }
-    } catch (err) {
-      console.warn("[VisualDirector] Motion directive pass failed (non-fatal):", (err as Error).message?.slice(0, 120));
-    }
-
-        // ── Stage 4c: Vidrush chapter cards (yellow title cards between sections) ──
-    // RONDE 113: a chapter card is a full frame of text. Same rule as every other text engine.
-    const useChapterCards =
-      !timelineDelivers &&
-      burnedInTextAllowed() &&
-      process.env.ENABLE_CHAPTER_CARDS === "true" && !isShortVideoLength(videoLength);
-    const orderedClips: string[] = [];
-    let chapterCardCount = 0;
-    for (let i = 0; i < composedScenes.length; i++) {
-      const scene = scenes[i];
-      const cardTitle = scene.chapterTitle || scene.sectionTitle;
-      // Never open on a card — real footage first; skip script meta labels (HOOK, CTA)
-      if (useChapterCards && i > 0 && cardTitle && isPublishableChapterTitle(cardTitle)) {
-        try {
-          const card = await renderChapterCard(cardTitle, i, workDir);
-          if (fs.existsSync(card) && fs.statSync(card).size > 1000) {
-            orderedClips.push(card);
-            chapterCardCount++;
-          }
-        } catch (err) {
-          console.warn(`[Pipeline] Chapter card ${i} failed (non-fatal):`, (err as Error).message);
-        }
-      }
-      orderedClips.push(composedScenes[i]);
-    }
-
-    let finalConcatInputs: string[] = [];
-    let finalVideoPath = "";
-    let finalValidation: Awaited<ReturnType<typeof ensureFinalVideoExportReady>>["validation"] | null = null;
-    if (!timelineDelivers) {
-      // ── Stage 5: Concatenate + intro/outro + music ────────────────────────
-      onProgress?.({ stage: STAGE_LABELS.assembling, percent: 77 });
-      const t4 = Date.now();
-      profiler.recordStageStart("concat", t4);
-      get_activeBudgetTracker()?.stageStart("concat", get_activeRenderBudget()?.concatMs ?? 120_000);
-      const totalDuration =
-        scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
-
-      // ── Cinematic audio: generate ambient track before final concat ──────────
-      let cinematicAmbientPath: string | null = null;
-      let dominantEmotion = "neutral";
-      try {
-        const { cinematicAudioEnabled, planVideoAudio, generateCinematicAmbientTrack } = await import("./cinematicAudio/index");
-        if (cinematicAudioEnabled()) {
-          const soundPlan = planVideoAudio(
-            scenes.map((s, i) => ({
-              index: i,
-              text: s.text ?? "",
-              visualCue: (s as any).visualCue ?? (s as any).pexelsQuery ?? "",
-              pexelsQuery: (s as any).pexelsQuery ?? "",
-              duration: s.duration,
-              beats: (s as any).beats ?? [],
-            })),
-            videoTitle
-          );
-          dominantEmotion = soundPlan.scenes[0]?.emotion ?? "neutral";
-          cinematicAmbientPath = await generateCinematicAmbientTrack(
-            soundPlan,
-            scenes.map(s => s.duration),
-            workDir
-          );
-          if (cinematicAmbientPath) {
-            console.log(`[CinematicAudio] Ambient track ready for final mix (emotion: ${dominantEmotion})`);
-          }
-        }
-      } catch (err) {
-        console.warn("[CinematicAudio] Ambient track generation failed (non-fatal):", (err as Error).message?.slice(0, 120));
-      }
-
-      /**
-       * RONDE 87 (§D) — the list of scene videos that provably went into the delivered file.
-       *
-       * Starts as the list this stage hands to the concat, and is REPLACED by whatever the heal loop
-       * concatenated if it had to rebuild. FINAL_VIDEO is derived from this and from nothing else:
-       * DOWNLOADED is not ADOPTED is not COMPOSED is not FINAL_VIDEO, and a clip only earns the last
-       * one when its scene is in the input of the concat that produced the validated output.
-       */
-      finalConcatInputs = orderedClips;
-
-      finalVideoPath = await timePipelineStep(
-        pipelineStepTiming,
-        "video_rendering",
-        "Final concat + music",
-        async () => {
-          let pathOut = await concatenateScenesWithMusic(
-            orderedClips,
-            workDir,
-            videoId,
-            totalDuration,
-            videoTitle,
-            undefined,
-            videoLength,
-            renderBudgetConcatMs,
-            get_activeRenderBudget()?.musicMixMs ?? 180_000,
-            cinematicAmbientPath,
-            dominantEmotion
-          );
-          if (isShortVideoLength(videoLength)) {
-            const targetSec = videoLength === "1" ? 58 : 118;
-            pathOut = await ensureFinalVideoDuration(pathOut, workDir, videoId, targetSec);
-          }
-          return pathOut;
-        }
-      );
-      get_activeBudgetTracker()?.stageEnd("concat");
-      profiler.recordStageEnd("concat", Date.now());
-      console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
-
-      /**
-       * RONDE 198 — THE PICTURE MUST COVER THE VOICE IN THE FILM, NOT ONLY IN EACH SCENE.
-       *
-       * `repairShortSceneVideo` has held the last frame across a short scene for many rounds, and
-       * `composeReadySceneClips` calls it on every scene it builds. Nothing ever asked the same
-       * question of the assembled film. R195 wired the MEASUREMENT in — video 574's 68.04s of
-       * picture under 69.88s of audio is now printed at stage 6 — and printing is where it stopped:
-       * the render reported the fault and shipped it, which is the shape this project keeps finding.
-       *
-       * The concat can produce a film whose picture is short of its sound even when every scene
-       * covered its own: the music mix and the ambient bed are mixed against the full narration, and
-       * `ensureFinalVideoDuration` bounds the picture for the short formats. Measured here, before
-       * the export-ready pass, so a repaired file goes through the same faststart/validation gate as
-       * an unrepaired one and the stage-6 measurement below still reports the DELIVERED file.
-       *
-       * Measure → repair only when the sound really outlasts the picture → measure again at stage 6.
-       * No gate is relaxed and nothing is asserted about the result: if the repair fails or the
-       * probe cannot read the file, the render keeps the file it had and stage 6 says what shipped.
-       */
-      try {
-        const preExport = await checkFileAvSync(finalVideoPath);
-        const soundEnd = Math.max(
-          preExport.envelope.audioSec ?? 0,
-          preExport.envelope.lastSoundSec ?? 0
-        );
-        const pictureEnd = preExport.envelope.videoSec ?? 0;
-        const soundOutlastsPicture = preExport.findings.some(
-          (f) => f.code === "audio_past_picture" || (f.code === "stream_length_mismatch" && f.deltaSec > 0)
-        );
-        if (soundOutlastsPicture && soundEnd > pictureEnd) {
-          console.warn(
-            `[FinalCoverage] video ${videoId}: picture ends at ${pictureEnd.toFixed(2)}s under ` +
-              `${soundEnd.toFixed(2)}s of sound — repairing before export`
-          );
-          const covered = await repairShortSceneVideo(
-            finalVideoPath,
-            soundEnd,
-            -1,
-            workDir,
-            Math.max(120_000, Math.min(300_000, Math.round(soundEnd * 4_000))),
-            pipelineFfmpegThreadFlag(),
-            "the assembled film"
-          );
-          if (covered !== finalVideoPath) {
-            finalVideoPath = covered;
-            qualityReport.warnings.push(
-              `AV envelope: the picture was ${(soundEnd - pictureEnd).toFixed(2)}s short of the ` +
-                `sound and was extended before export`
-            );
-            console.log(
-              pipelineReport.add(
-                "summary",
-                `[FinalCoverage] video ${videoId}: picture extended to cover the narration`
-              )
-            );
-          } else {
-            console.warn(
-              `[FinalCoverage] video ${videoId}: repair did not produce a longer picture — ` +
-                `shipping as composed; stage 6 reports what the file actually is`
-            );
-          }
-        }
-        /**
-         * AND THE OTHER DIRECTION, WHICH HAD NO REPAIR AT ALL.
-         *
-         * The block above extends the picture when the sound outlasts it. The opposite happened in
-         * the delivered film and nothing acted on it:
-         *
-         *     [AVSync] video=82.36s audio=75.23s
-         *     trailing_silence 7.128s — the last 7.13s of the film are silent picture
-         *
-         * Seven seconds of picture after the narration has finished. `checkFileAvSync` names it
-         * precisely — and then the file shipped with it, because the finding had a detector and no
-         * reader. A viewer reads that as the video having frozen.
-         *
-         * Trimmed to the sound, plus a short tail so the last word is not clipped and a fade still
-         * has room. Stream-copied: no re-encode, so nothing about the picture or the loudness the
-         * step above corrected can change here. Only when the excess is REAL — the same
-         * `EDGE_EXCESS_SEC` threshold the detector uses — so an ordinary end-frame hold is left
-         * alone, and only when a trim would still leave a film worth shipping.
-         */
-        const pictureEnd2 = preExport.envelope.videoSec ?? 0;
-        const lastSound = preExport.envelope.lastSoundSec ?? 0;
-        const excess = pictureEnd2 - lastSound;
-        if (
-          preExport.findings.some((f) => f.code === "trailing_silence") &&
-          lastSound > 1 &&
-          excess > TRAILING_SILENCE_TRIM_SEC
-        ) {
-          const keepSec = Number((lastSound + TRAILING_SILENCE_TAIL_SEC).toFixed(3));
-          const trimmed = finalVideoPath.replace(/\.mp4$/i, "_tailtrim.mp4");
-          try {
-            await exec(
-              `"${FFMPEG_BIN}" -y -i "${finalVideoPath}" -t ${keepSec} -c copy ` +
-                `-movflags +faststart "${trimmed}"`,
-              180_000
-            );
-            if (fs.existsSync(trimmed) && fs.statSync(trimmed).size > 1_000) {
-              finalVideoPath = trimmed;
-              qualityReport.warnings.push(
-                `AV envelope: ${excess.toFixed(2)}s of silent picture after the narration was trimmed`
-              );
-              console.log(
-                pipelineReport.add(
-                  "summary",
-                  `[FinalCoverage] video ${videoId}: trimmed ${excess.toFixed(2)}s of silent tail ` +
-                    `(picture ${pictureEnd2.toFixed(2)}s → ${keepSec.toFixed(2)}s)`
-                )
-              );
-            }
-          } catch (err) {
-            console.warn(
-              `[FinalCoverage] video ${videoId}: tail trim failed, shipping as composed: ` +
-                `${(err as Error)?.message?.slice(0, 140)}`
-            );
-          }
-        }
-      } catch (err) {
-        console.warn(
-          `[FinalCoverage] video ${videoId}: coverage check failed (non-fatal): ` +
-            `${(err as Error)?.message?.slice(0, 140)}`
-        );
-      }
-
-      const { path: exportReadyPath, validation: exportValidation } = await ensureFinalVideoExportReady({
-        filePath: finalVideoPath,
-        workDir,
-        videoId,
-        videoLength,
-        reassemble: async () => {
-          const validClips = orderedClips.filter(
-            (p) => p && fs.existsSync(p) && fs.statSync(p).size > 1_000
-          );
-          if (validClips.length === 0) return null;
-          const out = await concatenateScenesWithMusic(
-            validClips,
-            workDir,
-            videoId,
-            totalDuration,
-            videoTitle,
-            undefined,
-            videoLength,
-            renderBudgetConcatMs
-          );
-          // RONDE 87: the heal loop can rebuild the final file from a SUBSET of the scenes. Whatever
-          // it actually concatenated is what the delivered file contains, so that is what
-          // FINAL_VIDEO must be proven against — not the list this stage started with.
-          if (out) finalConcatInputs = validClips;
-          return out;
-        },
-        reassemblePlain: async () => {
-          const out = await plainConcatSceneVideos(composedScenes, workDir, videoId);
-          if (out) finalConcatInputs = composedScenes.filter((p) => p && fs.existsSync(p));
-          return out;
-        },
-        onHeartbeat: () => touchVideoProgress(videoId),
-      });
-      finalVideoPath = exportReadyPath;
-      finalValidation = exportValidation;
-
-      if (!exportValidation.ok) {
-        console.warn(
-          `[Pipeline] Video ${videoId}: final not playable after heal — ${exportValidation.reasons.join("; ")}`
-        );
-        throw pipelineError(
-          PIPELINE_ERROR.CONCAT,
-          `Final video not playable: ${exportValidation.reasons.slice(0, 3).join("; ")}`
-        );
-      }
-      if (exportValidation.softWarnings.length > 0) {
-        console.warn(
-          `[Pipeline] Video ${videoId}: export QA notes — ${exportValidation.softWarnings.slice(0, 4).join("; ")}`
-        );
-      }
-
-      /**
-       * ── RONDE 87 (§D/§F/§G/§H): the visual source audit ────────────────────────
-       *
-       * Emitted HERE, after the delivered file has been produced and validated, because this is the
-       * first moment FINAL_VIDEO is knowable. Everything before this point can say what was
-       * downloaded, adopted and composed; only the concat that produced the validated output can say
-       * what is actually in the video the customer receives.
-       *
-       * The proof chain is: finalConcatInputs holds the scene videos that went into that concat;
-       * composedScenes[i] is scene i's video and composedUsedClips[i] is the clip list that scene
-       * was composed from; so a clip is in the final video exactly when its scene's video is in
-       * finalConcatInputs. Nothing here is inferred from a name, a count or a position.
-       */
-    }
+    console.log(
+      pipelineReport.add("summary", `[RenderPath] video=${videoId} route=cinematic_timeline — the only render path`)
+    );
 
     try {
       const ledger = visualDedup.sourcingCache.lineage;
-      const deliveredScenes = new Set(finalConcatInputs.filter(Boolean));
-      const deliveredClips: string[] = [];
-      for (let i = 0; i < composedScenes.length; i++) {
-        const sceneVideo = composedScenes[i];
-        if (!sceneVideo || !deliveredScenes.has(sceneVideo)) continue;
-        for (const clip of composedUsedClips[i] ?? []) {
-          if (clip) deliveredClips.push(clip);
-        }
-      }
-      const proven = ledger.markFinalVideo(deliveredClips);
-      console.log(
-        `[VisualAudit] final concat carried ${deliveredScenes.size} scene video(s); ` +
-          `${proven} clip(s) proven in the delivered file out of ${deliveredClips.length} composed`
-      );
 
       /**
        * RONDE 88 — the two columns that are provider facts rather than per-asset events.
@@ -51904,28 +44893,6 @@ async function _runVideoPipelineInner(
           deliveryHappened: ledger.finalVideoWasVerified,
         });
         for (const line of errors) console.error(pipelineReport.add("dropped", line));
-        /**
-         * R194 §11 — THE COMPOSE ARITHMETIC, STATED ONCE FOR THE WHOLE RENDER.
-         *
-         * The three events have existed for several rounds and a per-scene line printed the three
-         * numbers. Nobody added them up, so the statement that matters —
-         * `composeInputs = composeSelected + composeDropped` with `unresolved = 0` — was never made
-         * and could not fail. Counted off the lifecycles rather than the raw events, so a clip that
-         * reached compose as `_transformed` and `_padded` is one picture and not three.
-         *
-         * `composeCompleted` is the render's own verification: an abandoned compose legitimately
-         * leaves its inputs unaccounted for, and reporting that as a defect would fire the alarm on
-         * every timeout. §11's rule — no fake DROPPED for a compose crash — lives in that flag.
-         */
-        const composeCensus = composeCensusOf(lifecycles);
-        for (const line of formatComposeCensus(composeCensus)) {
-          console.log(pipelineReport.add("summary", line));
-        }
-        for (const line of composeCensusViolations(composeCensus, {
-          composeCompleted: ledger.finalVideoWasVerified,
-        })) {
-          console.error(pipelineReport.add("dropped", line));
-        }
         const count = (s: string) => lifecycles.filter((a) => a.terminalStatus === s).length;
         console.log(
           pipelineReport.add(
@@ -52095,35 +45062,7 @@ async function _runVideoPipelineInner(
       console.warn("[VisualAudit] audit reporting failed (non-fatal):", (err as Error).message?.slice(0, 160));
     }
 
-    // ── P6: Gather async reviews before quality gate ──────────────────────────
-    // Reviews fired after compose; by now (after concat) they should be complete.
-    if (composeReviewPromise || finalReviewPromise) {
-      const REVIEW_GATHER_TIMEOUT = 45_000;
-      const [cr, fr] = await Promise.all([
-        composeReviewPromise
-          ? withTimeout(composeReviewPromise, REVIEW_GATHER_TIMEOUT, "async compose review")
-              .catch(() => composeReview)
-          : Promise.resolve(composeReview),
-        finalReviewPromise
-          ? withTimeout(finalReviewPromise, REVIEW_GATHER_TIMEOUT, "async final review")
-              .catch(() => finalReview)
-          : Promise.resolve(finalReview),
-      ]);
-      composeReview = cr;
-      finalReview = fr;
-      logPipelineReview("na samenstellen (async)", composeReview);
-      logPipelineReview("eindcontrole (async)", finalReview);
-      if (!composeReview.ok) {
-        console.warn(`[Pipeline] Visual QA (async): ${composeReview.summary} — doorgaan met export`);
-      }
-      if (!finalReview.ok) {
-        console.warn(`[Pipeline] Final review (async): ${finalReview.summary} — continuing export (self-heal)`);
-      }
-    }
-
-    // ── Stage 6: Upload + spot check ─────────────────────────────────────────
-    // P6: when asyncQaEnabled(), spot check runs concurrently with the S3 upload
-    // (both read finalVideoPath; upload is I/O-bound, spot check is CPU/ffprobe).
+    // ── Stage 6: Export gates (the delivered file is produced by the timeline render below) ──
     onProgress?.({ stage: STAGE_LABELS.uploading, percent: 93 });
     const t5 = Date.now();
     profiler.recordStageStart("upload", t5);
@@ -52146,27 +45085,6 @@ async function _runVideoPipelineInner(
      * reason on the line. The pass replaces the file only when the corrected audio measures closer
      * to target than the original.
      */
-    if (!timelineDelivers) {
-      const loudness = await normaliseDeliveredLoudness(finalVideoPath).catch(
-        (err): LoudnessResult => ({
-          outcome: "failed",
-          beforeLufs: null,
-          afterLufs: null,
-          targetLufs: TARGET_LUFS,
-          reason: `the loudness pass threw: ${(err as Error)?.message?.slice(0, 140)}`,
-        })
-      );
-      const line = formatLoudness(loudness);
-      if (loudnessNeedsAttention(loudness)) {
-        console.warn(pipelineReport.add("summary", line));
-        qualityReport.warnings.push(
-          `Loudness: delivered at ${loudness.beforeLufs?.toFixed(1) ?? "an unknown level"} ` +
-            `against a ${TARGET_LUFS} LUFS target — ${loudness.reason ?? loudness.outcome}`
-        );
-      } else {
-        console.log(pipelineReport.add("summary", line));
-      }
-    }
 
     /**
      * RONDE 223 — say what the refusal memo saved, or say nothing at all.
@@ -52186,8 +45104,6 @@ async function _runVideoPipelineInner(
       if (reuseLine) console.log(pipelineReport.add("summary", reuseLine));
     }
 
-    const finalVideoSizeBytes = finalVideoPath ? (await fs.promises.stat(finalVideoPath)).size : 0;
-
     /**
      * R195 — DOES THE PICTURE COVER THE NARRATION?
      *
@@ -52201,26 +45117,6 @@ async function _runVideoPipelineInner(
      * render delivers instead, the block at the cutover replaces this with the render job's own
      * verdict on the file the viewer actually received.
      */
-    if (!timelineDelivers) {
-      const avSync = await checkFileAvSync(finalVideoPath).catch(() => null);
-      if (avSync) {
-        for (const line of formatAvSync(avSync)) {
-          if (avSync.ok) console.log(pipelineReport.add("summary", line));
-          else console.warn(pipelineReport.add("summary", line));
-        }
-        qualityReport.avSync = {
-          /** True until the cutover block flips it — same rule as `stillness.measuredOn`. */
-          measuredOn: "compose_montage",
-          ok: avSync.ok,
-          videoSec: avSync.envelope.videoSec,
-          audioSec: avSync.envelope.audioSec,
-          findings: avSyncFindingCodes(avSync),
-        };
-        for (const f of avSync.findings) {
-          qualityReport.warnings.push(`AV envelope: ${f.reason}`);
-        }
-      }
-    }
     /**
      * RONDE 133 — measure the finished file, on every render.
      *
@@ -52237,222 +45133,6 @@ async function _runVideoPipelineInner(
      * nothing: it measures, it warns, and it is wrapped so a slow or broken audit can never cost a
      * render that is otherwise complete.
      */
-    /**
-     * RONDE 653 — the stillness and repeat audits measure THE FILE THE VIEWER RECEIVES, or wait.
-     *
-     * Both read the compose montage for up to three minutes each. With the cinematic render path on,
-     * that montage is the fallback and not the delivery: `measuredOn` was then flipped to
-     * "compose_montage" and a warning said the figures describe the wrong video. So they are
-     * deferred, and run only if the montage is what gets delivered after all. The delivered
-     * cinematic file is checked by the render job's own spot check.
-     */
-    const auditComposeMontage = async (): Promise<void> => {
-      /** RONDE 661 — no montage was assembled, so there is nothing to audit. */
-      if (!finalVideoPath) return;
-      try {
-        const stillness = await withTimeout(
-          auditVideoStillness({ videoPath: finalVideoPath, maxSampleFps: 8, timeoutMs: 180_000 }),
-          200_000,
-          "stillness audit"
-        );
-        const verdict = checkStillnessLimit(stillness, stillImageMaxSec());
-        console.log(formatStillnessReport(`video ${videoId} final.mp4`, stillness, verdict));
-        qualityReport.stillness = {
-          // True until the cutover block flips it — see `measuredOn` in videoQualityReport.ts.
-          measuredOn: "delivered_file",
-          durationSec: stillness.durationSec,
-          longestStillSec: stillness.longestStillSec,
-          longestStillStartSec: stillness.longestStillStartSec,
-          visualChanges: stillness.visualChanges,
-          stillSegments: stillness.stillRuns.length,
-          // RONDE 136: the two facts about the END of the film, which nothing measured before.
-          imagesOverLimit: verdict.stillsOverLimit,
-          endFrameLuma: stillness.endFrameLuma,
-          endsOnBlack: stillness.endsOnBlack,
-          limitSec: verdict.limitSec,
-          ok: verdict.ok,
-        };
-        if (stillness.endsOnBlack) {
-          qualityReport.warnings.push(
-            `de video eindigt op een zwart beeld (luma ${stillness.endFrameLuma?.toFixed(0)}) — ` +
-              `de kijker blijft achter met een leeg scherm`
-          );
-        }
-        for (const v of verdict.violations.slice(0, 3)) {
-          qualityReport.warnings.push(
-            `beeld staat ${v.durationSec.toFixed(1)}s stil vanaf ${v.startSec.toFixed(1)}s — ` +
-              `langer dan de ${verdict.limitSec.toFixed(0)}s die een foto mag duren`
-          );
-        }
-
-        /**
-         * RONDE 156 — and does the same picture come back?
-         *
-         * The sourcing dedup is thorough but runs entirely BEFORE adoption, and two routes step
-         * around it on purpose when a scene is starved: round B of ensureArchiveMontageVoiceCoverage
-         * re-uses dedup.lastRealClip, and montageTailPadFilterChain loops the whole scene montage.
-         * Neither is visible to usedContentKeys or usedFingerprints, so nothing could answer
-         * "does the finished film repeat itself". This measures the exported MP4 and answers it.
-         *
-         * Measurement only, like the stillness audit beside it — it decides nothing and cannot cost
-         * a render that is otherwise complete.
-         */
-        const repeats = await withTimeout(
-          auditVideoRepeats({ videoPath: finalVideoPath, timeoutMs: 180_000 }),
-          200_000,
-          "repeat audit"
-        );
-        const repeatVerdict = checkRepeatLimit(repeats);
-        console.log(formatRepeatReport(`video ${videoId} final.mp4`, repeats, repeatVerdict));
-        qualityReport.repeats = {
-          measuredOn: "delivered_file",
-          distinctPictures: repeats.distinctPictures,
-          repeatedPictures: repeats.repeats.length,
-          repeatedSec: repeats.repeatedSec,
-          repeatedShare: repeats.repeatedShare,
-          limitShare: repeatVerdict.limitShare,
-          ok: repeatVerdict.ok,
-        };
-        for (const v of repeatVerdict.violations.slice(0, 3)) {
-          qualityReport.warnings.push(`hetzelfde beeld keert terug — ${v}`);
-        }
-      } catch (err) {
-        /**
-         * A measurement that could not be taken is reported as absent, never as a pass.
-         *
-         * RONDE 156: this block now holds two audits, and the earlier one throwing means the later
-         * one never ran. Both fields stay unset on qualityReport, so "no number" reads as "not
-         * measured" rather than "clean" — but the message must not claim to know which one failed.
-         */
-        console.warn(
-          `[VisualIntegrity] stillness/repeat audit could not run: ` +
-            `${(err as Error)?.message?.slice(0, 120)}`
-        );
-      }
-    };
-    const composeAuditDeferred = timelineDelivers;
-    if (composeAuditDeferred) {
-      console.log(
-        `[VisualIntegrity] video=${videoId} stillness/repeat audit deferred — the compose montage is the ` +
-          `fallback, not the delivery; it is audited only if it is delivered`
-      );
-    } else {
-      await auditComposeMontage();
-    }
-
-    /** The montage's own URL — empty when the timeline is the only render (RONDE 661). */
-    let url = "";
-
-    if (timelineDelivers) {
-      /** Nothing to upload or spot-check: the timeline render below produces the delivered file. */
-    } else if (asyncQaEnabled() && postRenderSpotCheckEnabledForVideo(videoLength)) {
-      // Spot check + upload in parallel — spot check reads the local file,
-      // upload streams the same file; both start at the same wall-clock time.
-      await touchVideoProgress(videoId);
-      // RONDE 25: same reasoning as the sequential branch below — the upload itself spawns no
-      // child process. The concurrent spot check does, but it finishes long before a multi-GB
-      // upload does, so the tail of this Promise.all is just as child-free.
-      watchdog.ping("uploading final video (with concurrent spot check)");
-      const [uploadResult, spot] = await Promise.all([
-        withTimeout(
-          storagePutFromFile(`videos/${videoId}/final.mp4`, finalVideoPath, "video/mp4"),
-          600_000,
-          "S3 upload"
-        ),
-        spotCheckFinalVideo(finalVideoPath),
-      ]);
-      watchdog.ping("final video uploaded");
-      url = uploadResult.url;
-      qualityReport.postRenderSpotCheck = {
-        ok: spot.ok,
-        blackFrameCount: spot.blackFrameCount,
-        framesChecked: spot.framesChecked,
-        worstMeanLuma: spot.worstMeanLuma,
-        warnings: spot.warnings,
-      };
-      for (const w of spot.warnings) {
-        qualityReport.warnings.push(`Post-render: ${w}`);
-      }
-      if (!spot.ok) {
-        console.warn(`[Pipeline] Post-render spot-check (async): ${spot.warnings.join("; ")}`);
-      }
-      {
-        // RONDE 105: the re-score after the post-render check reads the SAME beat truth
-        // the report was built from, so the number and its status cannot drift apart.
-        const rescored = computeMeritQualityScore({
-          beatVisuals: qualityReport.beatVisuals,
-          totalClips: qualityReport.totalClips,
-          archiveCount: qualityReport.archiveCount,
-          stockCount: qualityReport.stockCount,
-          fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
-          offTopicCount: qualityReport.offTopicSuspects.length,
-          geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
-          adoptAudit: visualDedup.clipAdoptAudit,
-          archiveOnly: curatedArchiveOnlyVisuals(),
-          fastShort: isFastShortVideoLength(videoLength),
-          byMixKind: qualityReport.byMixKind,
-          postRenderOk: spot.ok,
-          /** From the report, so the re-score cannot drop what the delivered mix cost. */
-          screenTime: qualityReport.screenTime,
-        });
-        qualityReport.score = rescored.score;
-        qualityReport.qualityStatus = rescored.status;
-        qualityReport.qualityReason = rescored.reason;
-      }
-    } else {
-      if (postRenderSpotCheckEnabledForVideo(videoLength)) {
-        await touchVideoProgress(videoId);
-        const spot = await spotCheckFinalVideo(finalVideoPath);
-        qualityReport.postRenderSpotCheck = {
-          ok: spot.ok,
-          blackFrameCount: spot.blackFrameCount,
-          framesChecked: spot.framesChecked,
-          worstMeanLuma: spot.worstMeanLuma,
-          warnings: spot.warnings,
-        };
-        for (const w of spot.warnings) {
-          qualityReport.warnings.push(`Post-render: ${w}`);
-        }
-        if (!spot.ok) {
-          console.warn(`[Pipeline] Post-render spot-check: ${spot.warnings.join("; ")}`);
-        }
-        {
-          // RONDE 105: the re-score after the post-render check reads the SAME beat truth
-          // the report was built from, so the number and its status cannot drift apart.
-          const rescored = computeMeritQualityScore({
-            beatVisuals: qualityReport.beatVisuals,
-            totalClips: qualityReport.totalClips,
-            archiveCount: qualityReport.archiveCount,
-            stockCount: qualityReport.stockCount,
-            fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
-            offTopicCount: qualityReport.offTopicSuspects.length,
-            geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
-            adoptAudit: visualDedup.clipAdoptAudit,
-            archiveOnly: curatedArchiveOnlyVisuals(),
-            fastShort: isFastShortVideoLength(videoLength),
-            byMixKind: qualityReport.byMixKind,
-            postRenderOk: spot.ok,
-            /** From the report, so the re-score cannot drop what the delivered mix cost. */
-            screenTime: qualityReport.screenTime,
-          });
-          qualityReport.score = rescored.score;
-          qualityReport.qualityStatus = rescored.status;
-          qualityReport.qualityReason = rescored.reason;
-        }
-      }
-      // RONDE 25: the upload spawns no child process, so it is invisible to the watchdog's idle
-      // detector (whose only other signal is trackChild). Final videos run to hundreds of MB, and
-      // a kill now cancels the render and marks the video failed — so announce this phase before
-      // entering it rather than letting a slow upload look like a dead render.
-      watchdog.ping(`uploading final video (budget ${Math.round(renderBudgetUploadMs / 1000)}s)`);
-      const uploadResult = await withTimeout(
-        storagePutFromFile(`videos/${videoId}/final.mp4`, finalVideoPath, "video/mp4"),
-        renderBudgetUploadMs,
-        "S3 upload"
-      );
-      watchdog.ping("final video uploaded");
-      url = uploadResult.url;
-    }
 
     /**
      * A BLOCKED EXPORT MAY NOT PUBLISH THE FILM. IT MAY NOT LOSE IT EITHER.
@@ -52479,27 +45159,15 @@ async function _runVideoPipelineInner(
        * gate exists to stop, and it should be the reason reported when more than one applies.
        */
       assertVisionCoverageExportGate(visionCoverageParams);
-      enforceQualityExportGate(videoId, qualityReport, videoLength, finalValidation);
+      enforceQualityExportGate(videoId, qualityReport, videoLength);
     } catch (gateError) {
-      if (url) {
-        await recordBlockedExport(videoId, url, (gateError as Error)?.message ?? String(gateError))
-          .catch((err) =>
-            console.warn(`[Pipeline] Failed to record blocked export for ${videoId}:`, err)
-          );
-        console.warn(
-          `[Quality] Video ${videoId}: the refused render is kept for review — status stays failed`
-        );
-      }
       throw gateError;
-    }
-    for (const w of finalValidation?.softWarnings ?? []) {
-      qualityReport.warnings.push(`Export QA: ${w}`);
     }
     qualityReport.generatedAt = new Date().toISOString();
 
     get_activeBudgetTracker()?.stageEnd("upload");
     profiler.recordStageEnd("upload", Date.now());
-    console.log(`[Pipeline] Stage 6 (upload): ${((Date.now()-t5)/1000).toFixed(1)}s, size: ${(finalVideoSizeBytes/1024/1024).toFixed(1)}MB`);
+    console.log(`[Pipeline] Stage 6 (export gates): ${((Date.now()-t5)/1000).toFixed(1)}s`);
 
     qualityReport.pipelineSec = Math.round((Date.now() - t0) / 1000);
 
@@ -52703,7 +45371,7 @@ async function _runVideoPipelineInner(
      * The cinematic render's output, when it produced one — the file the viewer receives.
      *
      * Declared out here because the write that persists the video's URL is below this whole block.
-     * Null means the compose montage is what gets delivered, and the reason is logged where it is
+     * Null means the render did not deliver and is refused; the reason is logged where it is
      * decided rather than inferred from this being null.
      */
     let cinematicDeliveredUrl: string | null = null;
@@ -52711,7 +45379,7 @@ async function _runVideoPipelineInner(
      * RONDE 643 — the timeline the delivered cinematic file was rendered from, kept so the last
      * gate can say how many seconds of it are YouTube. `basis` says which of the two delivery paths
      * set it: the one that ran the render knows what was rendered; the one that waited knows what
-     * was asked for. Null on the compose route, which has no timeline to read.
+     * was asked for. Null when the render did not deliver.
      */
     let deliveredTimeline: {
       clips: TimelineVideoClip[];
@@ -52759,11 +45427,10 @@ async function _runVideoPipelineInner(
         planAndStoreCinematicTimeline,
         cinematicPlanningEnabled,
         cinematicRenderPathEnabled,
-        formatRenderRoute,
         enqueueCinematicRender,
         inProcessCinematicRenderBudgetMs,
       } = await import("./cinematicProduction");
-      const { pairClipsToBeats, plannerClipsForScene } = await import("./cinematicPipelineInputs");
+      const { pairClipsToBeats } = await import("./cinematicPipelineInputs");
       if (cinematicPlanningEnabled()) {
         const lineage = visualDedup.sourcingCache.lineage;
         /**
@@ -52817,112 +45484,12 @@ async function _runVideoPipelineInner(
               sceneVisualResults[i]?.beats ??
               [];
             /**
-             * §19 — THE PLANNER MUST NOT NEED COMPOSE TO HAVE RUN.
-             *
-             * ── Why the duplicate render could not simply be deleted ─────────────────────────
-             *
-             * `composedUsedClips[i]` is written BY the compose stage: it is the list of clips each
-             * scene's montage was actually built from. Reading only that made compose an INPUT to
-             * the cinematic plan, not merely a fallback behind it — delete the compose stage and
-             * this array is empty for every scene, every beat is dropped for having no clip, no
-             * timeline is stored, and the route falls back to the compose that no longer exists.
-             *
-             * That is the real reason the old render is still there, and it is a much more specific
-             * reason than "the new route is unproven". A spare tyre can be removed; an axle cannot.
-             *
-             * ── The fallback, which already existed elsewhere ────────────────────────────────
-             *
-             * `sceneVisualResults[i].clips` is the scene's SELECTED set — the clips retrieval chose,
-             * available before anything is composed. Stage 5's critical review already prefers the
-             * composed list and falls back to exactly this, for exactly this reason. Using the same
-             * pair here changes nothing when compose ran (the composed list is more accurate: it has
-             * had unusable files filtered out of it) and gives the planner real clips when it did
-             * not.
-             *
-             * This is also the render-562 failure mode from the other side: scenes that finished on
-             * a route which rebuilds the clip list reported `beats=0 dropped=3` and lost their whole
-             * plan. Those scenes now have somewhere to read from.
-             *
              * `pairClipsToBeats` rather than `clipPaths[beatIndex]` — see its own comment. The
-             * positional read was a guess that only ever ran over an empty beat list; giving the
-             * planner real beats is what makes it execute, so it is corrected in the same change.
+             * positional read was a guess that only ever ran over an empty beat list.
              */
-            const composedForScene = composedUsedClips[i] ?? [];
-            /**
-             * §3 — THE PREFERENCE IS MADE VISIBLE, NOT CHANGED.
-             *
-             * The planner takes compose's output when there is any, and the canonical
-             * retrieval/adoption state only as a fallback. Compose does not OVERWRITE
-             * `sceneVisualResults` — that array is intact — but what compose leaves out, the planner
-             * never sees. Whether the legacy route can therefore hide an adopted asset from the new
-             * one is a real question, and until now nothing in a render answered it.
-             *
-             * Changing the preference is a separate, measured decision and is deliberately not made
-             * here. These lines make the next production render decide it on evidence: which source
-             * was used, whether the other was available, and — the one that matters — which files
-             * are in the canonical state and missing from compose's.
-             *
-             * Compared by basename, because the two arrays hold paths produced at different stages
-             * of the same render and the basename is what survives the compose rename. A file that
-             * compose padded or overlaid appears under its derived name, so this over-reports rather
-             * than under-reports; a divergence line is a prompt to look, not a verdict.
-             */
-            const canonicalForScene = sceneVisualResults[i]?.clips ?? [];
-            const usingCompose = composedForScene.length > 0;
-            /**
-             * §3 — THE PREFERENCE, NOW MADE AND NOT MERELY MEASURED.
-             *
-             * These lines were written to let the next production render decide this on evidence:
-             * which source was used, whether the other was available, and which adopted files were
-             * missing from compose's. The trace above is what answers that question now — it
-             * reports the canonical set, the exclusions, and their reason — so `preferredSource` no
-             * longer names one of two lists. It names the merge, and the divergence report below
-             * stays because "what compose left out" is still worth reading; it is simply no longer
-             * the same thing as "what the planner lost".
-             */
-            const plannerSource = plannerClipsForScene({
-              canonical: canonicalForScene,
-              composed: composedForScene,
-              basenameOf: (clipPath) => path.basename(clipPath),
-            });
-            console.log(
-              `[CinematicPlannerSource] scene=${scene.index} ` +
-                `canonicalCount=${plannerSource.canonicalCount} ` +
-                `composeCount=${plannerSource.composeCount} ` +
-                `canonicalNotInCompose=${plannerSource.canonicalNotInCompose} ` +
-                `canonicalAvailableToPlanner=${plannerSource.canonicalAvailableToPlanner} ` +
-                `composeOnlyAdded=${plannerSource.composeOnly.length}`
-            );
-            console.log(
-              `[CinematicSourceDecision] scene=${scene.index} ` +
-                `preferredSource=canonicalFirstMerge ` +
-                `canonicalSourceAvailable=${canonicalForScene.length > 0} ` +
-                `composedSourceCount=${composedForScene.length} ` +
-                `canonicalSourceCount=${canonicalForScene.length}`
-            );
-            if (usingCompose && canonicalForScene.length > 0) {
-              const composedNames = new Set(composedForScene.map((p) => path.basename(p)));
-              const missing = canonicalForScene.filter(
-                (p) => !composedNames.has(path.basename(p))
-              );
-              if (missing.length > 0) {
-                console.warn(
-                  `[CinematicSourceDivergence] scene=${scene.index} ` +
-                    `canonicalCount=${canonicalForScene.length} composeCount=${composedForScene.length} ` +
-                    `missingFromCompose=${missing.length}`
-                );
-                for (const p of missing.slice(0, 10)) {
-                  const rec = visualDedup.sourcingCache?.lineage?.resolve(p, clipContentKey(p));
-                  const provider = rec?.provider ?? "UNVERIFIED";
-                  const sourceId = rec?.providerAssetId ?? rec?.archiveAssetId ?? "none";
-                  console.warn(
-                    `[CinematicSourceDivergence] scene=${scene.index} ` +
-                      `asset=${provider}:${sourceId} canonicalState=${rec?.adoptedAt != null ? "ADOPTED" : "PRESENT"} ` +
-                      `composeState=MISSING file=${path.basename(p)}`
-                  );
-                }
-              }
-            }
+            /** RONDE 661 — the scene's selected clips are the only clip list there is. */
+            const plannerSource = { clipPaths: sceneVisualResults[i]?.clips ?? [] };
+            console.log(`[CinematicPlannerSource] scene=${scene.index} clips=${plannerSource.clipPaths.length}`);
             const sceneAdoptions = visualDedup.clipAdoptAudit.filter(
               (e) => e.sceneIndex === scene.index
             );
@@ -53004,10 +45571,10 @@ async function _runVideoPipelineInner(
                  * ── The consequence, stated rather than discovered ──────────────────────────
                  *
                  * A render whose beats are mostly cards now plans a shorter timeline, and if every
-                 * beat is a card it plans none — the route then falls back to the compose montage
-                 * with its reason logged, exactly as it does today for a plan that fails. That is
-                 * the honest outcome of "geen beeld gevonden" and it is visible in the counter
-                 * below rather than hidden inside a film.
+                 * beat is a card it plans none — the render then fails with its reason logged,
+                 * exactly as it does for any plan that fails. That is the honest outcome of "geen
+                 * beeld gevonden" and it is visible in the counter below rather than hidden inside
+                 * a film.
                  *
                  * The verdict is taken from the ledger route, which is where `rescue_placeholder`
                  * lands via `adoptRouteForSource`, with the narrow filename as a last resort. The
@@ -53312,8 +45879,8 @@ async function _runVideoPipelineInner(
                *
                * `claimQueuedRenderJob` is a conditional UPDATE from `queued` to `running`: exactly
                * one caller can win it. Losing it means the worker already took this job, and then
-               * this render does NOT render it a second time — it says so and delivers the compose
-               * file, which is the honest outcome rather than two ffmpeg runs racing for one row.
+               * this render does NOT render it a second time — it waits for the worker's outcome,
+               * which is the honest outcome rather than two ffmpeg runs racing for one row.
                */
               const claimed = await claimQueuedRenderJob(cutover.renderJobId);
               if (!claimed) {
@@ -53364,11 +45931,10 @@ async function _runVideoPipelineInner(
                   /**
                    * RONDE 639 — AND FINAL_VIDEO STOPS DESCRIBING THE MONTAGE NOBODY RECEIVED.
                    *
-                   * `markFinalVideo` runs at stage 6 over `composedUsedClips` — the COMPOSE
-                   * montage's clips. The claimed path below corrects it with `replaceFinalVideo`
-                   * against what the render job reported it rendered. This path had no such
-                   * correction, and the LAST delivery gate reads exactly that marking
-                   * (`deliveryClipFactsFromLedger` keeps `finalVideoAt != null`).
+                   * The claimed path below marks FINAL_VIDEO with `replaceFinalVideo` against what
+                   * the render job reported it rendered. This path had no such marking, and the
+                   * LAST delivery gate reads exactly that marking (`deliveryClipFactsFromLedger`
+                   * keeps `finalVideoAt != null`). Before RONDE 661 it read the compose montage's.
                    *
                    * Render 603 is what that cost. The film was rendered, published and passed the
                    * gate that read the real file:
@@ -53395,8 +45961,7 @@ async function _runVideoPipelineInner(
                    * rehydrate would still be marked, so this is not as strong as the claimed
                    * path's list and the log says which it is rather than implying the other.
                    *
-                   * It is still enormously closer to the delivered file than the compose montage,
-                   * and it is the same correction applied at the same point for the same reason.
+                   * It is the same marking applied at the same point for the same reason.
                    */
                   try {
                     const ledger = visualDedup.sourcingCache.lineage;
@@ -53435,28 +46000,14 @@ async function _runVideoPipelineInner(
                     );
                   }
                   /**
-                   * AND EVERY STAGE-6 FIGURE WITHDRAWS ITS CLAIM ABOUT THIS FILE.
-                   *
-                   * The claimed path corrects the spot check and the AV envelope from the render
-                   * job's own return value. There is no return value here: another process
-                   * measured them and this one cannot see them. Re-measuring would mean fetching
-                   * and probing the delivered file, which is a multi-minute ffmpeg pass this
-                   * render has already spent its budget waiting through.
-                   *
-                   * So they say which file they describe, by the rule `avSync`'s own comment
-                   * states: "a number about a file the viewer did not receive is worse than no
-                   * number, because it reads as reassurance." `postRenderSpotCheck` has no
-                   * `measuredOn` field to qualify it with, so it is dropped rather than left
-                   * standing as a verdict on a file it never saw.
+                   * RONDE 661 — the claimed path fills the spot check and the AV envelope from the
+                   * render job's own return value. Another process rendered this file, so this
+                   * process has neither, and the report says so rather than leaving a gap unnamed.
                    */
-                  delete qualityReport.postRenderSpotCheck;
-                  if (qualityReport.avSync) qualityReport.avSync.measuredOn = "compose_montage";
-                  if (qualityReport.stillness) qualityReport.stillness.measuredOn = "compose_montage";
-                  if (qualityReport.repeats) qualityReport.repeats.measuredOn = "compose_montage";
                   qualityReport.warnings.push(
-                    `the delivered file was rendered by the render job worker, so this report's ` +
-                      `black-frame, AV-envelope, stillness and repetition figures describe the ` +
-                      `compose montage and not the video the viewer receives`
+                    `the delivered file was rendered by another render job worker, so this report ` +
+                      `has no black-frame or AV-envelope figures for it and its clip figures count ` +
+                      `the selected clips, not the delivered file`
                   );
                 } else {
                   cinematicRefusal = formatRenderJobWait(cutover.renderJobId, waited);
@@ -53579,16 +46130,15 @@ async function _runVideoPipelineInner(
                 /**
                  * THE WATCHDOG DOES NOT SEE THIS RENDER'S FFMPEG, SO IT IS TOLD ABOUT IT.
                  *
-                 * `timelineRenderer` spawns through its own `execFileAsync`; only the compose path's
-                 * `execRaw` calls `trackChild`. The watchdog's total-budget check measures IDLE time
-                 * since the last signal, so without this the whole cinematic render looks like a
-                 * hang — and a watchdog kill here would fire `throwIfVideoGenerationCancelled` and
-                 * fail a video whose compose file was already uploaded and fine.
+                 * `timelineRenderer` spawns through its own `execFileAsync`, which never calls
+                 * `trackChild`. The watchdog's total-budget check measures IDLE time since the last
+                 * signal, so without this the whole cinematic render looks like a hang — and a
+                 * watchdog kill here would fire `throwIfVideoGenerationCancelled` mid-render.
                  *
                  * The heartbeat is bounded rather than unconditional. An unconditional ping would
                  * switch the watchdog off for as long as this took, which is exactly the protection
-                 * it exists to provide. Past the deadline the pings stop, the pipeline delivers the
-                 * compose montage with a stated reason, and the watchdog is free to act again.
+                 * it exists to provide. Past the deadline the pings stop and the watchdog is free to
+                 * act again; a render that still finishes is delivered and says it overran.
                  *
                  * The render is not killed at the deadline — its ffmpeg children are not ours to
                  * SIGKILL from here. It continues, and if it eventually finishes it publishes to
@@ -53648,15 +46198,9 @@ async function _runVideoPipelineInner(
                   /**
                    * THE REPORT NOW DESCRIBES WHAT WAS DELIVERED.
                    *
-                   * `qualityReport.postRenderSpotCheck` was filled at stage 6 from the COMPOSE
-                   * montage — black frames, freezes and silences measured on a file that, since the
-                   * cutover, nobody receives. Overwriting it with the render job's own check on the
-                   * delivered file is the whole point: a report about a different video is worse
-                   * than no report, because it reads as reassurance.
-                   *
-                   * Only overwritten when the cinematic render actually delivered. On the fallback
-                   * path the compose file IS the deliverable, and its own numbers are the right
-                   * ones — see the `RENDER_FALLBACK_USED` line above.
+                   * `qualityReport.postRenderSpotCheck` is the render job's own check on the
+                   * delivered file — black frames, freezes and silences. A report about a different
+                   * video is worse than no report, because it reads as reassurance.
                    *
                    * The final `mergeVideoMetadata` runs after this block, so this reaches the
                    * stored record.
@@ -53675,34 +46219,6 @@ async function _runVideoPipelineInner(
                     }
                   }
                   /**
-                   * AND THE TWO AUDITS THAT CANNOT FOLLOW IT WITHDRAW THEIR CLAIM.
-                   *
-                   * The stillness and repetition audits ran at stage 6 on the compose montage. The
-                   * render job returns a spot check and its rendered clip ids; it does not re-run
-                   * either of these, and re-running them here would cost two more multi-minute
-                   * ffmpeg passes to re-measure something that, by its own doc comment, decides
-                   * nothing.
-                   *
-                   * The spot check above could be corrected, so it is. These two cannot be, so they
-                   * say which file they describe instead of quietly describing the wrong one. Both
-                   * remain measurement-only and neither gates anything, so nothing is loosened
-                   * here — the numbers are unchanged and still printed; only the claim about WHICH
-                   * video they belong to is corrected.
-                   */
-                  if (qualityReport.stillness) {
-                    qualityReport.stillness.measuredOn = "compose_montage";
-                  }
-                  if (qualityReport.repeats) {
-                    qualityReport.repeats.measuredOn = "compose_montage";
-                  }
-                  if (qualityReport.stillness || qualityReport.repeats) {
-                    qualityReport.warnings.push(
-                      `stillness/repetition were measured on the compose montage, not on the ` +
-                        `delivered cinematic render — those two figures do not describe the file ` +
-                        `the viewer receives`
-                    );
-                  }
-                  /**
                    * R195 — AND THE AV ENVELOPE OF THE FILE THE VIEWER RECEIVED.
                    *
                    * The render job already measured this and returned it with a doc comment saying
@@ -53713,8 +46229,7 @@ async function _runVideoPipelineInner(
                    * delivered file and then dropped on the floor.
                    *
                    * Same treatment as the spot check above, for the same reason: this CAN follow
-                   * the delivery, so it does, and the compose montage's verdict is replaced rather
-                   * than left standing as a claim about a file nobody received.
+                   * the delivery, so it does.
                    */
                   if (jobOutcome.avSync) {
                     const av = jobOutcome.avSync;
@@ -53835,95 +46350,28 @@ async function _runVideoPipelineInner(
         }
 
         /**
-         * A cinematic render that did not deliver is stated, with its reason, every time.
-         *
-         * "Geen stille terugval": the viewer still gets the compose montage — a real video beats no
-         * video — but nobody has to infer from a missing `[Graphics]` line that they got the older
-         * route. `RENDER_FALLBACK_USED` is greppable and the reason is the renderer's own words.
+         * RONDE 661 — one route, stated with its outcome. A render that did not deliver says why
+         * here, and is refused below the block; there is no second render to hand over instead.
          */
-        console.log(
-          pipelineReport.add(
-            "summary",
-            formatRenderRoute({
-              videoId,
-              /** The route is `cinematic_timeline` only when its file is the one being delivered. */
-              route: cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose",
-              planOk: outcome.ok,
-              reason: outcome.ok ? cinematicRefusal ?? undefined : outcome.reason,
-            })
-          )
-        );
-        /**
-         * Carried out of this block, because the gate that has to tell a FALLBACK delivery from a
-         * CONFIGURED one runs below it. One assignment, at the point the value is final.
-         */
-        cinematicRefusalForGate = cinematicRefusal;
-        /** RONDE 653 — the montage IS the delivery now, so it is measured after all. */
-        if (!cinematicDeliveredUrl && composeAuditDeferred) await auditComposeMontage();
-        if (!cinematicDeliveredUrl && cinematicRefusal) {
-          console.warn(
+        cinematicRefusalForGate = outcome.ok
+          ? cinematicRefusal
+          : `the cinematic plan was not usable: ${outcome.reason}`;
+        if (cinematicDeliveredUrl) {
+          console.log(pipelineReport.add("summary", `[RenderJob] video=${videoId} route=cinematic_timeline`));
+        } else {
+          console.error(
             pipelineReport.add(
               "summary",
-              `[RenderJob] video=${videoId} the delivered file is the compose montage — ` +
-                `${cinematicRefusal}`
+              `[RenderJob] video=${videoId} route=cinematic_timeline NOT_DELIVERED ` +
+                `reason=${cinematicRefusalForGate ?? "unknown"}`
             )
           );
-          /**
-           * §10 — AND THAT IS WHERE IT STOPS BEING A DELIVERY.
-           *
-           * ── What this line replaces ─────────────────────────────────────────────────────────
-           *
-           * The warning above, and then the render carried on and marked the video COMPLETE with
-           * the compose montage in it. The comment beside it argued "a real video beats no video",
-           * and the log was greppable, so this was never a SILENT fallback — it was a loud one that
-           * still shipped. §10's objection is not to the silence. It is that a film the authoritative
-           * timeline did not render was handed over as though it had.
-           *
-           * ── The distinction this depends on, and why it is safe ─────────────────────────────
-           *
-           * `cinematicRefusal` is set ONLY when a cinematic render was attempted and did not
-           * deliver. A deployment with `CINEMATIC_RENDER_PATH` switched off makes no attempt, records
-           * no refusal, and never reaches this branch — compose is that deployment's configured
-           * route, not a fallback, and refusing it would block every render. See `isFallbackDelivery`.
-           *
-           * ── The escape hatch, and why it is not the default ─────────────────────────────────
-           *
-           * §10 allows a fallback "for development/debugging if explicitly requested".
-           * `ALLOW_LEGACY_COMPOSE_FALLBACK=true` is that request. Off, this blocks; on, it delivers
-           * and says on its own line that it was allowed to, so a deployment that left the flag set
-           * cannot mistake the result for a clean render.
-           */
-          if (legacyFallbackDeliveryAllowed()) {
-            console.warn(
-              pipelineReport.add(
-                "summary",
-                `[DeliveryGate] video=${videoId} LEGACY_FALLBACK_ALLOWED — ` +
-                  `ALLOW_LEGACY_COMPOSE_FALLBACK is set, so a film the authoritative timeline did ` +
-                  `not render is being delivered on purpose`
-              )
-            );
-          } else {
-            console.error(
-              pipelineReport.add(
-                "summary",
-                `[DeliveryGate] ${DELIVERY_GATE_FAIL} video=${videoId} ` +
-                  `AUTHORITATIVE_RENDER_FAILED — ${cinematicRefusal}`
-              )
-            );
-            throw pipelineError(
-              PIPELINE_ERROR.FFMPEG,
-              `Delivery blocked for video ${videoId}: the authoritative timeline render did not ` +
-                `deliver (${cinematicRefusal}), and the compose montage may not be handed over in ` +
-                `its place. Set ALLOW_LEGACY_COMPOSE_FALLBACK=true only for development.`
-            );
-          }
         }
       }
     } catch (err) {
-      console.warn(
-        `[CinematicPipeline] video=${videoId} planning failed, the delivered video is unaffected: ` +
-          `${(err as Error).message.slice(0, 300)}`
-      );
+      /** RONDE 661 — the timeline is the only render, so its failure is the render's failure. */
+      cinematicRefusalForGate ??= `the cinematic render threw: ${(err as Error).message.slice(0, 300)}`;
+      console.error(`[CinematicPipeline] video=${videoId} ${cinematicRefusalForGate}`);
     }
 
     // Budget summary + history persistence (non-fatal — never block URL persistence)
@@ -53992,11 +46440,12 @@ async function _runVideoPipelineInner(
         graphicsEnabled: visualDedup.graphicClips.size > 0,
         graphicsPlanned: visualDedup.graphicClips.size,
         /**
-         * RONDE 203 — counted by the two functions that emit them, not derived from a scene count.
-         * `scenes.length - 1` described transitions between scenes, and the concat that joins them
-         * is `-f concat`, which cannot make one. See `montageTransitionCount`.
+         * RONDE 661 — read off the delivered timeline: every join into a clip that is not a hard
+         * cut. The compose montage's own tally went with the compose route.
          */
-        transitionsApplied: getRenderCtx().transitionsApplied,
+        transitionsApplied: (deliveredTimeline?.clips ?? []).filter(
+          (c, i) => i > 0 && c.transitionIn !== "hard_cut"
+        ).length,
         /** No catalogue is registered in this build — `musicFeatureStatus` states the consequence. */
         musicCatalogueAvailable: false,
         /**
@@ -54009,7 +46458,7 @@ async function _runVideoPipelineInner(
         sfxPlanned: soundPlans.reduce((n, p) => n + p.objectSounds.length, 0),
         duckingApplied: soundPlans.some((p) => p.ambience.length > 0),
         delivery: {
-          fileExists: Boolean(url),
+          fileExists: cinematicDeliveredUrl != null,
           /** FILE FACTS — the streams ffprobe actually found in the delivered container. */
           hasVideoStream: (qualityReport.avSync?.videoSec ?? null) != null,
           hasAudioStream: (qualityReport.avSync?.audioSec ?? null) != null,
@@ -54127,7 +46576,8 @@ async function _runVideoPipelineInner(
     }
 
     /** RONDE 661 — with one render path, a timeline render that did not deliver is the end. */
-    if (timelineDelivers && !cinematicDeliveredUrl) {
+    const deliveredUrl = cinematicDeliveredUrl;
+    if (!deliveredUrl) {
       throw pipelineError(
         PIPELINE_ERROR.FFMPEG,
         `The timeline render did not deliver video ${videoId}: ` +
@@ -54135,14 +46585,37 @@ async function _runVideoPipelineInner(
       );
     }
 
+    /**
+     * RONDE 661 — A BLANK FILM MAY STILL NOT BE PUBLISHED.
+     *
+     * `FINAL_PICTURE_IS_BLACK` used to be answered at stage 6, where the spot check ran on the
+     * compose montage before `enforceQualityExportGate`. That montage is gone: the spot check now
+     * arrives with the timeline render, after stage 6, and the render job deliberately does not
+     * block on it. So the one condition that moved in time is asked again here, on the delivered
+     * file's own measurement, before the video is marked complete. Nothing else is re-judged.
+     */
+    {
+      const { indefensibleExportConditions } = await import("./videoQualityReport");
+      const blank = indefensibleExportConditions(qualityReport).filter((c) => c.code === "FINAL_PICTURE_IS_BLACK");
+      if (blank.length > 0) {
+        console.error(
+          pipelineReport.add("summary", `[Quality] Video ${videoId}: EXPORT BLOCKED ${blank[0]!.code} — ${blank[0]!.detail}`)
+        );
+        throw pipelineError(
+          PIPELINE_ERROR.QUALITY_GATE,
+          `Export blocked — this render cannot say what it is showing: ${blank[0]!.code}: ${blank[0]!.detail}`
+        );
+      }
+    }
+
     {
       const deliveredRecords = visualDedup.sourcingCache?.lineage?.allRecords() ?? [];
       const finalGate = deliveryGate({
         videoId,
-        route: cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose",
-        /** Only set when a cinematic render was attempted and did not deliver — see §10. */
-        cinematicRefusal: cinematicDeliveredUrl ? null : cinematicRefusalForGate,
-        timelineExists: cinematicDeliveredUrl != null,
+        route: "cinematic_timeline",
+        /** Always null here: a render that did not deliver was refused above. */
+        cinematicRefusal: null,
+        timelineExists: true,
         clips: deliveryClipFactsFromLedger(deliveredRecords),
         /**
          * No file facts. This gate runs after the export gate, the stillness audit and the
@@ -54222,19 +46695,6 @@ async function _runVideoPipelineInner(
     // knows how to turn a cancellation into the correct terminal status) handle it instead.
     throwIfVideoGenerationCancelled(videoId);
 
-    /**
-     * WHAT THE VIEWER ACTUALLY RECEIVES.
-     *
-     * `url` is the compose montage. `cinematicDeliveredUrl` is set only when the timeline render
-     * above produced and published a real file. Preferring it here is the whole point of the
-     * cutover: before this, the good render existed but landed in `editedVideoUrl`, which only the
-     * timeline editor reads, so every downloaded video came from compose no matter which route ran.
-     *
-     * Falling back to `url` is deliberate and never silent — the `RENDER_FALLBACK_USED` line above
-     * carries the renderer's own reason.
-     */
-    const deliveredUrl = cinematicDeliveredUrl ?? url;
-
     // Persist URL immediately so a crash during finalization cannot lose the finished video
     await updateVideoStatus(videoId, "completed", {
       videoUrl: deliveredUrl,
@@ -54245,7 +46705,6 @@ async function _runVideoPipelineInner(
     await writeDeliveredLineage({
       videoId,
       ledger: visualDedup.sourcingCache?.lineage ?? null,
-      route: cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose",
       report: pipelineReport,
     });
 
@@ -54253,7 +46712,7 @@ async function _runVideoPipelineInner(
     const totalMs = Date.now() - t0;
     console.log(
       `[Pipeline] Video ${videoId} COMPLETE in ${(totalMs / 60000).toFixed(1)} min ` +
-        `via ${cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose"}: ${deliveredUrl}`
+        `via cinematic_timeline: ${deliveredUrl}`
     );
     profiler.printReport(totalMs, pipelineStepTiming.toReport());
     /**

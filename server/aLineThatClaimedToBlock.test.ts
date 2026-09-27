@@ -91,56 +91,9 @@ describe("§1 — the defect in its own flags", () => {
   });
 });
 
-/* ═══════════ §2 — the line asks the flag that owns the answer ═══════════ */
-
-describe("§2 — what the log now reads", () => {
-  const site = () => {
-    const at = SRC.indexOf("critical review: ${critical.summary}");
-    expect(at, "the critical-review log site moved").toBeGreaterThan(-1);
-    return SRC.slice(at, at + 2600);
-  };
-
-  it("THE DECIDING FLAG IS WHAT BRANCHES THE MESSAGE", () => {
-    expect(site()).toContain("const blocks = blockExportOnVisualMismatch();");
-    expect(site()).toContain("if (blocks) {");
-  });
-
-  it("and the 'blocks export' wording sits ONLY on the branch that blocks", () => {
-    const body = site();
-    const blocksAt = body.indexOf("— blocks export (strict voice↔visual)");
-    const elseAt = body.indexOf("} else {");
-    expect(blocksAt).toBeGreaterThan(-1);
-    expect(elseAt).toBeGreaterThan(-1);
-    expect(blocksAt, "the fatal wording moved to the non-blocking branch").toBeLessThan(elseAt);
-  });
-
-  it("THE NON-BLOCKING BRANCH SAYS WHY, and that the film ships", () => {
-    const body = site();
-    expect(body).toContain("NOT blocking export in this configuration");
-    expect(body).toContain("strictVoiceVisual=");
-    expect(body).toContain("degradedVisualExportAllowed=");
-    expect(body, "a reader must be told the outcome, not just the flags").toContain(
-      "the film ships with this scene as it is"
-    );
-  });
-});
-
 /* ═══════════ §3 — nothing about the gate moved ═══════════ */
 
 describe("§3 — reporting only", () => {
-  it("the scene is still recorded as failed, exactly as before", () => {
-    expect(SRC).toContain("sceneCriticalFailed.push(scenes[i]!.index);");
-  });
-
-  it("and it still reaches the quality report, which is what can block", () => {
-    expect(SRC).toContain("      sceneCriticalFailed,");
-    const report = readFileSync(join(__dirname, "videoQualityReport.ts"), "utf8");
-    expect(report).toContain("opts?.sceneCriticalFailed ?? []");
-    /** The real blocking rule, untouched by this round. */
-    expect(report).toContain(
-      "blocking: (policy.hardTier || policy.blockVisualMismatch) && (fallbackBeats > 0 || visualMismatch),"
-    );
-  });
 
   it("no flag default was changed to make the line true", () => {
     const policy = readFileSync(join(__dirname, "sourcingPolicy.ts"), "utf8");

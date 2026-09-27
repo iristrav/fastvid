@@ -127,88 +127,6 @@ describe("every adopted clip gets a cinematic ending", () => {
 /* ═══════════════ the source preference is measurable ═══════════════ */
 
 describe("which source the planner read is stated", () => {
-  it("names the preferred source and whether the other was available", () => {
-    expect(PIPE).toContain("[CinematicSourceDecision]");
-    const at = PIPE.indexOf("[CinematicSourceDecision]");
-    const block = PIPE.slice(at, at + 500);
-    expect(block).toContain("preferredSource=");
-    expect(block).toContain("canonicalSourceAvailable=");
-    expect(block).toContain("composedSourceCount=");
-    expect(block).toContain("canonicalSourceCount=");
-  });
-
-  /** The question this round exists to answer: can compose hide an adopted asset? */
-  it("reports files the canonical state holds and compose's output does not", () => {
-    expect(PIPE).toContain("[CinematicSourceDivergence]");
-    const at = PIPE.indexOf("[CinematicSourceDivergence]");
-    const block = PIPE.slice(at, at + 900);
-    expect(block).toContain("missingFromCompose=");
-    expect(block).toContain("canonicalState=");
-    expect(block).toContain("composeState=MISSING");
-  });
-
-  /** Divergence is per asset, resolved through the ledger — not a bare count. */
-  it("names each missing asset through the ledger", () => {
-    const at = PIPE.indexOf("missingFromCompose=");
-    const block = PIPE.slice(at, at + 800);
-    expect(block).toContain("lineage?.resolve(p, clipContentKey(p))");
-    expect(block).toContain("rec?.provider");
-    expect(block).toContain("rec?.providerAssetId");
-  });
-
-  /**
-   * THE SEPARATE, MEASURED DECISION THIS TEST WAS HOLDING THE DOOR FOR — RONDE 632.
-   *
-   * What stood here was "still prefers compose's output exactly as before", with the reason: "This
-   * round observes the preference; it does not flip it. A change here is a separate, measured
-   * decision and must not ride along with the logging that measures it."
-   *
-   * Render 600 supplied the measurement. Four YouTube clips reached `status=ASSIGNED` on beat
-   * level for the first time in this pipeline's history, and not one of them reached the film:
-   * `[CinematicPipeline] decisions=4 clips=4`, all four `fromArchive`. The planner was handed
-   * compose's list and planned exactly what it was handed.
-   *
-   * So the decision is made, on its own, in its own round — and it is NOT the flip this comment
-   * was guarding against. Compose's usability check still runs, over the canonical set. What
-   * stopped removing clips is compose's SELECTION, which was never a check.
-   */
-  it("states that the planner reads the merge", () => {
-    expect(PIPE).toContain("preferredSource=canonicalFirstMerge ");
-    expect(PIPE).toContain("clipPaths: plannerSource.clipPaths,");
-  });
-
-  /**
-   * RONDE 636 — AND THAT IT FORMS NO USABILITY OPINION WHILE DOING SO.
-   *
-   * The assertion that stood beside the one above required `usableOnly: (clips) =>
-   * usableSurvivorClips(clips)` in the assembly. Render 602 measured what that cost: the predicate
-   * reads the filesystem, it ran one stage after compose had consumed its intermediates, and it
-   * refused thirteen of thirteen adopted clips in every scene while compose had kept twelve of
-   * those same files minutes earlier. `plan NOT stored code=CINEMATIC_NO_PLANNABLE_BEATS`.
-   *
-   * So the check went back to where it is current — compose, and the planner's own refusals — and
-   * this pins that it did not grow back here.
-   */
-  it("and forms no usability opinion where the answer would already be stale", () => {
-    const at = PIPE.indexOf("const plannerSource = plannerClipsForScene({");
-    expect(at).toBeGreaterThan(-1);
-    expect(PIPE.slice(at, PIPE.indexOf("});", at))).not.toContain("usableOnly");
-    expect(PIPE).not.toContain("usableOnly:");
-    /** Compose still runs it, where it is holding the files. */
-    expect(PIPE).toContain("usableSurvivorClips(sceneVisualResults[i]?.clips ?? [])");
-  });
-
-  /** How much of the adopted set the planner can see, per scene, on every render. */
-  it("counts the adopted set against what compose used", () => {
-    expect(PIPE).toContain("[CinematicPlannerSource]");
-    const at = PIPE.indexOf("[CinematicPlannerSource]");
-    const block = PIPE.slice(at, at + 700);
-    expect(block).toContain("canonicalCount=");
-    expect(block).toContain("composeCount=");
-    expect(block).toContain("canonicalNotInCompose=");
-    expect(block).toContain("canonicalAvailableToPlanner=");
-    expect(block).toContain("composeOnlyAdded=");
-  });
 
   /** And every beat says whether its adopted clip reached the planner. */
   it("gives each beat a reason that distinguishes lost from never-found", () => {
@@ -217,11 +135,5 @@ describe("which source the planner read is stated", () => {
     const block = PIPE.slice(at, at + 400);
     expect(block).toContain("CANONICAL_CLIP_AVAILABLE");
     expect(block).toContain("NO_CANONICAL_CLIP");
-  });
-
-  /** Bounded output: a scene that diverges wholesale must not replace the log with itself. */
-  it("bounds the per-asset divergence lines", () => {
-    const at = PIPE.indexOf("missingFromCompose=");
-    expect(PIPE.slice(at, at + 500)).toContain("missing.slice(0, 10)");
   });
 });

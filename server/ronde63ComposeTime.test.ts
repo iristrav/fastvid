@@ -52,25 +52,6 @@ const withCpus = (n: number) => {
 describe("RONDE 63 — the compose timeout knows scenes run side by side", () => {
   const SRC = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("the per-scene cap is multiplied by the compose parallelism", () => {
-    const src = SRC();
-    const idx = src.indexOf("function composeSceneTimeoutMs(");
-    expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 2200);
-    expect(block).toContain("const parallelism = Math.max(1, composeParallelismForVideo(videoLength, IS_RAILWAY));");
-    expect(block).toContain("const cap = _b2.basePerSceneComposeMs * parallelism;");
-    // The bare cap that produced the 88s both scenes blew is gone.
-    expect(block).not.toContain("Math.max(complexity, 45_000), _b2.basePerSceneComposeMs)");
-  });
-
-  it("the floor and the complexity formula are untouched", () => {
-    const src = SRC();
-    const idx = src.indexOf("function composeSceneTimeoutMs(");
-    const block = src.slice(idx, idx + 2200);
-    expect(block).toContain("sceneDurationSec * 3_000 + Math.max(0, clipCount) * 2_500");
-    expect(block).toContain("Math.max(complexity, 45_000)");
-  });
-
   it("the arithmetic still fits the budget it came from", () => {
     // base is (total × 0.55) / scenes — a scene's share assuming sequential composition.
     // With P at a time, wall = (scenes / P) × (base × P) = scenes × base. The multiplication
@@ -203,48 +184,5 @@ describe("RONDE 63 — os.cpus() lies inside a container, so the quota wins", ()
     availableCpuCount();
     availableCpuCount();
     expect(spy.mock.calls.length).toBe(after);
-  });
-});
-
-describe("RONDE 63 — clip validation is not a sequential decode any more", () => {
-  const SRC = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-
-  it("the clips are validated side by side", () => {
-    const src = SRC();
-    const idx = src.indexOf('"Compose clip validation (ffprobe)"');
-    expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 2000);
-    expect(block).toContain("pLimit(");
-    expect(block).toContain("await Promise.all(");
-    // The plain for-loop that held one core while the rest of the box idled is gone.
-    expect(block).not.toMatch(/for \(const clip of safeClips\)/);
-  });
-
-  it("a verdict is remembered, so recomposing a scene does not re-derive it", () => {
-    const src = SRC();
-    const idx = src.indexOf('"Compose clip validation (ffprobe)"');
-    const block = src.slice(idx, idx + 2000);
-    expect(block).toContain("composeClipValidationMemo.get(key)");
-    expect(block).toContain("composeClipValidationMemo.set(key,");
-    // Keyed on content, not on the path — clips get renamed between routes.
-    expect(block).toContain("const key = clipContentKey(clip);");
-  });
-
-  it("the memo is bounded and cleared per render", () => {
-    const src = SRC();
-    expect(src).toContain("COMPOSE_VALIDATION_MEMO_MAX");
-    expect(src).toContain("export function resetComposeClipValidationMemo()");
-    expect(src).toContain("resetComposeClipValidationMemo();");
-    // Cleared from the same place every other per-render breaker state is.
-    const reset = src.indexOf("googleTtsFailureStreak = 0; googleTtsCooldownUntilMs = 0;");
-    expect(src.slice(reset, reset + 400)).toContain("resetComposeClipValidationMemo();");
-  });
-
-  it("a failed clip is still dropped, not silently kept", () => {
-    const src = SRC();
-    const idx = src.indexOf('"Compose clip validation (ffprobe)"');
-    const block = src.slice(idx, idx + 2000);
-    expect(block).toContain("for (const ok of results) if (ok) verifiedClips.push(ok);");
-    expect(block).toContain("return cached ? clip : null;");
   });
 });

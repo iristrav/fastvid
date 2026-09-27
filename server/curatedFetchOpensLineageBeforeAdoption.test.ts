@@ -176,7 +176,8 @@ describe("TEST 6 — the fetch itself is wrapped, not one call site", () => {
   });
 
   it("every REAL_FUNNEL-reaching fetch site goes through it", () => {
-    expect(PIPE.split("fetchCuratedArchiveBeatClipWithLineage(").length - 1).toBe(14);
+    /** RONDE 661: 13 — the fourteenth sat in the deleted fast-short compose rescue. */
+    expect(PIPE.split("fetchCuratedArchiveBeatClipWithLineage(").length - 1).toBe(13);
   });
 
   it("the wrapper opens the record with the same writer the ranked queue uses", () => {

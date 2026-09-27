@@ -7,7 +7,6 @@ import {
   MG_OVERLAY_MAX_WORDS,
   overlayFontDrawtextSuffix,
   parseMotionGraphicsScenesFromMetadata,
-  planMotionGraphicsScene,
   STANDARD_CROSSFADE_MS,
   STANDARD_IMAGE_ANIMATION,
   STANDARD_TRANSITION,
@@ -56,31 +55,6 @@ describe("motionGraphicsLayer", () => {
     }
   });
 
-  it("plans voice-synced scene output structure", () => {
-    const plan = planMotionGraphicsScene(
-      1,
-      12.4,
-      4.4,
-      [{ text: "In 2025 groeide de omzet met 43 procent.", holdSec: 4.4 }],
-      "Office workers at computers"
-    );
-    expect(plan.scene_id).toBe(1);
-    expect(plan.start_time).toBe(12.4);
-    expect(plan.end_time).toBeCloseTo(16.8, 1);
-    expect(plan.image_animation).toBe(STANDARD_IMAGE_ANIMATION);
-    expect(plan.transition).toBe(STANDARD_TRANSITION);
-    expect(plan.visual_description).toBe("Office workers at computers");
-    expect(plan.overlays.length).toBeGreaterThan(0);
-    for (const o of plan.overlays) {
-      expect(o.animation).toBe("typewriter");
-      expect(o.position).toBe("center");
-      expect(o.end_time).toBeGreaterThan(o.start_time);
-    }
-    const year = plan.overlays.find((o) => o.text === "2025");
-    expect(year?.trigger_word).toBe("2025");
-    expect(year!.start_time).toBeGreaterThanOrEqual(plan.start_time);
-  });
-
   it("uses fixed crossfade duration in standard range", () => {
     expect(standardMontageCrossfadeSec()).toBeCloseTo(STANDARD_CROSSFADE_MS / 1000, 3);
     expect(standardMontageTransitionName()).toBe("dissolve");
@@ -109,17 +83,5 @@ describe("motionGraphicsLayer", () => {
     if (overlayFontDrawtextSuffix()) {
       expect(chain).toContain("fontfile=");
     }
-  });
-
-  it("round-trips motion graphics metadata", () => {
-    const plan = planMotionGraphicsScene(2, 0, 5, [
-      { text: "Revenue grew 25% in 2024.", holdSec: 5 },
-    ]);
-    const merged = mergeMotionGraphicsIntoMetadata({ foo: "bar" }, [plan]);
-    const parsed = parseMotionGraphicsScenesFromMetadata(merged);
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0]?.scene_id).toBe(2);
-    expect(parsed[0]?.overlays.length).toBeGreaterThan(0);
-    expect(parsed[0]?.overlays[0]?.position).toBe("center");
   });
 });

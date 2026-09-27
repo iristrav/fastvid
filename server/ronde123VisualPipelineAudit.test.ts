@@ -24,11 +24,9 @@
 import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
-
 import {
   SCENE_SEARCH_BASELINE_SEC,
   SCENE_SEARCH_MAX_FACTOR,
-  formatSceneSearchBudget,
   sceneSearchBudgetMs,
 } from "./sceneSearchBudget";
 import {
@@ -38,6 +36,7 @@ import {
   stripToNameSafeText,
 } from "./personNameChars";
 import { extractPersonNamesFromText } from "./videoPipeline";
+
 
 const src = (f: string) => fs.readFileSync(path.join(process.cwd(), "server", f), "utf8");
 
@@ -94,49 +93,18 @@ describe("RONDE 123 — a longer scene gets longer to find its pictures", () => 
     expect(sceneSearchBudgetMs({ flatMs: FLAT, sceneDurationSec: -5 })).toBe(FLAT);
   });
 
-  it("both search call sites use it — a helper nothing calls changes nothing", () => {
+  it("the search call site uses it — a helper nothing calls changes nothing", () => {
     const pipeline = src("videoPipeline.ts");
+    /** RONDE 661: one — the second call site was the deleted P5A scene loop. */
     const uses = pipeline.split("sceneSearchBudgetMs({").length - 1;
-    expect(uses).toBe(2);
+    expect(uses).toBe(1);
     expect(pipeline).not.toContain("                    perf.sceneVisualTimeoutMs,");
-  });
-
-  it("the log line says what was granted and why", () => {
-    const line = formatSceneSearchBudget(1, 180_000, 312_000, 38.1, 9);
-    expect(line).toContain("[SceneBudget]");
-    expect(line).toContain("312s");
-    expect(line).toContain("38.1s of narration");
   });
 });
 
 /* ═══════════ 2. the ladder that was switched off ═══════════ */
 
 describe("RONDE 123 — the coverage backfill runs for short videos too", () => {
-  it("REGRESSION: the fast-path early return is gone", () => {
-    /**
-     * `if (isFastShortVideoLength(dedup.videoLength)) return;` at the top of
-     * backfillComposeMontageIfShort switched off every rung of RONDE 111 and 112 for a one-minute
-     * video: the short-clip search, the subject fallback, and re-using the scene's own footage in
-     * motion. Every scene in video 544 logged `Compose montage backfill: 0ms`.
-     */
-    const pipeline = src("videoPipeline.ts");
-    const fn = pipeline.slice(
-      pipeline.indexOf("async function backfillComposeMontageIfShort("),
-      pipeline.indexOf("async function backfillComposeMontageIfShort(") + 9000
-    );
-    expect(fn).not.toContain("if (isFastShortVideoLength(dedup.videoLength)) return;");
-    // It is bounded instead of skipped.
-    expect(fn).toContain("const fastShort = isFastShortVideoLength(dedup.videoLength);");
-    expect(fn).toContain("const roundAAttempts = fastShort ? 3 : 8;");
-  });
-
-  it("the long-video path keeps exactly the attempts it had", () => {
-    const pipeline = src("videoPipeline.ts");
-    expect(pipeline).toContain("fastShort ? 3 : 8");
-    // The other coverage routine (ensureArchiveMontageVoiceCoverage) is untouched — it was never
-    // gated on the fast path and must not start being.
-    expect(pipeline).toContain("for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {");
-  });
 
   it("the rungs above the held frame are all still there, in order", () => {
     /**

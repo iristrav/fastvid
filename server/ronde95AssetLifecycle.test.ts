@@ -124,31 +124,6 @@ describe("RONDE 95 §1 — asset A → REPLACED → asset B", () => {
     expect(result).toBe(false);
     expect(ledger.allEvents().filter((e) => e.stage === "REPLACED")).toHaveLength(0);
   });
-
-  it("TEST 7 — the compose path records each dropped clip exactly once", () => {
-    // The guard is structural: one flag, checked before any of the three branches records.
-    const idx = PIPELINE_SRC.indexOf("const settleDroppedClips =");
-    expect(idx).toBeGreaterThan(-1);
-    const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n  };", idx));
-    expect(body).toContain("if (dropsRecorded || !lineage || droppedClips.length === 0) return;");
-    expect(body).toContain("dropsRecorded = true;");
-    // Three call sites — rescue clip, removal, guaranteed fill — and one flag between them.
-    expect((PIPELINE_SRC.match(/settleDroppedClips\(/g) ?? []).length).toBe(3);
-    for (const call of [
-      'settleDroppedClips(rescueStockClip, "rescue_stock_clip")',
-      'settleDroppedClips(null, "removed")',
-      'settleDroppedClips(clip, "guaranteed_fill")',
-    ]) {
-      expect(PIPELINE_SRC, call).toContain(call);
-    }
-  });
-
-  it("TEST 8 — a drop with no substitute is REMOVED, not REPLACED", () => {
-    const idx = PIPELINE_SRC.indexOf("const settleDroppedClips =");
-    const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n  };", idx));
-    expect(body).toContain('lineage.recordEventForPath(dropped.path, "REMOVED"');
-    expect(PIPELINE_SRC).toContain('if (validClips.length > 0) settleDroppedClips(null, "removed");');
-  });
 });
 
 /* ═══════════ §2 — searchRoute survives the whole lifecycle ═══════════ */
@@ -310,17 +285,6 @@ describe("RONDE 95 §3 — the manifest is the concat, not the intention", () =>
     expect(ledger.allEvents().filter((e) => e.stage === "FINAL_VIDEO")).toHaveLength(0);
     expect(ledger.resolve("/tmp/a.mp4")!.finalVideoAt).toBeUndefined();
     expect(ledger.resolve("/tmp/b.mp4")!.finalVideoAt).toBeUndefined();
-  });
-
-  it("TEST 20 — FINAL_VIDEO can only come from markFinalVideo's own path list", () => {
-    const idx = PIPELINE_SRC.indexOf("const proven = ledger.markFinalVideo(deliveredClips);");
-    expect(idx).toBeGreaterThan(-1);
-    const before = PIPELINE_SRC.slice(Math.max(0, idx - 1200), idx);
-    // deliveredClips is built from the scenes whose video was in finalConcatInputs. Nothing else.
-    expect(before).toContain("const deliveredScenes = new Set(finalConcatInputs.filter(Boolean));");
-    expect(before).toContain("if (!sceneVideo || !deliveredScenes.has(sceneVideo)) continue;");
-    // And no other production call site marks it.
-    expect((PIPELINE_SRC.match(/markFinalVideo\(/g) ?? []).length).toBe(1);
   });
 });
 

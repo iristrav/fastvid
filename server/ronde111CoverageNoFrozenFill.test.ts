@@ -29,16 +29,14 @@ import { adoptionPolicyFor } from "./adoptionPolicy";
 import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
-
 import {
   MAX_COVERAGE_SLOWDOWN,
   MIN_STITCHABLE_SOURCE_SEC,
   coverageFloorSec,
-  formatCoverageFillPlan,
   planCoverageFill,
   stitchSourceFloorSec,
 } from "./coverageFillPlan";
-import { montageTailPadFilterChain } from "./videoPipeline";
+
 
 const PIPELINE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const CURATED = fs.readFileSync(path.join(__dirname, "curatedMediaSourcing.ts"), "utf8");
@@ -62,12 +60,6 @@ function withEnv<T>(key: string, value: string | undefined, fn: () => T): T {
 /* ═══════════ 1. normale coverage ═══════════ */
 
 describe("RONDE 111 — a scene that is covered is left alone", () => {
-  it("no shortfall means no filter at all", () => {
-    const plan = planCoverageFill(20, 20);
-    expect(plan.action).toBe("none");
-    expect(plan.slowdownRatio).toBe(1);
-    expect(montageTailPadFilterChain(20, 20, "covered scene")).toBe("");
-  });
 
   it("a rounding-sized shortfall is not worth a filter either", () => {
     expect(planCoverageFill(20, 20.05).action).toBe("none");
@@ -89,20 +81,6 @@ describe("RONDE 111 — a small shortfall is still absorbed by slowing", () => {
     expect(plan.slowdownRatio).toBeCloseTo(20 / 18, 5);
     expect(plan.stillShortSec).toBe(0);
   });
-
-  it("the filter is setpts only — no tpad, so nothing is held", () => {
-    const chain = montageTailPadFilterChain(18, 20, "small shortfall");
-    expect(chain).toContain("setpts=");
-    expect(chain).not.toContain("tpad");
-  });
-
-  it("exactly 2x is still fully covered by slowing", () => {
-    const plan = planCoverageFill(10, 20);
-    expect(plan.slowdownRatio).toBe(2);
-    expect(plan.action).toBe("slow");
-    expect(plan.stillShortSec).toBe(0);
-    expect(montageTailPadFilterChain(10, 20, "at the cap")).not.toContain("tpad");
-  });
 });
 
 /* ═══════════ 3. tekort boven 2× ═══════════ */
@@ -123,35 +101,6 @@ describe("RONDE 111 — a large shortfall is NOT absorbed by slowing", () => {
     expect(plan.slowdownRatio).toBe(2);
     expect(plan.stillShortSec).toBe(16);
     expect(plan.action).toBe("hold_frame");
-  });
-
-  it("the emitted filter slows to the cap and holds only the remainder", () => {
-    const chain = montageTailPadFilterChain(2, 20, "big shortfall");
-    expect(chain).toContain("setpts=2.000000*PTS");
-    /**
-     * SUPERSEDED BY RONDE 130 — the claim this line made is still true; what happens to the
-     * remainder is not.
-     *
-     * It was written to prove the slowdown stops at the 2x cap instead of absorbing a large
-     * shortfall, and that half is asserted above and below, unchanged. What it also encoded was a
-     * SIXTEEN-SECOND hold — and RONDE 130 measured what that looks like in the finished MP4:
-     * 28.13s of unchanging picture for the production case. The montage plays again now instead,
-     * which is the same judgement RONDE 112 made for extendLastClip one layer up.
-     *
-     * A shortfall inside the still limit is still a plain hold; that case has its own test in
-     * ronde130VisualIntegrity.
-     */
-    expect(chain).toContain("loop=loop=");
-    expect(chain).not.toContain("tpad=stop_mode=clone");
-  });
-
-  it("the report says how short it was and that this is a last resort", () => {
-    const line = formatCoverageFillPlan("Scene 7", planCoverageFill(2, 20));
-    expect(line).toContain("short 18.00s");
-    expect(line).toContain("10.00x");
-    expect(line).toContain("STILL UNCOVERED");
-    expect(line).toContain("held frame (last resort)");
-    expect(line).toContain("short of footage");
   });
 
   it("a scene below the floor triggers the extra searching, and one above it does not", () => {
@@ -287,41 +236,6 @@ describe("RONDE 111 — when no new candidate exists, the scene's own footage mo
 /* ═══════════ 6. absolute laatste fallback ═══════════ */
 
 describe("RONDE 111 — the held frame is the last resort and is labelled as one", () => {
-  it("a montage of literally nothing still produces a held frame rather than a crash", () => {
-    const plan = planCoverageFill(0, 12);
-    expect(plan.action).toBe("hold_frame");
-    expect(plan.stillShortSec).toBe(12);
-    expect(plan.uncappedRatio).toBe(Infinity);
-    expect(formatCoverageFillPlan("Scene 3", plan)).toContain("∞");
-  });
-
-  it("that case emits a tpad and no setpts — there is nothing to slow", () => {
-    const chain = montageTailPadFilterChain(0, 12, "empty montage");
-    expect(chain).toContain("tpad=stop_mode=clone");
-    expect(chain).not.toContain("setpts=");
-  });
-
-  it("the operator escape hatches still work", () => {
-    withEnv("MONTAGE_TAIL_PAD", "freeze", () => {
-      const chain = montageTailPadFilterChain(10, 20, "forced freeze");
-      expect(chain).toContain("tpad=stop_mode=clone:stop_duration=10.000");
-      expect(chain).not.toContain("setpts=");
-    });
-    withEnv("MONTAGE_TAIL_PAD", "grey", () => {
-      expect(montageTailPadFilterChain(10, 20, "forced grey")).toContain("color=0x2a2a2a");
-    });
-  });
-
-  it("without an override, a held frame is never reachable while slowing can finish the job", () => {
-    withEnv("MONTAGE_TAIL_PAD", undefined, () => {
-      for (const [montage, target] of [[10, 20], [15, 20], [19, 20], [10.1, 20]]) {
-        expect(
-          montageTailPadFilterChain(montage!, target!, `ratio ${(target! / montage!).toFixed(2)}`),
-          `${montage}s in ${target}s`
-        ).not.toContain("tpad");
-      }
-    });
-  });
 
   it("the last line before compose says what compose is about to do", () => {
     // RONDE 112: now with the numbers rather than the sentence — the applied slow-motion factor
@@ -398,13 +312,6 @@ describe("RONDE 111 — the decision is visible afterwards, per video", () => {
 
   it("it reaches the stored pipeline report the admin reads", () => {
     expect(PIPELINE).toContain('pipelineReport.addAll("warnings", visualDedup.coverageDecisions);');
-  });
-
-  it("each line carries the seconds and the resolution, not just a complaint", () => {
-    const line = formatCoverageFillPlan("Scene 4", planCoverageFill(9, 20));
-    expect(line).toMatch(/short \d+\.\d\ds/);
-    expect(line).toMatch(/would need \d+\.\d\dx/);
-    expect(line).toContain("2x cap");
   });
 
   it("a clip refused for length says the floor AND the slot it was judged against", () => {

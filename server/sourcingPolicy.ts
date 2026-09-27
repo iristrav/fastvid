@@ -3,7 +3,7 @@
 import { burnedInTextAllowed } from "./onScreenTextPolicy";
 import fs from "fs";
 import os from "os";
-import { normalizeVideoLength, targetVideoDurationMinutes } from "../shared/videoLengths";
+import { targetVideoDurationMinutes } from "../shared/videoLengths";
 
 /**
  * Archive-first mode: prefer the curated/admin media archive per beat. When a scene ends up
@@ -254,12 +254,6 @@ export function curatedMinimizeStockFootage(): boolean {
 export function strictNoVisualRepeat(): boolean {
   if (process.env.STRICT_NO_VISUAL_REPEAT === "false") return false;
   return curatedArchiveOnlyVisuals();
-}
-
-/** Subtle film grain + light flash overlays in effects pass. */
-export function documentaryOverlaysEnabled(): boolean {
-  if (yearsOnlyOnScreen()) return false;
-  return process.env.ENABLE_DOC_OVERLAYS !== "false";
 }
 
 /** Generation wall-clock minutes allowed per 1 minute of finished video (default 10:1). */
@@ -798,7 +792,6 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
   }
   return 10;
 }
-
 
 /**
  * RONDE 81 — the escalation thresholds, for every video length.
@@ -1648,36 +1641,6 @@ export function screenLabelIntervalSec(): number {
   return 30;
 }
 
-/** No yellow labels before this second in the final video timeline. */
-export function screenLabelMinStartSec(): number {
-  const raw = process.env.SCREEN_LABEL_MIN_START_SEC?.trim();
-  if (raw) {
-    const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 0 && n <= 30) return n;
-  }
-  return 10;
-}
-
-/** Minimum gap between on-screen labels (years / place names). */
-export function screenLabelMinGapSec(): number {
-  const raw = process.env.SCREEN_LABEL_MIN_GAP_SEC?.trim();
-  if (raw) {
-    const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 5 && n <= 20) return n;
-  }
-  return 9;
-}
-
-/** Max yellow labels per scene (years + places). */
-export function screenLabelMaxPerScene(): number {
-  const raw = process.env.SCREEN_LABEL_MAX_PER_SCENE?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 3 && n <= 12) return n;
-  }
-  return 7;
-}
-
 /** Prefer different archive clips across consecutive videos on the same topic.
  *  Phase 10: previously disabled for fast/short videos, but the underlying
  *  lookup (getCrossVideoExcludeAssetIds) is a synchronous in-memory scan of an
@@ -1753,16 +1716,6 @@ export function archiveSimilarMatchVisionFloor(): number {
     if (!isNaN(n) && n >= 4 && n <= 7) return n;
   }
   return 5;
-}
-
-/** Min CLIP score for last-chance 1-min compose rescue (archive still preferred). */
-export function fastShortComposeRescueVisionFloor(): number {
-  const raw = process.env.FAST_COMPOSE_RESCUE_VISION_FLOOR?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 5 && n <= 8) return n;
-  }
-  return 6;
 }
 
 /** Block upload when qualityReport fails thresholds (on by default). */
@@ -2087,16 +2040,6 @@ export function archiveFirstBeatsEnabled(): boolean {
   return process.env.ENABLE_ARCHIVE_FIRST_BEATS !== "false";
 }
 
-/** Async QA (P6): move pipeline review + post-render spot check off the critical path.
- *  When enabled, the two LLM reviews (compose review + final review) are fired as
- *  background promises that run concurrently with the final concat/music stage.
- *  The post-render spot check runs in parallel with the S3 upload.
- *  Net saving: ~30–70 s depending on video length and LLM latency.
- *  Requires ENABLE_ASYNC_QA=true.  Off by default. */
-export function asyncQaEnabled(): boolean {
-  return process.env.ENABLE_ASYNC_QA === "true";
-}
-
 /** Self-learning ingestion: winning external clips are uploaded to the own archive
  *  (quality gate → R2 → DB record → embedding index) so future videos can use them
  *  without external API calls.  Best-effort; never blocks video production.
@@ -2108,11 +2051,3 @@ export function externalAssetIngestionEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_ASSET_INGESTION !== "false";
 }
 
-/** P5A Scene Processing Pipeline: each scene runs fetch → recovery → compose as a unit,
- *  so Scene N+1 composes while Scene N+2 is still fetching.  Eliminates the Stage 3 →
- *  Stage 4 sequential barrier.  Aggregate polish steps (polishWeakAdoptBeats,
- *  ensureFastShortScenesReady) are skipped in pipeline mode — per-scene recovery still runs.
- *  Requires ENABLE_SCENE_PIPELINE=true. */
-export function scenePipelineEnabled(): boolean {
-  return process.env.ENABLE_SCENE_PIPELINE === "true";
-}

@@ -283,19 +283,6 @@ describe("RONDE 87 §D — downloaded is not adopted is not composed is not in t
     l.markFinalVideo([]);
     expect(formatSourceSummary(l.summary(), true).join("\n")).toContain("finalVideo=0");
   });
-
-  it("TEST 16 — the pipeline proves FINAL_VIDEO from the concat that made the delivered file", () => {
-    // The proof chain, asserted at the call site: the scene videos actually concatenated, mapped
-    // to the clips those scenes were composed from. Nothing derived from a name or a count.
-    expect(PIPELINE_SRC).toContain("finalConcatInputs = orderedClips;");
-    expect(PIPELINE_SRC).toContain("if (out) finalConcatInputs = validClips;");
-    expect(PIPELINE_SRC).toContain("const deliveredScenes = new Set(finalConcatInputs.filter(Boolean));");
-    expect(PIPELINE_SRC).toContain("if (!sceneVideo || !deliveredScenes.has(sceneVideo)) continue;");
-    expect(PIPELINE_SRC).toContain("ledger.markFinalVideo(deliveredClips)");
-    // And it runs AFTER the final file has been validated — before that there is nothing to prove.
-    const validateIdx = PIPELINE_SRC.indexOf("if (!finalValidation.ok) {");
-    expect(PIPELINE_SRC.indexOf("ledger.markFinalVideo(deliveredClips)")).toBeGreaterThan(validateIdx);
-  });
 });
 
 /* ═════════════ §E — rejections belong to an asset ═════════════ */
@@ -538,13 +525,6 @@ describe("RONDE 87 §I/§J — the official statistics come from the ledger", ()
     expect(proven.bySource.wikimedia).toBe(1);
   });
 
-  it("TEST 35 — the compose manifest reports the ledger and labels the filename guess as a hint", () => {
-    expect(PIPELINE_SRC).toContain("const source = lineageRecord?.provider ?? UNVERIFIED_PROVIDER;");
-    expect(PIPELINE_SRC).toContain("diagnosticNameHint=${inferClipSourceFromPath(basename)}");
-    // MUTATION GUARD: the RONDE 64 fallback that made a filename an official source is gone.
-    expect(PIPELINE_SRC).not.toContain('entry?.source ?? (inferred && inferred !== "unknown" ? inferred : "unknown")');
-  });
-
   it("TEST 36 — no official source statistic is left reading a filename", () => {
     // The inference functions survive as diagnostics and say so at their definition.
     for (const [src, name] of [[PIPELINE_SRC, "videoPipeline"], [REPORT_SRC, "videoQualityReport"]] as const) {
@@ -661,27 +641,10 @@ describe("RONDE 87 §L — observability only", () => {
     // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
     // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
     // technical fallback). A THIRD would still mean a freeze had leaked back in.
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(2);
+    // RONDE 661: both clone-pads sat in the deleted compose montage's tail pad — none remain.
+    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(0);
     // RONDE 86 search-performance cap.
     expect(PIPELINE_SRC).toContain("if (queue.length >= prepareCap) break;");
-  });
-
-  it("TEST 44 — the audit can never fail a render", () => {
-    const idx = PIPELINE_SRC.indexOf("const deliveredScenes = new Set(finalConcatInputs");
-    /**
-     * The window is bounded by the block's OWN end marker, not by a character count.
-     *
-     * RONDE 94 (AssetUsageSummary), 105 ([FinalVisualReport] and the per-beat problems) and 165
-     * (the lifecycle audit) each added lines inside this same try, and each time a fixed +N window
-     * stopped reaching the catch — a green test turning red on a change that did not break the
-     * rule it guards. The rule is unchanged: everything the audit prints sits inside a try whose
-     * catch is non-fatal, so the assertion runs to where that block actually ends.
-     */
-    const end = PIPELINE_SRC.indexOf("── P6: Gather async reviews", idx);
-    expect(end).toBeGreaterThan(idx);
-    const block = PIPELINE_SRC.slice(Math.max(0, idx - 600), end);
-    expect(block).toContain("try {");
-    expect(block).toContain("[VisualAudit] audit reporting failed (non-fatal)");
   });
 });
 
