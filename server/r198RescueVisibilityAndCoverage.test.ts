@@ -144,7 +144,7 @@ describe("R198 §2 — the film, not only each scene", () => {
   it("the film's repair runs BEFORE the export-ready pass, so what ships is validated", () => {
     const idx = PIPE.indexOf("[FinalCoverage] video ${videoId}: picture ends at");
     expect(idx).toBeGreaterThan(0);
-    expect(idx).toBeLessThan(PIPE.indexOf("const { path: exportReadyPath, validation: finalValidation }"));
+    expect(idx).toBeLessThan(PIPE.indexOf("const { path: exportReadyPath, validation: exportValidation }"));
   });
 
   it("a repair that produces nothing keeps the composed file and says so", () => {

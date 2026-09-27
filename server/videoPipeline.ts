@@ -51016,18 +51016,48 @@ async function _runVideoPipelineInner(
       );
     }
 
-    // Cleanup intermediates
-    for (let i = 0; i < scenes.length; i++) {
-      try { fs.unlinkSync(audioPaths[i]); } catch { /* ignore */ }
-      for (const clip of sceneVisualResults[i]?.clips ?? []) {
-        try { if (clip !== composedScenes[i]) fs.unlinkSync(clip); } catch { /* ignore */ }
+    /**
+     * RONDE 661 — ONE RENDER PATH.
+     *
+     * With the cinematic route on, the timeline render is what the viewer receives, and every
+     * successful video since 24 September was delivered by it. The compose montage built below
+     * was assembled, mixed, healed, audited and uploaded anyway — and then thrown away. Worse, it
+     * could still end the render: video 608 failed in the montage's music mix before the timeline
+     * render ever started, and in 8 of the 9 renders where the timeline failed, the montage itself
+     * carried a placeholder and could not have been delivered either.
+     *
+     * So with the timeline delivering, the montage's assembly (overlays, concat, music, heal),
+     * its audits and its upload are not run, and the adopted clips stay on disk for the timeline
+     * render instead of being deleted and fetched back. The export gates still run. A timeline
+     * render that does not deliver fails the video by name — there is no second render behind it.
+     */
+    const timelineDelivers = await (async () => {
+      const { cinematicPlanningEnabled, cinematicRenderPathEnabled } = await import("./cinematicProduction");
+      return cinematicPlanningEnabled() && cinematicRenderPathEnabled();
+    })().catch(() => false);
+    if (timelineDelivers) {
+      console.log(
+        pipelineReport.add(
+          "summary",
+          `[RenderPath] video=${videoId} route=cinematic_timeline_only — the compose montage is not assembled`
+        )
+      );
+    }
+
+    // Cleanup intermediates — only when the montage is the delivery; the timeline render reads these.
+    if (!timelineDelivers) {
+      for (let i = 0; i < scenes.length; i++) {
+        try { fs.unlinkSync(audioPaths[i]); } catch { /* ignore */ }
+        for (const clip of sceneVisualResults[i]?.clips ?? []) {
+          try { if (clip !== composedScenes[i]) fs.unlinkSync(clip); } catch { /* ignore */ }
+        }
       }
     }
 
     // ── Stage 4b: Text overlays (cinematic headlines + documentary labels) ──
     try {
       const { textOverlayEnabled, textOverlayStyle, planVideoTextOverlays, applyTextOverlaysToScenes } = await import("./textOverlay/index");
-      if (textOverlayEnabled()) {
+      if (!timelineDelivers && textOverlayEnabled()) {
         const overlayStyle = textOverlayStyle();
         const textPlan = planVideoTextOverlays(
           scenes.map((s, i) => ({
@@ -51060,7 +51090,7 @@ async function _runVideoPipelineInner(
     // ── Stage 4b2: Visual Director (intelligent motion graphics) ────────────
     try {
       const { visualDirectorEnabled, directVideo, applyVideoDirective } = await import("./visualDirector/index");
-      if (visualDirectorEnabled()) {
+      if (!timelineDelivers && visualDirectorEnabled()) {
         const sceneMetas = scenes.map((s, i) => ({
           index: i,
           text: s.text ?? "",
@@ -51083,6 +51113,7 @@ async function _runVideoPipelineInner(
         // ── Stage 4c: Vidrush chapter cards (yellow title cards between sections) ──
     // RONDE 113: a chapter card is a full frame of text. Same rule as every other text engine.
     const useChapterCards =
+      !timelineDelivers &&
       burnedInTextAllowed() &&
       process.env.ENABLE_CHAPTER_CARDS === "true" && !isShortVideoLength(videoLength);
     const orderedClips: string[] = [];
@@ -51105,271 +51136,278 @@ async function _runVideoPipelineInner(
       orderedClips.push(composedScenes[i]);
     }
 
-    // ── Stage 5: Concatenate + intro/outro + music ────────────────────────
-    onProgress?.({ stage: STAGE_LABELS.assembling, percent: 77 });
-    const t4 = Date.now();
-    profiler.recordStageStart("concat", t4);
-    get_activeBudgetTracker()?.stageStart("concat", get_activeRenderBudget()?.concatMs ?? 120_000);
-    const totalDuration =
-      scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
+    let finalConcatInputs: string[] = [];
+    let finalVideoPath = "";
+    let finalValidation: Awaited<ReturnType<typeof ensureFinalVideoExportReady>>["validation"] | null = null;
+    if (!timelineDelivers) {
+      // ── Stage 5: Concatenate + intro/outro + music ────────────────────────
+      onProgress?.({ stage: STAGE_LABELS.assembling, percent: 77 });
+      const t4 = Date.now();
+      profiler.recordStageStart("concat", t4);
+      get_activeBudgetTracker()?.stageStart("concat", get_activeRenderBudget()?.concatMs ?? 120_000);
+      const totalDuration =
+        scenes.reduce((sum, s) => sum + s.duration, 0) + chapterCardCount * CHAPTER_CARD_DURATION;
 
-    // ── Cinematic audio: generate ambient track before final concat ──────────
-    let cinematicAmbientPath: string | null = null;
-    let dominantEmotion = "neutral";
-    try {
-      const { cinematicAudioEnabled, planVideoAudio, generateCinematicAmbientTrack } = await import("./cinematicAudio/index");
-      if (cinematicAudioEnabled()) {
-        const soundPlan = planVideoAudio(
-          scenes.map((s, i) => ({
-            index: i,
-            text: s.text ?? "",
-            visualCue: (s as any).visualCue ?? (s as any).pexelsQuery ?? "",
-            pexelsQuery: (s as any).pexelsQuery ?? "",
-            duration: s.duration,
-            beats: (s as any).beats ?? [],
-          })),
-          videoTitle
-        );
-        dominantEmotion = soundPlan.scenes[0]?.emotion ?? "neutral";
-        cinematicAmbientPath = await generateCinematicAmbientTrack(
-          soundPlan,
-          scenes.map(s => s.duration),
-          workDir
-        );
-        if (cinematicAmbientPath) {
-          console.log(`[CinematicAudio] Ambient track ready for final mix (emotion: ${dominantEmotion})`);
-        }
-      }
-    } catch (err) {
-      console.warn("[CinematicAudio] Ambient track generation failed (non-fatal):", (err as Error).message?.slice(0, 120));
-    }
-
-    /**
-     * RONDE 87 (§D) — the list of scene videos that provably went into the delivered file.
-     *
-     * Starts as the list this stage hands to the concat, and is REPLACED by whatever the heal loop
-     * concatenated if it had to rebuild. FINAL_VIDEO is derived from this and from nothing else:
-     * DOWNLOADED is not ADOPTED is not COMPOSED is not FINAL_VIDEO, and a clip only earns the last
-     * one when its scene is in the input of the concat that produced the validated output.
-     */
-    let finalConcatInputs: string[] = orderedClips;
-
-    let finalVideoPath = await timePipelineStep(
-      pipelineStepTiming,
-      "video_rendering",
-      "Final concat + music",
-      async () => {
-        let pathOut = await concatenateScenesWithMusic(
-          orderedClips,
-          workDir,
-          videoId,
-          totalDuration,
-          videoTitle,
-          undefined,
-          videoLength,
-          renderBudgetConcatMs,
-          get_activeRenderBudget()?.musicMixMs ?? 180_000,
-          cinematicAmbientPath,
-          dominantEmotion
-        );
-        if (isShortVideoLength(videoLength)) {
-          const targetSec = videoLength === "1" ? 58 : 118;
-          pathOut = await ensureFinalVideoDuration(pathOut, workDir, videoId, targetSec);
-        }
-        return pathOut;
-      }
-    );
-    get_activeBudgetTracker()?.stageEnd("concat");
-    profiler.recordStageEnd("concat", Date.now());
-    console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
-
-    /**
-     * RONDE 198 — THE PICTURE MUST COVER THE VOICE IN THE FILM, NOT ONLY IN EACH SCENE.
-     *
-     * `repairShortSceneVideo` has held the last frame across a short scene for many rounds, and
-     * `composeReadySceneClips` calls it on every scene it builds. Nothing ever asked the same
-     * question of the assembled film. R195 wired the MEASUREMENT in — video 574's 68.04s of
-     * picture under 69.88s of audio is now printed at stage 6 — and printing is where it stopped:
-     * the render reported the fault and shipped it, which is the shape this project keeps finding.
-     *
-     * The concat can produce a film whose picture is short of its sound even when every scene
-     * covered its own: the music mix and the ambient bed are mixed against the full narration, and
-     * `ensureFinalVideoDuration` bounds the picture for the short formats. Measured here, before
-     * the export-ready pass, so a repaired file goes through the same faststart/validation gate as
-     * an unrepaired one and the stage-6 measurement below still reports the DELIVERED file.
-     *
-     * Measure → repair only when the sound really outlasts the picture → measure again at stage 6.
-     * No gate is relaxed and nothing is asserted about the result: if the repair fails or the
-     * probe cannot read the file, the render keeps the file it had and stage 6 says what shipped.
-     */
-    try {
-      const preExport = await checkFileAvSync(finalVideoPath);
-      const soundEnd = Math.max(
-        preExport.envelope.audioSec ?? 0,
-        preExport.envelope.lastSoundSec ?? 0
-      );
-      const pictureEnd = preExport.envelope.videoSec ?? 0;
-      const soundOutlastsPicture = preExport.findings.some(
-        (f) => f.code === "audio_past_picture" || (f.code === "stream_length_mismatch" && f.deltaSec > 0)
-      );
-      if (soundOutlastsPicture && soundEnd > pictureEnd) {
-        console.warn(
-          `[FinalCoverage] video ${videoId}: picture ends at ${pictureEnd.toFixed(2)}s under ` +
-            `${soundEnd.toFixed(2)}s of sound — repairing before export`
-        );
-        const covered = await repairShortSceneVideo(
-          finalVideoPath,
-          soundEnd,
-          -1,
-          workDir,
-          Math.max(120_000, Math.min(300_000, Math.round(soundEnd * 4_000))),
-          pipelineFfmpegThreadFlag(),
-          "the assembled film"
-        );
-        if (covered !== finalVideoPath) {
-          finalVideoPath = covered;
-          qualityReport.warnings.push(
-            `AV envelope: the picture was ${(soundEnd - pictureEnd).toFixed(2)}s short of the ` +
-              `sound and was extended before export`
+      // ── Cinematic audio: generate ambient track before final concat ──────────
+      let cinematicAmbientPath: string | null = null;
+      let dominantEmotion = "neutral";
+      try {
+        const { cinematicAudioEnabled, planVideoAudio, generateCinematicAmbientTrack } = await import("./cinematicAudio/index");
+        if (cinematicAudioEnabled()) {
+          const soundPlan = planVideoAudio(
+            scenes.map((s, i) => ({
+              index: i,
+              text: s.text ?? "",
+              visualCue: (s as any).visualCue ?? (s as any).pexelsQuery ?? "",
+              pexelsQuery: (s as any).pexelsQuery ?? "",
+              duration: s.duration,
+              beats: (s as any).beats ?? [],
+            })),
+            videoTitle
           );
-          console.log(
-            pipelineReport.add(
-              "summary",
-              `[FinalCoverage] video ${videoId}: picture extended to cover the narration`
-            )
+          dominantEmotion = soundPlan.scenes[0]?.emotion ?? "neutral";
+          cinematicAmbientPath = await generateCinematicAmbientTrack(
+            soundPlan,
+            scenes.map(s => s.duration),
+            workDir
           );
-        } else {
-          console.warn(
-            `[FinalCoverage] video ${videoId}: repair did not produce a longer picture — ` +
-              `shipping as composed; stage 6 reports what the file actually is`
-          );
+          if (cinematicAmbientPath) {
+            console.log(`[CinematicAudio] Ambient track ready for final mix (emotion: ${dominantEmotion})`);
+          }
         }
+      } catch (err) {
+        console.warn("[CinematicAudio] Ambient track generation failed (non-fatal):", (err as Error).message?.slice(0, 120));
       }
+
       /**
-       * AND THE OTHER DIRECTION, WHICH HAD NO REPAIR AT ALL.
+       * RONDE 87 (§D) — the list of scene videos that provably went into the delivered file.
        *
-       * The block above extends the picture when the sound outlasts it. The opposite happened in
-       * the delivered film and nothing acted on it:
-       *
-       *     [AVSync] video=82.36s audio=75.23s
-       *     trailing_silence 7.128s — the last 7.13s of the film are silent picture
-       *
-       * Seven seconds of picture after the narration has finished. `checkFileAvSync` names it
-       * precisely — and then the file shipped with it, because the finding had a detector and no
-       * reader. A viewer reads that as the video having frozen.
-       *
-       * Trimmed to the sound, plus a short tail so the last word is not clipped and a fade still
-       * has room. Stream-copied: no re-encode, so nothing about the picture or the loudness the
-       * step above corrected can change here. Only when the excess is REAL — the same
-       * `EDGE_EXCESS_SEC` threshold the detector uses — so an ordinary end-frame hold is left
-       * alone, and only when a trim would still leave a film worth shipping.
+       * Starts as the list this stage hands to the concat, and is REPLACED by whatever the heal loop
+       * concatenated if it had to rebuild. FINAL_VIDEO is derived from this and from nothing else:
+       * DOWNLOADED is not ADOPTED is not COMPOSED is not FINAL_VIDEO, and a clip only earns the last
+       * one when its scene is in the input of the concat that produced the validated output.
        */
-      const pictureEnd2 = preExport.envelope.videoSec ?? 0;
-      const lastSound = preExport.envelope.lastSoundSec ?? 0;
-      const excess = pictureEnd2 - lastSound;
-      if (
-        preExport.findings.some((f) => f.code === "trailing_silence") &&
-        lastSound > 1 &&
-        excess > TRAILING_SILENCE_TRIM_SEC
-      ) {
-        const keepSec = Number((lastSound + TRAILING_SILENCE_TAIL_SEC).toFixed(3));
-        const trimmed = finalVideoPath.replace(/\.mp4$/i, "_tailtrim.mp4");
-        try {
-          await exec(
-            `"${FFMPEG_BIN}" -y -i "${finalVideoPath}" -t ${keepSec} -c copy ` +
-              `-movflags +faststart "${trimmed}"`,
-            180_000
+      finalConcatInputs = orderedClips;
+
+      finalVideoPath = await timePipelineStep(
+        pipelineStepTiming,
+        "video_rendering",
+        "Final concat + music",
+        async () => {
+          let pathOut = await concatenateScenesWithMusic(
+            orderedClips,
+            workDir,
+            videoId,
+            totalDuration,
+            videoTitle,
+            undefined,
+            videoLength,
+            renderBudgetConcatMs,
+            get_activeRenderBudget()?.musicMixMs ?? 180_000,
+            cinematicAmbientPath,
+            dominantEmotion
           );
-          if (fs.existsSync(trimmed) && fs.statSync(trimmed).size > 1_000) {
-            finalVideoPath = trimmed;
+          if (isShortVideoLength(videoLength)) {
+            const targetSec = videoLength === "1" ? 58 : 118;
+            pathOut = await ensureFinalVideoDuration(pathOut, workDir, videoId, targetSec);
+          }
+          return pathOut;
+        }
+      );
+      get_activeBudgetTracker()?.stageEnd("concat");
+      profiler.recordStageEnd("concat", Date.now());
+      console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
+
+      /**
+       * RONDE 198 — THE PICTURE MUST COVER THE VOICE IN THE FILM, NOT ONLY IN EACH SCENE.
+       *
+       * `repairShortSceneVideo` has held the last frame across a short scene for many rounds, and
+       * `composeReadySceneClips` calls it on every scene it builds. Nothing ever asked the same
+       * question of the assembled film. R195 wired the MEASUREMENT in — video 574's 68.04s of
+       * picture under 69.88s of audio is now printed at stage 6 — and printing is where it stopped:
+       * the render reported the fault and shipped it, which is the shape this project keeps finding.
+       *
+       * The concat can produce a film whose picture is short of its sound even when every scene
+       * covered its own: the music mix and the ambient bed are mixed against the full narration, and
+       * `ensureFinalVideoDuration` bounds the picture for the short formats. Measured here, before
+       * the export-ready pass, so a repaired file goes through the same faststart/validation gate as
+       * an unrepaired one and the stage-6 measurement below still reports the DELIVERED file.
+       *
+       * Measure → repair only when the sound really outlasts the picture → measure again at stage 6.
+       * No gate is relaxed and nothing is asserted about the result: if the repair fails or the
+       * probe cannot read the file, the render keeps the file it had and stage 6 says what shipped.
+       */
+      try {
+        const preExport = await checkFileAvSync(finalVideoPath);
+        const soundEnd = Math.max(
+          preExport.envelope.audioSec ?? 0,
+          preExport.envelope.lastSoundSec ?? 0
+        );
+        const pictureEnd = preExport.envelope.videoSec ?? 0;
+        const soundOutlastsPicture = preExport.findings.some(
+          (f) => f.code === "audio_past_picture" || (f.code === "stream_length_mismatch" && f.deltaSec > 0)
+        );
+        if (soundOutlastsPicture && soundEnd > pictureEnd) {
+          console.warn(
+            `[FinalCoverage] video ${videoId}: picture ends at ${pictureEnd.toFixed(2)}s under ` +
+              `${soundEnd.toFixed(2)}s of sound — repairing before export`
+          );
+          const covered = await repairShortSceneVideo(
+            finalVideoPath,
+            soundEnd,
+            -1,
+            workDir,
+            Math.max(120_000, Math.min(300_000, Math.round(soundEnd * 4_000))),
+            pipelineFfmpegThreadFlag(),
+            "the assembled film"
+          );
+          if (covered !== finalVideoPath) {
+            finalVideoPath = covered;
             qualityReport.warnings.push(
-              `AV envelope: ${excess.toFixed(2)}s of silent picture after the narration was trimmed`
+              `AV envelope: the picture was ${(soundEnd - pictureEnd).toFixed(2)}s short of the ` +
+                `sound and was extended before export`
             );
             console.log(
               pipelineReport.add(
                 "summary",
-                `[FinalCoverage] video ${videoId}: trimmed ${excess.toFixed(2)}s of silent tail ` +
-                  `(picture ${pictureEnd2.toFixed(2)}s → ${keepSec.toFixed(2)}s)`
+                `[FinalCoverage] video ${videoId}: picture extended to cover the narration`
               )
             );
+          } else {
+            console.warn(
+              `[FinalCoverage] video ${videoId}: repair did not produce a longer picture — ` +
+                `shipping as composed; stage 6 reports what the file actually is`
+            );
           }
-        } catch (err) {
-          console.warn(
-            `[FinalCoverage] video ${videoId}: tail trim failed, shipping as composed: ` +
-              `${(err as Error)?.message?.slice(0, 140)}`
-          );
         }
+        /**
+         * AND THE OTHER DIRECTION, WHICH HAD NO REPAIR AT ALL.
+         *
+         * The block above extends the picture when the sound outlasts it. The opposite happened in
+         * the delivered film and nothing acted on it:
+         *
+         *     [AVSync] video=82.36s audio=75.23s
+         *     trailing_silence 7.128s — the last 7.13s of the film are silent picture
+         *
+         * Seven seconds of picture after the narration has finished. `checkFileAvSync` names it
+         * precisely — and then the file shipped with it, because the finding had a detector and no
+         * reader. A viewer reads that as the video having frozen.
+         *
+         * Trimmed to the sound, plus a short tail so the last word is not clipped and a fade still
+         * has room. Stream-copied: no re-encode, so nothing about the picture or the loudness the
+         * step above corrected can change here. Only when the excess is REAL — the same
+         * `EDGE_EXCESS_SEC` threshold the detector uses — so an ordinary end-frame hold is left
+         * alone, and only when a trim would still leave a film worth shipping.
+         */
+        const pictureEnd2 = preExport.envelope.videoSec ?? 0;
+        const lastSound = preExport.envelope.lastSoundSec ?? 0;
+        const excess = pictureEnd2 - lastSound;
+        if (
+          preExport.findings.some((f) => f.code === "trailing_silence") &&
+          lastSound > 1 &&
+          excess > TRAILING_SILENCE_TRIM_SEC
+        ) {
+          const keepSec = Number((lastSound + TRAILING_SILENCE_TAIL_SEC).toFixed(3));
+          const trimmed = finalVideoPath.replace(/\.mp4$/i, "_tailtrim.mp4");
+          try {
+            await exec(
+              `"${FFMPEG_BIN}" -y -i "${finalVideoPath}" -t ${keepSec} -c copy ` +
+                `-movflags +faststart "${trimmed}"`,
+              180_000
+            );
+            if (fs.existsSync(trimmed) && fs.statSync(trimmed).size > 1_000) {
+              finalVideoPath = trimmed;
+              qualityReport.warnings.push(
+                `AV envelope: ${excess.toFixed(2)}s of silent picture after the narration was trimmed`
+              );
+              console.log(
+                pipelineReport.add(
+                  "summary",
+                  `[FinalCoverage] video ${videoId}: trimmed ${excess.toFixed(2)}s of silent tail ` +
+                    `(picture ${pictureEnd2.toFixed(2)}s → ${keepSec.toFixed(2)}s)`
+                )
+              );
+            }
+          } catch (err) {
+            console.warn(
+              `[FinalCoverage] video ${videoId}: tail trim failed, shipping as composed: ` +
+                `${(err as Error)?.message?.slice(0, 140)}`
+            );
+          }
+        }
+      } catch (err) {
+        console.warn(
+          `[FinalCoverage] video ${videoId}: coverage check failed (non-fatal): ` +
+            `${(err as Error)?.message?.slice(0, 140)}`
+        );
       }
-    } catch (err) {
-      console.warn(
-        `[FinalCoverage] video ${videoId}: coverage check failed (non-fatal): ` +
-          `${(err as Error)?.message?.slice(0, 140)}`
-      );
-    }
 
-    const { path: exportReadyPath, validation: finalValidation } = await ensureFinalVideoExportReady({
-      filePath: finalVideoPath,
-      workDir,
-      videoId,
-      videoLength,
-      reassemble: async () => {
-        const validClips = orderedClips.filter(
-          (p) => p && fs.existsSync(p) && fs.statSync(p).size > 1_000
+      const { path: exportReadyPath, validation: exportValidation } = await ensureFinalVideoExportReady({
+        filePath: finalVideoPath,
+        workDir,
+        videoId,
+        videoLength,
+        reassemble: async () => {
+          const validClips = orderedClips.filter(
+            (p) => p && fs.existsSync(p) && fs.statSync(p).size > 1_000
+          );
+          if (validClips.length === 0) return null;
+          const out = await concatenateScenesWithMusic(
+            validClips,
+            workDir,
+            videoId,
+            totalDuration,
+            videoTitle,
+            undefined,
+            videoLength,
+            renderBudgetConcatMs
+          );
+          // RONDE 87: the heal loop can rebuild the final file from a SUBSET of the scenes. Whatever
+          // it actually concatenated is what the delivered file contains, so that is what
+          // FINAL_VIDEO must be proven against — not the list this stage started with.
+          if (out) finalConcatInputs = validClips;
+          return out;
+        },
+        reassemblePlain: async () => {
+          const out = await plainConcatSceneVideos(composedScenes, workDir, videoId);
+          if (out) finalConcatInputs = composedScenes.filter((p) => p && fs.existsSync(p));
+          return out;
+        },
+        onHeartbeat: () => touchVideoProgress(videoId),
+      });
+      finalVideoPath = exportReadyPath;
+      finalValidation = exportValidation;
+
+      if (!exportValidation.ok) {
+        console.warn(
+          `[Pipeline] Video ${videoId}: final not playable after heal — ${exportValidation.reasons.join("; ")}`
         );
-        if (validClips.length === 0) return null;
-        const out = await concatenateScenesWithMusic(
-          validClips,
-          workDir,
-          videoId,
-          totalDuration,
-          videoTitle,
-          undefined,
-          videoLength,
-          renderBudgetConcatMs
+        throw pipelineError(
+          PIPELINE_ERROR.CONCAT,
+          `Final video not playable: ${exportValidation.reasons.slice(0, 3).join("; ")}`
         );
-        // RONDE 87: the heal loop can rebuild the final file from a SUBSET of the scenes. Whatever
-        // it actually concatenated is what the delivered file contains, so that is what
-        // FINAL_VIDEO must be proven against — not the list this stage started with.
-        if (out) finalConcatInputs = validClips;
-        return out;
-      },
-      reassemblePlain: async () => {
-        const out = await plainConcatSceneVideos(composedScenes, workDir, videoId);
-        if (out) finalConcatInputs = composedScenes.filter((p) => p && fs.existsSync(p));
-        return out;
-      },
-      onHeartbeat: () => touchVideoProgress(videoId),
-    });
-    finalVideoPath = exportReadyPath;
+      }
+      if (exportValidation.softWarnings.length > 0) {
+        console.warn(
+          `[Pipeline] Video ${videoId}: export QA notes — ${exportValidation.softWarnings.slice(0, 4).join("; ")}`
+        );
+      }
 
-    if (!finalValidation.ok) {
-      console.warn(
-        `[Pipeline] Video ${videoId}: final not playable after heal — ${finalValidation.reasons.join("; ")}`
-      );
-      throw pipelineError(
-        PIPELINE_ERROR.CONCAT,
-        `Final video not playable: ${finalValidation.reasons.slice(0, 3).join("; ")}`
-      );
-    }
-    if (finalValidation.softWarnings.length > 0) {
-      console.warn(
-        `[Pipeline] Video ${videoId}: export QA notes — ${finalValidation.softWarnings.slice(0, 4).join("; ")}`
-      );
+      /**
+       * ── RONDE 87 (§D/§F/§G/§H): the visual source audit ────────────────────────
+       *
+       * Emitted HERE, after the delivered file has been produced and validated, because this is the
+       * first moment FINAL_VIDEO is knowable. Everything before this point can say what was
+       * downloaded, adopted and composed; only the concat that produced the validated output can say
+       * what is actually in the video the customer receives.
+       *
+       * The proof chain is: finalConcatInputs holds the scene videos that went into that concat;
+       * composedScenes[i] is scene i's video and composedUsedClips[i] is the clip list that scene
+       * was composed from; so a clip is in the final video exactly when its scene's video is in
+       * finalConcatInputs. Nothing here is inferred from a name, a count or a position.
+       */
     }
 
-    /**
-     * ── RONDE 87 (§D/§F/§G/§H): the visual source audit ────────────────────────
-     *
-     * Emitted HERE, after the delivered file has been produced and validated, because this is the
-     * first moment FINAL_VIDEO is knowable. Everything before this point can say what was
-     * downloaded, adopted and composed; only the concat that produced the validated output can say
-     * what is actually in the video the customer receives.
-     *
-     * The proof chain is: finalConcatInputs holds the scene videos that went into that concat;
-     * composedScenes[i] is scene i's video and composedUsedClips[i] is the clip list that scene
-     * was composed from; so a clip is in the final video exactly when its scene's video is in
-     * finalConcatInputs. Nothing here is inferred from a name, a count or a position.
-     */
     try {
       const ledger = visualDedup.sourcingCache.lineage;
       const deliveredScenes = new Set(finalConcatInputs.filter(Boolean));
@@ -52108,7 +52146,7 @@ async function _runVideoPipelineInner(
      * reason on the line. The pass replaces the file only when the corrected audio measures closer
      * to target than the original.
      */
-    {
+    if (!timelineDelivers) {
       const loudness = await normaliseDeliveredLoudness(finalVideoPath).catch(
         (err): LoudnessResult => ({
           outcome: "failed",
@@ -52148,7 +52186,7 @@ async function _runVideoPipelineInner(
       if (reuseLine) console.log(pipelineReport.add("summary", reuseLine));
     }
 
-    const finalVideoSizeBytes = (await fs.promises.stat(finalVideoPath)).size;
+    const finalVideoSizeBytes = finalVideoPath ? (await fs.promises.stat(finalVideoPath)).size : 0;
 
     /**
      * R195 — DOES THE PICTURE COVER THE NARRATION?
@@ -52163,7 +52201,7 @@ async function _runVideoPipelineInner(
      * render delivers instead, the block at the cutover replaces this with the render job's own
      * verdict on the file the viewer actually received.
      */
-    {
+    if (!timelineDelivers) {
       const avSync = await checkFileAvSync(finalVideoPath).catch(() => null);
       if (avSync) {
         for (const line of formatAvSync(avSync)) {
@@ -52209,6 +52247,8 @@ async function _runVideoPipelineInner(
      * cinematic file is checked by the render job's own spot check.
      */
     const auditComposeMontage = async (): Promise<void> => {
+      /** RONDE 661 — no montage was assembled, so there is nothing to audit. */
+      if (!finalVideoPath) return;
       try {
         const stillness = await withTimeout(
           auditVideoStillness({ videoPath: finalVideoPath, maxSampleFps: 8, timeoutMs: 180_000 }),
@@ -52290,10 +52330,7 @@ async function _runVideoPipelineInner(
         );
       }
     };
-    const composeAuditDeferred = await (async () => {
-      const { cinematicPlanningEnabled, cinematicRenderPathEnabled } = await import("./cinematicProduction");
-      return cinematicPlanningEnabled() && cinematicRenderPathEnabled();
-    })().catch(() => false);
+    const composeAuditDeferred = timelineDelivers;
     if (composeAuditDeferred) {
       console.log(
         `[VisualIntegrity] video=${videoId} stillness/repeat audit deferred — the compose montage is the ` +
@@ -52303,9 +52340,12 @@ async function _runVideoPipelineInner(
       await auditComposeMontage();
     }
 
-    let url: string;
+    /** The montage's own URL — empty when the timeline is the only render (RONDE 661). */
+    let url = "";
 
-    if (asyncQaEnabled() && postRenderSpotCheckEnabledForVideo(videoLength)) {
+    if (timelineDelivers) {
+      /** Nothing to upload or spot-check: the timeline render below produces the delivered file. */
+    } else if (asyncQaEnabled() && postRenderSpotCheckEnabledForVideo(videoLength)) {
       // Spot check + upload in parallel — spot check reads the local file,
       // upload streams the same file; both start at the same wall-clock time.
       await touchVideoProgress(videoId);
@@ -52452,7 +52492,7 @@ async function _runVideoPipelineInner(
       }
       throw gateError;
     }
-    for (const w of finalValidation.softWarnings) {
+    for (const w of finalValidation?.softWarnings ?? []) {
       qualityReport.warnings.push(`Export QA: ${w}`);
     }
     qualityReport.generatedAt = new Date().toISOString();
@@ -54084,6 +54124,15 @@ async function _runVideoPipelineInner(
     } catch (err) {
       console.warn(`[YouTubeInFilm] video=${videoId} not measured: ${(err as Error).message}`);
       youtubeFootageVerdict = judgeYoutubeRequirement(unmeasuredFootage(), requiredYoutubeSeconds());
+    }
+
+    /** RONDE 661 — with one render path, a timeline render that did not deliver is the end. */
+    if (timelineDelivers && !cinematicDeliveredUrl) {
+      throw pipelineError(
+        PIPELINE_ERROR.FFMPEG,
+        `The timeline render did not deliver video ${videoId}: ` +
+          `${cinematicRefusalForGate ?? "no reason was recorded"} — there is no second render to fall back to`
+      );
     }
 
     {

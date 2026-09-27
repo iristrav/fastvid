@@ -287,7 +287,7 @@ describe("RONDE 87 §D — downloaded is not adopted is not composed is not in t
   it("TEST 16 — the pipeline proves FINAL_VIDEO from the concat that made the delivered file", () => {
     // The proof chain, asserted at the call site: the scene videos actually concatenated, mapped
     // to the clips those scenes were composed from. Nothing derived from a name or a count.
-    expect(PIPELINE_SRC).toContain("let finalConcatInputs: string[] = orderedClips;");
+    expect(PIPELINE_SRC).toContain("finalConcatInputs = orderedClips;");
     expect(PIPELINE_SRC).toContain("if (out) finalConcatInputs = validClips;");
     expect(PIPELINE_SRC).toContain("const deliveredScenes = new Set(finalConcatInputs.filter(Boolean));");
     expect(PIPELINE_SRC).toContain("if (!sceneVideo || !deliveredScenes.has(sceneVideo)) continue;");
