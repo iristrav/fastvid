@@ -26684,6 +26684,11 @@ export function sweepUnadoptedSceneCandidates(dedup: VisualDedupState, sceneInde
   dedup.sceneCandidatePaths.delete(sceneIndex);
 }
 
+/** RONDE 647 — the adoption loop itself, for a test that hands it a real file. */
+export function adoptClipForTest(...args: Parameters<typeof adoptClip>): ReturnType<typeof adoptClip> {
+  return adoptClip(...args);
+}
+
 async function adoptClip(
   paths: string[],
   dedup: VisualDedupState,
@@ -27294,7 +27299,21 @@ async function adoptClip(
         );
         break;
       }
-      if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
+      if (!p || dedup.usedPaths.has(p)) continue;
+      /**
+       * RONDE 647 — A CANDIDATE THAT IS PASSED OVER SAYS WHY.
+       *
+       * Every `continue` below used to be silent, so a refused file simply stopped existing as far
+       * as the lineage could tell. Render 610's YouTube trace ended `delivered=0 refused=3
+       * openEnded=5`: five downloaded clips with no terminal event, one of them (`btHJYt5YE9s`,
+       * 168 512 bytes) refused on every one of its nine downloads by the size floor below. Each
+       * check is exactly what it was; it now names itself on the way out.
+       */
+      const refuse = (reason: string): true => {
+        recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, reason, sourceQuery);
+        return true;
+      };
+      if (!fs.existsSync(p) && refuse("file_missing")) continue;
       // Invariant 2 (no duplicate work): this is the authoritative same-render asset-identity
       // gate, and it now runs FIRST — before isValidVideoFile's ffprobe, before
       // isMostlyBlackClip's ffmpeg pass, and before clipPassesVisionGate's frame extraction +
@@ -27311,24 +27330,24 @@ async function adoptClip(
       const contentKey = clipContentKey(p);
       if (dedup.usedContentKeys.has(contentKey)) {
         dedup.sourcingCache.totals.duplicateCandidatesSkipped++;
+        refuse("already_used_in_render");
         continue;
       }
-      if (!(await isValidVideoFile(p))) continue;
+      if (!(await isValidVideoFile(p)) && refuse("not_a_valid_video")) continue;
       if (isStillPhotoClip(p)) {
         const scriptStill = Boolean(opts.scriptImageFallback);
-        if (!scriptStill && !canUseGlobalStillPhoto(dedup)) continue;
+        if (!scriptStill && !canUseGlobalStillPhoto(dedup) && refuse("still_photo_budget")) continue;
         const sceneStillCap = dedup.stillPhotosMaxThisScene;
-        if (!scriptStill && sceneStillCap > 0 && dedup.stillPhotosThisScene >= sceneStillCap) continue;
+        if (!scriptStill && sceneStillCap > 0 && dedup.stillPhotosThisScene >= sceneStillCap && refuse("scene_still_cap")) continue;
         if (scriptStill || canUseGlobalStillPhoto(dedup)) {
           dedup.stillPhotosThisScene++;
           if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
         }
       }
-      if (isAIGeneratedClip(p) && dedup.stillPhotosMaxThisScene === 0) continue;
-      if (isAIGeneratedClip(p)) continue;
-      if (isRejectedStockClip(p, sourceQuery)) continue;
-      if (isPipelineFallbackClip(p)) continue;
-      if (await isMostlyBlackClip(p)) continue;
+      if (isAIGeneratedClip(p) && refuse("ai_generated")) continue;
+      if (isRejectedStockClip(p, sourceQuery) && refuse("rejected_stock")) continue;
+      if (isPipelineFallbackClip(p) && refuse("pipeline_fallback")) continue;
+      if ((await isMostlyBlackClip(p)) && refuse("mostly_black")) continue;
       if (!opts.scriptImageFallback) {
         if (muskTopic && isOffTopicVisualForMusk(sourceQuery, p)) continue;
         if (
@@ -27342,13 +27361,13 @@ async function adoptClip(
           const hay = `${sourceQuery} ${path.basename(p)}`.toLowerCase();
           const personHit = textMentionsPersonName(hay, opts.primaryPerson);
           const celebCue = /\b(interview|red carpet|talk show|celebrity|paparazzi|jenner|kardashian)\b/.test(hay);
-          if (!personHit && !celebCue) continue;
+          if (!personHit && !celebCue && refuse("stock_without_person")) continue;
         }
       }
       const category = stockVisualCategory(sourceQuery, p);
       /** RONDE 621 — the same question the gate below asks, so the two cannot answer differently. */
-      if (categoryIsBlockedContent(category, muskTopic)) continue;
-      if (categoryAtLimit(dedup, category, muskTopic)) continue;
+      if (categoryIsBlockedContent(category, muskTopic) && refuse(`blocked_category:${category}`)) continue;
+      if (categoryAtLimit(dedup, category, muskTopic) && refuse(`category_at_limit:${category}`)) continue;
       // Documentary beat gate (blocklist-only: known non-documentary / off-topic geo-urban
       // filename patterns) now applies unconditionally, including scriptImageFallback
       // candidates — it was previously exempted here, one of the gaps that let a completely
@@ -27364,7 +27383,7 @@ async function adoptClip(
       }
       // Musk/Tesla topics: reject generic clips when query targets a specific category
       const queryCategory = stockVisualCategory(sourceQuery);
-      if (queryCategory !== "generic" && category === "generic") continue;
+      if (queryCategory !== "generic" && category === "generic" && refuse("generic_for_specific_query")) continue;
       if (opts.requireMuskBrand && !hasMuskBrandSignal(sourceQuery, p)) continue;
       const beatMatch = scoreBeatNarrationMatch(beatText, sourceQuery, p);
       const queryWords = sourceQuery.split(/\s+/).filter((w) => w.length >= 3);
@@ -27436,14 +27455,14 @@ async function adoptClip(
            requireBeat/scriptAnchored/personTopic checks below are intentionally skipped for
            this path (unchanged from before this hardening round). */
       } else {
-        if (requireBeat && beatMatch < 1 && !queryInBeat) continue;
-        if (scriptAnchored && beatMatch < 1 && !queryInBeat && entityRules.length === 0) continue;
+        if (requireBeat && beatMatch < 1 && !queryInBeat && refuse("no_beat_match")) continue;
+        if (scriptAnchored && beatMatch < 1 && !queryInBeat && entityRules.length === 0 && refuse("not_script_anchored")) continue;
         if (opts.personTopic && opts.primaryPerson) {
           const parts = opts.primaryPerson.toLowerCase().split(/\s+/).filter((x) => x.length >= 3);
           const hay = `${sourceQuery} ${path.basename(p)}`.toLowerCase();
           const personHit = parts.some((pt) => hay.includes(pt));
           const eventHit = /\b(interview|celebrity|red carpet|keynote|conference|launch)\b/.test(hay);
-          if (!personHit && !eventHit && beatMatch < 1) continue;
+          if (!personHit && !eventHit && beatMatch < 1 && refuse("person_not_named")) continue;
         }
       }
       if (muskTopic) {
@@ -27460,8 +27479,8 @@ async function adoptClip(
         if (category === "generic" && queryCategory !== "generic" && rel < 1 && brand === 0) continue;
       }
       let fileSize = 0;
-      try { fileSize = fs.statSync(p).size; } catch { continue; }
-      if (fileSize < 180_000) continue;
+      try { fileSize = fs.statSync(p).size; } catch { refuse("file_missing"); continue; }
+      if (fileSize < 180_000 && refuse(`below_size_floor_${fileSize}_bytes`)) continue;
       // Calls evaluateClipVisionGate directly (rather than the boolean-only clipPassesVisionGate
       // wrapper) so a cache hit can be told apart from a fresh evaluation below — a cache hit is
       // the SAME earlier CLIP judgment being returned again, not a new verdict on this candidate.
