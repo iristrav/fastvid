@@ -37229,6 +37229,26 @@ async function ensureBeatVisualFilled(
   );
 }
 
+/**
+ * RONDE 647 — WHEN ANOTHER FILL ATTEMPT CAN NO LONGER HELP, AND THE LOOP STOPS ASKING.
+ *
+ * Render 610 asked scene 1 beat 0 for a picture about thirty times between 15:09 and 15:17 — the
+ * same archive search, the same three Internet Archive items added again, the shortlist already
+ * full — after its scene budget had ended at 14:57. Three coverage loops call the beat filler in
+ * turn, and each picks the beat with the largest gap: a beat that comes back empty still has the
+ * largest gap, so it is picked again, with the same inputs and the same answer, until the loop's
+ * count runs out.
+ *
+ * Two facts end that, the same for every topic: the budget has ended (nothing started now can
+ * finish — `SceneFetchScope` refuses it anyway), or this beat already came back empty in this loop
+ * (its inputs have not changed, so neither will its answer). Returns the reason, or null.
+ */
+export function fillLoopStopReason(beatIdx: number, emptyBeats: ReadonlySet<number>): string | null {
+  if (remainingScopeMs() <= 0) return "the scene budget has ended";
+  if (emptyBeats.has(beatIdx)) return `beat ${beatIdx} already came back empty in this loop`;
+  return null;
+}
+
 async function backfillArchiveMontageFromPool(
   scene: Scene,
   workDir: string,
@@ -37267,6 +37287,7 @@ async function backfillArchiveMontageFromPool(
   );
 
   let added = 0;
+  const emptyBeats = new Set<number>();
   const beatInputs = beats.map((b) => ({ text: b.text, holdSec: b.holdSec }));
   const xfade = montageXfadeSec();
   for (let attempt = 0; attempt < maxFill && coverage < minCoverage; attempt++) {
@@ -37277,8 +37298,14 @@ async function backfillArchiveMontageFromPool(
         : attempt % Math.max(1, beats.length);
     const beat = beats[beatIdx] ?? beats[0];
     if (!beat) break;
+    const stop = fillLoopStopReason(beatIdx, emptyBeats);
+    if (stop) {
+      console.warn(`[Pipeline] ${prefix}: pool backfill stopped after ${attempt} attempt(s) — ${stop}`);
+      break;
+    }
     const profile = opts?.semanticProfiles?.get(beat.index);
     const fillHold = Math.max(beat.holdSec, outDur / minClipsNeeded);
+    const before = clips.length;
     try {
       await ensureBeatVisualFilled(
         beat,
@@ -37294,6 +37321,7 @@ async function backfillArchiveMontageFromPool(
     } catch {
       /* try next beat */
     }
+    if (clips.length === before) emptyBeats.add(beatIdx);
     coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, outDur);
   }
   return added;
@@ -38769,12 +38797,19 @@ async function ensureArchiveMontageVoiceCoverage(
 
   const beatInputs = beats.map((b) => ({ text: b.text, holdSec: b.holdSec }));
   const xfade = montageXfadeSec();
+  const emptyBeats = new Set<number>();
   for (let attempt = 0; attempt < 6 && coverage < minCoverage; attempt++) {
     const beatIdx = pickVoiceBackfillBeatIndex(beatInputs, scene.duration, clipBeatIndices, beatDurations, xfade);
     const beat = beats[beatIdx] ?? beats[0];
     if (!beat) break;
+    const stop = fillLoopStopReason(beatIdx, emptyBeats);
+    if (stop) {
+      console.warn(`[Coverage] Scene ${scene.index}: voice backfill stopped after ${attempt} attempt(s) — ${stop}`);
+      break;
+    }
     const holdSec = Math.max(beat.holdSec, scene.duration / minClips);
     const pushClip = (clipPath: string, sec = holdSec) => pushSceneClip(clipPath, sec, beat.index);
+    const before = clips.length;
     try {
       await ensureBeatVisualFilled(
         beat,
@@ -38787,11 +38822,11 @@ async function ensureArchiveMontageVoiceCoverage(
         holdSec
       );
     } catch {
-      continue;
+      /* counted as empty below */
     }
+    if (clips.length === before) emptyBeats.add(beatIdx);
+    coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
   }
-
-  coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
   if (coverage >= minCoverage) return;
 
   /**
@@ -38852,12 +38887,18 @@ async function ensureArchiveMontageVoiceCoverage(
   let shortClipsAdded = 0;
   /** RONDE 112: how many extra searches this scene actually cost, for the report. */
   let extraSearches = 0;
+  const emptyShortBeats = new Set<number>();
   for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
     const beatIdx = pickVoiceBackfillBeatIndex(
       beatInputsShort, scene.duration, clipBeatIndices, beatDurations, montageXfadeSec()
     );
     const beat = beats[beatIdx] ?? beats[0];
     if (!beat) break;
+    const stop = fillLoopStopReason(beatIdx, emptyShortBeats);
+    if (stop) {
+      note(`short-clip search stopped after ${attempt} attempt(s) — ${stop}`, false);
+      break;
+    }
     const before = clips.length;
     extraSearches++;
     try {
@@ -38872,8 +38913,10 @@ async function ensureArchiveMontageVoiceCoverage(
         shortHold
       );
     } catch {
-      continue;
+      /* counted as empty below */
     }
+    if (clips.length === before) emptyShortBeats.add(beatIdx);
+    coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
     if (clips.length > before) {
       shortClipsAdded += clips.length - before;
       console.log(
