@@ -239,10 +239,4 @@ describe("RONDE 113 — what this deliberately does not touch", () => {
     const curated = fs.readFileSync(path.join(__dirname, "curatedMediaSourcing.ts"), "utf8");
     expect(curated).toContain("has baked edit text — skipped");
   });
-
-  it("the picture itself is untouched — this round removed overlays, not footage", () => {
-    // RONDE 111/112's coverage chain still stands.
-    expect(PIPELINE).toContain("async function trySubjectFallbackForBeat(");
-    expect(PIPELINE).toContain("const floor = coverageFloorSec(scene.duration);");
-  });
 });

@@ -280,13 +280,8 @@ describe("RONDE 6 P1-B — wiring: every funnel/pool query call site is anchored
     //
     // This count is the point of the test: a new query builder that skips anchoring shows up
     // here as a number that did not move.
-    expect(calls.length).toBe(5);
-  });
-
-  it("the Internet Archive geo path is one of them", () => {
-    const idx = pipelineSrc.indexOf("const geoQueries = buildInternetArchiveGeoQueries(");
-    expect(idx).toBeGreaterThan(-1);
-    expect(pipelineSrc.slice(idx, idx + 900)).toContain("anchorQueriesToHistoricalContext({");
+    // Four: the fifth (Internet Archive geo path) was deleted with `adoptInternetArchiveBeatClip`.
+    expect(calls.length).toBe(4);
   });
 
   it("the funnel prefetch passes the anchored queries, not the raw scene phrasing", () => {

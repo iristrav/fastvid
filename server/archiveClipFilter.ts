@@ -474,33 +474,6 @@ export function overlayChecksSpent(): number {
 }
 
 /**
- * Was the last answer a real look, or a budget skip?
- *
- * Read immediately after `cachedClipHasBakedEditText` by the one caller that reports this gate's
- * verdict, so an unchecked clip is recorded as NOT ARMED instead of as a clean one. A counter
- * rather than a changed return type: the boolean means "does this clip carry text", and widening
- * it to a tri-state would touch every call site to answer a question only one of them asks.
- */
-export function overlayBudgetSkipCount(): number {
-  return overlayBudgetSkips;
-}
-
-/**
- * archiveClipHasBakedEditText, memoised on `cacheKey`. Fails OPEN (treats the clip as clean) when
- * the detector errors, so a broken or unconfigured vision path degrades to today's behaviour
- * rather than rejecting every candidate and starving the render.
- */
-export async function cachedClipHasBakedEditText(
-  media: string,
-  mimeType: string,
-  cacheKey: string,
-  maxChecks?: number
-): Promise<boolean> {
-  const result = await cachedClipBakedEditTextVerdict(media, mimeType, cacheKey, maxChecks);
-  return result.verdict === "has_text";
-}
-
-/**
  * The same memo, answering with the verdict instead of collapsing it.
  *
  * Only a REAL verdict is cached. A `not_asked` is deliberately not remembered, for the same reason

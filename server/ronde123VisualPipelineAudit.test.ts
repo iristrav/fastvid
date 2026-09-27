@@ -37,7 +37,6 @@ import {
 } from "./personNameChars";
 import { extractPersonNamesFromText } from "./videoPipeline";
 
-
 const src = (f: string) => fs.readFileSync(path.join(process.cwd(), "server", f), "utf8");
 
 /* ═══════════ 1. the scene that ran out of clock, not of material ═══════════ */
@@ -105,20 +104,6 @@ describe("RONDE 123 — a longer scene gets longer to find its pictures", () => 
 /* ═══════════ 2. the ladder that was switched off ═══════════ */
 
 describe("RONDE 123 — the coverage backfill runs for short videos too", () => {
-
-  it("the rungs above the held frame are all still there, in order", () => {
-    /**
-     * The point of this round is that the last resort stays last. These are RONDE 111/112's
-     * rungs, and a fix that quietly removed one of them would be worse than the bug.
-     */
-    const pipeline = src("videoPipeline.ts");
-    const roundA = pipeline.indexOf("Round A — ask for SHORT holds");
-    const roundA2 = pipeline.indexOf("Round A2: footage of what the shortest beats are ABOUT");
-    const roundB = pipeline.indexOf("Round B — re-use this scene's OWN footage, in motion");
-    expect(roundA).toBeGreaterThan(0);
-    expect(roundA2).toBeGreaterThan(roundA);
-    expect(roundB).toBeGreaterThan(roundA2);
-  });
 
   it("the 2x slow-motion cap and the 1.2s stitch floor are untouched", async () => {
     const { MAX_COVERAGE_SLOWDOWN, MIN_STITCHABLE_SOURCE_SEC, stitchSourceFloorSec } = await import(

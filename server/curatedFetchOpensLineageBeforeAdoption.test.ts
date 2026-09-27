@@ -158,26 +158,13 @@ describe("TEST 6 — the fetch itself is wrapped, not one call site", () => {
     const wrapped = PIPE.split("fetchCuratedArchiveBeatClipWithLineage(").length - 1;
     /** `wrapped` counts the definition plus its call sites; each call site holds one raw call. */
     const callSites = wrapped - 1;
-    expect(raw - callSites, "an unaccounted fetch bypassing the contract layer").toBe(2);
-  });
-
-  /**
-   * The two exceptions, each with the reason written at the call site:
-   *   padShortClipWithNextInner — the fill is concatenated into another clip and never adopted;
-   *                               the output's provenance comes from `linkDerivedPath`.
-   *   generateGuaranteedBeatClipInner — no dedup state in scope, and its tier adopts as
-   *                               `rescue_archive` (RESCUE_REAL), which requires no eligibility.
-   */
-  it.each([
-    ["a fill that is concatenated, not adopted", "NOT wrapped in `fetchCuratedArchiveBeatClipWithLineage`, deliberately."],
-    ["a rescue tier that needs no eligibility", "The tier loop's curated fetch is NOT wrapped"],
-  ])("%s says so at the call site", (_what, marker) => {
-    expect(PIPE).toContain(marker);
+    /** No exception left: `padShortClipWithNext` and the guaranteed ladder were deleted. */
+    expect(raw - callSites, "an unaccounted fetch bypassing the contract layer").toBe(0);
   });
 
   it("every REAL_FUNNEL-reaching fetch site goes through it", () => {
-    /** RONDE 661: 13 — the fourteenth sat in the deleted fast-short compose rescue. */
-    expect(PIPE.split("fetchCuratedArchiveBeatClipWithLineage(").length - 1).toBe(13);
+    /** Three (definition + two calls) — the rest sat in the deleted curated-only, rescue and backfill routes. */
+    expect(PIPE.split("fetchCuratedArchiveBeatClipWithLineage(").length - 1).toBe(3);
   });
 
   it("the wrapper opens the record with the same writer the ranked queue uses", () => {

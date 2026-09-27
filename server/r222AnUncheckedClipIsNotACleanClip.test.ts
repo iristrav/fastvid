@@ -121,11 +121,6 @@ describe("R222 §2 — the verdict function names why nobody looked", () => {
 /* ═══════════ 3. the beat gate is unchanged — nothing was tightened ═══════════ */
 
 describe("R222 §3 — the cascade still fails open", () => {
-  it("THE BOOLEAN THE BEAT GATE USES STILL COLLAPSES not_asked TO false", () => {
-    const at = FILTER.indexOf("export async function cachedClipHasBakedEditText(");
-    const fn = FILTER.slice(at, FILTER.indexOf("export async function cachedClipBakedEditTextVerdict("));
-    expect(fn).toContain(`return result.verdict === "has_text";`);
-  });
 
   it("the standalone boolean does too", () => {
     const at = FILTER.indexOf("export async function archiveClipHasBakedEditText(");

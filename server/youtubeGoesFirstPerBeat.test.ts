@@ -148,9 +148,4 @@ describe("the order on the route the 1-minute Railway profile takes", () => {
     expect(slice).toBeGreaterThan(-1);
     expect(ownArchive).toBeGreaterThan(slice);
   });
-
-  it("the scene-wide retrieval and its TTS prefetch both hang off the switch that is now off", () => {
-    expect(SRC).toContain("if (sceneCandidatePoolEnabled() && !curatedArchiveOnlyVisuals()) {");
-    expect(SRC).toContain("if (!archiveOnly && sceneCandidatePoolEnabled()) {");
-  });
 });

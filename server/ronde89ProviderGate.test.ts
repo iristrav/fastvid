@@ -82,14 +82,6 @@ const provenCtx = () => {
 /* ═══════════ §1/§19 — no search escapes the gate ═══════════ */
 
 describe("RONDE 89 §1/§19 — every provider search passes the gate", () => {
-  it("TEST 1 — each formerly bypassing fetcher now consults the gate", () => {
-    for (const fn of FORMERLY_BYPASSING) {
-      const idx = PIPELINE_SRC.indexOf(`function ${fn}(`);
-      expect(idx, `${fn} not found`).toBeGreaterThan(-1);
-      const body = bodyOf(PIPELINE_SRC, fn);
-      expect(body, `${fn} still reaches a provider without the gate`).toContain("admitProviderQuery(");
-    }
-  });
 
   it("TEST 2 — the gate and the cached search share one enforcement path", () => {
     // Two entry points, one set of rules: a divergence between them is how the last round's gap
@@ -342,7 +334,7 @@ describe("RONDE 89 §17 — the measured cases, through the whole chain", () => 
   it("TEST 20 — the LLM cannot reach a provider with an invented subject at all", () => {
     expect(PLAN_SRC).not.toContain("metaphorical equivalents");
     expect(PLAN_SRC).not.toContain('{ label: "visual-equiv", items: plan.fallback }');
-    expect(PLAN_SRC).toContain("do NOT invent subjects");
+    // The prompt that said "do NOT invent subjects" went with `buildVisualSearchPlan`, which had no caller left.
   });
 });
 

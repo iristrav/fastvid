@@ -238,58 +238,12 @@ describe("R230 §19 — no provider gets an exception", () => {
   });
 
   it("BOTH production admission routes release, and only on a real decline", () => {
-    expect((PIPE.match(/releaseShortlistSlot\(/g) ?? []).length).toBe(2);
-    /** The rescue route: gated on the verdict that means nobody looked. */
-    expect(PIPE).toContain('if (gateVerdict === "NOT_ASKED") {');
+    /** One: the rescue route's release was in `beatClipPassesVisionGate` (only reached from the deleted curated-only `adoptArchiveBeatClip`). */
+    expect((PIPE.match(/releaseShortlistSlot\(/g) ?? []).length).toBe(1);
     /** The adopt route: gated on its existing UNREVIEWED evidence. */
     const adopt = PIPE.indexOf('if (beatEvidence !== "UNREVIEWED") {');
     expect(adopt).toBeGreaterThan(0);
     expect(PIPE.slice(adopt, adopt + 900)).toContain("releaseShortlistSlot(");
-  });
-});
-
-/* ═══════════ §4/§9 — the metric now means what it says ═══════════ */
-
-describe("R230 §9 — visionAsked counts looks, not intentions", () => {
-  it("THE RESCUE ROUTE NO LONGER COUNTS AN ASK BEFORE THE JUDGEMENT", () => {
-    /**
-     * `noteVisionAsked` used to sit on the line above `judgeBeatClipRelevance`. Render 576's
-     * `eligible=53 … unreviewed=45` was that lie: 8 asks recorded, 2 looks taken.
-     */
-    const judge = PIPE.indexOf("const relevance = await judgeBeatClipRelevance(");
-    expect(judge).toBeGreaterThan(0);
-    const before = PIPE.slice(judge - 400, judge);
-    expect(before, "the ask is still recorded before anybody looked").not.toContain(
-      "noteVisionAsked(dedup.beatShortlist, scene.index, beat.index, shortlistKey)"
-    );
-  });
-
-  it("it is recorded after, and only for a verdict that means somebody looked", () => {
-    expect(PIPE).toContain('if (gateVerdict !== "NOT_ASKED") {');
-    const at = PIPE.indexOf('if (gateVerdict !== "NOT_ASKED") {');
-    expect(PIPE.slice(at, at + 260)).toContain("noteVisionAsked(");
-  });
-
-  it("VISION_UNAVAILABLE still counts as an ask — that policy is untouched", () => {
-    expect(PIPE).toContain('? "VISION_UNAVAILABLE"');
-    const at = PIPE.indexOf("const gateVerdict = visionPipelineIsUnavailable()");
-    expect(at).toBeGreaterThan(0);
-  });
-
-  it("the outcome is still recorded for every candidate", () => {
-    /**
-     * P0-7 gave this call a fifth argument — the decline's own cause — so the single-line form it
-     * used to pin no longer exists. What it was pinning does: the ONE reading of the ledger held in
-     * `gateVerdict` is what gets recorded, rather than the outcome being re-derived here.
-     */
-    const at = PIPE.indexOf("noteVisionOutcome(\n    dedup.beatShortlist,");
-    expect(at, "the gate route stopped recording its outcome").toBeGreaterThan(0);
-    const call = PIPE.slice(at, at + 500);
-    expect(call).toContain("scene.index");
-    expect(call).toContain("beat.index");
-    expect(call).toContain("gateVerdict");
-    /** And P0-7's addition: a decline that cannot say why is the defect this now prevents. */
-    expect(call).toContain("beatDeclineReasonFor(");
   });
 });
 

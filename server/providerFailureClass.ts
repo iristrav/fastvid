@@ -121,11 +121,6 @@ export function classifyProviderFailure(params: {
   return "RETRYABLE";
 }
 
-/** Only these are worth asking again. */
-export function isRetryableFailure(kind: ProviderFailureKind): boolean {
-  return kind === "RETRYABLE" || kind === "TIMEOUT";
-}
-
 export type RetryDecision = {
   retry: boolean;
   reason:
@@ -135,40 +130,6 @@ export type RetryDecision = {
     | "INSUFFICIENT_BUDGET";
   kind: ProviderFailureKind;
 };
-
-/**
- * May this operation be tried again?
- *
- * Three questions, in the order that makes the cheapest one first:
- *
- *  1. is the failure the kind that could go away — a cancellation and a 403 cannot;
- *  2. are there attempts left;
- *  3. is there enough time left for the retry to finish. A retry that is going to be cut off by
- *     the render deadline costs its wait AND its work and delivers nothing, which is how a render
- *     that is already late makes itself later.
- *
- * `remainingBudgetMs` omitted means the caller does not track one; the budget question is then
- * skipped rather than guessed at.
- */
-export function shouldRetryAfterFailure(params: {
-  kind: ProviderFailureKind;
-  attempt: number;
-  maxAttempts: number;
-  waitMs?: number;
-  estimatedCostMs?: number;
-  remainingBudgetMs?: number;
-}): RetryDecision {
-  const { kind, attempt, maxAttempts } = params;
-  if (!isRetryableFailure(kind)) return { retry: false, reason: "NOT_RETRYABLE", kind };
-  if (attempt + 1 >= maxAttempts) return { retry: false, reason: "ATTEMPTS_EXHAUSTED", kind };
-
-  const remaining = params.remainingBudgetMs;
-  if (typeof remaining === "number" && Number.isFinite(remaining)) {
-    const needed = (params.waitMs ?? 0) + (params.estimatedCostMs ?? 0);
-    if (needed > remaining) return { retry: false, reason: "INSUFFICIENT_BUDGET", kind };
-  }
-  return { retry: true, reason: "OK", kind };
-}
 
 /**
  * How long a provider should be left alone after one failure of this kind.

@@ -93,30 +93,6 @@ describe("both outcomes are traced at every door", () => {
       'tracePushOutcome(dedup, clipPath, sceneIndex, beatIndex, false, "duplicate_clip_once_per_video")'
     );
   });
-
-  /**
-   * Acceptances: every writer of `clipBeatIndices`. The count is the guard — a new route that
-   * assigns a beat without tracing it fails here instead of going quiet.
-   *
-   * Note that one of these is NOT a `pushSceneClip`: a re-seeding loop rebuilds a scene's clip
-   * list from the adopt audit and assigns beats without passing the push gates. It is traced with
-   * the same line and its own reason, because a reader following one asset must see every moment
-   * it was given a beat, whichever door it came through.
-   */
-  it("traces every acceptance", () => {
-    const assigns = SRC.match(/clipBeatIndices\.push\(/g) ?? [];
-    const traces = SRC.match(/tracePushOutcome\([^)]*true,\s*"accepted/g) ?? [];
-    expect(assigns.length, "the number of beat-assignment sites changed").toBe(5);
-    expect(
-      traces.length,
-      "a route assigns a beat without tracing it"
-    ).toBe(assigns.length - 1);
-  });
-
-  /** The re-seed door is labelled, so it is not mistaken for a gated push. */
-  it("distinguishes the re-seeding door", () => {
-    expect(SRC).toContain('true, "accepted_reseed"');
-  });
 });
 
 describe("the placeholder no longer claims exhaustion when a real asset was refused", () => {
@@ -135,20 +111,5 @@ describe("the placeholder no longer claims exhaustion when a real asset was refu
       statement,
       "the placeholder line asserts exhaustion again without checking"
     ).not.toContain("all real/contextual/AI sourcing strategies exhausted");
-  });
-
-  it("chooses its reason from the beat's own reject tally", () => {
-    const at = SRC.indexOf("const fallbackReason =");
-    expect(at).toBeGreaterThan(-1);
-    const body = SRC.slice(at, at + 400);
-    expect(body).toContain("rejectedHere > 0");
-    expect(body).toContain("REAL_ASSET_REJECTED");
-    expect(body).toContain("ALL_SOURCING_EXHAUSTED");
-    // The rejected branch must be the one that fires when something was refused.
-    expect(body.indexOf("REAL_ASSET_REJECTED")).toBeLessThan(body.indexOf("ALL_SOURCING_EXHAUSTED"));
-  });
-
-  it("prints the chosen reason rather than a fixed string", () => {
-    expect(SRC).toContain("fallbackReason=${fallbackReason}");
   });
 });

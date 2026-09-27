@@ -15,7 +15,7 @@ import {
   isFastShortVideoLength,
   pipelineEmergencyFinishMs,
   pipelineRushModeMs,
-  visualSourcingTurboMs,
+  
 } from "./sourcingPolicy";
 
 // RONDE 8 — the residual defects renders 517/518 proved after RONDE 5-7:
@@ -42,37 +42,7 @@ describe("RONDE 8A — fast-short sourcing ladder widened to 5/7/9 minutes", () 
     expect(isFastShortVideoLength("8-10")).toBe(false);
   });
 
-  it("turbo threshold is 5 minutes on the fast-short path", () => {
-    expect(visualSourcingTurboMs("1")).toBe(5 * 60_000);
-  });
-
-  it("rush mode is 7 minutes on the fast-short path", () => {
-    expect(pipelineRushModeMs("1")).toBe(7 * 60_000);
-  });
-
   it("emergency finish is 9 minutes on the fast-short path", () => {
-    expect(pipelineEmergencyFinishMs("1")).toBe(9 * 60_000);
-  });
-
-  it("ladder order turbo < rush < emergency holds on both paths", () => {
-    for (const len of ["1", "8-10"]) {
-      expect(visualSourcingTurboMs(len)).toBeLessThan(pipelineRushModeMs(len));
-      expect(pipelineRushModeMs(len)).toBeLessThan(pipelineEmergencyFinishMs(len));
-    }
-  });
-
-  it("the long-video rungs are scaled to the long-video budget", () => {
-    // Before RONDE 81 these returned 12s / 3min / 7min — dead code, because all three predicates
-    // in videoPipeline.ts opened with isFastShortVideoLength and never fired for a long video.
-    // RONDE 81 makes the ladder work at every length, which means those values had to become
-    // real: force-exporting a 20-minute render after seven minutes is not a degradation path.
-    // Each rung is now the same fraction of that length's own wall-clock target.
-    expect(pipelineEmergencyFinishMs("8-10")).toBeGreaterThan(7 * 60_000);
-    expect(pipelineRushModeMs("8-10")).toBeGreaterThan(3 * 60_000);
-    expect(visualSourcingTurboMs("8-10")).toBeGreaterThan(12_000);
-    // The fast-short path keeps exactly what RONDE 8 set.
-    expect(visualSourcingTurboMs("1")).toBe(5 * 60_000);
-    expect(pipelineRushModeMs("1")).toBe(7 * 60_000);
     expect(pipelineEmergencyFinishMs("1")).toBe(9 * 60_000);
   });
 });

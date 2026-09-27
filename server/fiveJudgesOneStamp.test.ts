@@ -52,7 +52,8 @@ describe("§1 — the five judges", () => {
      * by making someone look.
      */
     const calls = [...PIPE.matchAll(/(?<!function )judgeBeatClipRelevance\(\s*(?:dedup|relevance\.dedup)/g)];
-    expect(calls.length, "a judge appeared or vanished — check it reaches the stamp").toBe(5);
+    /** Three — `generateGuaranteedBeatClip` and `beatClipPassesVisionGate` were deleted with the routes that used them. */
+    expect(calls.length, "a judge appeared or vanished — check it reaches the stamp").toBe(3);
   });
 
   it("THE STAMP IS INSIDE THE JUDGE, so all five reach it", () => {
@@ -72,17 +73,6 @@ describe("§1 — the five judges", () => {
     expect(stamp).toBeGreaterThan(-1);
     expect(check).toBeGreaterThan(-1);
     expect(stamp, "the stamp records a decision that is made by calling the judge").toBeLessThan(check);
-  });
-
-  it("the vision gate KEEPS its own call — moving it would have narrowed one route", () => {
-    /**
-     * `beatClipPassesVisionGate` stamps before the shortlist admission, and that admission can
-     * return early without ever reaching `judgeBeatClipRelevance`. Both call the one helper;
-     * `markLineageEligible` is idempotent, so the second stamp costs nothing.
-     */
-    const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body).toContain("noteEligibleForJudgement(dedup, clipPath");
   });
 
   it("ONE BODY — no route open-codes the write or the gap line", () => {
@@ -127,11 +117,6 @@ describe("§2 — a placeholder never becomes eligible", () => {
     const guard = body.indexOf("if (!params.placeholder) {");
     const stamp = body.indexOf("noteEligibleForJudgement(dedup, params.clipPath");
     expect(guard, "a card would be stamped eligible").toBeLessThan(stamp);
-  });
-
-  it("which keeps RONDE 606's distinction intact", () => {
-    /** The ladder's card rungs reach the judge with placeholder:true so it declines to look. */
-    expect(PIPE).toContain("placeholder: isPlaceholderGuaranteedTier(tier.tier)");
   });
 });
 

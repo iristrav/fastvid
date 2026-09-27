@@ -69,45 +69,6 @@ describe("the predicate reads the record and claims nothing more", () => {
 /* ═══════════════════ THE SOURCING ENTRIES ═══════════════════ */
 
 describe("nothing is acquired for a slot with no sentence", () => {
-  it("THE BEAT FILL ASKS BEFORE IT HYDRATES, SEARCHES OR FETCHES", () => {
-    const fill = bodyOf(PIPE, "async function fillBeatVisual(");
-    expect(fill, "fillBeatVisual is gone").not.toBe("");
-    expect(
-      fill,
-      "fillBeatVisual's guard is absent or disabled"
-    ).toContain('if (skipSourcingForBeatlessSlot("beat visual fill", scene.index, beat.index)) return false;');
-    const guard = fill.indexOf("skipSourcingForBeatlessSlot");
-    /**
-     * Order is the whole point. Refusing after the archive prefetch, the geo lock or a provider
-     * call is what already happened in production.
-     */
-    for (const later of [
-      "hydrateSceneBeatInPlace",
-      "archivePrefetch",
-      "searchCuratedCandidatesForBeat",
-    ]) {
-      const at = fill.indexOf(later);
-      if (at > 0) {
-        expect(guard, `the guard runs after ${later}`).toBeLessThan(at);
-      }
-    }
-  });
-
-  it("AND THE ROUTE WITH ITS OWN FALLBACK LADDER ASKS TOO", () => {
-    /**
-     * `ensureBeatVisualFilled` calls `fillBeatVisual` and then has stock, rescue and guaranteed
-     * rungs of its own. Guarding only the inner call would stop one rung and pay for the rest.
-     */
-    const ensure = bodyOf(PIPE, "async function ensureBeatVisualFilled(");
-    expect(ensure, "ensureBeatVisualFilled is gone").not.toBe("");
-    expect(
-      ensure,
-      "ensureBeatVisualFilled's guard is absent or disabled"
-    ).toContain('if (skipSourcingForBeatlessSlot("beat visual fill", scene.index, beat.index)) return;');
-    const guard = ensure.indexOf("skipSourcingForBeatlessSlot");
-    const firstFetch = ensure.indexOf("adoptStockBeatClipFallback");
-    if (firstFetch > 0) expect(guard).toBeLessThan(firstFetch);
-  });
 
   it("THE YOUTUBE TURN IS REFUSED BEFORE THE SEARCH, not after the download", () => {
     const turn = PIPE.slice(
@@ -129,12 +90,6 @@ describe("nothing is acquired for a slot with no sentence", () => {
     /** It is asked before the query check and before any budget is spent. */
     const search = turn.indexOf("tryBeatRealYouTubeFootage");
     if (search > 0) expect(guard).toBeLessThan(search);
-  });
-
-  it("and the refusal is LOGGED, never silent", () => {
-    const skip = bodyOf(PIPE, "function skipSourcingForBeatlessSlot(");
-    expect(skip).toContain("console.warn");
-    expect(skip).toContain("slot_without_beat");
   });
 });
 

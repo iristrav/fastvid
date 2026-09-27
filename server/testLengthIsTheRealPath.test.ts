@@ -46,7 +46,7 @@ import {
   fastShortPlainComposeEnabled,
   isFastShortVideoLength,
   maxVisualCandidatesPerBeatTry,
-  polishBeforeComposeEnabled,
+  
 } from "./sourcingPolicy";
 import { postRenderSpotCheckEnabledForVideo } from "./postRenderSpotCheck";
 
@@ -80,10 +80,6 @@ describe("one minute takes the same path as ten", () => {
 
   it("gets a minimum moving-footage target, like every other length", () => {
     expect(archiveMinVideoClipsTarget("1")).toBeGreaterThan(0);
-  });
-
-  it("gets the weak-beat polish", () => {
-    expect(polishBeforeComposeEnabled("1")).toBe(polishBeforeComposeEnabled("8-10"));
   });
 });
 

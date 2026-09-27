@@ -80,66 +80,9 @@ describe("RONDE 154 — the collision that produced a 19.38s still", () => {
 });
 
 describe("RONDE 154 — the pipeline uses the counter", () => {
-  it("there is one counter, and it is module-scoped", () => {
-    expect(PIPE).toContain("let colorFallbackSequence = 0;");
-    expect((PIPE.match(/let colorFallbackSequence = 0;/g) ?? []).length).toBe(1);
-  });
-
-  it("both card sites draw from it", () => {
-    // The text-over-gradient card and the plain colour card.
-    expect((PIPE.match(/colorFallbackSequence\+\+/g) ?? []).length).toBeGreaterThanOrEqual(2);
-  });
 
   it("no card site keys its colour on sceneIndex alone any more", () => {
     // That was the bug: every placeholder beat in one scene got the identical colour.
     expect(PIPE).not.toContain("colors[Math.abs(sceneIndex) % colors.length]");
-  });
-
-  it("the sequence is drawn once per card, not once per internal retry", () => {
-    /**
-     * generateColorFallback delegates to _generateColorFallbackInner, which tries several encoder
-     * commands in turn. Drawing inside the retry loop would advance the counter per attempt and,
-     * worse, make the logged colour disagree with the encoded one.
-     */
-    expect(PIPE).toContain("const variant = variantIndex ?? colorFallbackSequence++;");
-    expect(PIPE).toContain("_generateColorFallbackInner(sceneIndex, safeDuration, out, workDir, variant);");
-  });
-
-  it("an explicit variant still wins, so a caller can pin a colour", () => {
-    expect(PIPE).toContain("variantIndex ?? colorFallbackSequence++");
-  });
-});
-
-describe("RONDE 154 — nothing about what a card IS has changed", () => {
-  it("a card is still a placeholder in the audit", () => {
-    // The colour is cosmetic; the accounting is what tells the truth about coverage.
-    expect(PIPE).toContain("isPlaceholderGuaranteedTier(tierOut.tier) ? \"rescue_placeholder\"");
-  });
-
-  it("no fake camera move was added — the card is a source, not a pan", () => {
-    /**
-     * SUPERSEDED IN PART BY RONDE 155, on the owner's explicit instruction.
-     *
-     * This round argued the card should stay a flat colour, because animating it would turn the
-     * stillness audit green while showing the viewer the same absence of footage. The owner heard
-     * that argument and overruled it: a frozen picture is unacceptable regardless of cause. R155
-     * therefore replaced the flat `color=` source with an animated `gradients` one, measured at
-     * longestStill 0.00s in 8 runs of 8.
-     *
-     * The concern behind this test was never really "flat vs moving" — it was that the accounting
-     * must not improve when only the appearance does. That half is still asserted, here and above:
-     * the clip is still adopted as rescue_placeholder, still in fallbackRatio, still penalised.
-     *
-     * What remains asserted below is the narrower rule that survives: the motion comes from the
-     * SOURCE, not from a zoom or pan faked over a still. A zoompan here would be the pipeline
-     * pretending to have a camera it does not have.
-     */
-    const idx = PIPE.indexOf("async function _generateColorFallbackInner");
-    const body = PIPE.slice(idx, idx + 4200);
-    expect(body).toContain("gradients=");
-    expect(body).not.toContain("zoompan");
-    expect(body).not.toContain("geq=");
-    // The flat-colour ladder is still there for a box that cannot run the gradient source.
-    expect(body).toContain('color=c=#${color}');
   });
 });

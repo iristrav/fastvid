@@ -261,13 +261,13 @@ describe("R227 §4 — read where it matters, not only in the report", () => {
     expect(
       PIPE,
       "beatShortlistViolations still has one reader, past the throw"
-    ).toContain("for (const line of beatShortlistViolations(dedup.beatShortlist)) console.error(line);");
+    ).toContain("for (const line of beatShortlistViolations(visualDedup.beatShortlist)) console.error(line);");
   });
 
   it("BEFORE the throw, and after the funnel it qualifies", () => {
-    const funnel = PIPE.indexOf("formatBeatShortlists(dedup.beatShortlist)");
-    const inv = PIPE.indexOf("beatShortlistViolations(dedup.beatShortlist)");
-    const thrown = PIPE.indexOf("voice/script-matchende clips — export geblokkeerd");
+    const funnel = PIPE.indexOf("formatBeatShortlists(visualDedup.beatShortlist)");
+    const inv = PIPE.indexOf("beatShortlistViolations(visualDedup.beatShortlist)");
+    const thrown = PIPE.indexOf("no picture was found for any of its beats — export geblokkeerd");
     expect(inv).toBeGreaterThan(funnel);
     expect(inv, "the invariants print after the render has thrown").toBeLessThan(thrown);
   });
@@ -289,12 +289,13 @@ describe("R227 §4 — read where it matters, not only in the report", () => {
   });
 
   it("BOTH refusal lines carry rankRuns — adopt and rescue alike", () => {
-    expect((PIPE.match(/rankRuns=\$\{admission\.rankRuns \?\? 0\}/g) ?? []).length).toBe(2);
+    /** One — the rescue route's refusal line went with `beatClipPassesVisionGate`. */
+    expect((PIPE.match(/rankRuns=\$\{admission\.rankRuns \?\? 0\}/g) ?? []).length).toBe(1);
   });
 
   it("NOTHING WAS DECIDED — the scene gate still only reports", () => {
-    const at = PIPE.indexOf("const why = formatNoVerdictReasons(dedup.beatImageGate);");
-    const block = PIPE.slice(at, PIPE.indexOf("if (!curatedArchiveOnlyVisuals()) {", at));
+    const at = PIPE.indexOf("const why = formatNoVerdictReasons(visualDedup.beatImageGate);");
+    const block = PIPE.slice(at, PIPE.indexOf("throw pipelineError(", at));
     expect(block).not.toContain("continue;");
     expect(block).not.toContain("admitToShortlist");
     expect(block).not.toContain("noteAskImpossible");

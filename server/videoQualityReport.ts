@@ -428,19 +428,6 @@ const STATUS_CEILING: Record<QualityStatus, number> = {
 };
 
 /**
- * The highest number a render with this verification status may carry — the one definition.
- *
- * Exported because the export-availability policy in `./pipelineSelfHeal` RAISES scores, and it
- * was raising them past this ceiling: a render whose beats nobody approved was stored as 85/100
- * because all of its clips came from one archive. A ceiling that only the measured path honours
- * is not a ceiling. `status` defaults to the strictest reading, so a caller with nothing to say
- * cannot buy headroom by saying nothing.
- */
-export function qualityStatusCeiling(status?: QualityStatus | null): number {
-  return STATUS_CEILING[status ?? "INSUFFICIENT_VERIFICATION"] ?? STATUS_CEILING.INSUFFICIENT_VERIFICATION;
-}
-
-/**
  * Merit-based score from what the content decider actually verified, plus the sourcing mix.
  *
  * ── What changed in RONDE 105, and why ───────────────────────────────────────────────────────

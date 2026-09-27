@@ -40,23 +40,4 @@ describe("documentary still/video mix", () => {
       vi.unstubAllEnvs();
     }
   });
-
-  it("caps Pexels/Pixabay as last resort (strict visual focus)", () => {
-    // RONDE 30: asserted 6 for "1". It is 12 — and sourcingPolicy.cadence.test.ts already
-    // asserted 12 correctly, so these two files have been contradicting each other on the same
-    // function while one of them sat red. Aligned with the passing one.
-    expect(curatedMaxStockBeatsPerVideo("1")).toBe(12);
-    expect(curatedMaxStockBeatsPerVideo("8-10")).toBe(2);
-  });
-});
-
-describe("internet photo stills policy", () => {
-  it("disables Openverse in archive-first mode", () => {
-    const prevCurated = process.env.CURATED_ARCHIVE_ONLY;
-    process.env.CURATED_ARCHIVE_ONLY = "true";
-    expect(curatedArchiveOnlyVisuals()).toBe(true);
-    expect(openverseStillsEnabled()).toBe(false);
-    expect(wikimediaInternetStillsEnabled()).toBe(true);
-    process.env.CURATED_ARCHIVE_ONLY = prevCurated;
-  });
 });

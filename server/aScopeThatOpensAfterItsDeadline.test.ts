@@ -218,15 +218,6 @@ describe("R263 §4 — one rule, not one call site", () => {
     expect(fn).toContain("return Promise.reject(scopeExpiredError(label, overrunMs));");
   });
 
-  it("and the rescue ladder — where it was observed — was not special-cased", () => {
-    const at = CODE.indexOf("historicalRescueBudgetMs(dedup)");
-    expect(at).toBeGreaterThan(-1);
-    const around = CODE.slice(Math.max(0, at - 900), at + 300);
-    expect(around, "a local guard would leave the other call sites exposed").not.toContain(
-      "SCOPE_EXPIRED"
-    );
-  });
-
   it("a negative window can no longer reach the reserve arithmetic at all", () => {
     const fn = CODE.slice(
       CODE.indexOf("export function withSceneFetchTimeout<T>("),

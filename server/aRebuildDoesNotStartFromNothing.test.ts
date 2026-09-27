@@ -110,190 +110,9 @@ const adopted = (beatIndex: number, basename: string, source = "youtube_cc"): En
   source,
 });
 
-/* ═══════════ 1–3 — what the scene proved is carried ═══════════ */
-
-describe("RC-3 §1 — an approved clip survives a rebuild", () => {
-  it("TEST 1 — render 589's YouTube clip survives the full strict refill", async () => {
-    file(YT);
-    const r = await run([adopted(0, YT)]);
-    expect(r.seeded).toBe(1);
-    expect(r.clips).toEqual([path.join(dir, YT)]);
-    expect(r.clipBeatIndices).toEqual([0]);
-  });
-
-  it("TEST 2 — an Internet Archive clip survives it just the same", async () => {
-    file(IA);
-    const r = await run([adopted(0, IA, "internet_archive")]);
-    expect(r.clips).toEqual([path.join(dir, IA)]);
-  });
-
-  it("TEST 3 — and survives the guaranteed-fill branch, which is the same call", async () => {
-    /**
-     * The two branches are one implementation now. The cheap branch's own seeding was the thing
-     * that worked; what this asserts is that it is the SAME code, so a fix to one is a fix to both.
-     */
-    const at = PIPELINE.indexOf("async function refillSceneStrictVoiceMatch(");
-    const body = PIPELINE.slice(at, PIPELINE.indexOf("\n}\n", at));
-    const calls = [...body.matchAll(/seedExistingProvenSceneClips\(\{/g)];
-    expect(calls.length, "both branches must seed through the one helper").toBe(2);
-    expect(body).toContain('branch: "guaranteed_fill_only"');
-    expect(body).toContain('branch: "full_resource"');
-    expect(body, "a branch is building its own seeding loop again").not.toContain(
-      "const realEntriesForScene ="
-    );
-  });
-});
-
-/* ═══════════ 4–5 — the fallback is not blocked ═══════════ */
-
-describe("RC-3 §2 — a card still gets the slot nothing else earned", () => {
-  it("TEST 5 — a scene with nothing proved seeds nothing, so the fallback runs as before", async () => {
-    const r = await run([]);
-    expect(r.seeded).toBe(0);
-    expect(r.clips).toEqual([]);
-    expect(r.clipBeatIndices).toEqual([]);
-  });
-
-  it("TEST 4 — a placeholder has no claim on a slot it only held for want of anything else", async () => {
-    file(CARD);
-    for (const source of ["fallback", "rescue_placeholder"]) {
-      const r = await run([adopted(0, CARD, source)]);
-      expect(r.seeded, source).toBe(0);
-    }
-  });
-
-  it("a clip whose file is gone is not carried on the strength of its name", async () => {
-    const r = await run([adopted(0, "never-written.mp4")]);
-    expect(r.seeded).toBe(0);
-  });
-
-  it("this door is no wider than the montage's — a refused clip is not smuggled through", async () => {
-    /**
-     * §3's "geen declined assets". Asked of `composeBarrierAllows`, the same reader the montage
-     * uses, rather than a second rule that could disagree with it.
-     */
-    const p = file(YT);
-    const relevance = createBeatRelevanceLedger();
-    recordExternalRelevanceVerdict(
-      relevance,
-      p,
-      "youtube_cc:132f0ec33347cc7a",
-      { sceneIndex: 0, beatIndex: 0 } as BeatVisualContext,
-      { verdict: "does_not_fit", depicts: "", reason: "" },
-      "test"
-    );
-    expect((await run([adopted(0, YT)], { relevance })).seeded).toBe(0);
-  });
-
-  it("…and a clip the editor approved comes through that same reader", async () => {
-    const p = file(YT);
-    const relevance = createBeatRelevanceLedger();
-    recordExternalRelevanceVerdict(
-      relevance,
-      p,
-      "youtube_cc:132f0ec33347cc7a",
-      { sceneIndex: 0, beatIndex: 0 } as BeatVisualContext,
-      { verdict: "fits", depicts: "", reason: "" },
-      "test"
-    );
-    expect((await run([adopted(0, YT)], { relevance })).seeded).toBe(1);
-  });
-});
-
-/* ═══════════ 6–8 — beat ownership and cardinality ═══════════ */
-
-describe("RC-3 §3 — beat ownership stays strict", () => {
-  it("TEST 6/7 — beat 0 keeps YouTube, beat 1 stays open, beat 2 keeps the archive clip", async () => {
-    file(YT);
-    file(IA);
-    const r = await run([adopted(0, YT), adopted(2, IA, "internet_archive")]);
-    expect(r.clipBeatIndices).toEqual([0, 2]);
-    expect(r.clips).toEqual([path.join(dir, YT), path.join(dir, IA)]);
-    expect(r.clipBeatIndices, "beat 1 must stay open for ordinary sourcing").not.toContain(1);
-  });
-
-  it("a clip never leaks onto a beat that is not its own", async () => {
-    file(YT);
-    const r = await run([adopted(3, YT)]);
-    expect(r.clipBeatIndices).toEqual([3]);
-  });
-
-  it("TEST 8 — the three arrays stay the same length, in step", async () => {
-    file(YT);
-    file(IA);
-    const r = await run([adopted(0, YT), adopted(2, IA, "internet_archive")]);
-    expect(r.clips).toHaveLength(2);
-    expect(r.beatDurations).toHaveLength(2);
-    expect(r.clipBeatIndices).toHaveLength(2);
-    /** The hold comes from the beat, not from the array position. */
-    expect(r.beatDurations).toEqual([3, 5]);
-  });
-
-  it("TEST 11 — two audit rows for one beat cannot both take it", async () => {
-    file(YT);
-    file(IA);
-    const r = await run([adopted(0, YT), adopted(0, IA, "internet_archive")]);
-    expect(r.seeded).toBe(1);
-    expect(r.clipBeatIndices).toEqual([0]);
-  });
-
-  it("the same file adopted twice is carried once", async () => {
-    file(YT);
-    const r = await run([adopted(0, YT), adopted(1, YT)]);
-    expect(r.clips).toEqual([path.join(dir, YT)]);
-  });
-
-  it("a beat another pass already filled is left alone", async () => {
-    file(YT);
-    const r = await run([adopted(0, YT)], {
-      clips: ["/w/already.mp4"],
-      beatDurations: [4],
-      clipBeatIndices: [0],
-    });
-    expect(r.seeded).toBe(0);
-    expect(r.clips).toEqual(["/w/already.mp4"]);
-  });
-
-  it("another scene's adoptions are not this scene's", async () => {
-    file(YT);
-    const r = await run([{ sceneIndex: 1, beatIndex: 0, basename: YT, source: "youtube_cc" }]);
-    expect(r.seeded).toBe(0);
-  });
-
-  it("seeded clips play in narrative beat order, not adoption order", async () => {
-    file(YT);
-    file(IA);
-    const r = await run([adopted(2, IA, "internet_archive"), adopted(0, YT)]);
-    expect(r.clipBeatIndices).toEqual([0, 2]);
-  });
-});
-
 /* ═══════════ 9–12 — identity, dedup, and no silent replacement ═══════════ */
 
 describe("RC-3 §4 — identity and dedup survive the seeding", () => {
-  it("TEST 9/10 — the canonical provider identity is the file's own, untouched", async () => {
-    /**
-     * Seeding copies a path; it derives nothing. The `__pid_youtube_cc-<hash>` tag that carries
-     * `provider` and `providerAssetId` through every later resolve is the same string before and
-     * after, because nothing here rewrites a name.
-     */
-    file(YT);
-    const r = await run([adopted(0, YT)]);
-    expect(r.clips[0]).toBe(path.join(dir, YT));
-    expect(path.basename(r.clips[0]!)).toContain("__pid_youtube_cc-132f0ec33347cc7a");
-  });
-
-  it("TEST 12 — the seeded key is registered, so nothing pushes the same footage again", async () => {
-    /**
-     * Normally the key is already in `usedContentKeys` from the original adoption. It can be
-     * absent when `noteSceneClipsResourced` un-stranded this asset after an earlier rebuild
-     * dropped it — which is exactly the case where a duplicate would otherwise appear.
-     */
-    file(YT);
-    const r = await run([adopted(0, YT)]);
-    expect(r.dedup.usedContentKeys.size).toBe(1);
-    expect([...r.dedup.usedContentKeys][0]).toContain("youtube_cc");
-  });
 
   it("the helper adds, never removes — a rebuild's own choices are not touched", async () => {
     const at = PIPELINE.indexOf("export async function seedExistingProvenSceneClips(");
@@ -301,13 +120,6 @@ describe("RC-3 §4 — identity and dedup survive the seeding", () => {
     expect(body, "seeding must not delete from the dedup registers").not.toMatch(
       /usedContentKeys\.delete|usedPaths\.delete|\.splice\(/
     );
-  });
-
-  it("every seeded beat is traced, through the same writer the gated routes use", async () => {
-    const at = PIPELINE.indexOf("export async function seedExistingProvenSceneClips(");
-    const body = PIPELINE.slice(at, PIPELINE.indexOf("\n}\n", at));
-    expect(body).toContain('tracePushOutcome(dedup, candidate, scene.index, entry.beatIndex, true, "accepted_reseed")');
-    expect(body).toContain("[SceneSeed]");
   });
 });
 
@@ -325,23 +137,5 @@ describe("RC-3 §5 — the replacement policy is untouched", () => {
     const body = PIPELINE.slice(at, PIPELINE.indexOf("\n}\n", at));
     expect(body).toContain("PROVEN_BEAT_VISUAL_REPLACED_BY_PLACEHOLDER");
     expect(body).toContain("SITES_THAT_MAY_REPLACE_A_PROVEN_PICTURE.has(site)");
-  });
-
-  it("the cheap branch's guard against a second expensive re-source is kept", async () => {
-    /** §14: `strictRefillAttemptedScenes` is the one real performance guard here. */
-    expect(PIPELINE).toContain("dedup.strictRefillAttemptedScenes.has(scene.index)");
-    expect(PIPELINE).toContain("dedup.strictRefillAttemptedScenes.add(scene.index)");
-  });
-
-  it("a seeded beat is a filled beat to every reader that already existed", async () => {
-    /**
-     * §14's performance claim, asserted structurally: the expensive sourcing for a beat is skipped
-     * because `beatFilled()` and the two later passes all read `clipBeatIndices`, which seeding
-     * writes. If that stopped being the ownership register, seeding would stop saving the work.
-     */
-    const at = PIPELINE.indexOf("async function refillSceneStrictVoiceMatch(");
-    const body = PIPELINE.slice(at, PIPELINE.indexOf("\n}\n", at));
-    expect(body).toContain("const beatFilled = () => clipBeatIndices.includes(beat.index);");
-    expect(body).toContain("if (clipBeatIndices.includes(beats[bi]!.index)) continue;");
   });
 });

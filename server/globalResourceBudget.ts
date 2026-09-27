@@ -87,11 +87,6 @@ export function withGlobalMediaFetch<T>(fn: () => Promise<T>): Promise<T> {
   return mediaFetchLimit(fn);
 }
 
-/** Queues a vision-gate evaluation behind the process-wide judgement budget. */
-export function withGlobalVisionGate<T>(fn: () => Promise<T>): Promise<T> {
-  return visionGateLimit(fn);
-}
-
 /** Runs a whole render inside a global render slot, waiting when the process is already full. */
 export function withRenderSlot<T>(fn: () => Promise<T>): Promise<T> {
   return renderSlots(fn);

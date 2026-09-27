@@ -291,16 +291,6 @@ describe("RONDE 96 §8 — every downloading provider is lineage-capable", () =>
     expect(PIPELINE_SRC).not.toMatch(/searchRoute: "provider_search"/);
   });
 
-  it("TEST 31b — AI-generated clips are the one documented exemption", () => {
-    // fetchBeatAIClip does not search a provider; it asks an image model for a picture that has
-    // never existed. There is no provider asset id to keep and no search route to record, so it
-    // writes its file plainly and arrives through clipAdoptAudit as UNVERIFIED — which is the
-    // correct answer for an asset with no external origin, not a gap.
-    const body = bodyOf("fetchBeatAIClip");
-    expect(body).not.toContain("tagPathWithProviderAsset(");
-    expect(body).toMatch(/generateAI|leonardo|Leonardo|aiImage|imagePrompt/i);
-  });
-
   it("TEST 32 — the curated archive is exempt, and says why", () => {
     // Curated assets come from the database, not from a search, so there is no route to record.
     // RONDE 170 split the body out so the funnel, which holds only a ledger, can call it too, and

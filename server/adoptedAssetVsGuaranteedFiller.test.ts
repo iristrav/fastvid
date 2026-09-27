@@ -135,29 +135,6 @@ describe("an adopted asset refused at the push is not a silent disappearance", (
 /* ═══════════════ the traced chain stays wired ═══════════════ */
 
 describe("the guaranteed filler is still reached the way this audit traced it", () => {
-  /** If this naming changes, the trace above stops matching the file it explains. */
-  it("names the filler from scene and slot", () => {
-    expect(SRC).toContain("`scene_${sceneIndex}_slot${slotIndex}_guaranteed.mp4`");
-  });
-
-  /** slot 100 = beat 0, attempt 1 — the arithmetic that identified the call site. */
-  it("derives the slot from the beat and the attempt", () => {
-    expect(SRC).toContain("beat.index + attempt * 100");
-  });
-
-  /** The emptiness test is membership of clipBeatIndices, never a count or an index. */
-  it("decides emptiness from clipBeatIndices membership", () => {
-    expect(SRC).toContain("if (!clipBeatIndices.includes(beat.index))");
-  });
-
-  /** And that array is only ever appended where a clip is accepted. */
-  it("fills clipBeatIndices only on acceptance", () => {
-    const pushes = SRC.match(/clipBeatIndices\.push\(/g) ?? [];
-    expect(pushes.length).toBeGreaterThanOrEqual(4);
-    // No route may empty it behind the beat loop's back.
-    expect(SRC).not.toContain("clipBeatIndices.splice(");
-    expect(SRC).not.toContain("clipBeatIndices.length = 0");
-  });
 
   /** Both push refusals feed the tally the placeholder line reads. */
   it("both refusals record on the beat tally", () => {

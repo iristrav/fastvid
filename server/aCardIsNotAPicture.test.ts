@@ -38,7 +38,7 @@ import {
   lineageRouteIsPlaceholder,
   tierIsPlaceholder,
 } from "./placeholderIdentity";
-import { isPipelineFallbackClip, isPlaceholderGuaranteedTier } from "./videoPipeline";
+import { isPipelineFallbackClip,  } from "./videoPipeline";
 import { isFillerAdoptSource, adoptRouteForSource } from "./clipAdoptAudit";
 
 const read = (f: string) => readFileSync(join(__dirname, f), "utf8");
@@ -51,14 +51,6 @@ const FALLBACK_FILE = "scene_0_fallback.mp4";
 /* ═══════════ §1 — the ladder's filenames are still what this round measured ═══════════ */
 
 describe("§1 — the names this pipeline writes", () => {
-  it("every rung of the guaranteed ladder still writes ONE name", () => {
-    /**
-     * The whole argument rests on this. If the ladder ever writes a per-tier name, the filename
-     * becomes answerable and this module's warnings should be revisited rather than trusted.
-     */
-    expect(PIPELINE).toContain("`scene_${sceneIndex}_slot${slotIndex}_guaranteed.mp4`");
-    expect(PIPELINE).toContain("`scene_${sceneIndex}_fallback.mp4`");
-  });
 
   it("and the ladder still has four rungs, two of which fetch real media", () => {
     expect(PIPELINE).toContain(
@@ -68,11 +60,6 @@ describe("§1 — the names this pipeline writes", () => {
     expect(tierIsPlaceholder("wikimedia")).toBe(false);
     expect(tierIsPlaceholder("text_overlay")).toBe(true);
     expect(tierIsPlaceholder("color_fallback")).toBe(true);
-  });
-
-  it("an unnamed tier counts as a card — the safe direction, unchanged", () => {
-    expect(tierIsPlaceholder(undefined)).toBe(true);
-    expect(isPlaceholderGuaranteedTier(undefined)).toBe(true);
   });
 });
 
@@ -270,21 +257,6 @@ describe("§6 — adopt sources", () => {
   it("the two labels the pipeline writes are placeholders", () => {
     expect(adoptSourceIsPlaceholder("rescue_placeholder")).toBe(true);
     expect(adoptSourceIsPlaceholder("fallback")).toBe(true);
-  });
-
-  it("the two legacy labels are carried, and no writer emits them", () => {
-    /**
-     * `guaranteed` and `color_fallback` are listed by three consumers. Including them costs
-     * nothing because the ladder records `rescue_placeholder` or `fallback` — so this set is the
-     * same set in production, and a future writer using an old label is caught rather than missed.
-     */
-    expect([...PLACEHOLDER_ADOPT_SOURCES].sort()).toEqual([
-      "color_fallback",
-      "fallback",
-      "guaranteed",
-      "rescue_placeholder",
-    ]);
-    expect(PIPELINE).toContain('? "rescue_placeholder"');
   });
 
   it("real rescue footage is NOT a placeholder source", () => {

@@ -4,7 +4,6 @@ import {
   computeMeritQualityScore,
   inferClipSourceFromPath,
 } from "./videoQualityReport";
-import { wikimediaV1AdoptionThreshold, wikimediaMetadataPassesBeatGate } from "./visualMatchingEngine";
 
 describe("inferClipSourceFromPath", () => {
   it("classifies wikimedia v1 stills", () => {
@@ -227,33 +226,5 @@ describe("buildVideoQualityReport", () => {
       }
     );
     expect(report.criticalGeoViolations).toBeUndefined();
-  });
-});
-
-describe("wikimediaV1AdoptionThreshold", () => {
-  it("uses one universal default for all topics", () => {
-    expect(
-      wikimediaV1AdoptionThreshold("Dutch cities vs American suburbs", "Amsterdam canal district")
-    ).toBe(55);
-    // RONDE 30: was 70. The universal default is 55 now (see visualMatchingEngine.ts). What the
-    // case is really about is that the threshold does not vary by topic — asserted directly.
-    expect(wikimediaV1AdoptionThreshold("The sinking of the Titanic", "RMS Titanic departure")).toBe(55);
-  });
-
-  it("rejects ford dealer metadata unless beat allows", () => {
-    expect(
-      wikimediaMetadataPassesBeatGate(
-        "Ford dealer showroom classic car lot",
-        "Netherlands vs United States cities",
-        "American car culture and dealers"
-      )
-    ).toBe(true);
-    expect(
-      wikimediaMetadataPassesBeatGate(
-        "Ford dealer showroom classic car lot",
-        "Netherlands vs United States cities",
-        "Dutch cycling infrastructure"
-      )
-    ).toBe(false);
   });
 });

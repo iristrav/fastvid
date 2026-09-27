@@ -233,7 +233,6 @@ describe("the intent is reportable", () => {
   });
 });
 
-
 /* ═══════════════ RONDE 97 §1 — the intent reaches QUERY GENERATION too ═══════════════ */
 
 describe("the planner's half of the intent reaches query generation", () => {
@@ -301,56 +300,5 @@ describe("the planner's half of the intent reaches query generation", () => {
     const plain = buildPrioritisedQueries(ctx()).map((q) => q.query);
     const cutaway = buildPrioritisedQueries(ctx(), { preferredShot: "cutaway" }).map((q) => q.query);
     expect(cutaway).toEqual(plain);
-  });
-
-  it("the beat's own query entry point passes the intent", () => {
-    const at = PIPE.indexOf("function typedRetrievalQueriesForBeat(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body).toContain("beatVisualIntent(dedup.beatIntent, scene.index, beat.index)");
-    expect(body).toContain("intent: beatIntent");
-    expect(body).toContain("formatQueryProvenance(");
-  });
-});
-
-/* ═══════════════ query provenance ═══════════════ */
-
-describe("every query can say why it exists", () => {
-  const intent = () =>
-    buildBeatVisualIntent({
-      sceneIndex: 2,
-      beatIndex: 1,
-      ctx: buildVerifiedQueryContextForBeat(beatText, { sceneText: beatText }),
-      contract,
-    });
-
-  it("carries every field the brief names", () => {
-    const p = queryProvenance(intent(), "Führerbunker Berlin 1945", "internet_archive");
-    for (const field of [
-      "sceneIndex", "beatIndex", "subject", "event", "place",
-      "period", "action", "shotIntent", "query", "provider",
-    ] as const) {
-      expect(p, `${field} is missing from the query provenance`).toHaveProperty(field);
-    }
-    expect(p.sceneIndex).toBe(2);
-    expect(p.beatIndex).toBe(1);
-    expect(p.subject).toBe("Führerbunker");
-    expect(p.shotIntent).toBe("archive_footage");
-    expect(p.provider).toBe("internet_archive");
-  });
-
-  it("prints one readable line", () => {
-    const line = formatQueryProvenance(queryProvenance(intent(), "Berlin 1945", "wikimedia"));
-    expect(line.startsWith("[QueryProvenance] s2b1")).toBe(true);
-    expect(line).toContain('query="Berlin 1945"');
-    expect(line).toContain("provider=wikimedia");
-    expect(line).toContain("subject=Führerbunker");
-  });
-
-  /** Nothing is re-extracted, so this can never disagree with the ranking about what was wanted. */
-  it("says so honestly when there is no intent to report", () => {
-    const p = queryProvenance(null, "anything", "");
-    expect(p.sceneIndex).toBe(-1);
-    expect(p.subject).toBe("");
-    expect(p.provider).toBe("unknown");
   });
 });

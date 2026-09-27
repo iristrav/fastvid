@@ -420,7 +420,8 @@ describe("P0-7 §6 — the cause reaches the place the record is written", () =>
         return from.slice(0, from.indexOf(");"));
       })(),
     }));
-    expect(sites.length, "a vision-outcome call site appeared or disappeared").toBe(3);
+    /** Two: the third was in `beatClipPassesVisionGate` (only reached from the deleted curated-only `adoptArchiveBeatClip`). */
+    expect(sites.length, "a vision-outcome call site appeared or disappeared").toBe(2);
     /**
      * A site that hardcodes an outcome which is not NOT_ASKED can never record a decline, so it
      * has nothing to attribute. Exactly one does — the requeue-after-refusal branch, which passes
@@ -431,7 +432,7 @@ describe("P0-7 §6 — the cause reaches the place the record is written", () =>
     );
     expect(cannotDecline.length).toBe(1);
     const canDecline = sites.filter((s) => !cannotDecline.includes(s));
-    expect(canDecline.length, "no call site records a decline any more").toBe(2);
+    expect(canDecline.length, "no call site records a decline any more").toBe(1);
     for (const { at, args } of canDecline) {
       expect(
         args,

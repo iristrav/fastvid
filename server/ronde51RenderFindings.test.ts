@@ -173,60 +173,6 @@ describe("RONDE 51 #2 — the pool path records its adoptions at all", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. Every rescue slot searched the same sentence
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("RONDE 51 #4 — a rescue slot searches its own sentence", () => {
-  const SCENE =
-    "In a surreal scene amidst Berlin's collapse, Adolf Hitler and Eva Braun married. " +
-    "But why tie the knot when defeat loomed large? Their union raised questions. " +
-    "Inside the confines of the Führerbunker in Berlin, Adolf Hitler wrote his will. " +
-    "A fate worse than death looms, compelling his irreversible decision. " +
-    "Witness the culmination of their choice in the bunker.";
-
-  it("consecutive slots get different text", async () => {
-    const { sceneSentenceForSlot } = await import("./videoPipeline");
-    // Six sentences — the question mark is a boundary too.
-    const picked = [0, 1, 2, 3, 4, 5].map((i) => sceneSentenceForSlot(SCENE, i));
-    expect(new Set(picked).size).toBe(6);
-    expect(picked[0]).toContain("surreal scene");
-    expect(picked[3]).toContain("Führerbunker");
-  });
-
-  it("rotates rather than running out", async () => {
-    const { sceneSentenceForSlot } = await import("./videoPipeline");
-    expect(sceneSentenceForSlot(SCENE, 6)).toBe(sceneSentenceForSlot(SCENE, 0));
-    expect(sceneSentenceForSlot(SCENE, 14)).toBe(sceneSentenceForSlot(SCENE, 2));
-  });
-
-  it("falls back to the old behaviour when there is only one sentence", async () => {
-    const { sceneSentenceForSlot } = await import("./videoPipeline");
-    const single = "A single uninterrupted clause with no terminator";
-    expect(sceneSentenceForSlot(single, 0)).toBe(single);
-    expect(sceneSentenceForSlot(single, 3)).toBe(single);
-    expect(sceneSentenceForSlot("", 1)).toBe("");
-  });
-
-  it("respects the length cap the callers relied on", async () => {
-    const { sceneSentenceForSlot } = await import("./videoPipeline");
-    const long = `${"x".repeat(400)}. ${"y".repeat(400)}.`;
-    expect(sceneSentenceForSlot(long, 0).length).toBeLessThanOrEqual(220);
-  });
-
-  it("the fast-short rescue loop refreshes the query per slot", async () => {
-    const { readFileSync } = await import("fs");
-    const path = await import("path");
-    const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const idx = src.indexOf("stubBeat.index = fi;");
-    expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 600);
-    expect(block).toContain("sceneSentenceForSlot(scene.text, fi)");
-    expect(block).toContain("stubBeat.powerWord =");
-    expect(block).toContain("stubBeat.searchQuery =");
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 // 6. The funnel thresholds sat outside the range the score can reach
 // ─────────────────────────────────────────────────────────────────────────────
 

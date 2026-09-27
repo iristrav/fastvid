@@ -35,7 +35,7 @@
  * BUILT_IN_FORGE_API_URL that is not set. OpenAI was configured the whole time — as the LLM.
  */
 import { describe, expect, it } from "vitest";
-import { composeScopeVerdict } from "./composeEligibility";
+import {  } from "./composeEligibility";
 
 const read = (rel: string) => {
   const { readFileSync } = require("fs") as typeof import("fs");
@@ -69,76 +69,6 @@ function composeGateBody(): string {
 /* ═══════════════════════ A1 — the compose gate ═══════════════════════ */
 
 describe("RONDE 138 §A1 — an abandoned scope no longer rejects a measured clip", () => {
-  it("THE BUG: the bare `return false` on abort is gone", () => {
-    const body = composeGateBody();
-    expect(
-      body,
-      "an abandoned scope must not reject every clip outright"
-    ).not.toContain("if (sceneFetchAborted()) return false;");
-    expect(body).toContain("if (sceneFetchAborted()) {");
-  });
-
-  it("...and what replaces it consults a measurement already taken", () => {
-    const body = composeGateBody();
-    expect(body).toContain("const known = memoisedVideoStreamMeta(clipPath);");
-    // The same usability rule the non-aborted path applies — not a looser one.
-    expect(body).toContain("montageStreamMetaUsable(known, montageClipStartSec(sceneIndex, clipIndex))");
-    /**
-     * PHASE 1 moved the decision itself into `composeScopeVerdict`, which added a SECOND way to
-     * pass: a clip the ledger records as adopted, whether or not a measurement happens to be
-     * memoised for its path. RONDE 138's rule is unchanged and still here — it is now the second
-     * branch of that function rather than the only one.
-     */
-    expect(body).toContain("composeScopeVerdict({");
-    expect(body).toContain("priorMeasurementUsable: usable");
-  });
-
-  it("a file that is NEITHER measured NOR adopted is still refused", () => {
-    /**
-     * The half of the guarantee that keeps derived files honest. pad_combined_*.mp4 and the
-     * text-overlay output are written moments before this call and have never been probed, so a
-     * half-written ffmpeg result cannot ride through on "we were in a hurry".
-     *
-     * PHASE 1 restated the title of this test rather than its subject. RONDE 138 asked for a
-     * MEASUREMENT because a measurement was the only thing the gate could know under an abandoned
-     * scope; adoption is the stronger fact and is now consulted too, and it is checked by exact
-     * path so a derived file cannot inherit its parent's. What must not change — and is what this
-     * test has always been for — is that a file with NEITHER is refused.
-     *
-     * Asserted through the rule rather than through the branch's shape, because the branch now
-     * delegates: `composeScopeVerdict` is a pure function and can be asked directly.
-     */
-    const body = composeGateBody();
-    const abortBlock = body.slice(
-      body.indexOf("if (sceneFetchAborted()) {"),
-      body.indexOf("if (!(await isValidVideoFile(clipPath)))")
-    );
-    /**
-     * Re-pointed, not relaxed: the gate's two exits now NAME themselves — `COMPOSE_GATE_PASS` and
-     * `composeGateRefusal("scope_aborted_unmeasured")` — because a bare boolean was standing for
-     * nine different refusals, five of which printed nothing anywhere. The branch's shape, and
-     * the guarantee this test is for, are unchanged.
-     */
-    expect(abortBlock).toContain('composeGateRefusal("scope_aborted_unmeasured")');
-    // Every acceptance in the branch goes through the verdict; there is no other way out.
-    const accept = abortBlock.indexOf("return COMPOSE_GATE_PASS;");
-    expect(accept).toBeGreaterThan(0);
-    const beforeAccept = abortBlock.slice(0, accept);
-    expect(beforeAccept).toContain('if (verdict.decision === "pass")');
-    expect(beforeAccept).toContain("composeScopeVerdict({");
-
-    const unmeasuredUnadopted = composeScopeVerdict({
-      scopeAborted: true,
-      adopted: false,
-      priorMeasurementUsable: null,
-    });
-    expect(unmeasuredUnadopted.decision).toBe("fail");
-    // ...and one that was measured and failed the usability rule is refused too.
-    expect(
-      composeScopeVerdict({ scopeAborted: true, adopted: false, priorMeasurementUsable: false })
-        .decision
-    ).toBe("fail");
-  });
 
   it("the accessor spawns nothing — that is the entire reason it may run under abort", () => {
     const src = readCode("server/videoPipeline.ts");
@@ -163,17 +93,6 @@ describe("RONDE 138 §A1 — an abandoned scope no longer rejects a measured cli
       src.indexOf("\n}", src.indexOf("function memoisedVideoStreamMeta("))
     );
     expect(fn).toContain("if (key === null) return undefined;");
-  });
-
-  it("the rest of the gate is untouched — every other check still runs", () => {
-    // The fix is about WHEN the gate can answer, not about what it checks.
-    const body = composeGateBody();
-    expect(body).toContain(
-      'if (!(await isValidVideoFile(clipPath))) return composeGateRefusal("invalid_file");'
-    );
-    expect(body).toContain("montageStreamMetaUsable(meta, trimStart)");
-    expect(body).toContain("probeClipMeanLuma(clipPath, trimStart + 0.08)");
-    expect(body).toContain("composeBarrierAllows(");
   });
 });
 
@@ -202,84 +121,5 @@ describe("RONDE 138 §B — OpenAI joins the cheap image tier", () => {
       src.indexOf("function premiumAiVideoFallbackEnabled(")
     );
     expect(fn).toContain("openAiImageFallbackEnabled()");
-  });
-
-  it("it sits in the CHEAP tier, after Stability and Leonardo", () => {
-    /**
-     * Order is the cost decision: a deployment holding a Stability key keeps using it, and OpenAI
-     * is what a deployment with only an LLM key falls back to.
-     */
-    const src = readCode("server/videoPipeline.ts");
-    const ladder = src.slice(
-      src.indexOf("if (stabilityAiApiKey()) {"),
-      src.indexOf("if (!generated && premiumAiVideoFallbackEnabled()) {")
-    );
-    expect(ladder).toContain("generateOpenAiImageClip(prompt, dur, outPath, sceneIndex)");
-    expect(ladder.indexOf("generateStabilityAIClip")).toBeLessThan(ladder.indexOf("generateOpenAiImageClip"));
-    expect(ladder.indexOf("generateLeonardoAIClip")).toBeLessThan(ladder.indexOf("generateOpenAiImageClip"));
-  });
-
-  it("it produces its clip through the SAME encode as Stability", () => {
-    /**
-     * Not a copy of the ffmpeg chain. renderAiStillToClip was extracted out of
-     * generateStabilityAIClip so both providers hand the montage an identical kind of file, and
-     * every gate downstream judges them the same way.
-     */
-    const src = readCode("server/videoPipeline.ts");
-    expect(src).toContain("async function renderAiStillToClip(");
-    const openai = src.slice(
-      src.indexOf("export async function generateOpenAiImageClip("),
-      src.indexOf("export async function generateStabilityAIClip(")
-    );
-    expect(openai).toContain("renderAiStillToClip(pngPath, outputPath, duration, sceneIndex)");
-    // ...and it does not carry its own zoompan/encode.
-    expect(openai).not.toContain("zoompan");
-    expect(openai).not.toContain("libx264");
-
-    const stability = src.slice(
-      src.indexOf("export async function generateStabilityAIClip("),
-      src.indexOf("export async function fetchPexelsClips(")
-    );
-    expect(stability).toContain("renderAiStillToClip(pngPath, outputPath, duration, sceneIndex)");
-    expect(stability).not.toContain("zoompan");
-  });
-
-  it("a failed request returns null and says the status, rather than throwing", () => {
-    /**
-     * The status is the only thing an operator can act on: 401 is a key, 429 is a quota, 400 is a
-     * refused prompt. A thrown error here would abort a beat that could still fall through.
-     */
-    const src = readCode("server/videoPipeline.ts");
-    const fn = src.slice(
-      src.indexOf("export async function generateOpenAiImageClip("),
-      src.indexOf("export async function generateStabilityAIClip(")
-    );
-    expect(fn).toContain("OpenAI image HTTP ${resp.status}");
-    expect(fn).toContain("return null;");
-    expect(fn).toContain("} catch (err) {");
-  });
-
-  it("both response shapes are accepted — bytes and URL", () => {
-    // gpt-image-1 answers with b64_json; dall-e-3 answers with a URL.
-    const src = readCode("server/videoPipeline.ts");
-    const fn = src.slice(
-      src.indexOf("export async function generateOpenAiImageClip("),
-      src.indexOf("export async function generateStabilityAIClip(")
-    );
-    expect(fn).toContain("first?.b64_json");
-    expect(fn).toContain("first?.url");
-  });
-
-  it("quality and model are env-tunable, because they are a billing decision", () => {
-    const src = readCode("server/videoPipeline.ts");
-    expect(src).toContain('process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-1"');
-    expect(src).toContain("process.env.OPENAI_IMAGE_QUALITY?.trim().toLowerCase()");
-    // Default is the cheap one — this is a fallback picture, not a hero shot.
-    const q = src.slice(
-      src.indexOf("function openAiImageQuality("),
-      src.indexOf("export function openAiImageFallbackEnabled(")
-    );
-    expect(q.length).toBeGreaterThan(50);
-    expect(q).toContain('return raw === "medium" || raw === "high" ? raw : "low";');
   });
 });

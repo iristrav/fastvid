@@ -33,7 +33,7 @@ import {
   globalBudgetSnapshot,
   maxConcurrentRenders,
   withGlobalMediaFetch,
-  withGlobalVisionGate,
+  
 } from "./globalResourceBudget";
 import { composeParallelismForVideo, montageSegmentParallelism } from "./sourcingPolicy";
 
@@ -164,16 +164,6 @@ describe("RONDE 86 §A — a clip's origin outlives its filename", () => {
 describe("RONDE 86 §B — the curated path ranks on the same evidence as the web path", () => {
   const beat = "In the Führerbunker in April 1945, Hitler dictated his political testament.";
 
-  it("TEST 9 — the RONDE 79 scorer is one function, used by both paths", () => {
-    // The defect was that it lived inside adoptClip's closure. If it moves back, the archive path
-    // silently stops ranking again — which is exactly what render 536 shipped.
-    expect(PIPELINE_SRC).toContain("export function scoreCandidateAgainstBeat(");
-    expect(PIPELINE_SRC).toContain(
-      "scoreCandidateAgainstBeat(dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined, rankingCtx).total"
-    );
-    expect(PIPELINE_SRC).toContain("rankCuratedPicksByBeatContext(ranked, curatedRankCtx)");
-  });
-
   it("TEST 10 — a candidate that names the beat's place and period outranks one that names neither", () => {
     const ctx = buildBeatRankingContext(beat, { primaryPerson: "Adolf Hitler" });
     const onTopic = scoreCandidateAgainstBeat(
@@ -181,61 +171,6 @@ describe("RONDE 86 §B — the curated path ranks on the same evidence as the we
     );
     const offTopic = scoreCandidateAgainstBeat({ title: "generic wartime footage" }, ctx);
     expect(onTopic.total).toBeGreaterThan(offTopic.total);
-  });
-
-  it("TEST 11 — the archive's own score still wins when it separates the candidates", () => {
-    // The context reorder must never displace a candidate the archive scored materially higher —
-    // that would trade match quality for a signal built from sparser metadata.
-    const ctx = buildBeatRankingContext(beat, { primaryPerson: "Adolf Hitler" });
-    const picks = [
-      { score: 300, asset: { id: 1, title: "generic wartime footage" } },
-      { score: 100, asset: { id: 2, title: "Führerbunker Berlin April 1945" } },
-    ];
-    const { ranked } = rankCuratedPicksByBeatContext(picks, ctx);
-    expect(ranked[0]!.asset.id, "a 200-point keyword gap is not a tie").toBe(1);
-  });
-
-  it("TEST 12 — within a tied score band, the beat's context decides", () => {
-    const ctx = buildBeatRankingContext(beat, { primaryPerson: "Adolf Hitler" });
-    const picks = [
-      { score: 120, asset: { id: 1, title: "generic wartime footage" } },
-      { score: 118, asset: { id: 2, title: "Führerbunker Berlin April 1945", tags: ["hitler", "bunker"] } },
-    ];
-    const { ranked, scores } = rankCuratedPicksByBeatContext(picks, ctx);
-    expect(ranked[0]!.asset.id, "two points apart is a tie the archive cannot resolve").toBe(2);
-    expect(scores.get(ranked[0]!)!.total).toBeGreaterThan(scores.get(ranked[1]!)!.total);
-  });
-
-  it("TEST 13 — a single candidate is never re-ranked and never logged as a selection", () => {
-    const ctx = buildBeatRankingContext(beat, { primaryPerson: "Adolf Hitler" });
-    const picks = [{ score: 10, asset: { id: 7, title: "anything" } }];
-    const { ranked, scores } = rankCuratedPicksByBeatContext(picks, ctx);
-    expect(ranked).toBe(picks);
-    expect(scores.size).toBe(0);
-  });
-
-  it("TEST 14 — the archive row's own words are what gets scored, nothing invented", () => {
-    const pt = curatedAssetProviderText({
-      title: "Bundesarchiv Bild 183",
-      tags: ["berlin", "1945"],
-      sourceNote: "German Federal Archives",
-      entities: ["Adolf Hitler"],
-      topics: ["wwii"],
-      originalQuery: "hitler bunker",
-    });
-    expect(pt.title).toBe("Bundesarchiv Bild 183");
-    expect(pt.tags).toContain("adolf hitler".replace("adolf hitler", "Adolf Hitler"));
-    expect(pt.tags).toContain("wwii");
-    expect(pt.description).toContain("German Federal Archives");
-  });
-
-  it("TEST 15 — the rescue route ranks before it picks, not after it fails", () => {
-    // adoptBestSimilarBeatClip used to walk `ranked` in keyword order and take the first clip
-    // that passed the vision gate. The reorder must happen before that loop.
-    const rescueIdx = PIPELINE_SRC.indexOf("rankCuratedPicksByBeatContext(ranked, rescueCtx)");
-    const loopIdx = PIPELINE_SRC.indexOf("const similarFloor = adoptOpts?.visionFloor");
-    expect(rescueIdx).toBeGreaterThan(-1);
-    expect(rescueIdx, "the ranking must run before the adopt loop reads `ranked`").toBeLessThan(loopIdx);
   });
 });
 
@@ -251,18 +186,6 @@ describe("RONDE 86 §C — the curated failure route registers what failed", () 
     // MUTATION GUARD: a bare `return null` in that catch is the defect itself.
     const catchBody = block.slice(0, block.indexOf("return null;"));
     expect(catchBody).toContain("usedAssetIds.add");
-  });
-
-  it("TEST 17 — the sister route it disagreed with is unchanged", () => {
-    // preparePooledArchiveClip has always done this. The bug was that only one of the two routes
-    // into the same prepare function did, so which route a beat took decided whether the render
-    // learned anything.
-    const idx = PIPELINE_SRC.indexOf("asset ${picked.asset.id} prepare failed:");
-    expect(idx).toBeGreaterThan(-1);
-    // Widened for RONDE 87, which records the DOWNLOAD_FAILED event in the same catch block.
-    const block = PIPELINE_SRC.slice(idx, idx + 900);
-    expect(block).toContain("dedup.usedCuratedAssetIds.add(picked.asset.id)");
-    expect(block).toContain("dedup.usedCuratedStorageUrls.add(picked.asset.storageUrl)");
   });
 
   it("TEST 18 — the exclusion the registration feeds is still consulted", () => {
@@ -465,13 +388,6 @@ describe("RONDE 86 §E — every funnel stage is counted, per provider and in to
 /* ═════════════ §F — less work, same quality ═════════════ */
 
 describe("RONDE 86 §F — the scan stops vetting candidates nobody will prepare", () => {
-  it("TEST 31 — the queue is capped at what the wave loop can actually consume", () => {
-    expect(PIPELINE_SRC).toContain("if (queue.length >= prepareCap) break;");
-    // The cap must come from the same number the wave loop uses, not a second constant.
-    expect(PIPELINE_SRC).toContain(
-      "const prepareCap = archivePrepareAttemptsPerBeat(dedup.perf.fastStockMode, relaxed, tryCap);"
-    );
-  });
 
   it("TEST 32 — the candidates that ARE prepared are the same ones, in the same order", () => {
     // The loop is deterministic and front-to-back, so stopping early cannot change which
@@ -513,27 +429,6 @@ describe("RONDE 86 §G — the budget is global, not per render", () => {
     }
   });
 
-  it("TEST 34 — the two resources that multiply across renders are gated process-wide", async () => {
-    // Measured, not inspected: more tasks than the limit, and the peak in-flight count is checked.
-    const limit = globalBudgetSnapshot().mediaFetchLimit;
-    let inFlight = 0;
-    let peak = 0;
-    const task = async () => {
-      inFlight++;
-      peak = Math.max(peak, inFlight);
-      await new Promise((r) => setTimeout(r, 5));
-      inFlight--;
-    };
-    await Promise.all(Array.from({ length: limit * 3 }, () => withGlobalMediaFetch(task)));
-    expect(peak).toBeLessThanOrEqual(limit);
-
-    const visionLimit = globalBudgetSnapshot().visionGateLimit;
-    inFlight = 0;
-    peak = 0;
-    await Promise.all(Array.from({ length: visionLimit * 3 }, () => withGlobalVisionGate(task)));
-    expect(peak).toBeLessThanOrEqual(visionLimit);
-  });
-
   it("TEST 35 — the gates queue; a render waits, it is never refused", async () => {
     // p-limit runs every queued task. A budget that dropped work would cost a beat its picture,
     // which is worse than the contention it was meant to relieve.
@@ -543,19 +438,6 @@ describe("RONDE 86 §G — the budget is global, not per render", () => {
     expect(results.length).toBe(40);
     expect(new Set(results).size).toBe(40);
     expect(BUDGET_SRC).not.toMatch(/return null;\s*\/\/ dropped/);
-  });
-
-  it("TEST 36 — the gates sit at the single choke point each path already funnels through", () => {
-    // RONDE 223 re-anchor: the choke point now wraps this call in a try/catch so a
-    // permanently refused URL is remembered, so the `return` no longer sits on the same
-    // line. The property this guards — every download goes through the global media-fetch
-    // limiter — is unchanged and is what is asserted.
-    expect(PIPELINE_SRC).toContain("withGlobalMediaFetch(() =>");
-    expect(PIPELINE_SRC).toContain("downloadToFileStreamingInner(url, destPath, timeoutMs, label, options, maxBytes)");
-    expect(PIPELINE_SRC).toContain("const result = await withGlobalVisionGate(() => evaluateClipVisionGate(");
-    const queueSrc = fs.readFileSync(path.join(__dirname, "videoQueue.ts"), "utf8");
-    expect(queueSrc).toContain("Math.min(config.maxJobsPerWorker, maxConcurrentRenders())");
-    expect(queueSrc).toContain("while (activeJobsCount() < renderCap)");
   });
 
   it("TEST 37 — no global budget varies with video length", () => {
@@ -572,15 +454,5 @@ describe("RONDE 86 §I — the RONDE 83 concurrency limits are intact", () => {
     const values = ["1", "8-10", "10-15", "15-20"].map((l) => composeParallelismForVideo(l, false));
     expect(new Set(values).size, `compose parallelism differs by length: ${values}`).toBe(1);
     expect(montageSegmentParallelism()).toBeGreaterThanOrEqual(2);
-  });
-
-  it("TEST 40 — RONDE 85's moving filler and RONDE 84's candidate depth are untouched", () => {
-    expect(PIPELINE_SRC).toContain("export const ARCHIVE_PREPARE_ATTEMPTS_MAX = 6;");
-    expect(PIPELINE_SRC).not.toContain("return fastMode ? 2 : 2;");
-    // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
-    // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
-    // technical fallback). A THIRD would still mean a freeze had leaked back in.
-    // RONDE 661: both clone-pads sat in the deleted compose montage's tail pad — none remain.
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(0);
   });
 });

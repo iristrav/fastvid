@@ -38,7 +38,6 @@ import {
 } from "./beatShortlist";
 import { adoptionGuardVerdict } from "./adoptionPolicy";
 
-
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
 const ENV = "MAX_BEAT_SHORTLIST";
@@ -121,86 +120,6 @@ describe("a beat may put only its shortlist to the picture editor", () => {
 /* ═══════════════ the boundary, as wired into the pipeline ═══════════════ */
 
 describe("the gate is where the boundary is drawn", () => {
-  /**
-   * One place, for the reason the gate's own doc gives: every rescue and adoption route funnels
-   * through it. A bound enforced anywhere else would be a bound some routes do not have.
-   */
-  /**
-   * R194 — THE CLAIM WAS "ONE PLACE"; THE PROPERTY IS "EVERY ADOPTING ROUTE".
-   *
-   * This asserted a single `admitToShortlist` call site, on the argument that the shared vision
-   * gate is the one function every route funnels through. That argument was true of the rescue
-   * side and false of the main one: `adoptClip` reaches the picture editor through
-   * `beatClipPassesImageGate`, which admitted nothing — so it consulted `beatShortlistExhausted`
-   * at the top of its loop while never contributing to the counter it read, and its questions to
-   * the editor were invisible to the funnel that reports how many were asked.
-   *
-   * So the count moves from one to two and the assertion moves from spelling to property: BOTH
-   * boundaries that decide an adoption admit, and at each the admission precedes the judgement. A
-   * third site is still a deliberate change and still fails this test — the bound is not weaker,
-   * it now covers the route that was outside it.
-   */
-  it("every route that puts a candidate to the editor admits it first", () => {
-    const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
-    expect(at).toBeGreaterThan(-1);
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    /**
-     * Whitespace-tolerant: the call now spans lines because it also passes the SOURCE, so no one
-     * source can take a beat's whole shortlist. What is guarded is unchanged — this route admits
-     * before it asks the editor.
-     */
-    expect(body.replace(/\s+/g, " ")).toContain(
-      "admitToShortlist( dedup.beatShortlist, scene.index, beat.index"
-    );
-
-    const adoptAt = PIPE.indexOf("async function adoptClip(");
-    const adopt = PIPE.slice(adoptAt, PIPE.indexOf("\n}\n", adoptAt));
-    /** Whitespace-tolerant for the same reason as above — the call now carries its source. */
-    expect(adopt.replace(/\s+/g, " ")).toContain(
-      "admitToShortlist( dedup.beatShortlist, sceneIndex, beatIndex"
-    );
-    expect(
-      adopt.indexOf("admitToShortlist("),
-      "the adoption route asks the editor before admitting the candidate"
-    ).toBeLessThan(adopt.indexOf("beatClipPassesImageGate(p, contentKey"));
-
-    expect(
-      [...PIPE.matchAll(/admitToShortlist\(/g)].length,
-      "a third route admits its own"
-    ).toBe(2);
-  });
-
-  /** THE PROPERTY. Refused admission returns BEFORE the editor is asked, not after. */
-  it("a candidate outside the shortlist is never put to the editor", () => {
-    const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    const admit = body.indexOf("admitToShortlist(");
-    const refuse = body.indexOf("if (!admission.admitted)");
-    const judge = body.indexOf("judgeBeatClipRelevance(");
-    expect(admit).toBeGreaterThan(-1);
-    expect(refuse).toBeGreaterThan(admit);
-    expect(judge, "the editor is asked before admission is decided").toBeGreaterThan(refuse);
-  });
-
-  /** Eligibility is recorded before admission: the bound selects among eligible candidates. */
-  it("eligibility is decided before the shortlist, not after", () => {
-    const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    /** RONDE 609: the write is `noteEligibleForJudgement` now — one body, five routes. Same order. */
-    expect(body.indexOf("noteEligibleForJudgement(dedup, clipPath")).toBeLessThan(
-      body.indexOf("admitToShortlist(")
-    );
-  });
-
-  /** A refusal is named and recorded, never a silent drop. */
-  it("a capped-out candidate is refused with a reason", () => {
-    const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    const block = body.slice(body.indexOf("if (!admission.admitted)"));
-    expect(block).toContain("noteNotAsked(");
-    expect(block).toContain("[BeatShortlist]");
-    expect(block).toContain('"shortlist_full"');
-  });
 
   /**
    * The composition that makes a second guard check unnecessary: an unadmitted candidate has no
@@ -217,16 +136,6 @@ describe("the gate is where the boundary is drawn", () => {
       if (savedEnv === undefined) delete process.env.ENFORCE_FUNNEL_ADOPTION;
       else process.env.ENFORCE_FUNNEL_ADOPTION = savedEnv;
     }
-  });
-
-  it("the outcome of every ask is recorded per beat", () => {
-    const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body).toContain("noteVisionAsked(dedup.beatShortlist");
-    expect(body).toContain("noteVisionOutcome(");
-    /** Read back from the ledger, not from `allowed`, which folds fits and unknown together. */
-    expect(body).toContain("relevanceVerdictForRenderedAsset(dedup.beatRelevance");
-    expect(body).toContain('"VISION_UNAVAILABLE"');
   });
 });
 

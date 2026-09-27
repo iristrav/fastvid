@@ -153,19 +153,4 @@ describe("C — a beat's own no is remembered, and only by that beat", () => {
     ledger.byBeat.set(beatRelevanceBeatKey(2, 1, "path", "/w/extend_s2b1.mp4"), entry("does_not_fit"));
     expect(beatAlreadyRefusedPicture(ledger, 2, 1, { clipPath: "/w/extend_s2b1.mp4" })).not.toBeNull();
   });
-
-  it("asked where every route passes and where the archive picks, before anything is prepared", () => {
-    const gate = PIPE.slice(PIPE.indexOf("async function beatClipPassesVisionGate("));
-    const ask = gate.indexOf("const refusedHere = beatAlreadyRefusedPicture(dedup.beatRelevance, scene.index, beat.index, {");
-    const detector = gate.indexOf("const hasBakedText = await beatClipHasBakedText(clipPath);");
-    expect(ask).toBeGreaterThan(-1);
-    expect(ask).toBeLessThan(detector);
-    const CURATED = readFileSync(join(__dirname, "curatedMediaSourcing.ts"), "utf8");
-    const pick = CURATED.indexOf("const refusedHere = curatedAssetRefusedHook?.(sceneIndex, beat.index, picked.asset.id) ?? null;");
-    const prepare = CURATED.indexOf("const tryPrepare = async (picked: CuratedCandidatePick)");
-    expect(pick).toBeGreaterThan(-1);
-    expect(pick).toBeLessThan(prepare);
-    expect(PIPE).toContain("setCuratedAssetRefusedHook((sceneIndex, beatIndex, assetId) => {");
-    expect(PIPE).toContain("ledgerBySourcingCache.set(state.sourcingCache, state.beatRelevance);");
-  });
 });

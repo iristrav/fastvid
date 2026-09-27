@@ -175,23 +175,6 @@ describe("FIX 7 — sourcing-ladder clock starts when the visual stage starts", 
     /** RONDE 661: the scene loop's heartbeat — the P5A heartbeat and the stage-4 guard are deleted. */
     expect(calls.length).toBeGreaterThanOrEqual(1);
   });
-
-  it("the fast-short ladder rungs exist and keep their order (values widened by RONDE 8)", () => {
-    // FIX 7 itself moved only the CLOCK, not the thresholds — at the time they were 3/5/7 min.
-    // RONDE 8 then deliberately widened the fast-short rungs to 5/7/9 (render 518: a 3-scene
-    // 1-min video needs ~5min of visual stage, so the last scene always hit turbo budgets).
-    // What this test still guards from FIX 7's contract: all three rungs exist for the
-    // fast-short path and their ladder ordering is intact.
-    // RONDE 81 removed the isFastShortVideoLength branch: the rungs are now the same fractions
-    // of every length's own wall-clock target, so long videos get a ladder too. The fast-short
-    // VALUES are unchanged, which is what FIX 7's contract was actually about — so this asserts
-    // the values the functions return rather than the shape of the source that produces them.
-    expect(visualSourcingTurboMs("1")).toBe(5 * 60_000);      // turbo
-    expect(pipelineRushModeMs("1")).toBe(7 * 60_000);         // rush
-    expect(pipelineEmergencyFinishMs("1")).toBe(9 * 60_000);  // emergency
-    expect(visualSourcingTurboMs("1")).toBeLessThan(pipelineRushModeMs("1"));
-    expect(pipelineRushModeMs("1")).toBeLessThan(pipelineEmergencyFinishMs("1"));
-  });
 });
 
 // ─── FIX 8 — background audits yield to active renders ────────────────────────

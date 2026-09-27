@@ -20,39 +20,6 @@ const RELEVANCE = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts")
 /* ═══════════ 1. the last judge that decided without seeing the picture ═══════════ */
 
 describe("RONDE 104 #1 — a filename may flag footage, it may not refuse it", () => {
-  it("the off-topic-protest heuristic no longer costs a clip its place", () => {
-    /**
-     * RONDE 29 added this because a "white lives matter" roadside clip went under narration about
-     * the Battle of Berlin, and it reads the provider's title or the asset's own slug to catch it.
-     * It sat in front of CLIP, whose content verdicts on this material are inverted, so a cheap
-     * word-match ahead of a bad judge was a net gain.
-     *
-     * It now sits in front of a model that looks at the frame, where it can only take material
-     * away: a clip the model would have accepted, binned on a word in its filename. Same pattern
-     * RONDE 103 removed from CLIP — it survived only because it was not called CLIP.
-     */
-    const start = PIPELINE.indexOf("const isOffTopicProtest = beatClipIsOffTopicProtest(");
-    expect(start).toBeGreaterThan(-1);
-    const block = PIPELINE.slice(start, start + 700);
-    // Still measured, so the gate-firing stats can show how often it WOULD have fired.
-    expect(block).toContain('recordGateVerdict("off_topic_protest", isOffTopicProtest)');
-    // ...and no longer decisive.
-    expect(block).not.toContain('recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "off_topic_protest"');
-    expect(block).toContain("flagged, not rejected");
-  });
-
-  it("the baked-text check KEEPS its veto — a chyron is a defect, not an opinion", () => {
-    const start = PIPELINE.indexOf("const hasBakedText = await beatClipHasBakedText(clipPath);");
-    expect(start).toBeGreaterThan(-1);
-    /**
-     * RONDE 625 writes the asset off for the render inside this same branch, which pushed the
-     * refusal past a 700-character window. The claim is unchanged — the check still vetoes — and
-     * the window is now wide enough to contain the branch it is reading.
-     */
-    const block = PIPELINE.slice(start, start + 1200);
-    expect(block).toContain('recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text"');
-    expect(block).toContain("return { pass: false");
-  });
 
   it("no reject reason in the pipeline is decided by reading a filename any more", () => {
     // vision_gate went in RONDE 103; off_topic_protest goes here. baked_text reads the PIXELS.
@@ -134,12 +101,6 @@ describe("RONDE 104 #3 — the dead functions are gone", () => {
       /^\s?\{\s*$/.test(l) && i > 0 && all[i - 1]!.trim() === ""
     );
     expect(orphans).toEqual([]);
-  });
-
-  it("the still-referenced neighbours survived", () => {
-    // extractVideoTopicAnchorsWithKey shares a prefix with a deleted function and is live.
-    expect(PIPELINE).toContain("function extractVideoTopicAnchorsWithKey(");
-    expect(PIPELINE).toContain("extractVideoTopicAnchorsWithKey(videoTitle ?? \"\", beat.text)");
   });
 });
 
@@ -293,7 +254,6 @@ describe("RONDE 104 #5 — the durable verdict store", () => {
  * `isCanonicalAssetKey` and by `ensureVerdictBeforeCompose`, both in beatVisualRelevance.ts, on
  * the route every judgement now takes.
  */
-
 
 /* ═══════════ 7. the reprieve bookkeeping ═══════════ */
 

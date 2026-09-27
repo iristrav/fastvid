@@ -32,7 +32,7 @@ afterEach(() => {
 
 describe("every budget is bounded and configurable", () => {
   it("has a finite default for each kind", () => {
-    for (const kind of ["queries", "downloads", "preparations", "rescues"] as const) {
+    for (const kind of ["queries", "downloads", "preparations"] as const) {
       const limit = BUDGETS[kind]();
       expect(Number.isFinite(limit)).toBe(true);
       expect(limit).toBeGreaterThan(0);
@@ -83,17 +83,6 @@ describe("a beat spends its own budget and no one else's", () => {
     expect(budgetAllows(state, 0, 0, "queries")).toBe(false);
     expect(budgetAllows(state, 0, 0, "downloads")).toBe(true);
     expect(budgetAllows(state, 0, 0, "preparations")).toBe(true);
-    expect(budgetAllows(state, 0, 0, "rescues")).toBe(true);
-  });
-
-  /** The infinite-rescue case the brief names. */
-  it("the rescue ladder cannot be entered indefinitely", () => {
-    const state = createRetrievalBudgetState();
-    let entered = 0;
-    for (let i = 0; i < 500; i++) {
-      if (budgetAllows(state, 0, 0, "rescues")) entered += 1;
-    }
-    expect(entered).toBe(BUDGETS.rescues());
   });
 
   /**
@@ -106,21 +95,9 @@ describe("a beat spends its own budget and no one else's", () => {
     budgetAllows(state, 0, 0, "downloads");
     expect(beatSpend(state, 0, 0).downloads).toBe(2);
   });
-
-  it("is inert without a render state", () => {
-    expect(budgetAllows(undefined, 0, 0, "queries")).toBe(true);
-    expect(budgetExhaustedFor(undefined, 0, 0)).toEqual([]);
-  });
 });
 
 describe("exhaustion is named, once", () => {
-  it("records which budget stopped the beat", () => {
-    process.env.MAX_BEAT_DOWNLOADS = "1";
-    const state = createRetrievalBudgetState();
-    budgetAllows(state, 1, 2, "downloads");
-    budgetAllows(state, 1, 2, "downloads");
-    expect(budgetExhaustedFor(state, 1, 2)).toEqual(["downloads"]);
-  });
 
   /** A route that keeps asking after a refusal must not bury the render's other findings. */
   it("does not repeat the same refusal", () => {
@@ -160,14 +137,6 @@ describe("exhaustion is named, once", () => {
 });
 
 describe("the budget is charged where the beat actually asks", () => {
-  /** One charge at the beat's own query entry point covers every route that asks through it. */
-  it("the beat's query entry point charges the query budget", () => {
-    const at = PIPE.indexOf("function typedRetrievalQueriesForBeat(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body).toContain('budgetAllows(dedup.beatBudget, scene.index, beat.index, "queries")');
-    /** And a refused beat returns no queries rather than throwing. */
-    expect(body).toContain("return [];");
-  });
 
   it("the render reports the budgets", () => {
     expect(PIPE).toContain("formatRetrievalBudgets(visualDedup.beatBudget)");

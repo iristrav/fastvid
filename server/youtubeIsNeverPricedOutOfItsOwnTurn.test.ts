@@ -217,41 +217,6 @@ describe("§2 — a turn opened three scopes deep still has a window", () => {
       process.env = saved;
     }
   });
-
-  it("the beat wall ADDS it — the cascade is not asked to pay for the turn", () => {
-    /**
-     * The sourcing tiers keep their own numbers and the supplement is summed onto them. A carve-out
-     * would read `Math.max(...)` or a smaller literal here; an addition is what keeps the archive
-     * whole.
-     */
-    /**
-     * RONDE 604 — still an addition, now through `beatWallWithYoutubeTurn` so the beat's fill wall
-     * and its STOCK wall read one helper. The sourcing tiers keep their own numbers inside it.
-     */
-    expect(PIPELINE).toContain(
-      "      : beatWallWithYoutubeTurn(\n" +
-        "          visualSourcingTurbo(dedup) || isPipelineRushMode(dedup) ? 12_000 : 20_000\n" +
-        "        );"
-    );
-    const helper = PIPELINE.slice(
-      PIPELINE.indexOf("export function beatWallWithYoutubeTurn("),
-      PIPELINE.indexOf("\n}", PIPELINE.indexOf("export function beatWallWithYoutubeTurn("))
-    );
-    expect(helper, "a carve-out would read Math.max or a smaller literal").toContain(
-      "baseMs + youtubeBeatWallSupplementMs()"
-    );
-  });
-
-  it("the two landing tiers keep their numbers — a render that is finishing starts no turns", () => {
-    const at = PIPELINE.indexOf("const beatBudgetMs = dedup.forceExportMode");
-    expect(at).toBeGreaterThan(-1);
-    const decl = PIPELINE.slice(at, PIPELINE.indexOf(";", at));
-    expect(decl).toContain("? 5_000");
-    expect(decl).toContain("? 6_000");
-    /** Neither panic tier is summed with the supplement. */
-    expect(decl).not.toContain("5_000 + youtubeBeatWallSupplementMs()");
-    expect(decl).not.toContain("6_000 + youtubeBeatWallSupplementMs()");
-  });
 });
 
 /* ═══════════ §3 — a reserve smaller than the turn reserves nothing ═══════════ */

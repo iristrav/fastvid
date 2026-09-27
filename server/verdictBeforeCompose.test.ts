@@ -283,33 +283,9 @@ describe("both gates ask, and the diagnostic does not", () => {
   it("every push call site awaits the gate", () => {
     const awaited = [...CODE.matchAll(/await beatClipRefusedByRelevanceGate\(/g)].length;
     const total = [...CODE.matchAll(/[^n] beatClipRefusedByRelevanceGate\(/g)].length;
-    /** RONDE 661: four — the fifth was the deleted compose-montage backfill. */
-    expect(awaited, "the push gate's call sites have moved").toBeGreaterThanOrEqual(4);
+    /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
+    expect(awaited, "the push gate's call sites have moved").toBeGreaterThanOrEqual(1);
     expect(total, "a call site gates on a Promise, which is always truthy").toBe(awaited);
-  });
-
-  it("the compose chokepoint asks before the barrier decides", () => {
-    const at = CODE.indexOf("async function montageClipPassesComposeGate(");
-    const body = CODE.slice(at, at + 2500);
-    const ask = body.indexOf("ensureVerdictBeforeCompose({");
-    const decide = body.indexOf("composeBarrierAllows(relevance");
-    expect(ask, "the widest chokepoint no longer asks").toBeGreaterThan(-1);
-    expect(ask).toBeLessThan(decide);
-  });
-
-  /**
-   * The extension site reads state to LABEL an outcome — its own comment says "it reads state
-   * rather than doing work". Making it judge would turn a diagnostic into a spend, on a route
-   * whose common case is deliberately reusing footage already on the timeline.
-   */
-  it("the extension diagnostic still only reads", () => {
-    const at = CODE.indexOf("const barrier = composeBarrierAllows(\n            dedup.beatRelevance, extended");
-    expect(at, "the extension diagnostic has moved").toBeGreaterThan(-1);
-    const before = CODE.slice(Math.max(0, at - 1500), at);
-    expect(
-      before,
-      "the extension diagnostic now buys a verdict; it exists to label an outcome, not to gate"
-    ).not.toContain("ensureVerdictBeforeCompose(");
   });
 
   /** The render opens the scope and installs every resolver it needs. */

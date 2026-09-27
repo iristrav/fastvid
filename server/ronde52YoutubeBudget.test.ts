@@ -161,35 +161,6 @@ describe("RONDE 52 #2 — a call sizes itself against the budget containing it",
   }, 20_000);
 });
 
-describe("RONDE 52 #2 — the historical rescue gets a budget YouTube can finish in", () => {
-  const perf = (beatClipTimeoutMs: number) => ({ perf: { beatClipTimeoutMs } });
-
-  it("the Railway short-video budget that starved YouTube is raised", async () => {
-    const { historicalRescueBudgetMs } = await import("./videoPipeline");
-    // 22_000 is what render 530 ran with, and it is smaller than the download step alone.
-    expect(historicalRescueBudgetMs(perf(22_000))).toBeGreaterThan(22_000);
-  });
-
-  it("a profile that already allows more keeps its own, larger budget", async () => {
-    const { historicalRescueBudgetMs } = await import("./videoPipeline");
-    expect(historicalRescueBudgetMs(perf(150_000))).toBe(150_000);
-  });
-
-  it("is overridable from the environment, within sane bounds", async () => {
-    vi.resetModules();
-    vi.stubEnv("HISTORICAL_RESCUE_TIMEOUT_MS", "45000");
-    const { historicalRescueBudgetMs } = await import("./videoPipeline");
-    expect(historicalRescueBudgetMs(perf(22_000))).toBe(45_000);
-  });
-
-  it("ignores nonsense and falls back to the computed budget", async () => {
-    vi.resetModules();
-    vi.stubEnv("HISTORICAL_RESCUE_TIMEOUT_MS", "not-a-number");
-    const { historicalRescueBudgetMs } = await import("./videoPipeline");
-    expect(historicalRescueBudgetMs(perf(22_000))).toBeGreaterThan(22_000);
-  });
-});
-
 describe("RONDE 52 — the wiring is where it needs to be", () => {
   const src = async () => {
     const { readFileSync } = await import("fs");
@@ -217,14 +188,6 @@ describe("RONDE 52 — the wiring is where it needs to be", () => {
     expect(s).toContain("sceneFetchScopeStorage.exit(");
     // The flat download value that could not fit is still gone.
     expect(s).not.toMatch(/youtubeDownloadTimeoutMs\(\),\s*\n\s*`RapidAPI YouTube download/);
-  });
-
-  it("the rescue scope uses the computed budget, not the raw per-beat one", async () => {
-    const s = await src();
-    expect(s).toContain("historicalRescueBudgetMs(dedup)");
-    expect(s).not.toMatch(
-      /fetchHistoricalBeatRescue[\s\S]{0,200}?dedup\.perf\.beatClipTimeoutMs,\s*\n\s*`historical archival rescue/
-    );
   });
 
   it("both YouTube catch paths reach the breaker, and both exempt scope aborts", async () => {

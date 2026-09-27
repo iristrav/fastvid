@@ -185,15 +185,6 @@ describe("SHORTLIST_FULL says why, not just that", () => {
     expect(ok.admitted).toBe(true);
     expect("eligible" in ok).toBe(false);
   });
-
-  it("the per-candidate line prints the three numbers", () => {
-    const at = PIPELINE.indexOf("[BeatShortlist] s${scene.index}b${beat.index} not asked");
-    expect(at).toBeGreaterThan(-1);
-    const line = PIPELINE.slice(at, at + 1200);
-    expect(line).toContain("admission.eligible");
-    expect(line).toContain("admission.ranked");
-    expect(line).toContain("admission.unreviewed");
-  });
 });
 
 /* ═══════════════════════ §27 — one rule, one place ═══════════════════════ */

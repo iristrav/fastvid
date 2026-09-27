@@ -22,13 +22,10 @@ import { formatProductionRoute } from "./cinematicProduction";
 import {
   createBeatOutcomeAudit,
   noteBeatAdopted,
-  noteBeatFillTier,
-  noteBeatPlaceholder,
   renderBeatFunnelReport,
   resolveBeatCoverage,
   coverageHasRealFootage,
   beatRecord,
-  type BeatFillTier,
 } from "./beatOutcomeAudit";
 import { createClipRejectAudit } from "./clipRejectAudit";
 
@@ -156,12 +153,10 @@ describe("§14 — every render says which route it takes", () => {
 
 /* ═══════════════════════ §20 — coverage in the viewer's terms ═══════════════════════ */
 
-function beat(over: Partial<{ adopted: number; placeholder: boolean; fillTier: BeatFillTier }>) {
+function beat(over: Partial<{ adopted: number }>) {
   const audit = createBeatOutcomeAudit();
   const rec = beatRecord(audit, 0, 0);
   if (over.adopted) noteBeatAdopted(audit, 0, 0, "pexels", "clip.mp4");
-  if (over.placeholder) noteBeatPlaceholder(audit, 0, 0);
-  if (over.fillTier) noteBeatFillTier(audit, 0, 0, over.fillTier);
   return rec;
 }
 
@@ -170,34 +165,8 @@ describe("§20 — the things that can be on screen are told apart", () => {
     expect(resolveBeatCoverage(beat({ adopted: 1 }))).toBe("REAL_ASSET");
   });
 
-  /**
-   * The heart of the 2-out-of-29 problem. These beats were counted as `placeholder` because every
-   * search strategy was exhausted — and then the guaranteed ladder handed them REAL FOOTAGE from
-   * the curated archive or Wikimedia. Calling that a placeholder is what made the video look empty.
-   */
-  it.each(["topical", "wikimedia"] as const)(
-    "a beat the guaranteed ladder filled with %s footage is REAL_ASSET, not a placeholder",
-    (tier) => {
-      expect(resolveBeatCoverage(beat({ placeholder: true, fillTier: tier }))).toBe("REAL_ASSET");
-    }
-  );
-
-  /** A card carrying the beat's own narration is a deliberate presentation, not a blank frame. */
-  it("a text card is INTENTIONAL_TEXT", () => {
-    expect(resolveBeatCoverage(beat({ placeholder: true, fillTier: "text_overlay" }))).toBe("INTENTIONAL_TEXT");
-  });
-
-  it("a drawn colour card is FALLBACK", () => {
-    expect(resolveBeatCoverage(beat({ placeholder: true, fillTier: "color_fallback" }))).toBe("FALLBACK");
-  });
-
   it("a beat that reached no picture at all is NO_VALID_ASSET", () => {
     expect(resolveBeatCoverage(beat({}))).toBe("NO_VALID_ASSET");
-  });
-
-  /** A card of unrecorded kind is still a card — never counted as nothing, never as real footage. */
-  it("a placeholder with no tier recorded is FALLBACK", () => {
-    expect(resolveBeatCoverage(beat({ placeholder: true }))).toBe("FALLBACK");
   });
 });
 
@@ -216,31 +185,6 @@ describe("§20 — the things that can be on screen are told apart", () => {
  * counters over one render disagreeing by more than half is the bug; a mixed category is the fix.
  */
 describe("§20 — a beat holding both real footage and a colour card", () => {
-  it("is neither REAL_ASSET nor FALLBACK", () => {
-    const rec = beat({ adopted: 1, placeholder: true, fillTier: "color_fallback" });
-    expect(
-      resolveBeatCoverage(rec),
-      "an adopted clip is reported as if nothing chose the beat's picture"
-    ).not.toBe("FALLBACK");
-    expect(
-      resolveBeatCoverage(rec),
-      "a beat part of whose screen time is a drawn card is claimed as fully covered"
-    ).not.toBe("REAL_ASSET");
-    expect(resolveBeatCoverage(rec)).toBe("REAL_PLUS_FILLER");
-  });
-
-  /** The order matters, not just the categories: `adopted` alone must not be enough to reach it. */
-  it("an adopted beat with no colour card stays REAL_ASSET", () => {
-    expect(resolveBeatCoverage(beat({ adopted: 1, placeholder: true }))).toBe("REAL_ASSET");
-    expect(resolveBeatCoverage(beat({ adopted: 1, fillTier: "topical" }))).toBe("REAL_ASSET");
-  });
-
-  /** And a colour card with nothing adopted is still a plain FALLBACK — no coverage was invented. */
-  it("a colour card with no adoption stays FALLBACK", () => {
-    expect(resolveBeatCoverage(beat({ placeholder: true, fillTier: "color_fallback" }))).toBe(
-      "FALLBACK"
-    );
-  });
 
   /** Both mixed and pure count as footage having reached the screen; nothing else does. */
   it("real footage is recognised in both categories and no others", () => {
@@ -250,86 +194,24 @@ describe("§20 — a beat holding both real footage and a colour card", () => {
       expect(coverageHasRealFootage(c), `${c} is counted as real footage`).toBe(false);
     }
   });
-
-  /**
-   * The whole render, rebuilt from the ledger lines of video 562. The coverage totals must now
-   * agree with the funnel's own `adopted` count — the disagreement that exposed the defect.
-   */
-  it("reproduces render 562's beats and agrees with its adoption count", () => {
-    const audit = createBeatOutcomeAudit();
-    /** [scene, beat, adopted, origin, colour card?] — read off the production [BeatLedger] lines. */
-    const production = [
-      [0, 0, 1, "archive", false], [0, 1, 1, "archive", false],
-      [0, 2, 1, "archive", true], [0, 3, 1, "archive", true],
-      [1, 0, 0, "", true], [1, 1, 0, "", true], [1, 2, 1, "internet_archive", true],
-      [1, 3, 0, "", true], [1, 4, 0, "", false], [1, 5, 0, "", false], [1, 6, 0, "", false],
-      [1, 7, 1, "wikimedia", false],
-      [2, 0, 2, "pexels", true], [2, 1, 1, "wikimedia", true],
-      [2, 2, 2, "internet_archive", true], [2, 3, 2, "pexels", false],
-    ] as const;
-    for (const [s, b, adopted, origin, card] of production) {
-      for (let i = 0; i < adopted; i++) noteBeatAdopted(audit, s, b, origin, `s${s}b${b}.mp4`);
-      if (card) {
-        noteBeatPlaceholder(audit, s, b);
-        noteBeatFillTier(audit, s, b, "color_fallback");
-      }
-    }
-    const planned = production.map(([sceneIndex, beatIndex]) => ({ sceneIndex, beatIndex }));
-    const lines = renderBeatFunnelReport(audit, planned, createClipRejectAudit());
-    const roll = lines.find((l) => l.includes("COVERAGE beats="))!;
-
-    expect(roll).toContain("beats=16");
-    expect(roll).toContain("REAL_ASSET=4");
-    expect(roll).toContain("REAL_PLUS_FILLER=6");
-    expect(roll).toContain("FALLBACK=3");
-    expect(roll).toContain("NO_VALID_ASSET=3");
-
-    /**
-     * The invariant the old ordering broke. Ten beats adopted something; ten beats must show
-     * footage. It read REAL_ASSET=4 against adopted=10 in production.
-     */
-    const funnel = lines.find((l) => l.includes("TOTAL beats="))!;
-    expect(funnel).toContain("adopted=10");
-    expect(roll, "the coverage line disagrees with the funnel about how many beats got footage")
-      .toContain("realFootage=10");
-  });
 });
 
 describe("§20 — the render report carries coverage alongside the funnel", () => {
-  /** The production shape: mostly rescue-filled beats, two adopted, one truly empty. */
+  /** Two adopted beats and one with no picture — cards and the guaranteed ladder no longer fill beats. */
   function productionLikeAudit() {
     const audit = createBeatOutcomeAudit();
     noteBeatAdopted(audit, 0, 0, "pexels", "a.mp4");
     noteBeatAdopted(audit, 0, 1, "wikimedia", "b.mp4");
-    for (const [b, tier] of [[2, "wikimedia"], [3, "topical"], [4, "text_overlay"], [5, "color_fallback"]] as const) {
-      noteBeatPlaceholder(audit, 0, b);
-      noteBeatFillTier(audit, 0, b, tier);
-    }
-    beatRecord(audit, 0, 6);
+    beatRecord(audit, 0, 2);
     return audit;
   }
-  const planned = Array.from({ length: 7 }, (_, beatIndex) => ({ sceneIndex: 0, beatIndex }));
-
-  it("reports every beat's coverage on its own line", () => {
-    const lines = renderBeatFunnelReport(productionLikeAudit(), planned, createClipRejectAudit());
-    /**
-     * The COVERAGE line specifically. `[BeatLedger]` also carries `beat=`, so a filter on that
-     * alone now matches two lines per beat — both of them correct, and the claim here is about
-     * this one. Filtering by prefix keeps the assertion about what it was always about.
-     */
-    const perBeat = lines.filter((l) => l.startsWith("[VisualCoverageFinal] scene="));
-    expect(perBeat).toHaveLength(7);
-    for (const l of perBeat) expect(l, `no coverage on: ${l}`).toMatch(/coverage=[A-Z_]+/);
-  });
+  const planned = Array.from({ length: 3 }, (_, beatIndex) => ({ sceneIndex: 0, beatIndex }));
 
   it("rolls the categories up on a line of their own", () => {
     const lines = renderBeatFunnelReport(productionLikeAudit(), planned, createClipRejectAudit());
     const roll = lines.find((l) => l.includes("COVERAGE beats="));
     expect(roll, "no coverage roll-up in the report").toBeTruthy();
-    /** Four real assets: two adopted plus the two the ladder filled with real footage. */
-    expect(roll).toContain("REAL_ASSET=4");
-    expect(roll).toContain("INTENTIONAL_TEXT=1");
-    expect(roll).toContain("FALLBACK=1");
+    expect(roll).toContain("REAL_ASSET=2");
     expect(roll).toContain("NO_VALID_ASSET=1");
   });
 
@@ -354,34 +236,6 @@ describe("§20 — the render report carries coverage alongside the funnel", () 
       ),
     ];
     expect(nums.map((m) => m[1]), "a category is missing from the roll-up").toHaveLength(5);
-    expect(nums.reduce((sum, m) => sum + Number(m[2]), 0)).toBe(7);
-  });
-});
-
-describe("§20 — the pipeline actually records the tier", () => {
-  const SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-
-  /**
-   * Without this the categories are a function nothing feeds: every beat would fall back to
-   * `placeholder → FALLBACK` and the rescue ladder's real footage would still be miscounted.
-   */
-  it("every per-beat guaranteed fill records which rung answered", () => {
-    /**
-     * The three per-beat sites that call `generateGuaranteedBeatClip` with a tier out-parameter:
-     * the rescue placeholder, the beat fill, and the emergency finish. The two remaining
-     * `GuaranteedTierOut` uses are compose-level slots with no real beat index — recording those
-     * against a beat would invent beats the render does not have.
-     */
-    const calls = [...SRC.matchAll(/noteBeatFillTier\(/g)].length;
-    expect(calls, "a per-beat guaranteed fill site does not record its tier").toBe(3);
-  });
-
-  /** And it must be the REAL tier from the out-parameter, not a constant someone typed. */
-  it("passes the tier the ladder reported", () => {
-    const args = [...SRC.matchAll(/noteBeatFillTier\(([^)]*)\)/g)];
-    expect(args).toHaveLength(3);
-    for (const m of args) {
-      expect(m[1], `a fill site invents its tier: ${m[1]}`).toMatch(/[Tt]ierOut\.tier/);
-    }
+    expect(nums.reduce((sum, m) => sum + Number(m[2]), 0)).toBe(3);
   });
 });

@@ -44,9 +44,8 @@ import {
   formatAdoptionPolicyCensus,
   isDeclaredAdoptSource,
 } from "./adoptionPolicy";
-import { guaranteedAdoptSource } from "./videoPipeline";
+import {  } from "./videoPipeline";
 import { buildBeatVisualStatuses, coverageOfAdoptEntry } from "./beatVisualStatus";
-import { SUBJECT_FALLBACK_ROUTE } from "./beatSubjectFallback";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -85,8 +84,8 @@ function adoptSourceExpressions(): string[] {
 
 describe("every adoption route says what it is", () => {
   it("finds the call sites the audit counted", () => {
-    /** RONDE 661: 26 — the compose, P5A and stage-4 rescue sites went with the compose route. */
-    expect(adoptSourceExpressions().length).toBeGreaterThanOrEqual(26);
+    /** Two — the rest were on the deleted curated-only, rescue, recovery, guaranteed and AI routes. */
+    expect(adoptSourceExpressions().length).toBeGreaterThanOrEqual(2);
   });
 
   /**
@@ -103,15 +102,6 @@ describe("every adoption route says what it is", () => {
     expect([...new Set(undeclared)], "adoptionPolicy.ts has no entry for these").toEqual([]);
   });
 
-  /** The two labels the pipeline builds at runtime rather than writing literally. */
-  it("declares every label the runtime producers emit", () => {
-    for (const tier of ["topical", "wikimedia", undefined] as const) {
-      const label = guaranteedAdoptSource(tier as never);
-      expect(isDeclaredAdoptSource(label), `guaranteedAdoptSource -> "${label}"`).toBe(true);
-    }
-    expect(isDeclaredAdoptSource(SUBJECT_FALLBACK_ROUTE)).toBe(true);
-  });
-
   it("has no empty or duplicate declarations", () => {
     const all = declaredAdoptSources();
     expect(new Set(all).size).toBe(all.length);
@@ -122,11 +112,6 @@ describe("every adoption route says what it is", () => {
 /* ═══════════════ the guaranteed ladder stops wearing the funnel's name ═══════════════ */
 
 describe("a rescue does not report itself as retrieval", () => {
-  /** The exact mechanism behind `wikimedia retrieved=400 eligible=0 adopted=2 finalVideo=1`. */
-  it("labels the guaranteed ladder's Commons rung a rescue", () => {
-    expect(guaranteedAdoptSource("wikimedia" as never)).toBe("rescue_wikimedia");
-    expect(guaranteedAdoptSource("wikimedia" as never)).not.toBe("wikimedia");
-  });
 
   it("and that rescue may not claim to be a verified visual", () => {
     const p = adoptionPolicyFor("rescue_wikimedia");
@@ -143,11 +128,6 @@ describe("a rescue does not report itself as retrieval", () => {
     expect(p.requiresEligibility).toBe(true);
     expect(p.requiresVision).toBe(true);
     expect(p.countsAsVerifiedVisual).toBe(true);
-  });
-
-  it("keeps the archive rung a rescue too", () => {
-    expect(guaranteedAdoptSource("topical" as never)).toBe("rescue_archive");
-    expect(adoptionPolicyFor("rescue_archive").category).toBe("RESCUE_REAL");
   });
 });
 
@@ -262,7 +242,6 @@ describe("the census reaches the render log", () => {
     expect(block).toContain("console.log");
   });
 });
-
 
 /* ═══════════════ RONDE 91 — the policy now DECIDES coverage ═══════════════ */
 

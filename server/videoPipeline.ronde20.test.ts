@@ -35,39 +35,6 @@ import { composeRescueWallClockMs } from "./sourcingPolicy";
 const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const watchdogSrc = readFileSync(path.join(__dirname, "renderWatchdog.ts"), "utf8");
 
-describe("RONDE 20A — the compose-time rescue is wall-clock bounded", () => {
-  it("exposes a bounded, env-overridable budget", () => {
-    expect(composeRescueWallClockMs("8-10")).toBe(240_000);
-    expect(composeRescueWallClockMs("1")).toBeLessThan(composeRescueWallClockMs("8-10"));
-    // Must always be finite — an unbounded rescue is the bug this round fixes.
-    expect(Number.isFinite(composeRescueWallClockMs("8-10"))).toBe(true);
-  });
-
-  it("wraps the rescue in withSceneFetchTimeout and keeps partial results", () => {
-    const fn = pipelineSrc.slice(
-      pipelineSrc.indexOf("export async function recoverSceneClipsIfEmpty("),
-      pipelineSrc.indexOf("async function recoverSceneClipsIfEmptyInner("),
-    );
-    expect(fn).toContain("withSceneFetchTimeout");
-    expect(fn).toContain("composeRescueWallClockMs(dedup.videoLength)");
-    /**
-     * On timeout it returns the clips gathered so far rather than discarding them.
-     *
-     * RONDE 217 wrapped this return in `record(...)`, which files what the pass yielded on the
-     * render's own state and returns its argument unchanged — so the guarantee this line exists
-     * for is untouched, and a capped pass is now remembered like any other. The anchor moves with
-     * the spelling; what it asserts does not.
-     */
-    expect(fn).toContain("return record({ clips, beatDurations });");
-  });
-
-  it("hands the wrapper's arrays to the inner so they can be filled in place", () => {
-    expect(pipelineSrc).toMatch(
-      /recoverSceneClipsIfEmptyInner\(\s*scene,\s*workDir,\s*topicContext,\s*dedup,\s*clips,\s*beatDurations\s*\)/
-    );
-  });
-});
-
 describe("RONDE 20B — a watchdog kill actually ends the render", () => {
   const killAll = watchdogSrc.slice(
     watchdogSrc.indexOf("const killAll ="),

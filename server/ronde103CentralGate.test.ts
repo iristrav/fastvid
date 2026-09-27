@@ -36,7 +36,7 @@ import {
   type BeatVisualContext,
 } from "./beatVisualRelevance";
 import { __resetVerdictStoreForTests } from "./beatRelevanceVerdictStore";
-import { isPlaceholderGuaranteedTier } from "./videoPipeline";
+import {  } from "./videoPipeline";
 
 const invoke = vi.hoisted(() => ({ fn: vi.fn() }));
 // RONDE 115: the gate now asks llm.ts whether a throw was a PRE-FLIGHT refusal (no key,
@@ -381,61 +381,6 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
     ).toBe(1);
   });
 
-  it("the chokepoint every adopt/rescue route funnels through IS the gate", () => {
-    /**
-     * beatClipPassesVisionGate is where the baked-text and off-topic-protest checks were put, for
-     * the stated reason that "every rescue and adoption route funnels through here, so one hook
-     * covers them all". RONDE 101 found the LLM gate was NOT there — it had one caller. It is now.
-     */
-    const idx = SRC.indexOf("async function beatClipPassesVisionGate(");
-    expect(idx).toBeGreaterThan(-1);
-    const body = SRC.slice(idx, SRC.indexOf("\n/**\n * RONDE 103 phase 4", idx));
-    expect(body).toContain("const relevance = await judgeBeatClipRelevance(dedup, scene.index, beat.index, {");
-    expect(body).toContain("if (!relevance.allowed) {");
-    // And it is reached from the routes, not from one of them.
-    const callers = SRC.split("beatClipPassesVisionGate(").length - 1;
-    expect(callers).toBeGreaterThanOrEqual(12);
-  });
-
-  it("the guaranteed ladder's REAL rungs are judged and its cards are not", () => {
-    const idx = SRC.indexOf("export async function generateGuaranteedBeatClip(");
-    const body = SRC.slice(idx, SRC.indexOf("async function generateGuaranteedBeatClipInner(", idx));
-    /**
-     * RENDER 563 — the beat index moved, the rule did not.
-     *
-     * This asserted `slotIndex` as the beat to file under, and eight render logs showed what that
-     * cost: 49 `real_footage_never_judged` lines on this ladder's own `rescue_archive` rung. The
-     * ladder DID judge; it filed the answer under the fetch slot while the adoption beside it was
-     * recorded under the real beat, so the lookup by (scene, beat) found nothing.
-     *
-     * What this test protects — the real rungs are judged, the cards are not — is unchanged, so
-     * the assertion follows the fix rather than being relaxed. `verdictFiledUnderTheBeat.test.ts`
-     * pins the beat index itself.
-     */
-    expect(body).toContain(
-      "await judgeBeatClipRelevance(relevance.dedup, sceneIndex, verdictBeatIndex, {"
-    );
-    expect(body, "the slot is being filed as the beat again").toContain(
-      "const verdictBeatIndex = relevance.beatIndex ?? slotIndex;"
-    );
-    expect(body).toContain("placeholder: isPlaceholderGuaranteedTier(tier.tier)");
-    /**
-     * isPlaceholderGuaranteedTier is what draws the line, and it draws it where phase 7 says.
-     *
-     * Asserted by CALLING it rather than by grepping for `return tier !== "topical" && …`. The
-     * body moved into `placeholderIdentity` when six disagreeing placeholder predicates were
-     * collapsed into one, and a text anchor would have failed for a refactor while a behavioural
-     * change slipped past. The claim is unchanged and now stronger: the line itself is checked,
-     * on all four rungs and on the unknown one.
-     */
-    expect(isPlaceholderGuaranteedTier("topical"), "a real rung became a card").toBe(false);
-    expect(isPlaceholderGuaranteedTier("wikimedia"), "a real rung became a card").toBe(false);
-    expect(isPlaceholderGuaranteedTier("text_overlay"), "a card became real media").toBe(true);
-    expect(isPlaceholderGuaranteedTier("color_fallback"), "a card became real media").toBe(true);
-    expect(isPlaceholderGuaranteedTier(undefined), "an unproven tier stopped counting as a card")
-      .toBe(true);
-  });
-
   it("the text overlay carries the decision across the file it writes", () => {
     const idx = SRC.indexOf("async function applyVideoBeatTextOverlay(");
     expect(idx).toBeGreaterThan(-1);
@@ -480,9 +425,6 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
       /** The recorder wrapping the gate: reaching it IS reaching the decider. */
       "judgeBeatClipRelevance(",
       "adoptClip(",
-      "generateGuaranteedBeatClip(",
-      "ensureBeatVisualFilled(",
-      "fillBeatVisual(",
       "beatClipRefusedByRelevanceGate(",
       "montageClipPassesComposeGate(",
     ];
@@ -496,7 +438,8 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
       const reaches = GATES.some((g) => body.includes(g)) || /\badopt[A-Z]\w*\(/.test(body);
       if (!reaches) ungated.push(starts.get(start)!);
     });
-    expect(examined).toBeGreaterThanOrEqual(20);
+    /** Two placing functions remain; the others were the deleted curated-only, rescue and fill routes. */
+    expect(examined).toBeGreaterThanOrEqual(2);
     expect(ungated, `routes that can place a clip with no path to the gate: ${ungated.join(", ")}`)
       .toEqual([]);
   });
@@ -510,7 +453,8 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
      * this render has already refused, whatever it did or did not call on the way.
      */
     const closures = SRC.split("const pushSceneClip = async (").slice(1);
-    expect(closures.length).toBeGreaterThanOrEqual(4);
+    /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
+    expect(closures.length).toBeGreaterThanOrEqual(1);
     for (const c of closures) {
       const head = c.slice(0, 1200);
       /**
@@ -576,28 +520,6 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
       body.indexOf("recordRejection"),
       "the gate returns its refusal before recording it"
     ).toBeLessThan(body.lastIndexOf("return true;"));
-  });
-
-  it("SECOND AUDIT — the last-resort clip is judged like any other real picture", () => {
-    /**
-     * fetchLastResortRealClip has five return paths and only two of them (its own adoptClip
-     * calls) were gated: an own-archive hit, a YouTube hit and a topical hit reached the timeline
-     * with nothing having looked at them. It is not an `adopt*` function, which is exactly why a
-     * name-based sweep missed it and a behaviour-based one did not.
-     */
-    const idx = SRC.indexOf("const lastResortFits =");
-    expect(idx).toBeGreaterThan(-1);
-    const block = SRC.slice(idx, idx + 700);
-    expect(block).toContain("beatClipPassesVisionGate(");
-    expect(block).toContain('"last_resort"');
-    /**
-     * RONDE 94 wrapped this push in `withAdoptionIntent("stock", ...)` and the condition became a
-     * multi-line one, so the anchor moved to the push itself. The rule is unchanged and still
-     * checked below: the vision gate is asked BEFORE the clip is pushed, never after.
-     */
-    expect(block).toContain("pushClip(lastResort!, holdSec)");
-    expect(block).toContain('withAdoptionIntent("stock"');
-    expect(idx).toBeLessThan(SRC.indexOf("pushClip(lastResort!, holdSec)"));
   });
 
   it("the render summary reports declines, so a render that stopped looking says so", () => {

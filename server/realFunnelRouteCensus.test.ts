@@ -54,39 +54,6 @@ const OPENS_A_RECORD = [
   "bindPath",
 ];
 
-describe("the census", () => {
-  const body = bodyOf("adoptArchiveBeatClip");
-
-  it("adoptArchiveBeatClip does open a record on its ranked queue", () => {
-    expect(body).toContain("ensureCuratedAssetLineage(dedup, picked");
-    expect(body).toContain("markLineageEligible(candidateLineage.lineageId");
-  });
-
-  /**
-   * THE GAP, PINNED AS A MEASUREMENT.
-   *
-   * The initialClip attempt adopts under a REAL_FUNNEL label. Whether it can prove that claim is
-   * decided by whether a record exists by then — and until it does, this test records the fact
-   * rather than asserting the wish. A measurement that can correct its author is worth more than
-   * an expectation that cannot.
-   */
-  it("its initialClip attempt adopts as REAL_FUNNEL before any record is opened", () => {
-    const attempt = body.indexOf('tryClip(initialClip, holdSec, { source: "archive" })');
-    const firstRecord = Math.min(
-      ...OPENS_A_RECORD.map((fn) => {
-        const at = body.indexOf(fn);
-        return at === -1 ? Number.POSITIVE_INFINITY : at;
-      })
-    );
-    expect(attempt, "the initialClip attempt moved or was renamed").toBeGreaterThan(-1);
-    expect(adoptionPolicyFor("archive").category).toBe("REAL_FUNNEL");
-    expect(
-      attempt,
-      "if this now fails, the gap is closed and this expectation should be inverted"
-    ).toBeLessThan(firstRecord);
-  });
-});
-
 /**
  * THE INVARIANT THE CENSUS EXISTS FOR.
  *
@@ -113,17 +80,8 @@ describe("no REAL_FUNNEL adoption may be anonymous", () => {
     const realFunnel = [...new Set(intents)]
       .filter((i) => adoptionPolicyFor(i).category === "REAL_FUNNEL")
       .sort();
-    expect(realFunnel).toEqual([
-      "archive_topic",
-      "beat_fetch",
-      "europeana",
-      "internet_archive",
-      "pexels",
-      "research_refetch",
-      "script_image",
-      "stock",
-      "wikimedia",
-    ]);
+    /** The other six intents were on the deleted curated-only, rescue, stock-ladder and recovery routes. */
+    expect(realFunnel).toEqual(["beat_fetch", "research_refetch", "script_image"]);
   });
 
   /**

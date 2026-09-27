@@ -102,33 +102,6 @@ export type ClipRejectAudit = {
 };
 
 /**
- * Reasons that describe the FILE rather than the moment. Deliberately one entry: it is the one
- * render 598 measured, and it is the one that cannot change between beats. A reason added here
- * stops a candidate being offered again for the whole render, so the bar is that it must be
- * impossible for the same asset to pass it later.
- */
-export const FILE_LEVEL_REJECT_REASONS: ReadonlySet<string> = new Set(["baked_text"]);
-
-/** Write an asset off for this render. `identity` must be a canonical asset key, never a path. */
-export function noteAssetRefusedForRender(
-  audit: ClipRejectAudit | undefined,
-  identity: string,
-  reason: string
-): void {
-  if (!audit || !identity.trim() || !FILE_LEVEL_REJECT_REASONS.has(reason)) return;
-  if (!audit.refusedAssets.has(identity)) audit.refusedAssets.set(identity, reason);
-}
-
-/** The reason this asset was written off this render, or null. */
-export function assetRefusedForRender(
-  audit: ClipRejectAudit | undefined,
-  identity: string | null | undefined
-): string | null {
-  if (!audit || !identity) return null;
-  return audit.refusedAssets.get(identity) ?? null;
-}
-
-/**
  * Has this exact refusal already been reported? Returns how many times it had been seen BEFORE
  * this call, so a caller logs on 0 and counts thereafter.
  */

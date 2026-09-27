@@ -109,29 +109,12 @@ describe("YouTube is the first source the cascade asks", () => {
   });
 
   /**
-   * RONDE 234 — THE OTHER ROUTE. `beatPrimaryFetchInner` opens with its own
-   * `if (curatedArchiveOnlyVisuals())` branch whose every exit is a `return`, so with that flag at
-   * its default it never reached the cascade — and RONDE 233's repaired guard sat in the cascade.
-   * Fixing one guard left the turn absent on this path entirely.
-   */
-  it("also runs before the archive on beatPrimaryFetch's own curated branch", () => {
-    const src = pipeline();
-    const fn = src.indexOf("async function beatPrimaryFetchInner(");
-    expect(fn).toBeGreaterThan(-1);
-    const curated = src.indexOf("if (curatedArchiveOnlyVisuals()) {", fn);
-    const yt = src.indexOf("youtubeFirstBeatSlice(", fn);
-    const archive = src.indexOf("fetchCuratedArchiveBeatClipWithLineage(", fn);
-    expect(yt, "the curated branch asks YouTube").toBeGreaterThan(curated);
-    expect(archive, "and it asks before the archive, not after").toBeGreaterThan(yt);
-  });
-
-  /**
-   * TWO CALL SITES, AND THEY ARE MUTUALLY EXCLUSIVE. The curated branch returns before reaching
-   * the cascade, so no beat can spend two 45-second slices on the same query. A third call site
-   * would break that argument, which is why the count is asserted and not just the presence.
+   * ONE CALL SITE. The curated-only branch that held the second one is gone, so no beat can spend
+   * two 45-second slices on the same query. A second call site would break that, which is why the
+   * count is asserted and not just the presence.
    */
   it("is asked once per beat, never twice", () => {
-    expect(callSites()).toBe(2);
+    expect(callSites()).toBe(1);
   });
 
   /** One implementation, so the turn cannot be true on one route and quietly absent on another. */
@@ -183,11 +166,6 @@ describe("YouTube is the first source the cascade asks", () => {
   });
 
   /** Which is what made the old condition dead rather than merely narrow. */
-  it("and that flag really is on unless it is switched off", () => {
-    expect(
-      fs.readFileSync(path.join(__dirname, "sourcingPolicy.ts"), "utf8")
-    ).toContain('return process.env.CURATED_ARCHIVE_ONLY !== "false";');
-  });
 
   /** A slice that runs out costs the beat nothing but time — the archive still gets asked. */
   it("a spent slice is caught, not thrown", () => {

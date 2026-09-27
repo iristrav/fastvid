@@ -8,13 +8,6 @@ import { isArchiveGeoBlockedForBeat } from "./curatedMediaSourcing";
 import { buildVideoQualityReport, qualityStatusCeiling } from "./videoQualityReport";
 
 describe("pipelineSelfHeal", () => {
-  it("buildEmergencyGeoStockQueries anchors on Singapore title", () => {
-    const queries = buildEmergencyGeoStockQueries(
-      "Public housing keeps rent affordable.",
-      "Why Singapore is the Blueprint for Future Cities"
-    );
-    expect(queries.some((q) => /singapore/i.test(q))).toBe(true);
-  });
 
   it("blocks Kansas City stock query on Singapore beat — when metadata blocks are on", () => {
     // RONDE 30: this had been failing because isArchiveGeoBlockedForBeat opens with

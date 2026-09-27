@@ -131,15 +131,6 @@ describe("the cinematic planner asks the render, not the clip list", () => {
       "sceneVisualResults[i]?.beats"
     );
   });
-
-  /** The route that broke it must still be a rebuild — this round did not repair it by hand. */
-  it("the branch that lost them is unchanged", () => {
-    expect(
-      CODE,
-      "the 'strict refill already attempted' branch was altered; the fix is meant to make its " +
-        "return shape irrelevant, not to patch one route"
-    ).toContain("strict refill already attempted this render");
-  });
 });
 
 /* ═══════════════════════ what the adapter does with what it is handed ═══════════════════════ */

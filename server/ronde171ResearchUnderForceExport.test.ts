@@ -162,16 +162,6 @@ describe("RONDE 171 — wired at the one call site", () => {
     expect(block).toContain(": undefined,");
   });
 
-  it("force-export itself is untouched — it still fires and still says so", () => {
-    // The mode is a real signal about a real deadline. Only its effect on research changed.
-    expect(PIPE).toContain("function ensurePipelineForceExport(");
-    expect(PIPE).toContain("dedup.forceExportMode = true;");
-    expect(PIPE).toContain("Force-export mode (≥");
-    // And it still stops the polish pass and shortens the beat budget.
-    expect(PIPE).toContain("Force-export — skipping polish");
-    expect(PIPE).toContain("const beatBudgetMs = dedup.forceExportMode");
-  });
-
   it("the once-per-beat rule and the marking-before-the-search rule still stand", () => {
     // RONDE 132: one extra look means one, however it ends.
     expect(PIPE).toContain("dedup.mismatchResearchedBeats.add(researchKey);");

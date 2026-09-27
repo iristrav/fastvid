@@ -338,19 +338,6 @@ describe("RONDE 159 §C — a starved scene may fetch, a thin one may not", () =
       else process.env.COMPOSE_LOCAL_CLIPS_ONLY = prev;
     }
   });
-
-  it("the exemption is per scene, and a caller that names no scene never gets it", async () => {
-    const { isComposeNetworkBlocked } = await import("./pipelineStepTiming");
-    const dedup = {
-      composeNetworkBlocked: true,
-      videoLength: "1",
-      composeFetchExemptScenes: new Set([2]),
-    };
-    expect(isComposeNetworkBlocked(dedup, 2)).toBe(false);
-    expect(isComposeNetworkBlocked(dedup, 1)).toBe(true);
-    // A render-wide decision must not inherit one scene's exemption.
-    expect(isComposeNetworkBlocked(dedup)).toBe(true);
-  });
 });
 
 describe("RONDE 159 §D — the funnel check no longer cries wolf", () => {

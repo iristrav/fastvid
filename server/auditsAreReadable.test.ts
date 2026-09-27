@@ -39,7 +39,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import { formatComposeScopeDecision } from "./composeEligibility";
+import {  } from "./composeEligibility";
 import { PIPELINE_SECTION_TITLES } from "./renderPipelineReport";
 
 const read = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");
@@ -71,61 +71,6 @@ describe("the glance figure is named after what it counts", () => {
     const lineage = read("visualSourceLineage.ts");
     expect(lineage).toContain("`  final_clips=${rendered.length}`");
     expect(lineage).toContain("const rendered = input.records.filter((r) => r.finalVideoAt != null);");
-  });
-});
-
-/* ═══════════════════════ P21 — the verdict before the story ═══════════════════════ */
-
-describe("an abandoned scope says whether the clip survived", () => {
-  const line = (verdict: Parameters<typeof formatComposeScopeDecision>[0]["verdict"]) =>
-    formatComposeScopeDecision({ sceneIndex: 2, clipIndex: 5, basename: "shot.mp4", verdict });
-
-  it("a clip already adopted is KEPT, and says so before the reason", () => {
-    const s = line({ decision: "pass", basis: "already_adopted" });
-    expect(s).toContain("scope abandoned KEPT —");
-    expect(s.indexOf("KEPT")).toBeLessThan(s.indexOf("already adopted"));
-  });
-
-  it("a clip kept on an earlier measurement is also KEPT", () => {
-    expect(line({ decision: "pass", basis: "prior_measurement" })).toContain("scope abandoned KEPT —");
-  });
-
-  it("the one outcome that loses a clip is REFUSED", () => {
-    const s = line({ decision: "fail", basis: "scope_abandoned_unmeasured" });
-    expect(s).toContain("scope abandoned REFUSED —");
-    expect(s).not.toContain("KEPT");
-  });
-
-  /**
-   * The two are greppable apart. That is the whole point: counting `[ComposeGate]` lines told you
-   * how often the budget ran out, and nothing about what it cost.
-   */
-  it("KEPT and REFUSED never appear on the same line", () => {
-    for (const v of [
-      { decision: "pass", basis: "already_adopted" },
-      { decision: "pass", basis: "prior_measurement" },
-      { decision: "fail", basis: "scope_abandoned_unmeasured" },
-    ] as const) {
-      const s = line(v);
-      expect(s.includes("KEPT") && s.includes("REFUSED")).toBe(false);
-    }
-  });
-
-  /** The condition stays in the head — it is what somebody counting these lines is counting. */
-  it("still says the scope was abandoned", () => {
-    for (const v of [
-      { decision: "pass", basis: "already_adopted" },
-      { decision: "fail", basis: "scope_abandoned_unmeasured" },
-    ] as const) {
-      expect(line(v)).toContain("scope abandoned");
-    }
-  });
-
-  /** A verdict without its reason is the other half of the same defect. */
-  it("keeps the reason after the verdict", () => {
-    expect(line({ decision: "fail", basis: "scope_abandoned_unmeasured" })).toContain(
-      "never adopted and has no earlier measurement"
-    );
   });
 });
 

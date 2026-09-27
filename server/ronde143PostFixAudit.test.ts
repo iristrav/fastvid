@@ -60,92 +60,6 @@ const backfillLoop = (): string => {
   return PIPE.slice(idx, idx + 2600);
 };
 
-// ─── GAP 1 ───────────────────────────────────────────────────────────────────────────────────
-
-describe("RONDE 143 GAP 1 — both routes into extendLastClip are budgeted", () => {
-  it("A. the coverage backfill asks the budget before extending", () => {
-    const block = backfillLoop();
-    expect(block).toContain("mayExtendAgain({ state: dedup.extendHold, sourceClipPath: source, holdSec: need })");
-    expect(block).toContain("if (!extendDecision.allowed)");
-    // And it stops the whole run, not just this attempt: `need` does not shrink and the budget
-    // does not grow, so attempt 2 and 3 would be refused identically.
-    expect(block).toMatch(
-      /console\.warn\(formatExtendRefusal\(scene\.index, 900 \+ attempt, extendDecision\)\);\s*\n\s*break;/
-    );
-  });
-
-  it("B. the refusal comes BEFORE extendLastClip runs, not after", () => {
-    const block = backfillLoop();
-    const guard = block.indexOf("mayExtendAgain(");
-    const call = block.indexOf("await extendLastClip(");
-    expect(guard).toBeGreaterThan(-1);
-    expect(call).toBeGreaterThan(-1);
-    expect(guard).toBeLessThan(call);
-  });
-
-  it("C. the backfill CHARGES the budget, so the per-beat ladder cannot stack on top of it", () => {
-    const block = backfillLoop();
-    expect(block).toContain("recordExtension(dedup.extendHold, source, need);");
-    // Charged at the adoption, which on this route is the push into `clips` — there is no
-    // pushClip gate to pass first.
-    const push = block.indexOf("clips.push(extended);");
-    const charge = block.indexOf("recordExtension(");
-    expect(push).toBeGreaterThan(-1);
-    expect(charge).toBeGreaterThan(push);
-  });
-
-  it("D. behaviourally: three backfill attempts cannot lay ~18s of one picture", () => {
-    const state = createExtendHoldState();
-    const source = "/w/scene_1_b0_archive.mp4";
-    let onScreen = 0;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const need = 6;
-      if (!mayExtendAgain({ state, sourceClipPath: source, holdSec: need }).allowed) break;
-      recordExtension(state, source, need);
-      onScreen += need;
-    }
-    // 6s already exceeds the 5s limit, so not even the first one runs — which is correct: this
-    // route asks for a single hold longer than the whole allowance.
-    expect(onScreen).toBe(0);
-    expect(onScreen).toBeLessThanOrEqual(stillImageMaxSec() + 0.04);
-  });
-
-  it("E. a backfill that fits is still allowed — the budget refuses runs, not the route", () => {
-    const state = createExtendHoldState();
-    const source = "/w/scene_1_b0_archive.mp4";
-    const first = mayExtendAgain({ state, sourceClipPath: source, holdSec: 2.5 });
-    expect(first.allowed).toBe(true);
-    recordExtension(state, source, 2.5);
-    // A second short one still fits inside five seconds.
-    expect(mayExtendAgain({ state, sourceClipPath: source, holdSec: 2.5 }).allowed).toBe(true);
-    recordExtension(state, source, 2.5);
-    // The third is the run this whole module exists to stop.
-    expect(mayExtendAgain({ state, sourceClipPath: source, holdSec: 2.5 }).allowed).toBe(false);
-  });
-
-  it("F. the two routes share ONE budget — screen time from either counts against the other", () => {
-    const state = createExtendHoldState();
-    const source = "/w/scene_1_b0_archive.mp4";
-    // The coverage backfill spends 4s of the allowance.
-    expect(mayExtendAgain({ state, sourceClipPath: source, holdSec: 4 }).allowed).toBe(true);
-    recordExtension(state, source, 4);
-    // The per-beat ladder now finds only 1s left, not a fresh 5s.
-    expect(mayExtendAgain({ state, sourceClipPath: source, holdSec: 3.5 }).allowed).toBe(false);
-    expect(mayExtendAgain({ state, sourceClipPath: source, holdSec: 1 }).allowed).toBe(true);
-  });
-
-  it("G. every extendLastClip call site in the pipeline is behind the budget", () => {
-    // Two call sites, and each one has a mayExtendAgain guard above it. If a third is ever added
-    // this count changes and the test says so rather than letting it in unguarded.
-    const calls = PIPE.match(/await extendLastClip\(/g) ?? [];
-    expect(calls.length).toBe(2);
-    const guards = PIPE.match(/mayExtendAgain\(/g) ?? [];
-    expect(guards.length).toBe(2);
-    const charges = PIPE.match(/recordExtension\(/g) ?? [];
-    expect(charges.length).toBe(2);
-  });
-});
-
 // ─── GAP 2 ───────────────────────────────────────────────────────────────────────────────────
 
 describe("RONDE 143 GAP 2 — a refusal is counted once, whichever layer saw it", () => {
@@ -154,12 +68,6 @@ describe("RONDE 143 GAP 2 — a refusal is counted once, whichever layer saw it"
     expect(idx).toBeGreaterThan(-1);
     const block = PIPE.slice(idx, idx + 400);
     expect(block).toContain("dedupeKey: `${clipContentKey(winner.clipPath)}|s${scene.index}b${beat.index}`");
-  });
-
-  it("I. both registrations build the key the same way", () => {
-    // The shared gate's key and the funnel's must agree, or deduping between them never fires.
-    expect(PIPE).toContain("const refusalKey = `${clipContentKey(clipPath)}|s${scene.index}b${beat.index}`;");
-    expect(PIPE).toContain("dedupeKey: `${clipContentKey(winner.clipPath)}|s${scene.index}b${beat.index}`");
   });
 
   it("J. behaviourally: the same clip refused twice for one beat counts once", () => {
@@ -201,23 +109,6 @@ describe("RONDE 143 GAP 2 — a refusal is counted once, whichever layer saw it"
 // ─── GAP 3 ───────────────────────────────────────────────────────────────────────────────────
 
 describe("RONDE 143 GAP 3 — the research signal survives a duplicate count", () => {
-  it("M. the shared gate records the beat's verdict outside the dedupe branch", () => {
-    const idx = PIPE.indexOf("const refusalKey = `${clipContentKey(clipPath)}|s${scene.index}b${beat.index}`;");
-    expect(idx).toBeGreaterThan(-1);
-    const block = PIPE.slice(idx, idx + 1600);
-    expect(block).toContain("dedup.lastMismatchByBeat.set(`s${scene.index}b${beat.index}`, kind);");
-    // The registration is no longer the condition of an `if` — the set does not hang off it.
-    expect(block).not.toMatch(/if\s*\(\s*\n?\s*recordMismatch\(dedup\.mismatchTally/);
-  });
-
-  it("N. the set comes after the count, and both run on every refusal", () => {
-    const idx = PIPE.indexOf("const refusalKey = `${clipContentKey(clipPath)}|s${scene.index}b${beat.index}`;");
-    const block = PIPE.slice(idx, idx + 1600);
-    const count = block.indexOf("recordMismatch(dedup.mismatchTally");
-    const set = block.indexOf("dedup.lastMismatchByBeat.set(");
-    expect(count).toBeGreaterThan(-1);
-    expect(set).toBeGreaterThan(count);
-  });
 
   it("O. the research pass still reads it, and still runs without a winner", () => {
     // RONDE 142's two structural fixes, re-asserted here so a later edit to this area cannot

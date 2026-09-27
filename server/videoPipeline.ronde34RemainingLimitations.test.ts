@@ -106,8 +106,8 @@ describe("RONDE 34 #1 — every curated adoption marks the storage URL, not only
     ) ?? [];
     expect(bare).toHaveLength(0);
     const wired = s.match(/curatedStorageUrlForClip\((?:clipPath|extra), dedup\)/g) ?? [];
-    /** RONDE 661: six — the fast-short compose rescue and the compose backfill are deleted. */
-    expect(wired.length).toBe(6);
+    /** One — the others were in the deleted curated-only montage, adopter, strict refill, coverage and backfill routes. */
+    expect(wired.length).toBe(1);
   });
 });
 

@@ -70,7 +70,8 @@ describe("no adoption route reaches the montage undeclared", () => {
   /** And the intents that ARE declared must all be labels the policy table knows. */
   it("every declared intent is a label the policy table declares", () => {
     const literals = [...PIPE.matchAll(/withAdoptionIntent\(\s*"([a-z0-9_]+)"/g)].map((m) => m[1]!);
-    expect(literals.length).toBeGreaterThan(12);
+    /** Four — the other intents were on the deleted rescue, recovery and AI routes. */
+    expect(literals.length).toBeGreaterThanOrEqual(4);
     for (const label of new Set(literals)) {
       expect(adoptionPolicyFor(label).category, `route "${label}" is undeclared`).not.toBe(
         "UNDECLARED"
@@ -94,80 +95,9 @@ describe("no adoption route reaches the montage undeclared", () => {
   });
 });
 
-/* ═══════════════ PHASE 6 — the scene-level ways round the guard ═══════════════ */
-
-describe("the scene-level fill routes cannot bypass the montage boundary", () => {
-  /**
-   * RONDE 93 guarded the five push closures and stopped there, which was right for the montage
-   * path and blind to the other one: `recoverSceneClipsIfEmpty` builds its own `clips` array and
-   * the caller assigns it STRAIGHT to `sceneVisualResults[si]`. Nothing in that path ever met a
-   * push variant, so a clip could reach the delivered scene without any guard seeing it.
-   */
-  it("recoverSceneClipsIfEmpty consults the guard at every insertion", () => {
-    const at = PIPE.indexOf("async function recoverSceneClipsIfEmptyInner(");
-    expect(at).toBeGreaterThan(-1);
-    const end = PIPE.indexOf("\nasync function ", at + 10);
-    const body = PIPE.slice(at, end);
-    const inserts = [...body.matchAll(/clips\.push\(/g)].length;
-    const guards = [...body.matchAll(/adoptionGuardRefusesPush\(/g)].length;
-    expect(inserts).toBeGreaterThan(0);
-    expect(guards, "an insertion in scene recovery is not guarded").toBeGreaterThanOrEqual(inserts);
-  });
-
-  /** The fast-short rescue writes into the same delivered structure and gets the same rule. */
-  it("the fast stock rescue for an empty scene is guarded", () => {
-    const at = PIPE.indexOf("fast stock/guaranteed fill");
-    expect(at).toBeGreaterThan(-1);
-    const region = PIPE.slice(at, at + 3000);
-    const insert = region.indexOf("clips.push(clipPath)");
-    const guard = region.indexOf("adoptionGuardRefusesPush(");
-    expect(insert).toBeGreaterThan(-1);
-    expect(guard).toBeGreaterThan(-1);
-    expect(guard, "the guard runs after the clip is already in the scene").toBeLessThan(insert);
-  });
-
-  /** The guaranteed scene filler builds clips without a beat and must still declare and be gated. */
-  it("the guaranteed scene filler declares its tier and is gated", () => {
-    const at = PIPE.indexOf("const guaranteedIntent = guaranteedAdoptSource(tierOut.tier);");
-    expect(at).toBeGreaterThan(-1);
-    const region = PIPE.slice(at, at + 600);
-    expect(region).toContain("adoptionGuardRefusesPush(");
-    expect(region.indexOf("adoptionGuardRefusesPush(")).toBeLessThan(region.indexOf("clips.push("));
-  });
-});
-
 /* ═══════════════ PHASE 2/3 — one writer, one reader, no second registry ═══════════════ */
 
 describe("eligibility has exactly one writer and one reader", () => {
-  /**
-   * The central write. `beatClipPassesVisionGate`'s own doc says every rescue and adoption route
-   * funnels through it — that is precisely why RONDE 94 records eligibility there, one line after
-   * the last deterministic veto and one line before the picture costs a judgement.
-   */
-  it("the vision gate records eligibility for every route that reaches it", () => {
-    const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    /**
-     * RONDE 609 — the write is now `noteEligibleForJudgement`, one body shared with the four other
-     * routes that judge a picture. The claim is unchanged and the ordering it protects is the
-     * whole point: the vision gate stamps BEFORE the judgement, and before the shortlist admission
-     * that can return without ever reaching one.
-     */
-    const mark = body.indexOf("noteEligibleForJudgement(dedup, clipPath");
-    const judge = body.indexOf("judgeBeatClipRelevance(");
-    expect(mark, "the vision gate does not record eligibility").toBeGreaterThan(-1);
-    expect(judge).toBeGreaterThan(-1);
-    expect(mark, "eligibility is recorded after the judgement it should precede").toBeLessThan(judge);
-  });
-
-  /** A veto above it must still refuse before eligibility is claimed. */
-  it("a clip with burnt-in text never becomes eligible", () => {
-    const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body.indexOf('recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text"')).toBeLessThan(
-      body.indexOf("noteEligibleForJudgement(dedup, clipPath")
-    );
-  });
 
   /**
    * NO SECOND REGISTRY. `VisualSourceLedger` is the only thing that stores the answer, and after

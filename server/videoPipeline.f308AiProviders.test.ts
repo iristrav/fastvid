@@ -4,7 +4,7 @@ import os from "os";
 import path from "path";
 import { Readable } from "stream";
 import {
-  generateStabilityAIClip,
+  
   generateRunwayClip,
   generateLumaClip,
   generatePikaClip,
@@ -59,105 +59,6 @@ function bufferResponse(buf: Buffer, ok = true) {
   } as unknown as Awaited<ReturnType<typeof fetchModule>>;
 }
 
-describe("generateStabilityAIClip timeout (F3-08-A)", () => {
-  let dir: string;
-  let outputPath: string;
-  let realPng: Buffer;
-
-  beforeEach(async () => {
-    process.env.STABILITY_AI_ENABLED = "true";
-    // RONDE 30: the flag was set here but never the key, and the key used to be captured at
-    // import time so setting it was impossible anyway. Both are needed — generateStabilityAIClip
-    // checks stabilityAiEnabled() and then stabilityAiApiKey().
-    process.env.STABILITY_AI_API_KEY = process.env.STABILITY_AI_API_KEY || "test-key";
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-f308a-test-"));
-    outputPath = path.join(dir, "scene_0.mp4");
-    mockedFetch.mockReset();
-    // A real, valid, noisy PNG (>50KB, matching Stability's own `raw.length > 50_000` gate) —
-    // ffmpeg needs to actually decode this for the Ken Burns conversion step to succeed, same
-    // as it would with a genuine Stability AI response. A flat-color PNG compresses to well
-    // under 1KB regardless of resolution, so random noise is used to produce a realistic size.
-    const pngPath = path.join(dir, "seed.png");
-    const { exec: execHelper } = await import("./videoPipeline");
-    await execHelper(`ffmpeg -y -f lavfi -i "nullsrc=s=640x360,geq=random(1)*255:128:128" -update 1 -frames:v 1 "${pngPath}"`);
-    realPng = fs.readFileSync(pngPath);
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
-    vi.useRealTimers();
-    delete process.env.STABILITY_AI_ENABLED;
-  });
-
-  it("still produces a valid clip on a normal successful core response (fetchWithTimeout wired correctly)", async () => {
-    mockedFetch.mockResolvedValueOnce(bufferResponse(realPng, true));
-
-    const result = await generateStabilityAIClip("a blue square", 1, outputPath, 0);
-
-    expect(result).not.toBeNull();
-    expect(fs.existsSync(result!)).toBe(true);
-    expect(fs.statSync(result!).size).toBeGreaterThan(1000);
-    expect(mockedFetch).toHaveBeenCalledTimes(1);
-    const [calledUrl] = mockedFetch.mock.calls[0]!;
-    expect(String(calledUrl)).toContain("stable-image/generate");
-    /**
-     * A REAL ENCODE, GIVEN THE TIME A REAL ENCODE TAKES.
-     *
-     * The fetch is mocked; the clip is not. `generateStabilityAIClip` turns the seed PNG into an
-     * actual video file with ffmpeg, and every assertion above is about that file — it exists, it
-     * is over a kilobyte, it came from the right endpoint. Five seconds is vitest's DEFAULT, not
-     * a budget anyone chose for encoding work, and on a shared two-core runner it is not enough:
-     * the same test passes locally and timed out in CI at 5000ms.
-     *
-     * It had never run on a CI machine before. This file builds its seed frame with ffmpeg, which
-     * the runner did not have, so it failed at the fixture long before it reached this assertion.
-     *
-     * Nothing is relaxed: no assertion changes, and a hang still fails — 20s is the same explicit
-     * ceiling `scriptEngine.test.ts` gives its two slow cases, so the convention is the file's own.
-     */
-  }, 20_000);
-
-  it("aborts within the 45s budget when the core response headers never arrive, instead of hanging", async () => {
-    vi.useFakeTimers();
-    mockedFetch.mockImplementation(
-      (_url, opts?: Record<string, unknown>) =>
-        new Promise((_resolve, reject) => {
-          const signal = opts?.signal as AbortSignal | undefined;
-          signal?.addEventListener("abort", () => {
-            const err = new Error("The operation was aborted");
-            err.name = "AbortError";
-            reject(err);
-          });
-        }) as ReturnType<typeof fetchModule>
-    );
-
-    const resultPromise = generateStabilityAIClip("a blue square", 1, outputPath, 0);
-    await vi.advanceTimersByTimeAsync(45_000);
-    const result = await resultPromise;
-
-    // A timeout throws (AbortError -> pipelineError), which the function's own outer catch
-    // turns into null — never a hang, and never falls through to the SDXL fallback (a thrown
-    // error skips the `if (coreResp.ok) {...} else {...}` branch entirely — same control flow
-    // as before this fix, since withTimeout also threw on timeout).
-    expect(result).toBeNull();
-    expect(mockedFetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("still falls back to the legacy SDXL endpoint when the core endpoint returns a non-ok response", async () => {
-    mockedFetch.mockResolvedValueOnce(jsonResponse({ error: "core down" }, false, 500));
-    mockedFetch.mockResolvedValueOnce(
-      jsonResponse({ artifacts: [{ base64: realPng.toString("base64"), finishReason: "SUCCESS" }] })
-    );
-
-    const result = await generateStabilityAIClip("a blue square", 1, outputPath, 0);
-
-    expect(result).not.toBeNull();
-    expect(mockedFetch).toHaveBeenCalledTimes(2);
-    const [, secondUrl] = mockedFetch.mock.calls.map((c) => String(c[0]));
-    expect(secondUrl).toContain("stable-diffusion-xl-1024-v1-0");
-  });
-});
-
 describe("AI-video-provider size validation (F3-08-B)", () => {
   let dir: string;
   let outputPath: string;
@@ -180,39 +81,6 @@ describe("AI-video-provider size validation (F3-08-B)", () => {
     vi.useRealTimers();
     delete process.env.BUILT_IN_FORGE_API_URL;
     delete process.env.BUILT_IN_FORGE_API_KEY;
-  });
-
-  it("Runway: returns the output path for a valid (>1000 byte) download", async () => {
-    // All three responses (create, poll, download) are queued up front — the poll-wait timer
-    // advance below can synchronously drive the call straight through to the download fetch
-    // within the same microtask flush, so the download mock must already be queued by then.
-    mockedFetch.mockResolvedValueOnce(jsonResponse({ id: "task1" }));
-    mockedFetch.mockResolvedValueOnce(
-      jsonResponse({ status: "SUCCEEDED", output: ["http://fake/video.mp4"] })
-    );
-    mockedFetch.mockResolvedValueOnce(bufferResponse(Buffer.alloc(5000, "v"), true));
-    vi.useFakeTimers();
-    const callPromise = generateRunwayClip("prompt", null, 5, outputPath, 0);
-    await vi.advanceTimersByTimeAsync(5_000);
-    const result = await callPromise;
-
-    expect(result).not.toBeNull();
-    expect(fs.existsSync(result!)).toBe(true);
-    expect(fs.statSync(result!).size).toBe(5000);
-  });
-
-  it("Runway: returns null for a too-small (<1000 byte) download instead of the path", async () => {
-    mockedFetch.mockResolvedValueOnce(jsonResponse({ id: "task1" }));
-    mockedFetch.mockResolvedValueOnce(
-      jsonResponse({ status: "SUCCEEDED", output: ["http://fake/video.mp4"] })
-    );
-    mockedFetch.mockResolvedValueOnce(bufferResponse(Buffer.alloc(200, "v"), true));
-    vi.useFakeTimers();
-    const callPromise = generateRunwayClip("prompt", null, 5, outputPath, 0);
-    await vi.advanceTimersByTimeAsync(5_000);
-    const result = await callPromise;
-
-    expect(result).toBeNull();
   });
 
   it("Luma (dead code, isolated): returns null for a too-small download", async () => {

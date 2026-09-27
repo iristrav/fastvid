@@ -135,8 +135,9 @@ describe("every push route records its refusals", () => {
      * spelling made this test fail for a change that kept the property it exists to guard.
      */
     const records = SRC.match(/noteDuplicateClipRefused\(\s*dedup,\s*clipPath,\s*key\b/g) ?? [];
-    expect(defs.length, "the number of push routes changed").toBe(4);
-    expect(refusals.length).toBe(4);
+    /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
+    expect(defs.length, "the number of push routes changed").toBe(1);
+    expect(refusals.length).toBe(1);
     expect(records.length, "a duplicate refusal exists that records nothing").toBe(
       refusals.length
     );
@@ -157,7 +158,7 @@ describe("every push route records its refusals", () => {
       expect(record, `duplicate refusal #${checked} records nothing`).toBeGreaterThan(-1);
       expect(record, `duplicate refusal #${checked} returns before recording`).toBeLessThan(ret);
     }
-    expect(checked).toBe(4);
+    expect(checked).toBe(1);
   });
 
   /** The helper reads the ledger through the cache, so a render without one is unaffected. */

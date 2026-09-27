@@ -72,31 +72,6 @@ describe("cinematicEffectsEngine", () => {
     expect(labels[0].startTime).toBeLessThan(8);
   });
 
-  it("computes word-weighted voice beat windows", () => {
-    const windows = computeVoiceBeatWindows(
-      [
-        { text: "Korte zin.", holdSec: 3 },
-        { text: "Een veel langere zin met extra woorden voor timing.", holdSec: 7 },
-      ],
-      10
-    );
-    expect(windows[0]!.dur).toBeLessThan(windows[1]!.dur);
-    expect(windows[0]!.start).toBe(0);
-    expect(windows[1]!.start).toBeCloseTo(windows[0]!.dur, 1);
-  });
-
-  it("uses TTS voiceStartSec windows when present", () => {
-    const beats = [
-      { text: "First.", holdSec: 3, voiceStartSec: 0, voiceEndSec: 2.5 },
-      { text: "Second longer.", holdSec: 4, voiceStartSec: 2.5, voiceEndSec: 6.0 },
-    ];
-    const windows = computeVoiceBeatWindows(beats, 6.5);
-    expect(windows[0]!.start).toBe(0);
-    expect(windows[0]!.dur).toBeCloseTo(2.5, 1);
-    expect(windows[1]!.start).toBeCloseTo(2.5, 1);
-    expect(windows[1]!.dur).toBeCloseTo(4.0, 1);
-  });
-
   it("computeTtsHardCutMontagePlan anchors cuts to voiceStartSec with xfade=0", () => {
     const beats = [
       { text: "One.", holdSec: 3, voiceStartSec: 0, voiceEndSec: 2.0 },
@@ -131,20 +106,6 @@ describe("cinematicEffectsEngine", () => {
     expect(plan!.xfadeSec).toBe(0);
     expect(plan!.cutStartsSec[0]).toBeCloseTo(0, 1);
     expect(plan!.cutStartsSec[2]).toBeGreaterThan(plan!.cutStartsSec[1]!);
-  });
-
-  it("prefers later beats for backfill when end voice still needs footage", () => {
-    const beats = [
-      { text: "Opening zin.", holdSec: 3 },
-      { text: "Midden.", holdSec: 3 },
-      { text: "Afsluitende zin met veel woorden.", holdSec: 4 },
-    ];
-    const voiceDur = 12;
-    const windows = computeVoiceBeatWindows(beats, voiceDur);
-    const clipBeatIndices = [0, 1];
-    const clipDurations = [windows[0]!.dur, windows[1]!.dur * 0.5];
-    const pick = pickVoiceBackfillBeatIndex(beats, voiceDur, clipBeatIndices, clipDurations, 0.3);
-    expect(pick).toBe(2);
   });
 
   it("plans interval screen labels every 30s with years and keywords", () => {

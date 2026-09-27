@@ -20,10 +20,6 @@ import {
   extractPeriodPhrase,
   type TypedRetrievalContext,
 } from "./mediaResearchEngine";
-import {
-  buildInternetArchiveGeoQueries,
-  buildWikimediaVideoGeoQueries,
-} from "./geoDocumentarySources";
 import { buildGeoStockSearchQueries } from "./curatedMediaSourcing";
 import { beatVisualSearchSubjects } from "./scriptVisualKeywords";
 import { uniqueQueryStrings, toQueryString } from "./stringCoercion";
@@ -85,25 +81,6 @@ function archivalQueries(beat: string): string[] {
     place: extractVisualPlacePhrase(beat),
     action: extractActionCue(beat),
   });
-}
-
-/** The list adoptInternetArchiveBeatClip hands to fetchInternetArchiveClips. */
-function iaQueries(beat: string): string[] {
-  const geo = buildInternetArchiveGeoQueries(beat, TITLE, 0);
-  return uniqueQueryStrings([...archivalQueries(beat).slice(0, 3), ...geo], 3).slice(0, 11);
-}
-
-/** The list adoptWikimediaBeatClip iterates for Wikimedia video. */
-function wikiQueries(beat: string): string[] {
-  return uniqueQueryStrings(
-    [
-      ...archivalQueries(beat).slice(0, 3),
-      ...buildGeoStockSearchQueries(beat, TITLE).slice(0, 3),
-      ...buildWikimediaVideoGeoQueries(beat, TITLE),
-      toQueryString(""),
-    ],
-    3
-  ).slice(0, 11);
 }
 
 /* ═════════════ §A — the five categories ═════════════ */
@@ -364,19 +341,6 @@ describe("RONDE 78 §D — the context reaches the provider query, not just the 
   ];
 
   for (const [beat, first, mustAppear] of expectations) {
-    it(`INTERNET ARCHIVE — "${beat.slice(0, 38)}…"`, () => {
-      const qs = iaQueries(beat);
-      expect(qs[0]).toBe(first);
-      const joined = qs.join(" | ");
-      for (const term of mustAppear) expect(joined, `"${term}" never reached IA`).toContain(term);
-    });
-
-    it(`WIKIMEDIA — "${beat.slice(0, 38)}…"`, () => {
-      const qs = wikiQueries(beat);
-      expect(qs[0]).toBe(first);
-      const joined = qs.join(" | ");
-      for (const term of mustAppear) expect(joined).toContain(term);
-    });
 
     it(`BEAT VISUAL QUERY LIST (Pexels/Pixabay/stock) — "${beat.slice(0, 30)}…"`, () => {
       /**
@@ -397,29 +361,6 @@ describe("RONDE 78 §D — the context reaches the provider query, not just the 
     });
   }
 
-  it("§7 — the Internet Archive narration query is still a fallback, still uncut", () => {
-    const qs = buildInternetArchiveGeoQueries(BEAT_1, TITLE, 0);
-    // The 55-character cut used to produce "Adolf Hitler dictated his final political testament
-    // in " at positions 1 and 2, losing the place and the date.
-    expect(qs[0]).not.toMatch(/^Adolf Hitler dictated/);
-    expect(qs[1]).not.toMatch(/^Adolf Hitler dictated/);
-    const narrative = qs.find((q) => q.startsWith("Adolf Hitler dictated"));
-    if (narrative) {
-      expect(narrative, "the narration query lost the place again").toContain("Fuhrerbunker");
-      expect(narrative).toContain("April 1945");
-      expect(narrative).not.toMatch(/\bin\s+(?:documentary|footage)$/);
-    }
-    for (const q of qs) expect(q).not.toMatch(/\s{2,}/);
-  });
-
-  it("§7 — and the typed queries lead the Internet Archive list on all four beats", () => {
-    for (const beat of ALL) {
-      const typed = archivalQueries(beat).slice(0, 3);
-      const qs = iaQueries(beat);
-      expect(qs.slice(0, typed.length), `"${beat.slice(0, 28)}"`).toEqual(typed);
-    }
-  });
-
   it("YOUTUBE — the typed query reaches the youtube list too", () => {
     // buildBeatYoutubeQueries is not exported; it composes the celebrity builder, which is.
     for (const [beat, first] of [[BEAT_1, "Adolf Hitler Fuhrerbunker"], [BEAT_4, "Churchill France"]] as Array<[string, string]>) {
@@ -431,16 +372,6 @@ describe("RONDE 78 §D — the context reaches the provider query, not just the 
 /* ═════════════ §E — nothing was taken away ═════════════ */
 
 describe("RONDE 78 §E — the existing fallbacks all still reach the provider", () => {
-  it("INTERNET ARCHIVE — every geo/narration query the path had is still in the list", () => {
-    for (const beat of ALL) {
-      const before = buildInternetArchiveGeoQueries(beat, TITLE, 0);
-      const after = iaQueries(beat);
-      const kept = before.filter((q) => after.includes(q));
-      expect(kept.length, `only ${kept.length}/${before.length} survived for "${beat.slice(0, 26)}"`)
-        .toBeGreaterThanOrEqual(Math.min(before.length, 8) - 3);
-      expect(after.length).toBeGreaterThan(3);
-    }
-  });
 
   it("the geo-stock phrase is still asked — one place down, never removed", () => {
     const stillThere: Array<[string, string]> = [

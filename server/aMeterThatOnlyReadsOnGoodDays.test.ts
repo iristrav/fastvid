@@ -38,14 +38,14 @@ describe("1. the render that failed says where its time went", () => {
     expect(
       exportGateBlock(),
       "RONDE 241's meter was unreachable from the only exit these renders reach"
-    ).toContain("stepTiming?.toReportLines()");
+    ).toContain("pipelineStepTiming.toReportLines()");
   });
 
   /** The company it keeps is the argument: the same block already prints for the same reason. */
   it("beside the funnel and the invariants, which are there on the same argument", () => {
     const block = exportGateBlock();
-    expect(block).toContain("formatBeatShortlists(dedup.beatShortlist)");
-    expect(block).toContain("beatShortlistViolations(dedup.beatShortlist)");
+    expect(block).toContain("formatBeatShortlists(visualDedup.beatShortlist)");
+    expect(block).toContain("beatShortlistViolations(visualDedup.beatShortlist)");
   });
 
   /** And the success path keeps its own reader — this adds an exit, it does not move one. */

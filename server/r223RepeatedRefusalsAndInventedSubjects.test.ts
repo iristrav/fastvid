@@ -41,7 +41,7 @@ import {
   classifyProviderFailure,
   formatPermanentDownloadRefusals,
   isOversizedResponseError,
-  isRetryableFailure,
+  
   notePermanentDownloadRefusal,
   permanentDownloadRefusal,
   permanentDownloadRefusalStats,
@@ -70,11 +70,6 @@ describe("R223 §1 — the refusal is classified for what it is", () => {
     expect(
       isOversizedResponseError(new Error("x: response exceeded maximum size of 83886080 bytes"))
     ).toBe(true);
-  });
-
-  it("IT IS PERMANENT, AND THEREFORE NOT WORTH ASKING AGAIN", () => {
-    expect(classifyProviderFailure({ err: REAL })).toBe("PERMANENT");
-    expect(isRetryableFailure(classifyProviderFailure({ err: REAL }))).toBe(false);
   });
 
   it("a 200 status does not talk it out of that — our own code threw after the response was fine", () => {
@@ -199,25 +194,6 @@ describe("R223 §3 — the choke point, not the loops", () => {
 /* ═══════════ 4. the model's words are held to the script ═══════════ */
 
 describe("R223 §4 — searchTiersSource is finally read", () => {
-  it("THE MARKER HAS A READER NOW", () => {
-    expect(SEM, "searchTiersSource is still written and never read").toContain(
-      `profile.searchTiersSource === "llm"`
-    );
-  });
-
-  it("model-written tiers must be provable from the beat", () => {
-    const at = SEM.indexOf("const tiersAreModelWritten");
-    const block = SEM.slice(at, at + 400);
-    expect(block).toContain("termProvableFrom(term, profile.beatText)");
-  });
-
-  it("THE BEAT-DERIVED PATH IS UNTOUCHED", () => {
-    const at = SEM.indexOf("const tiersAreModelWritten");
-    const block = SEM.slice(at, at + 400);
-    expect(block, "the filter was applied to the script's own terms too").toContain(
-      "tiersAreModelWritten &&"
-    );
-  });
 
   it("MEASURED: render 575's three refused terms fail the test, and the real ones pass", () => {
     const beat = "Hitler stayed in the bunker beneath Berlin as the Red Army closed in.";
@@ -227,10 +203,6 @@ describe("R223 §4 — searchTiersSource is finally read", () => {
     for (const kept of ["bunker", "hitler", "berlin"]) {
       expect(termProvableFrom(kept, beat), `${kept} was lost`).toBe(true);
     }
-  });
-
-  it("the sibling guard RONDE 91 added is still there — this round matched it, not replaced it", () => {
-    expect(SEM).toContain(`if (profile.summarySource !== "llm") push(profile.summary);`);
   });
 });
 
@@ -258,10 +230,6 @@ describe("R223 §5 — the genre word stops standing in for a subject", () => {
     expect(CURATED).not.toContain(`: ["documentary"]`);
     expect(CURATED).toContain("return best;");
     expect(FUNNEL, "the funnel stub still invents a subject").not.toContain(`|| "documentary"`);
-  });
-
-  it("an empty scene is announced rather than papered over", () => {
-    expect(CURATED).toContain("[CuratedSourcing] scene text is empty");
   });
 
   it("`words[0]` is kept — a weak real word beats an invented one", () => {

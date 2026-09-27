@@ -222,29 +222,6 @@ describe("the shot-query generator stops building queries about nothing", () => 
   });
 });
 
-describe("the emergency stock generator stops building queries about nothing", () => {
-  /** "documentary documentary footage" and a bare "documentary" — both measured, both gone. */
-  it("drops the anchor-less queries a genre-word title produced", () => {
-    const out = buildEmergencyGeoStockQueries("documentary", "documentary");
-    expect(out).not.toContain("documentary");
-    expect(out.every(hasContentAnchor), JSON.stringify(out)).toBe(true);
-  });
-
-  it("still answers for a real place", () => {
-    const out = buildEmergencyGeoStockQueries("Berlin", "Berlin");
-    expect(out.length).toBeGreaterThan(0);
-    expect(out.every(hasContentAnchor), JSON.stringify(out)).toBe(true);
-  });
-
-  it("never emits an anchor-less query", () => {
-    for (const t of ["documentary", "Berlin", "", "historical footage", "Stalin's Moscow"]) {
-      for (const q of buildEmergencyGeoStockQueries(t, t)) {
-        expect(hasContentAnchor(q), `"${t}" -> "${q}"`).toBe(true);
-      }
-    }
-  });
-});
-
 /* ═══════════════ RONDE 95 — a query with no subject is refused with or without a context ═══════════════ */
 
 describe("RONDE 95 — the content anchor needs no context, and no longer waits for one", () => {

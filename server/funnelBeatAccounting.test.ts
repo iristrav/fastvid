@@ -230,7 +230,8 @@ describe("no gate was weakened to make coverage look better", () => {
   /** And this round added no new fallback route to inflate coverage. */
   it("no new placeholder route was added", () => {
     const fillTiers = [...CODE.matchAll(/noteBeatFillTier\(/g)].length;
-    expect(fillTiers, "a new fallback route appeared").toBe(3);
+    /** Zero — the three fill-tier sites went with the guaranteed ladder. */
+    expect(fillTiers, "a new fallback route appeared").toBe(0);
   });
 });
 

@@ -244,18 +244,6 @@ describe("RONDE 81 §D — a chunk deadline is never below what its scenes may t
 /* ═════════════ §G — long videos can degrade too ═════════════ */
 
 describe("RONDE 81 §G — the escalation ladder exists at every length", () => {
-  it("turbo < rush < emergency, at every length", () => {
-    for (const len of LENGTHS) {
-      expect(visualSourcingTurboMs(len), len).toBeLessThan(pipelineRushModeMs(len));
-      expect(pipelineRushModeMs(len), len).toBeLessThan(pipelineEmergencyFinishMs(len));
-    }
-  });
-
-  it("the 1-minute thresholds are byte-identical to before this round", () => {
-    expect(visualSourcingTurboMs("1")).toBe(5 * 60_000);
-    expect(pipelineRushModeMs("1")).toBe(7 * 60_000);
-    expect(pipelineEmergencyFinishMs("1")).toBe(9 * 60_000);
-  });
 
   it("a long video's ladder is scaled to its own budget, not to the 1-minute one", () => {
     for (const len of ["8-10", "10-15", "15-20"] as const) {
@@ -265,25 +253,6 @@ describe("RONDE 81 §G — the escalation ladder exists at every length", () => 
       expect(pipelineEmergencyFinishMs(len), len).toBeGreaterThan(7 * 60_000);
       // And every rung stays inside the length's own hard cap.
       expect(pipelineEmergencyFinishMs(len)).toBeLessThan(maxPipelineWallClockHardMin(len) * 60_000);
-    }
-  });
-
-  it("every rung is the same fraction of that length's wall-clock target", () => {
-    for (const len of LENGTHS) {
-      const target = maxPipelineWallClockMin(len) * 60_000;
-      expect(visualSourcingTurboMs(len) / target).toBeCloseTo(0.25, 5);
-      expect(pipelineRushModeMs(len) / target).toBeCloseTo(0.35, 5);
-      expect(pipelineEmergencyFinishMs(len) / target).toBeCloseTo(0.45, 5);
-    }
-  });
-
-  it("the three predicates no longer refuse to fire for long videos", () => {
-    for (const fn of ["visualSourcingTurbo", "isPipelineRushMode", "isPipelineEmergencyFinish"]) {
-      const start = PIPELINE_SRC.indexOf(`function ${fn}(dedup: VisualDedupState): boolean {`);
-      expect(start, fn).toBeGreaterThan(-1);
-      const body = PIPELINE_SRC.slice(start, PIPELINE_SRC.indexOf("\n}", start));
-      expect(body, `${fn} must not gate on video length`).not.toContain("isFastShortVideoLength");
-      expect(body).toContain("dedup.pipelineStartedMs");
     }
   });
 });

@@ -68,7 +68,8 @@ describe("the vision gate's answer is counted wherever it is asked", () => {
    */
   it("every gate call goes through judgeBeatClipRelevance", () => {
     const wrapped = [...CODE.matchAll(/await judgeBeatClipRelevance\(/g)];
-    expect(wrapped.length, "the gate's call sites are not all wrapped").toBe(5);
+    /** Three — `generateGuaranteedBeatClip` and `beatClipPassesVisionGate` (only reached from the deleted curated-only `adoptArchiveBeatClip`) were deleted. */
+    expect(wrapped.length, "the gate's call sites are not all wrapped").toBe(3);
   });
 
   /** And the wrapper is the ONLY thing that calls the gate itself. */
@@ -198,7 +199,7 @@ describe("this round only changed who counts", () => {
 
   /** The four routes still identify themselves, so the log can still tell them apart. */
   it("each route still names itself to the gate", () => {
-    for (const route of ['route: "adopt"', "route: `funnel:", "route: `guaranteed:", 'route: queryLabel ?']) {
+    for (const route of ['route: "adopt"', "route: `funnel:"]) {
       expect(CODE, `the ${route} route lost its label`).toContain(route);
     }
   });

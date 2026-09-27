@@ -52,28 +52,21 @@ const GATE = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), 
 
 describe("R224 §1 — the scene gate says why nobody could judge", () => {
   const block = () => {
-    const at = PIPE.indexOf("const why = formatNoVerdictReasons(dedup.beatImageGate);");
+    const at = PIPE.indexOf("const why = formatNoVerdictReasons(visualDedup.beatImageGate);");
     expect(at, "the scene gate still dies without printing the tally").toBeGreaterThan(0);
     return PIPE.slice(at - 200, at + 1400);
   };
 
   it("THE TALLY IS PRINTED WHERE THE SCENE GATE GIVES UP", () => {
-    expect(block()).toContain("formatNoVerdictReasons(dedup.beatImageGate)");
+    expect(block()).toContain("formatNoVerdictReasons(visualDedup.beatImageGate)");
   });
 
   it("BEFORE the throw, so a failing render carries its own explanation", () => {
-    const why = PIPE.indexOf("const why = formatNoVerdictReasons(dedup.beatImageGate);");
-    const thrown = PIPE.indexOf("voice/script-matchende clips — export geblokkeerd");
+    const why = PIPE.indexOf("const why = formatNoVerdictReasons(visualDedup.beatImageGate);");
+    const thrown = PIPE.indexOf("no picture was found for any of its beats — export geblokkeerd");
     expect(why).toBeGreaterThan(0);
     expect(thrown).toBeGreaterThan(0);
     expect(why, "the explanation prints after the render has already thrown").toBeLessThan(thrown);
-  });
-
-  it("AND BEFORE THE OTHER EXIT — the archive-only deployment needs it too", () => {
-    const why = PIPE.indexOf("const why = formatNoVerdictReasons(dedup.beatImageGate);");
-    const carriesOn = PIPE.indexOf("pipeline gaat door met lege montage");
-    expect(carriesOn).toBeGreaterThan(0);
-    expect(why).toBeLessThan(carriesOn);
   });
 
   it("the seven-way partition is reported by its own counters, not summarised away", () => {
@@ -209,13 +202,13 @@ describe("R226 §4 — the beat funnel prints where the render dies", () => {
     expect(
       PIPE,
       "the funnel still only prints inside the report, past the throw"
-    ).toContain("for (const line of formatBeatShortlists(dedup.beatShortlist)) console.error(line);");
+    ).toContain("for (const line of formatBeatShortlists(visualDedup.beatShortlist)) console.error(line);");
   });
 
   it("BEFORE the throw, beside the vision tally", () => {
-    const funnel = PIPE.indexOf("formatBeatShortlists(dedup.beatShortlist)");
-    const tally = PIPE.indexOf("const why = formatNoVerdictReasons(dedup.beatImageGate);");
-    const thrown = PIPE.indexOf("voice/script-matchende clips — export geblokkeerd");
+    const funnel = PIPE.indexOf("formatBeatShortlists(visualDedup.beatShortlist)");
+    const tally = PIPE.indexOf("const why = formatNoVerdictReasons(visualDedup.beatImageGate);");
+    const thrown = PIPE.indexOf("no picture was found for any of its beats — export geblokkeerd");
     expect(funnel).toBeGreaterThan(0);
     expect(funnel).toBeGreaterThan(tally);
     expect(funnel, "the funnel prints after the render has thrown").toBeLessThan(thrown);

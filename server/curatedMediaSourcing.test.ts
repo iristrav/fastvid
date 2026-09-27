@@ -21,7 +21,7 @@ import {
   isCuratedPreparedVideoClip,
   isPipelineBlurFillStillClip,
   rotateCuratedCandidates,
-  archiveAssetPreflight,
+  
   isArchiveGeoBlockedForBeat,
   resolveRequiredGeoTagsForBeat,
   shouldPreferPexelsOverArchive,
@@ -1149,44 +1149,6 @@ describe("curatedMediaSourcing", () => {
     expect(isPipelineBlurFillStillClip("/tmp/scene_0_b0_pexels_vid123.mp4")).toBe(false);
   });
 
-  it("isArchiveGeoBlockedForBeat rejects Kansas City map on Netherlands beat", () => {
-    const kansasMap = {
-      title: "Kansas City metropolitan area transportation map 1972",
-      tags: ["kansas city", "map", "urban planning"],
-    };
-    const nlBeat = "In cities across the Netherlands, bike lanes connect every neighborhood.";
-    const title = "Why the Netherlands Is the Opposite of the U.S.";
-    expect(isArchiveGeoBlockedForBeat(kansasMap, nlBeat, title)).toBe(true);
-    expect(
-      archiveAssetPreflight(
-        {
-          id: 1,
-          archiveId: 1,
-          title: kansasMap.title,
-          tags: kansasMap.tags,
-          mediaType: "image",
-          mimeType: "image/jpeg",
-          storageUrl: "/kansas.jpg",
-          isActive: 1,
-          sortOrder: 0,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          fileSizeBytes: 1,
-          width: 1920,
-          height: 1080,
-          durationSec: null,
-          sourceUrl: null,
-          sourceLabel: null,
-        },
-        new Set(),
-        new Set(),
-        [],
-        [],
-        { beatText: nlBeat, videoTitle: title, videoVisualTopic: "geography_urban" }
-      )
-    ).toBe(false);
-  });
-
   it("isArchiveGeoBlockedForBeat rejects Tokyo on Netherlands beat", () => {
     expect(
       isArchiveGeoBlockedForBeat(
@@ -1361,20 +1323,6 @@ describe("curatedMediaSourcing", () => {
     ];
     expect(reorderForArchiveDiversity(ranked, new Map())).toBe(ranked);
     expect(reorderForArchiveDiversity([ranked[0]!], new Map([["A", 3]]))).toEqual([ranked[0]]);
-  });
-
-  it("resolvePrefetchedArchiveCandidates re-searches when prefetch is empty", async () => {
-    let searched = false;
-    const picks = await resolvePrefetchedArchiveCandidates([], async () => {
-      searched = true;
-      return [{ asset: { id: 1 } as MediaArchiveAsset, score: 50, archiveName: "test", archiveNicheTags: [] }];
-    });
-    expect(searched).toBe(true);
-    expect(picks).toHaveLength(1);
-    const cached = await resolvePrefetchedArchiveCandidates(picks, async () => {
-      throw new Error("should not search");
-    });
-    expect(cached).toBe(picks);
   });
 
   it("assetPassesBeatMinimum allows any documentary clip when metadata blocks off", () => {

@@ -484,13 +484,4 @@ describe("archive video and external video ask the same question", () => {
     expect(fn).not.toContain("candidate.width");
     expect(fn).not.toContain("candidate.height");
   });
-
-  it("montageStreamMetaUsable's 2-pixel check is left exactly as it was", () => {
-    /**
-     * It is not the quality bar and this round does not turn it into one — it is the last-ditch
-     * "is this a picture at all" test at montage time, and RONDE 133/134's floor sits far earlier
-     * in the flow. Changing it here would be a montage-architecture change, which is out of scope.
-     */
-    expect(read("server/videoPipeline.ts")).toContain("if (meta.width < 2 || meta.height < 2) return false;");
-  });
 });

@@ -250,59 +250,6 @@ describe("a compose rescue continues the beat rather than restarting it", () => 
 /* ═════════════════ C7–C8: only sourcing needs authorisation ═════════════════ */
 
 describe("transformation is not sourcing", () => {
-  /**
-   * C7 — a pure transformation of an already-adopted asset asks the ladder nothing.
-   *
-   * Proven where the distinction is actually made: the functions that transform or re-select an
-   * asset the render already holds — `adoptBestSimilarBeatClip`, `rescueFastShortComposeClips`,
-   * `adoptArchiveBeatClip`, `trySubjectFallbackForBeat` — contain no provider call at all, so
-   * nothing in them can reach the gate. The audit checked every one against the provider list.
-   */
-  it("C7: the compose functions that only reuse existing assets call no provider", () => {
-    const providerCalls = [
-      "fetchPexels", "fetchPixabay", "fetchWikimedia", "fetchInternetArchive",
-      "fetchNasa", "fetchNara", "fetchEuropeana", "fetchFlickr", "fetchOpenverse",
-      "searchGateDecision(", "admitProviderQuery(", "cachedProviderSearch(",
-    ];
-    for (const fn of [
-      "adoptBestSimilarBeatClip",
-      "trySubjectFallbackForBeat",
-    ]) {
-      const start = PIPELINE.indexOf(`async function ${fn}(`);
-      expect(start, `${fn} moved`).toBeGreaterThan(-1);
-      const body = PIPELINE.slice(start, PIPELINE.indexOf("\n}\n", start));
-      for (const call of providerCalls) {
-        expect(body, `${fn} acquires a new external visual via ${call}`).not.toContain(call);
-      }
-    }
-  });
-
-  /**
-   * C8 — every function that DOES acquire a new external visual runs inside the sourcing scope.
-   *
-   * These seven are the complete set of provider-touching beat leaves; the audit found them by
-   * matching every provider fetcher against every function body. Each is wrapped in
-   * `withBeatProvenance`, which now carries the ladder continuation — or, for `beatPrimaryFetch`,
-   * opens the same scope directly.
-   */
-  it("C8: every provider-touching beat leaf runs inside the central sourcing scope", () => {
-    const leaves = [
-      "fetchBeatStockFallbackInner",
-      "adoptStockBeatClipFallbackInner",
-      "adoptEmergencyGeoStockClipInner",
-      "fetchLastResortRealClipInner",
-      "rescueBeatVisualWhenEmptyInner",
-    ];
-    for (const leaf of leaves) {
-      const call = `withBeatProvenance(beat, scene, () => ${leaf}(`;
-      expect(PIPELINE, `${leaf} is not behind withBeatProvenance`).toContain(call);
-    }
-    /** And the one that opens its provenance itself carries the continuation itself. */
-    const at2 = PIPELINE.indexOf("async function beatPrimaryFetch(");
-    const body = PIPELINE.slice(at2, PIPELINE.indexOf("\n}\n", at2));
-    expect(body).toContain("resumeBeatSourcing(");
-    expect(body.indexOf("resumeBeatSourcing(")).toBeLessThan(body.indexOf("beatPrimaryFetchInner("));
-  });
 
   it("and withBeatProvenance opens the continuation before the body it wraps", () => {
     const at2 = PIPELINE.indexOf("function withBeatProvenance<T>(");

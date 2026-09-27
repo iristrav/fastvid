@@ -42,7 +42,7 @@ import fs from "fs";
 import path from "path";
 
 import {
-  contentTermsFromText,
+  
   hasContentAnchor,
   validateSearchQuery,
 } from "./searchQueryContract";
@@ -58,101 +58,9 @@ const REAL_NARRATION = [
   "Her instructions were clear: the evidence had to be destroyed before dawn.",
 ];
 
-/* ═══════════ 1. what the narration becomes ═══════════ */
-
-describe("R213 §1 — a sentence is reduced to the terms it actually names", () => {
-  it("THE THREE MEASURED SENTENCES, as they now reach a provider", () => {
-    expect(contentTermsFromText(REAL_NARRATION[0]!, 4)).toBe("winter 1953 North Sea");
-    expect(contentTermsFromText(REAL_NARRATION[1]!, 4)).toBe("factory floor fell silent");
-    expect(contentTermsFromText(REAL_NARRATION[2]!, 4)).toBe("Researchers measuring glacier 1912");
-  });
-
-  it("A WORD IS NEVER CUT IN HALF — the defect is structurally impossible now", () => {
-    for (const beat of REAL_NARRATION) {
-      const q = contentTermsFromText(beat, 4);
-      for (const term of q.split(" ").filter(Boolean)) {
-        expect(
-          beat.split(/[^\p{L}\p{N}'’-]+/u),
-          `"${term}" is not a whole word of the narration`
-        ).toContain(term);
-      }
-    }
-  });
-
-  it("EVERY QUERY IS A SUBSEQUENCE — nothing invented, nothing reordered", () => {
-    for (const beat of REAL_NARRATION) {
-      const source = beat.split(/[^\p{L}\p{N}'’-]+/u).filter(Boolean);
-      const terms = contentTermsFromText(beat, 4).split(" ").filter(Boolean);
-      let at = -1;
-      for (const t of terms) {
-        const next = source.indexOf(t, at + 1);
-        expect(next, `"${t}" appears out of the sentence's own order`).toBeGreaterThan(at);
-        at = next;
-      }
-    }
-  });
-
-  it("the pronoun that used to refuse a whole beat's query is simply gone", () => {
-    // "Her instructions …" was rejected FORBIDDEN_PRONOUN as a raw sentence.
-    const raw: any = validateSearchQuery(REAL_NARRATION[3]!.slice(0, 80));
-    expect(raw.ok).toBe(false);
-    expect(raw.reason).toBe("FORBIDDEN_PRONOUN");
-    const reduced = contentTermsFromText(REAL_NARRATION[3]!, 4);
-    expect(reduced).toBe("instructions clear evidence destroyed");
-    expect((validateSearchQuery(reduced) as any).ok).toBe(true);
-  });
-
-  it("every reduced query passes the gate the raw sentence was gambling on", () => {
-    for (const beat of REAL_NARRATION) {
-      const q = contentTermsFromText(beat, 4);
-      expect(q).not.toBe("");
-      expect((validateSearchQuery(q) as any).ok, `refused: "${q}"`).toBe(true);
-    }
-  });
-});
-
-/* ═══════════ 2. the term cap ═══════════ */
-
-describe("R213 §2 — the cap", () => {
-  it("takes the sentence's first content words, in order", () => {
-    const s = "The eruption buried the harbour under ash for eleven years.";
-    expect(contentTermsFromText(s, 2)).toBe("eruption buried");
-    expect(contentTermsFromText(s, 3)).toBe("eruption buried harbour");
-  });
-
-  it("a short sentence yields what it has, not padding", () => {
-    expect(contentTermsFromText("Chernobyl burned.", 4)).toBe("Chernobyl burned");
-  });
-
-  it("a single-word beat is a single-word query", () => {
-    expect(contentTermsFromText("Chernobyl.", 4)).toBe("Chernobyl");
-  });
-
-  it("a cap of zero or less asks for nothing and gets nothing", () => {
-    expect(contentTermsFromText(REAL_NARRATION[0]!, 0)).toBe("");
-    expect(contentTermsFromText(REAL_NARRATION[0]!, -1)).toBe("");
-  });
-});
-
 /* ═══════════ 3. when it must refuse to build a query ═══════════ */
 
 describe("R213 §3 — nothing to search for is answered with nothing", () => {
-  it("A SENTENCE THAT ONLY DESCRIBES THE FILM PRODUCES NO QUERY", () => {
-    /**
-     * "archival", "footage" and "restored" are all production vocabulary: they describe the film,
-     * not its subject. `hasContentAnchor` — the gate's own helper — says so, and the builder must
-     * agree with the gate rather than send a query it knows will be refused.
-     */
-    const q = contentTermsFromText("The archival footage was restored.", 4);
-    expect(q).toBe("");
-    expect(hasContentAnchor("archival footage restored")).toBe(false);
-  });
-
-  it("empty, blank and nonsense input are all the same answer", () => {
-    expect(contentTermsFromText("", 4)).toBe("");
-    expect(contentTermsFromText("   ", 4)).toBe("");
-    expect(contentTermsFromText("... --- ...", 4)).toBe("");
-  });
 
   it("A HOLE IN THE GATE, FOUND WHILE BUILDING THIS: punctuation was a subject", () => {
     /**
@@ -169,28 +77,6 @@ describe("R213 §3 — nothing to search for is answered with nothing", () => {
       expect(hasContentAnchor(junk), `"${junk}" still counts as a subject`).toBe(false);
       expect((validateSearchQuery(junk) as any).reason).toBe("NO_CONTENT_ANCHOR");
     }
-  });
-
-  it("and a real hyphenated or possessive name still passes", () => {
-    expect(hasContentAnchor("Marie-Curie")).toBe(true);
-    expect(hasContentAnchor("Churchill's bunker")).toBe(true);
-    expect(contentTermsFromText("Marie-Curie entered the laboratory.", 4)).toBe(
-      "Marie-Curie entered laboratory"
-    );
-  });
-
-  it("a sentence of pure grammar yields nothing", () => {
-    expect(contentTermsFromText("It was to be, and it had been.", 4)).toBe("");
-  });
-
-  it("KNOWN AND ACCEPTED: a nearly contentless sentence yields a weak single term", () => {
-    /**
-     * "of course" is an idiom whose only non-function word is "course". Special-casing it would be
-     * a hardcoded stopword for one English phrase — the topic-specific patch this brief forbids —
-     * and the term IS what the sentence says. A weak query is judged by the picture editor like
-     * any other; a wrong one invented to look strong would not be.
-     */
-    expect(contentTermsFromText("It was, of course, all of them.", 4)).toBe("course");
   });
 });
 
@@ -209,66 +95,6 @@ describe("R213 §4 — no builder sends a raw sentence any more", () => {
   it("the adjacent-beat fragments are reduced too", () => {
     expect(PLAN).not.toContain("prevBeat.slice(0, 60)");
     expect(PLAN).not.toContain("nextBeat.slice(0, 60)");
-  });
-
-  it("the Wikimedia rescue's last resort is reduced too", () => {
-    expect(PIPE, "the rescue still appends the raw sentence").not.toContain(
-      "wikiQueries.push(beat.text.slice(0, 80))"
-    );
-    const at = PIPE.indexOf("const wikiQueries: string[] = [];");
-    expect(at).toBeGreaterThan(0);
-    /**
-     * The window was 600 characters and is now 2000. The rung acquired a documented intent-first
-     * term source above this line (see `theBeatSaysWhatItIsAbout.test.ts`), which pushed the
-     * reduction past the old window — the guarantee this test exists for is unchanged, so the
-     * anchor moves rather than the assertion.
-     */
-    const block = PIPE.slice(at, at + 2000);
-    expect(block).toContain("contentTermsFromText(beat.text)");
-    /** And the stronger statement the same rung now makes: the typed terms are tried FIRST. */
-    expect(block.indexOf("visualTermsFromIntent(")).toBeGreaterThan(-1);
-    expect(block.indexOf("visualTermsFromIntent(")).toBeLessThan(
-      block.indexOf("contentTermsFromText(beat.text)")
-    );
-  });
-
-  it("AN EMPTY REDUCTION ADDS NO QUERY — no site falls back to the raw text", () => {
-    /**
-     * The reduction now sits behind `beatQueryTerms`, which picks the beat's TYPED terms first and
-     * falls back to the reading-order reduction only when the extractors typed nothing. So the
-     * emptiness check moved one level up rather than away: every CONSUMER of the result checks it,
-     * which is the rule this test exists for and a stronger statement than checking each
-     * `contentTermsFromText` call site individually.
-     */
-    const code = PLAN.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-    for (const m of code.matchAll(/beatQueryTerms\(input\)/g)) {
-      const around = code.slice(m.index!, m.index! + 400);
-      expect(around, "a reduction result is used without checking it is non-empty").toMatch(
-        /\?|if \(/
-      );
-    }
-    expect(
-      (code.match(/beatQueryTerms\(input\)/g) ?? []).length,
-      "the plan route and the planless route must both go through it"
-    ).toBeGreaterThanOrEqual(2);
-    /** Both consumers, named — a window check alone would pass on the wrong `?`. */
-    expect(code).toMatch(/beatTerms\s*\?\s*\[/);
-    expect(code).toMatch(/planless\s*\?\s*\[/);
-    /** And the reduction is still reachable — replaced as the DEFAULT, not removed as a route. */
-    expect(PLAN).toContain("contentTermsFromText(input.beatText, BEAT_QUERY_TERMS)");
-    /**
-     * `const beatTerms =` rather than the whole former one-line assignment: the right-hand side
-     * now picks the typed terms first and falls back to the reduction, so the literal line is
-     * gone while the rule this test protects — an empty result adds NO query — is not.
-     */
-    const at = PIPE.indexOf("const beatTerms =");
-    expect(at).toBeGreaterThan(0);
-    expect(PIPE.slice(at, at + 260)).toContain("if (beatTerms) wikiQueries.push(beatTerms)");
-  });
-
-  it("the cap is one named constant, not a number repeated at each site", () => {
-    expect(PLAN).toContain("const BEAT_QUERY_TERMS = 4;");
-    expect(PLAN).toContain("const ADJACENT_QUERY_TERMS = 3;");
   });
 });
 
@@ -289,17 +115,6 @@ describe("R213 §5 — the gate is untouched", () => {
   it("the validator still refuses a capitalised pronoun", () => {
     expect((validateSearchQuery("She walked into the hall") as any).reason).toBe(
       "FORBIDDEN_PRONOUN"
-    );
-  });
-
-  it("the reduction strips grammar only — a content word is never removed as production vocabulary", () => {
-    /**
-     * The guard against the tempting-but-wrong version of this fix: PRODUCTION_VOCABULARY contains
-     * "black", "white", "period", "real" and "old", which are ordinary content words in a sentence.
-     * Stripping by that set would have quietly deleted the subject.
-     */
-    expect(contentTermsFromText("The black market survived the period of famine.", 4)).toBe(
-      "black market survived period"
     );
   });
 });

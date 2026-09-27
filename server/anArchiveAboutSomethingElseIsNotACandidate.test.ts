@@ -287,12 +287,6 @@ describe("`transferReserve=3s` inside `granted=2s` is RONDE 259 WORKING, not a d
 /* ═══════════════════ nothing protected moved ═══════════════════ */
 
 describe("the invariants this round may not have touched", () => {
-  it("the subject anchor of 14b7cc2 is intact", () => {
-    const plan = readFileSync(join(__dirname, "visualSearchPlan.ts"), "utf8");
-    expect(plan).toContain("export function ensureSubjectAnchor");
-    expect(plan).toContain("export function subjectAnchorForBeat");
-    expect((plan.match(/anchorTierQueries\(/g) ?? []).length).toBe(5);
-  });
 
   it("the gates, the reprieve and the evidence rule are unchanged", () => {
     expect(readFileSync(join(__dirname, "searchQueryContract.ts"), "utf8")).toContain(

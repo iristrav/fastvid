@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { computeMeritQualityScore, qualityStatusCeiling } from "./videoQualityReport";
+import { computeMeritQualityScore,  } from "./videoQualityReport";
 import { healQualityReportForExport } from "./pipelineSelfHeal";
 import type { VideoQualityReport } from "./videoQualityReport";
 import type { ScreenTimeFinding } from "./deliveredScreenTime";
@@ -155,40 +155,6 @@ describe("the delivered mix reaches the score", () => {
       screenTime: [finding("ONE_CLIP_DOMINATES"), finding("SHOT_HELD_TOO_LONG")],
     });
     expect(floored.score).toBeGreaterThanOrEqual(0);
-  });
-});
-
-describe("an availability raise may not make a verification claim", () => {
-  const report = (over: Partial<VideoQualityReport>): VideoQualityReport =>
-    ({
-      score: 43,
-      qualityStatus: "INSUFFICIENT_VERIFICATION",
-      qualityReason: "",
-      totalClips: 13,
-      archiveCount: 13,
-      stockCount: 0,
-      warnings: [],
-      offTopicSuspects: [],
-      bySource: {},
-      diagnosticBySource: {},
-      byMixKind: {} as never,
-      wikimediaCount: 0,
-      generatedClips: 0,
-      videoTitle: "t",
-      visualTopic: "general",
-      generatedAt: "",
-      clipsMeasuredOn: "compose_montage",
-      rejectSummary: {} as never,
-      topRejects: [],
-      ...over,
-    }) as VideoQualityReport;
-
-  const playable = { ok: true } as never;
-
-  it("an unstated status is read as the strictest one", () => {
-    // Saying nothing must not buy headroom.
-    expect(qualityStatusCeiling(undefined)).toBe(qualityStatusCeiling("INSUFFICIENT_VERIFICATION"));
-    expect(qualityStatusCeiling(null)).toBe(qualityStatusCeiling("INSUFFICIENT_VERIFICATION"));
   });
 });
 

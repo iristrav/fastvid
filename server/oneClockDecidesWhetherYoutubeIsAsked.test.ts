@@ -118,15 +118,6 @@ describe("§2 — a wall that may host a turn is wide enough to hold one", () =>
     ).not.toMatch(/withSceneFetchTimeout\([\s\S]{0,400}?\n\s*beatClipTimeoutMs,/);
   });
 
-  it("and the beat fill wall reads the same helper", () => {
-    const at = PIPELINE.indexOf("const beatBudgetMs = dedup.forceExportMode");
-    const decl = PIPELINE.slice(at, PIPELINE.indexOf(";", at));
-    expect(decl).toContain("beatWallWithYoutubeTurn(");
-    /** The landing tiers keep their numbers: a render that is finishing starts no turns. */
-    expect(decl).toContain("? 5_000");
-    expect(decl).toContain("? 6_000");
-  });
-
   it("the supplement is zero when there is no YouTube, so other builds keep their wall", () => {
     const saved = { ...process.env };
     try {
@@ -433,26 +424,6 @@ describe("§6 — the nest render 597 declined in, opened for real", () => {
         "scene 1 visuals"
       );
       expect(ok, "a 20s wall in the middle should have shut the door").toBe(false);
-    });
-  });
-
-  it("and the historical cascade nest opens too — the other family render 597 declined in", async () => {
-    await withYoutubeEnv(async () => {
-      let ok: boolean | null = null;
-      await withSceneFetchTimeout(
-        () =>
-          withSceneFetchTimeout(
-            async () => {
-              ok = canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS);
-              return null;
-            },
-            historicalRescueBudgetMs({ perf: PERF }),
-            "historical cascade s2b2_research s2 b2"
-          ),
-        beatVisualWallMs(PERF as never),
-        "scene 2 visuals"
-      );
-      expect(ok, "the historical cascade was granted 8s in render 597").toBe(true);
     });
   });
 });

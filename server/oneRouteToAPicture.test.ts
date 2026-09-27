@@ -267,7 +267,7 @@ describe("an unplaced provider cannot slip past the ladder", () => {
    */
   it("every provider the production gates are given has a tier", () => {
     const names = new Set<string>();
-    for (const src of [PIPELINE, POOL, read("wikimediaGeoSearch.ts")]) {
+    for (const src of [PIPELINE, POOL]) {
       for (const m of src.matchAll(
         /(?:searchGateDecision|admitProviderQuery|cachedProviderSearch)\(\s*"([a-z_0-9]+)"/g
       )) {
@@ -370,16 +370,6 @@ describe("running out of clock is not the same as running out of footage", () =>
       expect(currentBeatLadder()?.declined.get("OPEN_SOURCES")).toBe("BUDGET_EXHAUSTED");
       expect(currentBeatLadder()?.declined.get("YOUTUBE")).toBeUndefined();
     });
-  });
-
-  it("and the reason is a constant, so the budget path cannot invent a provider-shaped one", () => {
-    const at = PIPELINE.indexOf('budgetAllows(dedup.beatBudget, scene.index, beat.index, "queries")');
-    expect(at).toBeGreaterThan(-1);
-    const body = PIPELINE.slice(at, at + 1600);
-    expect(body).toContain("declineTier(tier, BUDGET_EXHAUSTED)");
-    expect(body, "a literal would let this path drift from the constant").not.toContain(
-      'declineTier(tier, "BUDGET_EXHAUSTED")'
-    );
   });
 
   it("a budget decline still unlocks the tiers below, so a starved beat is not left empty", async () => {

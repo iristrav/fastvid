@@ -616,26 +616,6 @@ describe("RONDE 90 §16 — M1–M15, each pinned to one thing that must not be 
     expect(minted.rejectReason).toBe("NO_SEARCH_CONTEXT");
   });
 
-  it("M13 — un-scoping any of the beat entry points is caught", () => {
-    for (const fn of [
-      "beatPrimaryFetch",
-      "tryBeatTopicRealFootage",
-      "fetchHistoricalBeatVideo",
-      "researchBeatClipUnified",
-      "fetchBeatClip",
-      "adoptInternetArchiveBeatClip",
-      "adoptEuropeanaBeatClip",
-      "fetchPersonCelebrityVideoClips",
-      "fetchUniqueStockForBeat",
-      "fetchBeatInternetStillsFirst",
-    ]) {
-      const idx = PIPELINE_SRC.indexOf(`function ${fn}(`);
-      expect(idx, `${fn} not found`).toBeGreaterThan(-1);
-      const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
-      expect(body, `${fn} lost its provenance scope`).toContain("withSearchProvenance(");
-    }
-  });
-
   it("M14 — validating the cache-key suffix as content again is caught", () => {
     const ctx = buildVerifiedQueryContextForBeat("The Golden Gate Bridge opened in 1937.");
     expect(validateSearchQuery("Golden Gate#creative_common#n5", ctx).ok).toBe(true);
@@ -661,12 +641,6 @@ describe("RONDE 90 §19 — RONDE 87/88/89 untouched", () => {
       "recordProviderDownloadOutcome",
       "tagPathWithProviderAsset",
     ]) {
-      expect(PIPELINE_SRC, anchor).toContain(anchor);
-    }
-  });
-
-  it("TEST 45 — the global budget and render concurrency are unchanged", () => {
-    for (const anchor of ["withGlobalMediaFetch(", "withGlobalVisionGate(", "formatGlobalBudget("]) {
       expect(PIPELINE_SRC, anchor).toContain(anchor);
     }
   });

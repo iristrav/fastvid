@@ -40,7 +40,6 @@ const PIPELINE_SRC = read("videoPipeline.ts");
 const CONTRACT_SRC = read("searchQueryContract.ts");
 const RESEARCH_SRC = read("mediaResearchEngine.ts");
 const POOL_SRC = read("scenePool.ts");
-const GEO_SRC = read("wikimediaGeoSearch.ts");
 
 /** Every non-test source file in server/, for the repo-wide bypass scans. */
 function serverSources(): Array<{ file: string; src: string }> {
@@ -196,14 +195,6 @@ describe("RONDE 91 §4 — no provider search has an alternative route", () => {
       expect(idx, `${fn} missing`).toBeGreaterThan(-1);
       expect(POOL_SRC.slice(idx, idx + 4000), `${fn} bypasses the gate`).toContain("searchGateDecision(");
     }
-  });
-
-  it("TEST 13 — the Commons geosearch is gated on the place it actually asks about", () => {
-    expect(GEO_SRC).toContain('searchGateDecision("wikimedia"');
-    const idx = GEO_SRC.indexOf("export async function fetchWikimediaGeoImageTitles(");
-    const body = GEO_SRC.slice(idx, GEO_SRC.indexOf("\n}", idx));
-    // Gated BEFORE the request is built, not after it comes back.
-    expect(body.indexOf("searchGateDecision(")).toBeLessThan(body.indexOf("await fetch("));
   });
 
   /**
@@ -534,17 +525,6 @@ describe("RONDE 91 §11 — the log is the answer, not a hint", () => {
 /* ═══════════ §13 — mutation tests M1–M8 ═══════════ */
 
 describe("RONDE 91 §13 — M1–M8: each mutation must turn something red", () => {
-  it("M1 — central gate bypass: a search that skips the decision is caught", () => {
-    // Both pipeline entry points, and every out-of-file provider search, must reach it.
-    expect((PIPELINE_SRC.match(/searchGateDecision\(provider, query, route\)/g) ?? []).length).toBe(2);
-    /**
-     * Nine since the integrity audit: `searchLibraryOfCongressCandidates` was the one external
-     * provider in the pipeline that reached the network with no gate at all, found by counting
-     * these call-sites against `sourcingTiers.PROVIDER_TIER` rather than by reading the code.
-     */
-    expect((POOL_SRC.match(/searchGateDecision\(/g) ?? []).length).toBe(9);
-    expect(GEO_SRC).toContain("searchGateDecision(");
-  });
 
   it("M2 — combined builder bypass: a second combination engine is caught", () => {
     let engines = 0;
@@ -624,15 +604,6 @@ describe("RONDE 91 §14 — nothing from the earlier rounds was traded away", ()
     }
   });
 
-  it("TEST 37 — global budget, concurrency and the render-scoped caches", () => {
-    for (const anchor of [
-      "withGlobalMediaFetch(", "withGlobalVisionGate(", "formatGlobalBudget(",
-      "providerQueryCacheKey(", "queryCacheHits", "usedContentKeys",
-    ]) {
-      expect(PIPELINE_SRC, anchor).toContain(anchor);
-    }
-  });
-
   it("TEST 38 — strict provenance is still the default", () => {
     expect(CONTRACT_SRC).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
   });
@@ -640,8 +611,8 @@ describe("RONDE 91 §14 — nothing from the earlier rounds was traded away", ()
   it("TEST 39 — the beat entry points still put the beat's proof in scope", () => {
     for (const fn of [
       "beatPrimaryFetch", "tryBeatTopicRealFootage", "fetchHistoricalBeatVideo",
-      "researchBeatClipUnified", "fetchBeatClip", "adoptInternetArchiveBeatClip",
-      "adoptEuropeanaBeatClip", "fetchPersonCelebrityVideoClips", "fetchUniqueStockForBeat",
+      "researchBeatClipUnified", "fetchBeatClip",
+      "fetchPersonCelebrityVideoClips", "fetchUniqueStockForBeat",
       "fetchBeatInternetStillsFirst",
     ]) {
       const idx = PIPELINE_SRC.indexOf(`function ${fn}(`);

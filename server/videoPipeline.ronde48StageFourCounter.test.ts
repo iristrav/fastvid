@@ -86,29 +86,3 @@ describe("RONDE 48 (C1) — the export gate is what makes this counter expensive
     );
   });
 });
-
-describe("RONDE 48 (C1) — a guaranteed beat clip really does come back with a usable file", () => {
-  let dir: string;
-  beforeAll(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-r48-"));
-  });
-  afterAll(() => {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
-  });
-
-  it("resolves to a real file even with no topic, no beat text and no network tier available", async () => {
-    const { generateGuaranteedBeatClip } = await import("./videoPipeline");
-    // No beatText and no active topic ⇒ the escalation tiers are empty, so no provider is called
-    // and the function walks straight to its own placeholder tier. The point is not WHICH tier
-    // answers — it is that the call RETURNS a path instead of throwing. That is the premise of
-    // C1: the old code had already incremented the counter by the time this succeeded.
-    const clip = await generateGuaranteedBeatClip(4242, 9999, 3, dir);
-    expect(typeof clip).toBe("string");
-    expect(fs.existsSync(clip)).toBe(true);
-    expect(fs.statSync(clip).size).toBeGreaterThan(1_000);
-  }, 120_000);
-});

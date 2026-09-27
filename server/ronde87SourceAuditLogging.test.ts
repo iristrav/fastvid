@@ -227,8 +227,9 @@ describe("RONDE 87 §C — a rename never creates a new source", () => {
   });
 
   it("TEST 12 — both pipeline rename sites pass the stage that describes them", () => {
-    expect(PIPELINE_SRC).toContain('linkDerivedPath(effectiveClip, clipPath, "PADDED")');
-    expect(PIPELINE_SRC).toContain('linkDerivedPath(withText, effectiveClip, "OVERLAYED")');
+    // The PADDED site went with `padShortClipWithNext`, only called from the deleted curated-only adopter.
+    // Both original sites were in the deleted curated-only adopter; the overlay rename that remains passes its stage too.
+    expect(PIPELINE_SRC).toContain('linkDerivedPath(out, clipPath, "OVERLAYED"');
   });
 });
 
@@ -617,34 +618,6 @@ describe("RONDE 87 §K — concurrent renders never contaminate each other", () 
     expect(PIPELINE_SRC).toContain("lineage: new VisualSourceLedger({");
     expect(PIPELINE_SRC).toContain("bindLineageLedger(state.clipAdoptAudit, state.sourcingCache.lineage);");
     expect(PIPELINE_SRC).toContain("state.clipRejectAudit.lineage = state.sourcingCache.lineage;");
-  });
-});
-
-/* ═════════════ §L — nothing about quality logic moved ═════════════ */
-
-describe("RONDE 87 §L — observability only", () => {
-  it("TEST 43 — ranking, thresholds, concurrency and fallback order are untouched", () => {
-    // RONDE 79/86 ranking.
-    expect(PIPELINE_SRC).toContain("export function scoreCandidateAgainstBeat(");
-    expect(PIPELINE_SRC).toContain("rankCuratedPicksByBeatContext(ranked, curatedRankCtx)");
-    // RONDE 83/86 concurrency.
-    expect(PIPELINE_SRC).toContain("const visualLimit = pLimit(perf.sceneParallelism);");
-    expect(PIPELINE_SRC).toContain("const beatLimit = pLimit(beatConcurrency);");
-    // RONDE 223 re-anchor: the choke point now wraps this call in a try/catch so a
-    // permanently refused URL is remembered, so the `return` no longer sits on the same
-    // line. The property this guards — every download goes through the global media-fetch
-    // limiter — is unchanged and is what is asserted.
-    expect(PIPELINE_SRC).toContain("withGlobalMediaFetch(() =>");
-    expect(PIPELINE_SRC).toContain("downloadToFileStreamingInner(url, destPath, timeoutMs, label, options, maxBytes)");
-    // RONDE 84 candidate depth and RONDE 85's moving filler.
-    expect(PIPELINE_SRC).toContain("export const ARCHIVE_PREPARE_ATTEMPTS_MAX = 6;");
-    // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
-    // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
-    // technical fallback). A THIRD would still mean a freeze had leaked back in.
-    // RONDE 661: both clone-pads sat in the deleted compose montage's tail pad — none remain.
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(0);
-    // RONDE 86 search-performance cap.
-    expect(PIPELINE_SRC).toContain("if (queue.length >= prepareCap) break;");
   });
 });
 

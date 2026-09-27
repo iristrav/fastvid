@@ -258,13 +258,6 @@ describe("the render hands its key function over", () => {
     expect(at).toBeGreaterThan(-1);
     expect(pipe.slice(at, at + 1400)).toContain("bindContentKeyResolver(state.clipAdoptAudit, clipContentKey)");
   });
-
-  it("and the vision gate passes the key admission was granted on", () => {
-    const fs = require("fs") as typeof import("fs");
-    const path = require("path") as typeof import("path");
-    const pipe = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    expect(pipe).toContain("noteVisionAsked(dedup.beatShortlist, scene.index, beat.index, shortlistKey)");
-  });
 });
 
 /* ═════════════ P0-C — every push refusal records the asset's ending ═════════════ */

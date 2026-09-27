@@ -77,30 +77,6 @@ describe("RONDE 29a — the protest filter covers historical topics", () => {
   it("defaults to the general topic when no topic is passed", () => {
     expect(isOffTopicProtestForBeat("She opened the letter slowly.", protestHay)).toBe(false);
   });
-
-  it("is wired into the universal vision gate, not just the archive path", () => {
-    // The whole point of RONDE 29a: assetPassesBeatMinimum only ever sees curated-archive
-    // assets. beatClipPassesVisionGate is the function every rescue/adoption route funnels
-    // through, which is why the hook belongs there.
-    const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const gateBody = src.slice(
-      src.indexOf("async function beatClipPassesVisionGate("),
-      src.indexOf("async function loadArchiveCandidatePool(")
-    );
-    expect(gateBody).toContain("beatClipIsOffTopicProtest");
-    expect(gateBody).toContain("off_topic_protest");
-  });
-
-  it("judges the candidate's own provider text, never the search query", () => {
-    const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const fn = src.slice(
-      src.indexOf("function beatClipIsOffTopicProtest("),
-      src.indexOf("async function beatClipPassesVisionGate(")
-    );
-    expect(fn).toContain("providerText");
-    // No provider text = no evidence = leave the candidate alone.
-    expect(fn).toContain("if (!hay.trim()) return false;");
-  });
 });
 
 describe("RONDE 29b — the moving-footage target the ranking leans on", () => {
@@ -264,17 +240,6 @@ describe("RONDE 29c — per-gate ask/fire counters", () => {
     expect(summarizeGateFiring(b)).toEqual([
       { gate: "baked_text", asked: 1, fired: 0, closestShortfall: null, notArmed: 0 },
     ]);
-  });
-
-  it("counts the vision gate only on fresh verdicts, never on cache hits", () => {
-    // A cache hit is the same earlier judgment returned again; counting it would inflate
-    // "asked" with candidates nobody actually looked at.
-    const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const gateBody = src.slice(
-      src.indexOf("async function beatClipPassesVisionGate("),
-      src.indexOf("async function loadArchiveCandidatePool(")
-    );
-    expect(gateBody).toMatch(/if \(!result\.fromCache\) \{[\s\S]{0,200}recordGateVerdict\("vision_gate"/);
   });
 
   it("instruments the gate that motivated this whole mechanism", () => {

@@ -15,7 +15,6 @@ import {
   noteBeatCandidatesOffered,
   noteBeatEligible,
   noteBeatAdopted,
-  noteBeatPlaceholder,
   noteBeatVision,
   resolveBeatStatus,
   finalizeBeatOutcomes,
@@ -111,8 +110,8 @@ describe("RONDE 70 §1 — the reject audit no longer loses information silently
   it("no reject REASON was added, removed or renamed — only the counting changed", () => {
     const src = PIPELINE();
     for (const reason of [
-      "documentary_beat_gate", "entity_evidence", "off_topic_visual", "vision_gate",
-      "beat_image_gate", "baked_text", "off_topic_protest", "still_cap",
+      // vision_gate, baked_text and off_topic_protest went with `beatClipPassesVisionGate`.
+      "documentary_beat_gate", "entity_evidence", "off_topic_visual", "beat_image_gate",
     ]) {
       expect(src).toContain(`"${reason}"`);
     }
@@ -129,19 +128,6 @@ describe("RONDE 70 §2 — every beat gets exactly one VisualCoverageFinal line"
     { sceneIndex: 1, beatIndex: 1 },
     { sceneIndex: 1, beatIndex: 2 },
   ];
-
-  it("a multi-beat render reports every beat, adopted and failed alike", () => {
-    const audit = createBeatOutcomeAudit();
-    noteBeatAdopted(audit, 0, 0, "wikimedia", "wiki_a.mp4");
-    noteBeatPlaceholder(audit, 1, 1);
-    // Beats 0b1, 1b0 and 1b2 recorded nothing at all — they must still be reported.
-    const rows = finalizeBeatOutcomes(audit, collectReportableBeats(audit, planned, []), () => 0);
-    expect(rows).toHaveLength(planned.length);
-    const keys = rows.map((r) => `s${r.record.sceneIndex}b${r.record.beatIndex}`);
-    expect(keys).toEqual(["s0b0", "s0b1", "s1b0", "s1b1", "s1b2"]);
-    // Exactly one row per beat — no duplicates, so no beat can carry two statuses.
-    expect(new Set(keys).size).toBe(rows.length);
-  });
 
   it("a beat the plan never named but the audit saw is still reported", () => {
     // The fast-path and rescue routes fill a scene without recording a beat list.
@@ -199,51 +185,6 @@ describe("RONDE 70 §2 — every beat gets exactly one VisualCoverageFinal line"
     expect(line).toContain("origin=none");
   });
 
-  it("RUNTIME — the report really produces one line per beat, plus a TOTAL and the cap line", () => {
-    // Counted, not read off the source. A source assertion cannot tell `for (const r of rows)`
-    // from `for (const r of rows.slice(1))`, which is precisely how RONDE 62's ceiling passed
-    // its tests while bounding nothing.
-    const audit = createBeatOutcomeAudit();
-    const rejects = createClipRejectAudit();
-    noteBeatAdopted(audit, 0, 0, "wikimedia", "w.mp4");
-    noteBeatPlaceholder(audit, 1, 1);
-    recordClipReject(rejects, 1, 1, "/tmp/a.mp4", "beat_image_gate");
-
-    const lines = renderBeatFunnelReport(audit, planned, rejects);
-    const beatLines = lines.filter((l) => /\bscene=\d+ beat=\d+\b/.test(l));
-    expect(beatLines).toHaveLength(planned.length);
-    // Every planned beat appears exactly once, by name.
-    for (const b of planned) {
-      const hits = beatLines.filter((l) => l.includes(`scene=${b.sceneIndex} beat=${b.beatIndex} `));
-      expect(hits).toHaveLength(1);
-    }
-    expect(lines.filter((l) => l.includes("TOTAL beats="))).toHaveLength(1);
-    expect(lines.find((l) => l.includes("TOTAL beats="))).toContain(`TOTAL beats=${planned.length}`);
-    expect(lines.some((l) => l.includes("auditEntriesRecorded="))).toBe(true);
-  });
-
-  it("RUNTIME — the TOTAL adds up to the number of beat lines", () => {
-    const audit = createBeatOutcomeAudit();
-    const rejects = createClipRejectAudit();
-    noteBeatAdopted(audit, 0, 0, "wikimedia", "w.mp4");
-    noteBeatAdopted(audit, 0, 1, "pexels", "p.mp4");
-    noteBeatPlaceholder(audit, 1, 0);
-    noteBeatEligible(audit, 1, 1);
-    noteBeatCandidatesOffered(audit, 1, 2, 3);
-    recordClipReject(rejects, 1, 2, "/tmp/a.mp4", "vision_gate");
-
-    const lines = renderBeatFunnelReport(audit, planned, rejects);
-    const total = lines.find((l) => l.includes("TOTAL beats="))!;
-    expect(total).toContain("TOTAL beats=5");
-    expect(total).toContain("adopted=2");
-    expect(total).toContain("placeholder=1");
-    expect(total).toContain("eligibleNotAdopted=1");
-    expect(total).toContain("rejected=1");
-    const nums = [...total.matchAll(/(?:adopted|placeholder|eligibleNotAdopted|rejected|noCandidates|unknown)=(\d+)/g)]
-      .map((m) => Number(m[1]));
-    expect(nums.reduce((a, b) => a + b, 0)).toBe(5);
-  });
-
   it("the pipeline calls the report and prints every line it returns", () => {
     const src = PIPELINE();
     expect(src).toContain("for (const line of renderBeatFunnelReport(");
@@ -278,15 +219,6 @@ describe("RONDE 70 §3/§4 — adopted, placeholder, and the gap between eligibl
     expect(row!.record.selected).toBe("File_Adolf_Hitler_1945.mp4");
   });
 
-  it("PLACEHOLDER — a beat with nothing usable reports status=placeholder", () => {
-    const audit = createBeatOutcomeAudit();
-    noteBeatCandidatesOffered(audit, 1, 3, 5);
-    noteBeatPlaceholder(audit, 1, 3);
-    const [row] = finalizeBeatOutcomes(audit, collectReportableBeats(audit, [], []), () => 5);
-    expect(row!.status).toBe("placeholder");
-    expect(row!.record.adopted).toBe(0);
-  });
-
   it("ELIGIBLE BUT NOT ADOPTED — the gate said yes and the clip never arrived", () => {
     const audit = createBeatOutcomeAudit();
     noteBeatCandidatesOffered(audit, 2, 0, 4);
@@ -309,14 +241,6 @@ describe("RONDE 70 §3/§4 — adopted, placeholder, and the gap between eligibl
     // Three candidates passed the gates, one became the clip. The beat is adopted, full stop.
     expect(row!.status).toBe("adopted");
     expect(row!.status).not.toBe("eligible_not_adopted");
-  });
-
-  it("adopted also wins over placeholder — one status per beat, never two", () => {
-    const audit = createBeatOutcomeAudit();
-    noteBeatPlaceholder(audit, 5, 0);
-    noteBeatAdopted(audit, 5, 0, "pexels", "p.mp4");
-    const [row] = finalizeBeatOutcomes(audit, collectReportableBeats(audit, [], []), () => 0);
-    expect(row!.status).toBe("adopted");
   });
 
   it("vision is attributed to the beat that asked — judged and unavailable stay separate", () => {
@@ -408,7 +332,7 @@ describe("RONDE 70 §3/§4 — adopted, placeholder, and the gap between eligibl
     expect(callsOf("noteBeatCandidatesOffered")).toBeGreaterThanOrEqual(1);
     expect(callsOf("noteBeatEligible")).toBeGreaterThanOrEqual(1);
     expect(callsOf("noteBeatAdopted")).toBeGreaterThanOrEqual(1);
-    expect(callsOf("noteBeatPlaceholder")).toBeGreaterThanOrEqual(1);
+    // noteBeatPlaceholder went with the colour cards it counted.
     /**
      * SUPERSEDED BY RONDE 103, deliberately.
      *
@@ -434,7 +358,7 @@ describe("RONDE 70 §3/§4 — adopted, placeholder, and the gap between eligibl
     expect(
       callsOf("judgeBeatClipRelevance"),
       "the recorder's declaration plus one call per route that can spend a judgement"
-    ).toBeGreaterThanOrEqual(5);
+    ).toBeGreaterThanOrEqual(4);
     // Still counts judged and unavailable separately, and still only there.
     expect(callsOf("noteBeatVision")).toBe(2);
   });
@@ -451,16 +375,6 @@ describe("RONDE 70 §3/§4 — adopted, placeholder, and the gap between eligibl
     const beforeMark = src.slice(accept, src.indexOf("const markAdopted", accept));
     expect(beforeMark).not.toContain("noteBeatAdopted");
     expect(beforeMark).not.toContain("adoptedCount++");
-  });
-
-  it("WIRING — the placeholder note sits in the block that hands out the placeholder", () => {
-    const src = PIPELINE();
-    const note = src.indexOf("noteBeatPlaceholder(dedup.beatOutcomeAudit, scene.index, beat.index);");
-    expect(note).toBeGreaterThan(-1);
-    const loop = src.indexOf("for (let attempt = 0; attempt < 4; attempt++)", note);
-    expect(loop).toBeGreaterThan(note);
-    // And it is the same block that prints the per-beat [VisualCoverage] warning.
-    expect(src.slice(note, loop)).toContain("[VisualCoverage] s${scene.index}b${beat.index}");
   });
 
   it("eligibleCount and adoptedCount are their own counters — acceptedCount is NOT aliased", () => {
@@ -514,7 +428,7 @@ describe("RONDE 70 §6/§7 — Ronde 69 is still intact", () => {
     const src = PIPELINE();
     expect(
       [...src.matchAll(/if \(!isScopeAbortError\(err\)\) markWikimediaSearchResult\(false\);/g)]
-    ).toHaveLength(4); // RONDE 136 added the batched imageinfo helper — see ronde69's note.
+    ).toHaveLength(3); // RONDE 136's fourth stays; the V1 scored search was deleted — see ronde69's note.
     expect(src).toContain("const WIKIMEDIA_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;");
     expect(src).toContain("const WIKIMEDIA_COOLDOWN_MS = 3 * 60_000;");
   });
@@ -639,7 +553,6 @@ describe("RONDE 70 §10 — observability only", () => {
     expect(src).toContain("/** Quick script-ordered rescue: YouTube CC first, then capped Pexels. */");
     expect(src).toContain("if (realFootageFirstEnabled() && !youtubeOnlySourcingEnabled()) {");
     expect(src).toContain("const VISUAL_PROVIDER_FAILURE_STREAK_TRIP = 3;");
-    expect(src).toContain("maxVisualCandidatesPerBeatTry");
     expect(src).toContain("MAX_FUNNEL_CANDIDATES_TO_SCORE");
   });
 

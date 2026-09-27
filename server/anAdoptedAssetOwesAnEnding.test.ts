@@ -338,21 +338,12 @@ describe("VID-0589 §2 — scene_resourced says which rebuild did it", () => {
 
   it("every call site passes a site, and the rebuilds that can drop a clip are distinguishable", () => {
     const calls = [...PIPELINE.matchAll(/noteSceneClipsResourced\(([^;]*?)\);/gs)].map((m) => m[1]!);
-    /** RONDE 661: 10 calls — the fast-short compose readiness sweep and the P5A site are deleted. */
-    expect(calls.length, "the resourcing call sites moved").toBeGreaterThanOrEqual(10);
+    /** Three — the reorder, shot-sequence and rhythm passes; the refill, guaranteed and AI rebuilds are deleted. */
+    expect(calls.length, "the resourcing call sites moved").toBeGreaterThanOrEqual(3);
     const named = calls.map((c) => /,\s*"([a-z_]+)"\s*$/.exec(c.trim())?.[1] ?? null);
     expect(named.filter((n) => n == null), "an anonymous rebuild is back").toEqual([]);
-    /**
-     * The four that matter for 589: a compose-ready filter, a strict-voice refill, a guaranteed
-     * fill and a single generated card are four different decisions about a proven asset, and the
-     * record could not previously tell them apart.
-     */
-    for (const site of [
-      /** RONDE 661: "compose_ready_filter" went with `ensureFastShortScenesReadyForCompose`. */
-      "strict_voice_refill",
-      "guaranteed_fill",
-      "last_resort_ai_clip",
-    ]) {
+    /** The three rebuilds that remain, each named. */
+    for (const site of ["beat_reorder", "shot_sequence", "visual_rhythm"]) {
       expect(named, `${site} is not reachable from any call site`).toContain(site);
     }
   });

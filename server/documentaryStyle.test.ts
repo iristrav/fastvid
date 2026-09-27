@@ -92,23 +92,6 @@ describe("documentaryStyle", () => {
     else process.env.ARCHIVE_BLUR_FILL_STILLS = prev;
   });
 
-  it("builds per-clip and final scene grades", () => {
-    // buildPerClipDocumentaryGradeVF is unconditional; buildMontageBranchNormVF/
-    // buildFitGrayGradedVideoVF/buildFinalSceneGradeVF gate on documentaryStyleEnabled(),
-    // which is off by default (see "is off by default" above) — exercise the graded branch
-    // explicitly here rather than relying on ambient env state.
-    expect(buildPerClipDocumentaryGradeVF()).toContain("eq=contrast");
-    expect(buildPerClipDocumentaryGradeVF()).toContain("vignette=");
-    const prev = process.env.ENABLE_DOC_STYLE;
-    process.env.ENABLE_DOC_STYLE = "true";
-    expect(buildMontageBranchNormVF()).toContain("color=0x2a2a2a");
-    expect(buildMontageBranchNormVF()).toContain("eq=contrast");
-    expect(buildFitGrayGradedVideoVF()).toContain("eq=contrast");
-    expect(buildFinalSceneGradeVF()).toMatch(/noise=|copy/);
-    if (prev === undefined) delete process.env.ENABLE_DOC_STYLE;
-    else process.env.ENABLE_DOC_STYLE = prev;
-  });
-
   describe("Ken Burns easing (Phase 10)", () => {
     it("buildKenBurnsTail uses an eased sine progress curve, not a linear zoom+step increment", () => {
       const vf = buildKenBurnsTail(4, 1.1, "center", "zoom-in");
@@ -243,16 +226,6 @@ describe("documentaryStyle", () => {
       expect(buildFilmGrainVF("stock")).toBe(",noise=alls=9:allf=t+u");
       if (prev === undefined) delete process.env.ENABLE_FILM_GRAIN;
       else process.env.ENABLE_FILM_GRAIN = prev;
-    });
-
-    it("montage branch grade is not identical for an AI-generated clip vs. an archive clip", () => {
-      const prev = process.env.ENABLE_DOC_STYLE;
-      process.env.ENABLE_DOC_STYLE = "true";
-      const archiveGrade = buildMontageBranchNormVF("archive");
-      const aiGrade = buildMontageBranchNormVF("ai_generated");
-      expect(archiveGrade).not.toBe(aiGrade);
-      if (prev === undefined) delete process.env.ENABLE_DOC_STYLE;
-      else process.env.ENABLE_DOC_STYLE = prev;
     });
   });
 });

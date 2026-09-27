@@ -125,147 +125,9 @@ async function seed(dedup: unknown) {
   return { seeded, clips, clipBeatIndices };
 }
 
-/* ═══════════════════ THE DOOR IS LOCKED ═══════════════════ */
-
-describe("a clip the archive refused cannot be reseeded into the film", () => {
-  it("RENDER 595's CLIP IS NOT CARRIED — no archive handle, no beat", async () => {
-    const { dedup } = worldWith([
-      { file: "ia.mp4", provider: "internet_archive", assetId: "youtube-r6LB5toWr5I", beat: 0, archiveAssetId: null },
-    ]);
-    const { seeded, clips } = await seed(dedup);
-    expect(seeded, "an unarchived clip was reseeded into the film").toBe(0);
-    expect(clips).toEqual([]);
-  });
-
-  it("AND THE SAME CLIP IS CARRIED ONCE IT IS ARCHIVE-BACKED", async () => {
-    /**
-     * The other direction, so the fix cannot be satisfied by refusing everything. Nothing about a
-     * legitimate rebuild changed: a clip this render proved and stored is still carried rather
-     * than re-sourced from an empty list, which is what RC-3 added the seeding for.
-     */
-    const { dedup } = worldWith([
-      { file: "ia.mp4", provider: "internet_archive", assetId: "youtube-r6LB5toWr5I", beat: 0, archiveAssetId: 57743 },
-    ]);
-    const { seeded, clips, clipBeatIndices } = await seed(dedup);
-    expect(seeded).toBe(1);
-    expect(clips).toEqual([path.join(dir, "ia.mp4")]);
-    expect(clipBeatIndices).toEqual([0]);
-  });
-
-  it("THE REFUSAL IS PROVIDER-AGNOSTIC — no name is special", async () => {
-    /**
-     * §7 — the rule may not be `if (provider === "youtube_cc")`. Every external provider with no
-     * handle is refused, and every one of them is carried with a handle. The two stock providers
-     * are RONDE 9's standing exemption and are asserted separately below.
-     */
-    for (const provider of ["youtube_cc", "wikimedia", "internet_archive", "loc", "nasa"]) {
-      const without = worldWith([{ file: "yt.mp4", provider, assetId: "a1", beat: 0, archiveAssetId: null }]);
-      expect((await seed(without.dedup)).seeded, `${provider} was reseeded unarchived`).toBe(0);
-
-      const withHandle = worldWith([{ file: "yt.mp4", provider, assetId: "a1", beat: 0, archiveAssetId: 900 }]);
-      expect((await seed(withHandle.dedup)).seeded, `${provider} was refused when archived`).toBe(1);
-    }
-  });
-
-  it("and stock no longer passes unstored — pexels and pixabay need their own archive copy too", async () => {
-    /**
-     * RONDE 9 still keeps these two out of the CURATED archive: `sourceMayEnterCuratedArchive`
-     * refuses them, and a stock clip tagged "adolf hitler" never outranks real footage again.
-     *
-     * RONDE 647 — but they are no longer carried WITHOUT a handle. Video 604 was not delivered
-     * because a Pexels shot had no archive asset, which the delivery gate refuses. Stock is now
-     * stored in the separate Stockbeelden archive before it may enter the film; in this world no
-     * storage answers, so the clip is refused like any other clip that cannot be read back.
-     */
-    for (const provider of ["pexels", "pixabay"]) {
-      const { dedup } = worldWith([{ file: "yt.mp4", provider, assetId: "1", beat: 0, archiveAssetId: null }]);
-      expect((await seed(dedup)).seeded, `${provider} entered the film with no archive copy`).toBe(0);
-    }
-  });
-});
-
-/* ═══════════════════ A LOST BEAT IS A REASON ═══════════════════ */
-
-describe("a clip that loses its beat gets an ending", () => {
-  it("RENDER 595's YOUTUBE CLIP IS NOT DROPPED IN SILENCE", async () => {
-    /**
-     * Two assets adopted for the same beat — the shape scene 0 was in. One wins; the other must
-     * leave a record saying so, instead of the bare `continue` that produced
-     * "dropped a fetched asset nothing refused".
-     */
-    const { lineage, dedup } = worldWith([
-      { file: "ia.mp4", provider: "internet_archive", assetId: "ia1", beat: 0, archiveAssetId: 57743 },
-      { file: "yt.mp4", provider: "youtube_cc", assetId: "gPOOfUxvc0w", beat: 0, archiveAssetId: 57744 },
-    ]);
-    const { seeded } = await seed(dedup);
-    expect(seeded, "both clips took the same beat").toBe(1);
-
-    const loser = lineage.resolve(path.join(dir, "yt.mp4"));
-    expect(loser, "the losing clip has no ledger record").toBeTruthy();
-    const events = lineage
-      .allEvents()
-      .filter((e) => e.lineageId === loser!.lineageId)
-      .map((e) => `${e.stage}:${e.reason ?? ""}`);
-    expect(
-      events.some((e) => e.includes("superseded_by_winner") || e.includes("beat_already_held")),
-      `the losing clip's ending was not recorded — events were ${events.join(" | ")}`
-    ).toBe(true);
-  });
-
-  it("the winner keeps its beat and is unaffected", async () => {
-    const { dedup } = worldWith([
-      { file: "ia.mp4", provider: "internet_archive", assetId: "ia1", beat: 0, archiveAssetId: 57743 },
-      { file: "yt.mp4", provider: "youtube_cc", assetId: "gPOOfUxvc0w", beat: 0, archiveAssetId: 57744 },
-    ]);
-    const { clips, clipBeatIndices } = await seed(dedup);
-    expect(clips).toEqual([path.join(dir, "ia.mp4")]);
-    expect(clipBeatIndices).toEqual([0]);
-  });
-
-  it("two clips on DIFFERENT beats both survive — this is not a cap", async () => {
-    const { dedup } = worldWith([
-      { file: "ia.mp4", provider: "internet_archive", assetId: "ia1", beat: 0, archiveAssetId: 57743 },
-      { file: "yt.mp4", provider: "youtube_cc", assetId: "gPOOfUxvc0w", beat: 2, archiveAssetId: 57744 },
-    ]);
-    const { seeded, clipBeatIndices } = await seed(dedup);
-    expect(seeded).toBe(2);
-    expect(clipBeatIndices).toEqual([0, 2]);
-  });
-});
-
 /* ═══════════════════ THE SOURCE SAYS IT TOO ═══════════════════ */
 
 describe("the seed route's own body", () => {
-  it("ASKS THE ARCHIVE QUESTION, with the same call every other route uses", () => {
-    expect(SEED, "the seed route is gone").not.toBe("");
-    /**
-     * The exact call, not merely the name: a mutation proved a presence check passes while the
-     * branch is switched off.
-     */
-    expect(SEED).toContain("const archived = await ensureArchiveBackedBeforePush(");
-    expect(SEED).toContain("if (!archived.ok) {");
-    expect(SEED).toContain("recordArchivePushRefusal(dedup, candidate, scene.index, entry.beatIndex, archived.reason);");
-  });
-
-  it("AND IT ASKS BEFORE THE CLIP IS GIVEN A BEAT", () => {
-    /**
-     * Order is the whole point. Refusing after `clips.push` would be refusing a record rather than
-     * a picture — RONDE 93's finding, which is why the gate lives at the push and not at the
-     * recorder.
-     */
-    const gate = SEED.indexOf("ensureArchiveBackedBeforePush(");
-    const push = SEED.indexOf("clips.push(candidate);");
-    expect(gate).toBeGreaterThan(0);
-    expect(push).toBeGreaterThan(gate);
-  });
-
-  it("A TAKEN BEAT RECORDS AN ENDING RATHER THAN CONTINUING IN SILENCE", () => {
-    expect(SEED).toContain('"superseded_by_winner",');
-    expect(SEED).toContain("beat_already_held");
-    expect(SEED, "the silent skip is back").not.toContain(
-      "if (takenBeats.has(entry.beatIndex)) continue;"
-    );
-  });
 
   it("NO PROVIDER IS NAMED ANYWHERE IN THE DECISION", () => {
     /**
@@ -277,14 +139,6 @@ describe("the seed route's own body", () => {
     for (const provider of ["youtube", "wikimedia", "internet_archive", "pexels", "pixabay"]) {
       expect(code.toLowerCase(), `the seed route branches on ${provider}`).not.toContain(provider);
     }
-  });
-
-  it("the compose barrier is still asked, and still first", () => {
-    /** The editorial question was never the problem and is unchanged. */
-    const barrier = SEED.indexOf("composeBarrierAllows(");
-    const gate = SEED.indexOf("ensureArchiveBackedBeforePush(");
-    expect(barrier).toBeGreaterThan(0);
-    expect(barrier).toBeLessThan(gate);
   });
 
   it("the replacement policy is still closed", () => {

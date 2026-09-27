@@ -219,10 +219,4 @@ describe("Points 15/16 — quality gate and fallback cadence stay unchanged (reu
     };
     expect(() => assertVisualCoverageExportGate(report, 1)).toThrow();
   });
-
-  it("Test 16 — the scene-level placeholder fallback stays capped to a short clip, never a long single placeholder", async () => {
-    const { guaranteedTextOverlayDurationSec } = await freshPipeline();
-    const { archiveVisualMaxClipSec } = await import("./sourcingPolicy");
-    expect(guaranteedTextOverlayDurationSec(120)).toBe(archiveVisualMaxClipSec());
-  });
 });

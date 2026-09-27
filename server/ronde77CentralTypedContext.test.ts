@@ -214,7 +214,8 @@ describe("RONDE 77 §D — action becomes a query, after the entities and never 
     // state, so they cannot be driven from a test — but a call site that quietly stops passing
     // { action } is exactly the regression this round exists to prevent, and it is countable.
     const calls = [...SRC.matchAll(/buildHistoricalArchivalQueries\(intent, beat\.text, \{/g)];
-    expect(calls.length, "call sites found").toBeGreaterThanOrEqual(5);
+    // Four: the fifth was in `typedRetrievalQueriesForBeat`, deleted with the Wikimedia/IA rescue routes.
+    expect(calls.length, "call sites found").toBeGreaterThanOrEqual(4);
     for (const m of calls) {
       const opts = SRC.slice(m.index!, SRC.indexOf("}", m.index! + m[0].length));
       expect(opts, `call site at ${m.index} passes no action`)

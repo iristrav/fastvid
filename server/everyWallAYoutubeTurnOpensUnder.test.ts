@@ -327,22 +327,6 @@ describe("§4 — a wall sized by a budget function, checked rather than trusted
     }
   });
 
-  it("composeRescueWallClockMs never returns less than a turn costs", () => {
-    for (const len of [null, "30s", "3min"]) {
-      expect(composeRescueWallClockMs(len), `videoLength=${len}`).toBeGreaterThanOrEqual(PRICE);
-    }
-  });
-
-  it("historicalRescueBudgetMs never returns less than a turn costs", () => {
-    /** Its own floor is 90s; the profile's number only ever raises it. */
-    for (const beatClipTimeoutMs of [1_000, 22_000, 150_000]) {
-      expect(
-        historicalRescueBudgetMs({ perf: { beatClipTimeoutMs } }),
-        `beatClipTimeoutMs=${beatClipTimeoutMs}`
-      ).toBeGreaterThanOrEqual(PRICE);
-    }
-  });
-
   it("the scene search budget's floor is above the price", () => {
     expect(SCENE_SEARCH_MIN_MS).toBeGreaterThanOrEqual(PRICE);
     /** Including the degenerate input that returns the floor outright. */

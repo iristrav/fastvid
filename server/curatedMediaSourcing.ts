@@ -2869,67 +2869,6 @@ export function isArchiveGeoBlockedForBeat(
   return false;
 }
 
-/** Skip FFmpeg when metadata already rules out an asset. */
-export function archiveAssetPreflight(
-  asset: ArchiveAssetRow,
-  usedAssetIds: Set<number>,
-  usedStorageUrls: Set<string>,
-  topicAnchors: string[],
-  beatTags: string[],
-  opts: {
-    minVideoSec?: number;
-    interviewUsed?: number;
-    interviewMax?: number;
-    imageUsed?: number;
-    imageMax?: number;
-    beatText?: string;
-    videoTitle?: string;
-    segmentGeoLock?: BeatGeoRegion | null;
-    videoVisualTopic?: VideoVisualTopic;
-  } = {}
-): boolean {
-  if (usedAssetIds.has(asset.id) || usedStorageUrls.has(asset.storageUrl)) return false;
-  if (metadataVisualBlocksEnabled()) {
-    if (isCuratedOffTopicAsset(asset, topicAnchors, beatTags, opts.videoVisualTopic ?? "general")) return false;
-    if (
-      opts.beatText &&
-      isArchiveGeoBlockedForBeat(asset, opts.beatText, opts.videoTitle, opts.segmentGeoLock)
-    ) {
-      return false;
-    }
-    if (opts.beatText && isGenericPeopleAsset(asset)) {
-      const required = extractRequiredVisualTags(opts.beatText);
-      if (required.length >= 2 && countVisualTagHits(asset, required) === 0) return false;
-    }
-  }
-  if (
-    opts.interviewMax != null &&
-    opts.interviewUsed != null &&
-    isCuratedInterviewAsset(asset) &&
-    opts.interviewUsed >= opts.interviewMax
-  ) {
-    return false;
-  }
-  if (
-    opts.imageMax != null &&
-    opts.imageUsed != null &&
-    asset.mediaType === "image" &&
-    opts.imageUsed >= opts.imageMax
-  ) {
-    return false;
-  }
-  const minVideo = opts.minVideoSec ?? archiveVisualMinClipSec() - 0.5;
-  if (
-    asset.mediaType === "video" &&
-    asset.durationSec != null &&
-    asset.durationSec > 0 &&
-    asset.durationSec < minVideo
-  ) {
-    return false;
-  }
-  return true;
-}
-
 /**
  * RONDE 645 — THE ROUTE THAT PREPARED A CURATED CLIP TELLS THE LEDGER WHICH ASSET IT WAS.
  *

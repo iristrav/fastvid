@@ -264,11 +264,6 @@ describe("YT-REPAIR §4 — nothing was loosened to make YouTube work", () => {
     expect(allowUnverifiedYoutube()).toBe(false);
   });
 
-  it("THE SEARCH GATE AND THE VISION GATE ARE EXACTLY AS THEY WERE", () => {
-    /** NOT_ASKED is still not a verdict — RONDE 89/230-A's rule. */
-    expect(PIPE).toContain('gateVerdict !== "NOT_ASKED"');
-  });
-
   it("THE DOWNLOAD CAP WAS RAISED ON PURPOSE, and only the cap", () => {
     /**
      * 20 → 60. Not a gate, not a threshold, not a quality bar: a supply budget, raised because the

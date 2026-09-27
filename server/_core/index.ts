@@ -14,7 +14,6 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { LOCAL_UPLOADS_DIR } from "../storageLocal";
 import { getStorageBackend } from "../storageBackend";
-import { isKlingAvailable, klingBeatFallbackEnabled } from "./klingVideo";
 import { registerArchiveUploadRoute } from "../archiveUpload";
 import { registerArchiveMediaRoute } from "../archiveMediaStream";
 import { archiveUploadRequestTimeoutMs } from "../archiveVideoSplitter";
@@ -240,27 +239,6 @@ async function startServer() {
   );
   console.log("[Fastvid] STABILITY_AI_API_KEY:", process.env.STABILITY_AI_API_KEY ? "✓ set" : "✗ NOT SET");
   console.log("[Fastvid] LEONARDO_API_KEY:", process.env.LEONARDO_API_KEY ? "✓ set" : "✗ NOT SET");
-  console.log("[Fastvid] REPLICATE_API_KEY:", process.env.REPLICATE_API_KEY ? "✓ set" : "✗ NOT SET — Grok video");
-  console.log("[Fastvid] RUNWAY_API_KEY:", process.env.RUNWAY_API_KEY ? "✓ set" : "✗ NOT SET");
-  const cheapAi =
-    process.env.ENABLE_AI_FALLBACK !== "false" &&
-    !!(process.env.STABILITY_AI_API_KEY || process.env.LEONARDO_API_KEY);
-  const premiumVideo = process.env.ENABLE_AI_VIDEO_FALLBACK === "true";
-  console.log(
-    "[Fastvid] AI fallback (cheap image, ~$0.03/beat):",
-    cheapAi ? "✓ Stability/Leonardo" : "✗ set STABILITY_AI_API_KEY (recommended)"
-  );
-  console.log(
-    "[Fastvid] AI video fallback (Runway/Grok, expensive):",
-    premiumVideo ? "✓ enabled" : "✗ off (default — saves cost)"
-  );
-  const klingOn = process.env.ENABLE_KLING_BEAT_FALLBACK !== "false" && isKlingAvailable();
-  console.log(
-    "[Fastvid] Kling beat fallback (last resort after all stock/archive):",
-    klingOn
-      ? `✓ on (max ${process.env.KLING_MAX_CLIPS_PER_VIDEO || "6"}/video — FAL_KEY or KLING_API_KEY)`
-      : "✗ set FAL_KEY or KLING_API_KEY+KLING_API_SECRET"
-  );
   console.log(
     "[Fastvid] Faceless typewriter keywords on B-roll:",
     facelessSubtitlesEnabled()
@@ -637,7 +615,6 @@ async function startServer() {
         UNSPLASH_ACCESS_KEY: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
         youtubeSourcingEnabled: youtubeSourcingEnabled(),
         europeanaReady: europeanaSourcingEnabled() && Boolean(process.env.EUROPEANA_API_KEY?.trim()),
-        klingReady: klingBeatFallbackEnabled(),
         falKeySet: Boolean(process.env.FAL_KEY?.trim() || process.env.FAL_API_KEY?.trim()),
         facelessSubtitles: facelessSubtitlesEnabled(),
         extraOnScreenText: process.env.ENABLE_EXTRA_ONSCREEN_TEXT !== "false",

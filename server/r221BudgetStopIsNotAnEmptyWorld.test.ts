@@ -38,67 +38,6 @@ import {
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-/* ═══════════ 1. the fact is recorded, and now read ═══════════ */
-
-describe("R221 §1 — a budget stop is distinguishable from an empty world", () => {
-  it("THE READER HAS A CALLER NOW", () => {
-    const callers = [...PIPE.matchAll(/budgetExhaustedFor\(/g)];
-    expect(callers.length, "the question still has no asker").toBeGreaterThan(0);
-  });
-
-  it("the coverage line offers all three answers, in the right precedence", () => {
-    const at = PIPE.indexOf("const budgetStops = budgetExhaustedFor(");
-    expect(at).toBeGreaterThan(0);
-    const block = PIPE.slice(at, at + 600);
-    expect(block).toContain("REAL_ASSET_REJECTED");
-    expect(block).toContain("BUDGET_EXHAUSTED");
-    expect(block).toContain("ALL_SOURCING_EXHAUSTED");
-    // A refusal is an answer no budget explains, so it must be tested first.
-    expect(block.indexOf("REAL_ASSET_REJECTED")).toBeLessThan(block.indexOf("BUDGET_EXHAUSTED"));
-  });
-
-  it("and it names WHICH ceiling, not merely that there was one", () => {
-    const at = PIPE.indexOf("BUDGET_EXHAUSTED (${budgetStops.join");
-    expect(at, "the reason does not say which budget stopped the beat").toBeGreaterThan(0);
-  });
-
-  it("THE MISLEADING SENTENCE IS NO LONGER REACHED WHEN A BUDGET STOPPED THE BEAT", () => {
-    const at = PIPE.indexOf("const budgetStops = budgetExhaustedFor(");
-    const block = PIPE.slice(at, at + 600);
-    expect(block).toContain("budgetStops.length > 0");
-  });
-});
-
-/* ═══════════ 2. the underlying fact behaves as the line now claims ═══════════ */
-
-describe("R221 §2 — measured on the budget itself", () => {
-  it("A BEAT THAT HIT A CEILING SAYS SO; ONE THAT DID NOT SAYS NOTHING", () => {
-    const state = createRetrievalBudgetState();
-    // Spend the query allowance for one beat.
-    for (let i = 0; i < BUDGETS.queries() + 2; i++) budgetAllows(state, 0, 0, "queries");
-    expect(budgetExhaustedFor(state, 0, 0)).toContain("queries");
-    expect(budgetExhaustedFor(state, 0, 1), "an untouched beat claims a ceiling").toEqual([]);
-  });
-
-  it("a beat well under its allowance reports nothing", () => {
-    const state = createRetrievalBudgetState();
-    expect(budgetAllows(state, 1, 0, "queries")).toBe(true);
-    expect(budgetExhaustedFor(state, 1, 0)).toEqual([]);
-  });
-
-  it("the answer is per beat, never leaked from a neighbour", () => {
-    const state = createRetrievalBudgetState();
-    for (let i = 0; i < BUDGETS.queries() + 2; i++) budgetAllows(state, 2, 5, "queries");
-    expect(budgetExhaustedFor(state, 2, 5)).toContain("queries");
-    expect(budgetExhaustedFor(state, 2, 6)).toEqual([]);
-    expect(budgetExhaustedFor(state, 3, 5)).toEqual([]);
-  });
-
-  it("no state at all is not an assertion that a budget was hit", () => {
-    expect(budgetExhaustedFor(undefined, 0, 0)).toEqual([]);
-  });
-});
-
 /* ═══════════ 3. what this round did NOT do ═══════════ */
 
 describe("R221 §3 — a reader was added, nothing else", () => {

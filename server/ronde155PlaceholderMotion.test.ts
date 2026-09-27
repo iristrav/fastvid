@@ -41,42 +41,7 @@ import { describe, expect, it } from "vitest";
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 const FEEDBACK = readFileSync(join(__dirname, "visualMismatchFeedback.ts"), "utf8");
 
-describe("RONDE 155 — every placeholder card moves", () => {
-  it("both card sites use the animated gradient source", () => {
-    // The plain colour card and the text-over-colour card.
-    expect((PIPE.match(/gradients=s=\$\{VIDEO_WIDTH\}x\$\{VIDEO_HEIGHT\}/g) ?? []).length).toBe(2);
-  });
-
-  it("the speed is the measured-stable one, not the marginal one", () => {
-    expect((PIPE.match(/speed=0\.20:r=25/g) ?? []).length).toBe(2);
-    // 0.05 was measured as a coin-flip and must not come back.
-    expect(PIPE).not.toContain("speed=0.05:r=25");
-  });
-
-  it("the drift stays inside the palette — the next entry, not an arbitrary colour", () => {
-    expect(PIPE).toContain("const colorB = colors[(variant + 1) % colors.length];");
-    expect(PIPE).toContain("const textColorB = colors[(textVariant + 1) % colors.length];");
-  });
-
-  it("the flat-colour commands survive as the fallback ladder", () => {
-    /**
-     * A box whose ffmpeg lacks the gradients source, or one so loaded that only the cheapest
-     * encode completes, must still get a card: a held frame beats no picture at all, which is the
-     * entire purpose of a last-resort net. Those commands are the ladder that already existed.
-     */
-    const idx = PIPE.indexOf("async function _generateColorFallbackInner");
-    const body = PIPE.slice(idx, idx + 4200);
-    expect(body).toContain("gradients=");
-    expect((body.match(/color=c=/g) ?? []).length).toBeGreaterThanOrEqual(3);
-    // The gradient is FIRST, so the still fallbacks are only reached on failure.
-    expect(body.indexOf("gradients=")).toBeLessThan(body.indexOf("color=c="));
-  });
-});
-
 describe("RONDE 155 — the card is still honest about being a card", () => {
-  it("it is still adopted as a placeholder", () => {
-    expect(PIPE).toContain('isPlaceholderGuaranteedTier(tierOut.tier) ? "rescue_placeholder"');
-  });
 
   it("no zoom or crop was added — the motion is the source, not a fake camera move", () => {
     const idx = PIPE.indexOf("async function _generateColorFallbackInner");
@@ -111,20 +76,6 @@ describe("RONDE 155 — an unclassified refusal now says what it could not read"
 
   it("an empty answer is reported as empty rather than silently skipped", () => {
     expect(FEEDBACK).toContain("the gate returned no prose to classify");
-  });
-
-  it("the shared gate prints it too — that is where most refusals land", () => {
-    /**
-     * The funnel already logged a line per refusal because it has a candidate list to reorder.
-     * The shared gate has none, so it recorded the tally and said nothing — which is exactly where
-     * video 551's seven UNCLEAR refusals went: counted, never shown.
-     */
-    const idx = PIPE.indexOf('dedup.lastMismatchByBeat.set(`s${scene.index}b${beat.index}`, kind);');
-    expect(idx).toBeGreaterThan(-1);
-    const block = PIPE.slice(idx, idx + 1400);
-    expect(block).toContain('if (kind === "UNCLEAR") {');
-    expect(block).toContain("formatMismatchFeedback({");
-    expect(block).toContain("depicts: relevance.depicts");
   });
 
   it("the funnel passes its prose through as well", () => {

@@ -54,8 +54,8 @@ const DECIDER = (() => {
 describe("the boundary is the one every picture crosses", () => {
   it("every scene-push variant opens with the gate — five call sites, no exceptions", () => {
     const calls = [...PIPELINE.matchAll(/await beatClipRefusedByRelevanceGate\(/g)];
-    /** RONDE 661: four — the fifth was the deleted compose-montage backfill. */
-    expect(calls.length, "a push route stopped asking the gate").toBe(4);
+    /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
+    expect(calls.length, "a push route stopped asking the gate").toBe(1);
     /** And every one of them refuses the push on a true answer. */
     for (const m of calls) {
       const line = PIPELINE.slice(m.index!, PIPELINE.indexOf("\n", m.index!));
@@ -131,8 +131,8 @@ describe("§18 — THE SWEEP: no push closure exists outside the invariant", () 
   );
 
   it("there are push closures to check, and every one of them is found", () => {
-    /** RONDE 661: four — the fast-short compose rescue and the compose backfill are deleted. */
-    expect(CLOSURES.length, "the push closures moved or were renamed").toBe(4);
+    /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
+    expect(CLOSURES.length, "the push closures moved or were renamed").toBe(1);
   });
 
   it("EVERY PUSH CLOSURE REACHES THE ARCHIVE INVARIANT — not archive-backed = 0", () => {
@@ -163,8 +163,6 @@ describe("§18 — THE SWEEP: no push closure exists outside the invariant", () 
     const EXPECTED_CALLERS = [
       /** The universal push gate, for every route that has a beat. */
       "beatClipRefusedByRelevanceGate",
-      /** The scene rebuild's seeding route — render 595's unlocked door. */
-      "seedExistingProvenSceneClips",
     ];
     /** Every call site, resolved to the function it sits in, through this file's own reader. */
     const callers = [...PIPELINE.matchAll(/recordArchivePushRefusal\(dedup, /g)].map(
@@ -529,9 +527,8 @@ describe("§6 — the invariant is not subject-specific", () => {
 
 describe("what this round did not touch", () => {
   it("the gates, thresholds and budgets named as untouchable are where they were", () => {
-    expect(PIPELINE).toContain("ensureSubjectAnchor(q, stockSubjectAnchor)");
+    /** The stock subject anchor and the repeated-query skip went with `adoptStockBeatClipFallback`. */
     expect(PIPELINE).toContain("capCandidatesPerSource(poolCandidates, before)");
-    expect(PIPELINE).toContain("if (dedup.stockQueriesAsked.has(askKey)) {");
     const CURATED = readFileSync(join(__dirname, "curatedMediaSourcing.ts"), "utf8");
     expect(CURATED).toContain("NO_RELEVANT_ARCHIVE");
   });

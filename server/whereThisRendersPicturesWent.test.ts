@@ -68,10 +68,10 @@ describe("P0-9 §1 — one implementation, and the exit that throws reads it too
      * reason. The two belong together: one says which candidates were never put to the editor,
      * the other says what became of the ones that were chosen.
      */
-    const anchor = PIPE.indexOf("for (const line of beatShortlistViolations(dedup.beatShortlist)) console.error(line);");
+    const anchor = PIPE.indexOf("for (const line of beatShortlistViolations(visualDedup.beatShortlist)) console.error(line);");
     expect(anchor, "RONDE 227's reader at the failure exit is gone").toBeGreaterThan(0);
     const block = PIPE.slice(anchor, anchor + 700);
-    expect(block).toContain("reportLineageOutcomeInvariant(dedup.sourcingCache?.lineage");
+    expect(block).toContain("reportLineageOutcomeInvariant(visualDedup.sourcingCache?.lineage");
   });
 
   it("and the report route still reads it, through its own report sink", () => {
@@ -274,9 +274,11 @@ describe("P0-9 §4 — the boundary of this proof", () => {
      * removal is now filed through `recordAssetOutcome` with a reason whose status is REMOVED.
      */
     const removed = PIPE.match(/"extended_removed"|"not_chosen"/g)?.length ?? 0;
-    expect(selected, "nothing records SELECTED any more").toBeGreaterThanOrEqual(2);
+    /** One SELECTED site: the other was in the curated-only branch of `adoptArchiveBeatClip`. */
+    expect(selected, "nothing records SELECTED any more").toBeGreaterThanOrEqual(1);
     expect(adopted, "nothing records ADOPTED any more").toBeGreaterThanOrEqual(2);
-    expect(removed, "nothing records REMOVED any more").toBeGreaterThanOrEqual(2);
+    /** One REMOVED reason left: `extended_removed` belonged to the rescue ladder's `extendLastClip`. */
+    expect(removed, "nothing records REMOVED any more").toBeGreaterThanOrEqual(1);
     expect(PIPE).toContain("recordAssetOutcome(");
   });
 

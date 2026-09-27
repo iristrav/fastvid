@@ -252,16 +252,6 @@ describe("RONDE 128 — earlier guarantees intact", () => {
     expect(MIN_STITCHABLE_SOURCE_SEC).toBe(1.2);
   });
 
-  it("the coverage ladder still has its rungs, in order", () => {
-    const p = src("videoPipeline.ts");
-    const a = p.indexOf("Round A — ask for SHORT holds");
-    const a2 = p.indexOf("Round A2: footage of what the shortest beats are ABOUT");
-    const b = p.indexOf("Round B — re-use this scene's OWN footage, in motion");
-    expect(a).toBeGreaterThan(0);
-    expect(a2).toBeGreaterThan(a);
-    expect(b).toBeGreaterThan(a2);
-  });
-
   it("RONDE 124's licence statuses are untouched", async () => {
     const { classifyArchiveLicense } = await import("./youtubeLicenseStatus");
     expect(classifyArchiveLicense(null, null)).toBe("UNVERIFIED");

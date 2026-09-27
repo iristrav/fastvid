@@ -163,14 +163,6 @@ export function strictVisionInconclusiveFails(fastMode = false): boolean {
   return minClipQualityScore() >= 8;
 }
 
-/** Min CLIP score — no fast-path relaxation when strict voice↔visual match is on. */
-export function effectiveMinClipQualityScore(fastMode = false, shortVideo = false): number {
-  if (strictVoiceVisualMatchEnabled()) return minClipQualityScore();
-  if (fastMode && shortVideo) return Math.min(minClipQualityScore(), 7);
-  if (fastMode) return Math.min(minClipQualityScore(), 7);
-  return minClipQualityScore();
-}
-
 /** Frames scored per clip (1–6). Default 4 across the full duration. */
 export function clipVisionSampleCount(): number {
   const raw = process.env.CLIP_VISION_SAMPLE_COUNT?.trim();

@@ -446,7 +446,6 @@ describe("what this round did not touch", () => {
   });
 
   it("the subject anchor, the archive router and the per-source caps are where they were", () => {
-    expect(PIPELINE).toContain("ensureSubjectAnchor(q, stockSubjectAnchor)");
     expect(PIPELINE).toContain("capCandidatesPerSource(poolCandidates, before)");
     const CURATED = readFileSync(join(__dirname, "curatedMediaSourcing.ts"), "utf8");
     expect(CURATED).toContain("NO_RELEVANT_ARCHIVE");

@@ -295,12 +295,6 @@ describe("a candidate asked about fifteen times is still one candidate", () => {
 /* ═══════════════════ what this round may not have touched ═══════════════════ */
 
 describe("the invariants this round is not allowed to have moved", () => {
-  it("THE SUBJECT ANCHOR OF 14b7cc2 IS INTACT", () => {
-    const plan = readFileSync(join(__dirname, "visualSearchPlan.ts"), "utf8");
-    expect(plan).toContain("export function ensureSubjectAnchor");
-    expect(plan).toContain("export function subjectAnchorForBeat");
-    expect((plan.match(/anchorTierQueries\(/g) ?? []).length).toBe(5);
-  });
 
   it("no quality gate, threshold or timeout was changed", () => {
     const gate = readFileSync(join(__dirname, "searchQueryContract.ts"), "utf8");

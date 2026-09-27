@@ -37,7 +37,7 @@ function envInt(key: string, fallback: number, min: number, max: number): number
 }
 
 /**
- * The four budgets, and where each number comes from.
+ * The three budgets, and where each number comes from.
  *
  * Every one is generous relative to what a healthy beat actually uses and tight relative to what
  * render 568 spent — the point is to bound a pathological beat, not to ration a normal one.
@@ -49,8 +49,6 @@ export const BUDGETS = {
   downloads: () => envInt("MAX_BEAT_DOWNLOADS", 12, 1, 100),
   /** Preparation is the expensive one after vision; RONDE 97's cache makes repeats free, so this bounds real work. */
   preparations: () => envInt("MAX_BEAT_PREPARATIONS", 10, 1, 100),
-  /** The rescue ladder may be entered a few times, never indefinitely — the infinite-rescue case. */
-  rescues: () => envInt("MAX_BEAT_RESCUES", 3, 1, 20),
 } as const;
 
 export type BudgetKind = keyof typeof BUDGETS;
@@ -102,8 +100,8 @@ export function createRetrievalBudgetState(): RetrievalBudgetState {
   return {
     byBeat: new Map(),
     exhausted: [],
-    unscoped: { queries: 0, downloads: 0, preparations: 0, rescues: 0 },
-    sceneScoped: { queries: 0, downloads: 0, preparations: 0, rescues: 0 },
+    unscoped: { queries: 0, downloads: 0, preparations: 0 },
+    sceneScoped: { queries: 0, downloads: 0, preparations: 0 },
   };
 }
 
@@ -113,7 +111,7 @@ function spendFor(state: RetrievalBudgetState, sceneIndex: number, beatIndex: nu
   const k = key(sceneIndex, beatIndex);
   const existing = state.byBeat.get(k);
   if (existing) return existing;
-  const fresh: BeatSpend = { queries: 0, downloads: 0, preparations: 0, rescues: 0 };
+  const fresh: BeatSpend = { queries: 0, downloads: 0, preparations: 0 };
   state.byBeat.set(k, fresh);
   return fresh;
 }
@@ -154,7 +152,7 @@ export function beatSpend(
   sceneIndex: number,
   beatIndex: number
 ): BeatSpend {
-  if (!state) return { queries: 0, downloads: 0, preparations: 0, rescues: 0 };
+  if (!state) return { queries: 0, downloads: 0, preparations: 0 };
   return { ...spendFor(state, sceneIndex, beatIndex) };
 }
 
@@ -253,14 +251,14 @@ export function formatRetrievalBudgets(state: RetrievalBudgetState | undefined):
     0
   );
   if (state.byBeat.size === 0 && unscopedTotal === 0 && sceneScopedTotal === 0) return [];
-  const total: BeatSpend = { queries: 0, downloads: 0, preparations: 0, rescues: 0 };
+  const total: BeatSpend = { queries: 0, downloads: 0, preparations: 0 };
   for (const spend of state.byBeat.values()) {
     for (const kind of Object.keys(total) as BudgetKind[]) total[kind] += spend[kind];
   }
   const lines = [
     `[RetrievalBudget] beats=${state.byBeat.size} queries=${total.queries} ` +
-      `downloads=${total.downloads} preparations=${total.preparations} rescues=${total.rescues} ` +
-      `(perBeat caps q=${BUDGETS.queries()} d=${BUDGETS.downloads()} p=${BUDGETS.preparations()} r=${BUDGETS.rescues()})`,
+      `downloads=${total.downloads} preparations=${total.preparations} ` +
+      `(perBeat caps q=${BUDGETS.queries()} d=${BUDGETS.downloads()} p=${BUDGETS.preparations()})`,
   ];
   /**
    * The hole, stated rather than assumed away. Work charged here was allowed through unbounded
@@ -279,7 +277,7 @@ export function formatRetrievalBudgets(state: RetrievalBudgetState | undefined):
     const s = state.sceneScoped;
     lines.push(
       `[RetrievalBudget] SCENE_SCOPED total=${sceneScopedTotal} queries=${s.queries} ` +
-        `downloads=${s.downloads} preparations=${s.preparations} rescues=${s.rescues} — ` +
+        `downloads=${s.downloads} preparations=${s.preparations} — ` +
         `scene-level work with no single beat to charge; the per-beat caps do not apply by design`
     );
   }
@@ -287,7 +285,7 @@ export function formatRetrievalBudgets(state: RetrievalBudgetState | undefined):
     const u = state.unscoped;
     lines.push(
       `[RetrievalBudget] UNSCOPED total=${unscopedTotal} queries=${u.queries} ` +
-        `downloads=${u.downloads} preparations=${u.preparations} rescues=${u.rescues} — ` +
+        `downloads=${u.downloads} preparations=${u.preparations} — ` +
         `charged to no beat, so no per-beat cap applied to it`
     );
   }

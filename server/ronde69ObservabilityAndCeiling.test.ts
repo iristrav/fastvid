@@ -252,7 +252,8 @@ describe("RONDE 69 FIX 1 — a Wikimedia HTTP failure says which HTTP failure it
      * not a provider failure.
      */
     const guards = [...src.matchAll(/if \(!isScopeAbortError\(err\)\) markWikimediaSearchResult\(false\);/g)];
-    expect(guards).toHaveLength(4);
+    // Three again: the V1 scored search (`fetchWikimediaImagesV1`) went with the curated-only route.
+    expect(guards).toHaveLength(3);
   });
 });
 

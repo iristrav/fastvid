@@ -149,7 +149,8 @@ describe("§2 — RONDE 9 still holds", () => {
   it("curated sourcing never searches the stock archive — every archive list excludes it by name", () => {
     const CURATED = readFileSync(join(__dirname, "curatedMediaSourcing.ts"), "utf8");
     const lists = CURATED.match(/getAllMediaArchives\(\)\)\.filter\([^\n]+/g) ?? [];
-    expect(lists.length).toBe(3);
+    /** Two — the third was in `buildVideoArchiveCandidatePool`, deleted with the curated-only route. */
+    expect(lists.length).toBe(2);
     for (const l of lists) {
       expect(l).toContain("a.isActive === 1");
       expect(l).toContain("a.slug !== STOCK_ARCHIVE_SLUG");

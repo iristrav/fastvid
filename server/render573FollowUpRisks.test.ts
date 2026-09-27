@@ -133,19 +133,6 @@ describe("an empty query falls through instead of being sent", () => {
 });
 
 describe("a beat with no searchable subject says so before the ladder moves on", () => {
-  it("the empty-query exit is named, not silent", () => {
-    /**
-     * This state was effectively unreachable while the builder always produced something. It is
-     * reachable now, and `return false` on its own would skip the stock ladder for that beat with
-     * nothing in the log to explain it.
-     */
-    const at = PIPE.indexOf("if (queries.length === 0) {");
-    expect(at).toBeGreaterThan(-1);
-    const region = PIPE.slice(at, at + 1_400);
-    expect(region).toContain("no stock query — the beat names");
-    expect(region).toContain("stock ladder skipped for this beat");
-    expect(region).toContain("return false;");
-  });
 
   it("the ladder's contract is unchanged — false still means this route found nothing", () => {
     const at = PIPE.indexOf("if (queries.length === 0) {");

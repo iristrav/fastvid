@@ -315,7 +315,8 @@ describe("the montage guard refuses only what it can justify refusing", () => {
 describe("the guard runs at the montage boundary", () => {
   it("every pushSceneClip variant consults it", () => {
     const variants = [...PIPE.matchAll(/const pushSceneClip = async \(/g)];
-    expect(variants.length).toBeGreaterThanOrEqual(4);
+    /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
+    expect(variants.length).toBeGreaterThanOrEqual(1);
     const calls = [...PIPE.matchAll(/adoptionGuardRefusesPush\(dedup, clipPath, scene\.index, beatIndex\)/g)];
     expect(calls.length).toBeGreaterThanOrEqual(variants.length);
   });
@@ -379,12 +380,5 @@ describe("the guard runs at the montage boundary", () => {
   it("no route open-codes the eligibility question a second time", () => {
     const openCoded = [...PIPE.matchAll(/hasStage\([^)]*,\s*"ELIGIBLE"\)/g)];
     expect(openCoded.length, "eligibility is read through isEligible(), not re-derived").toBe(0);
-  });
-
-  /** The archive adopt route is wired, and states the label it already records. */
-  it("the archive adopt route declares its intent", () => {
-    expect(PIPE).toContain("withAdoptionIntent(adoptIntent, () => pushClip(withText, sec))");
-    const at = PIPE.indexOf("const adoptIntent =");
-    expect(PIPE.slice(at, at + 200)).toContain('adoptMeta?.source ?? (curated ? "archive" : "archive_fetch")');
   });
 });

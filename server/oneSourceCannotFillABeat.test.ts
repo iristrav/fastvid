@@ -136,9 +136,9 @@ describe("the render says it happened", () => {
   it("both admission sites pass the source, read from the ledger", () => {
     const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
     const calls = PIPE.match(/admitToShortlist\(/g) ?? [];
-    expect(calls.length, "two production call sites").toBe(2);
+    /** One production call site: the other was in `beatClipPassesVisionGate` (only reached from the deleted curated-only `adoptArchiveBeatClip`). */
+    expect(calls.length, "one production call site").toBe(1);
     expect(PIPE).toContain("dedup.sourcingCache?.lineage?.providerFor(p, contentKey)");
-    expect(PIPE).toContain("dedup.sourcingCache?.lineage?.providerFor(clipPath, shortlistKey)");
     expect(PIPE, "never from a filename").not.toContain("admitToShortlist(dedup.beatShortlist, sceneIndex, beatIndex, contentKey, undefined, path.basename");
   });
 });

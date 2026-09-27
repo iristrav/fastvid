@@ -153,14 +153,6 @@ function exactSampleKey(localPath: string): string | null {
   }
 }
 
-export async function fingerprintMediaFile(
-  filePath: string,
-  opts?: { seekSec?: number; mimeType?: string; durationSec?: number | null }
-): Promise<bigint | null> {
-  const hashes = await fingerprintMediaFileMulti(filePath, opts);
-  return hashes?.[0] ?? null;
-}
-
 export async function fingerprintMediaFileMulti(
   filePath: string,
   opts?: { seekSec?: number; mimeType?: string; durationSec?: number | null; fast?: boolean }
@@ -311,33 +303,6 @@ export async function buildArchiveFingerprintIndex(
     if (row) entries.push(row);
   }
   return entries;
-}
-
-function segmentMatchesArchiveIndex(
-  seg: VideoClipSegment,
-  exactKey: string,
-  fp: bigint[] | null,
-  fragment: ParsedArchiveFragment | null,
-  index: ArchiveFingerprintEntry[],
-  maxDist: number
-): boolean {
-  for (const entry of index) {
-    if (entry.exactKey === exactKey) return true;
-    if (fp != null && entry.fp.length > 0 && isNearDuplicateFingerprint(entry.fp, fp, maxDist)) {
-      return true;
-    }
-    if (
-      fragment != null &&
-      entry.fragment != null &&
-      fp != null &&
-      entry.fp.length > 0 &&
-      isAdjacentSameSourceFragment(entry.fragment, fragment, 4) &&
-      isNearDuplicateFingerprint(entry.fp, fp, maxDist + 1)
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /**

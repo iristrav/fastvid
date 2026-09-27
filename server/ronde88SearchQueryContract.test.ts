@@ -302,7 +302,7 @@ describe("RONDE 88 §6/§10/§17/§18 — no guessing anywhere", () => {
   it("TEST 13b — the metaphorical-equivalents route is gone", () => {
     expect(PLAN_SRC).not.toContain("metaphorical equivalents");
     expect(PLAN_SRC).not.toContain('{ label: "visual-equiv", items: plan.fallback }');
-    expect(PLAN_SRC).toContain("do NOT invent subjects");
+    // The prompt that said "do NOT invent subjects" went with `buildVisualSearchPlan`, which had no caller left.
   });
 
   it("TEST 16 — primary and rescue derive from the same proven terms", () => {

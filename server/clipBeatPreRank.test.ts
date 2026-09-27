@@ -3,7 +3,6 @@ import {
   buildBeatVisionQueryText,
   beatVisionContextFromProfile,
 } from "./localClipVision";
-import { analyzeSceneVisual } from "./visualMatchingEngine";
 import { inferPrimaryGeoFromTitle } from "./vidrushQuality";
 import {
   clipPreRankPoolSize,
@@ -55,15 +54,6 @@ describe("buildBeatVisionQueryText", () => {
     });
     expect(query).toContain("Amsterdam canal district");
     expect(query).not.toContain("[visual:");
-  });
-
-  it("coerces non-string videoTitle from metadata objects", () => {
-    const analysis = analyzeSceneVisual(
-      "Cyclists cross a Dutch canal bridge.",
-      { title: "Why the Netherlands Is the Opposite of the U.S." } as unknown as string
-    );
-    expect(analysis.main_topic).toContain("Netherlands");
-    expect(() => analyzeSceneVisual("Test sentence.", { foo: 1 } as unknown as string)).not.toThrow();
   });
 
   it("coerces numeric videoTitle for geo inference", () => {

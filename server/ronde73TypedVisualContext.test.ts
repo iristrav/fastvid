@@ -12,7 +12,6 @@ import {
   extractEventCue,
   extractObjectCue,
 } from "./mediaResearchEngine";
-import { buildInternetArchiveGeoQueries } from "./geoDocumentarySources";
 import { beatVisualSearchSubjects } from "./scriptVisualKeywords";
 
 /**
@@ -236,43 +235,5 @@ describe("RONDE 73 §D3 — person, place and time in one query", () => {
       expect(queries, "the F3-39 breadth set must survive").toContain(generic);
     }
     expect(queries.length).toBeLessThanOrEqual(12);
-  });
-});
-
-/* ═════════════ Internet Archive ═════════════ */
-
-describe("RONDE 73 — the Internet Archive narration query is a fallback again", () => {
-  const BEAT = "Adolf Hitler dictated his final political testament in the Fuhrerbunker in April 1945.";
-
-  it("the truncated sentence no longer leads", () => {
-    const qs = buildInternetArchiveGeoQueries(BEAT, TITLE, 0);
-    // It used to be positions 1 and 2, cut at character 55.
-    expect(qs[0]).not.toMatch(/^Adolf Hitler dictated/);
-    expect(qs[1]).not.toMatch(/^Adolf Hitler dictated/);
-    expect(qs[0]).toBe("hitler bunker");
-  });
-
-  it("nothing is cut mid-word, and no query ends on a dangling preposition", () => {
-    for (const beat of [
-      BEAT,
-      "Soviet soldiers raised their flag over the Reichstag in April 1945.",
-      "The Brandenburg Gate stood in ruins after the Battle of Berlin.",
-    ]) {
-      for (const q of buildInternetArchiveGeoQueries(beat, TITLE, 0)) {
-        expect(q).not.toMatch(/\s{2,}/);
-        expect(q).not.toMatch(/\b(?:in|at|on|of|to|the|a|an|and|or|for|from|with|by|into)\s+(?:documentary|footage)$/i);
-      }
-    }
-  });
-
-  it("the narration query, when it appears, carries the whole clause", () => {
-    // 55 characters cut "…testament in " — the place and the date were lost.
-    const long = "Adolf Hitler dictated his final political testament in the Fuhrerbunker in April 1945.";
-    const qs = buildInternetArchiveGeoQueries(long, TITLE, 0);
-    const narrative = qs.find((q) => q.startsWith("Adolf Hitler dictated"));
-    if (narrative) {
-      expect(narrative).toContain("Fuhrerbunker");
-      expect(narrative).not.toMatch(/\bin\s+(?:documentary|footage)$/);
-    }
   });
 });

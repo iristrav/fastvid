@@ -181,39 +181,6 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
     expect(body).toContain("beatSearchProvenance(");
   });
 
-  it("TEST 2 — every provider-reaching leaf opens a scope before its body runs", () => {
-    for (const fn of SCOPED_LEAVES) {
-      const wrapper = bodyOf(PIPELINE_SRC, fn);
-      expect(wrapper, `${fn} has no provenance wrapper`).toContain("withBeatProvenance(beat, scene");
-      expect(wrapper, `${fn} does not delegate to its body`).toContain(`${fn}Inner(`);
-      // A wrapper that does anything else is a place for a search to escape.
-      expect(PIPELINE_SRC, `${fn}Inner is missing`).toContain(`async function ${fn}Inner(`);
-    }
-  });
-
-  it("TEST 3 — the wrapper is a wrapper: no provider call inside it", () => {
-    const providers = [
-      "fetchPexelsClips(", "fetchPixabayClips(", "fetchWikimediaVideos(",
-      "fetchSerpAPIImages(", "fetchUnsplashImages(", "fetchWikimediaImages(",
-      "fetchYouTubeCCClips(", "cachedProviderSearch(",
-    ];
-    for (const fn of SCOPED_LEAVES) {
-      const wrapper = bodyOf(PIPELINE_SRC, fn);
-      for (const p of providers) {
-        expect(wrapper, `${fn}'s wrapper calls ${p} outside the scope`).not.toContain(p);
-      }
-    }
-  });
-
-  it("TEST 4 — Wikimedia now matches the two neighbours it was measured against", () => {
-    // internet_archive and europeana reported bypassAttempts=0 in the same render that reported
-    // wikimedia=64, and the only difference between the three adopters was this wrapper.
-    for (const fn of ["adoptWikimediaBeatClip", "adoptInternetArchiveBeatClip", "adoptEuropeanaBeatClip"]) {
-      const wrapper = bodyOf(PIPELINE_SRC, fn);
-      expect(wrapper, `${fn} lost its scope`).toMatch(/withBeatProvenance|withSearchProvenance/);
-    }
-  });
-
   it("TEST 5 — Unsplash and SerpAPI are reached only through scoped leaves", () => {
     // Both routes reported 100%/most bypass in production. Their direct callers are these.
     for (const [fetcher, callers] of [
@@ -227,16 +194,6 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
           `function ${caller}(`
         );
       }
-    }
-  });
-
-  it("TEST 5a — the text-only leaf is scoped from the narration it does have", () => {
-    for (const fn of TEXT_ONLY_LEAVES) {
-      const wrapper = bodyOf(PIPELINE_SRC, fn);
-      expect(wrapper, `${fn} has no provenance wrapper`).toContain("withBeatProvenance(");
-      expect(wrapper).toContain(`${fn}Inner(`);
-      // No beat/scene objects here — the proof comes from beatText.
-      expect(wrapper).toContain("{ text: beatText");
     }
   });
 

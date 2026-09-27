@@ -202,15 +202,4 @@ describe("R216 §3 — an anchor the source cannot support is not built", () => 
   it("THE STEMMER WAS NOT LOOSENED — 'arm' must never prove 'army'", () => {
     expect(termProvableFrom("army", "He raised his arm.")).toBe(false);
   });
-
-  it("the anchor tables are filtered through it, and an empty result is not a topic", () => {
-    const fn = PIPE.slice(
-      PIPE.indexOf("function extractVideoTopicAnchorsWithKey("),
-      PIPE.indexOf("const DUTCH_STOCK_WORD_MAP")
-    );
-    expect(fn).toContain("termProvableFrom(a, source)");
-    expect(fn).toContain('return { anchors: [], topicKey: "none" };');
-    // Every return of anchors is now behind a length check, so "none" is reachable.
-    expect((fn.match(/if \(anchors\.length\)/g) ?? []).length).toBeGreaterThanOrEqual(3);
-  });
 });

@@ -84,13 +84,4 @@ describe("RONDE 130 — earlier rounds, asserted rather than assumed", () => {
     expect(f).not.toContain("zoompan");
     expect(f).toContain("setsar=1");
   });
-
-  it("RONDE 129: a cancellation is not retried and a 429 stands one provider down", async () => {
-    const { classifyProviderFailure, cooldownMsForFailure, shouldRetryAfterFailure } = await import(
-      "./providerFailureClass"
-    );
-    expect(classifyProviderFailure({ err: new Error("Video generation cancelled") })).toBe("CANCELLED");
-    expect(shouldRetryAfterFailure({ kind: "CANCELLED", attempt: 0, maxAttempts: 4 }).retry).toBe(false);
-    expect(cooldownMsForFailure("RATE_LIMITED")).toBeGreaterThanOrEqual(60_000);
-  });
 });

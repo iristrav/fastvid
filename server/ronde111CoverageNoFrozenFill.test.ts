@@ -37,7 +37,6 @@ import {
   stitchSourceFloorSec,
 } from "./coverageFillPlan";
 
-
 const PIPELINE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const CURATED = fs.readFileSync(path.join(__dirname, "curatedMediaSourcing.ts"), "utf8");
 const DOCSTYLE = fs.readFileSync(path.join(__dirname, "documentaryStyle.ts"), "utf8");
@@ -56,64 +55,6 @@ function withEnv<T>(key: string, value: string | undefined, fn: () => T): T {
     else process.env[key] = previous;
   }
 }
-
-/* ═══════════ 1. normale coverage ═══════════ */
-
-describe("RONDE 111 — a scene that is covered is left alone", () => {
-
-  it("a rounding-sized shortfall is not worth a filter either", () => {
-    expect(planCoverageFill(20, 20.05).action).toBe("none");
-  });
-
-  it("a montage LONGER than its scene is not stretched backwards", () => {
-    const plan = planCoverageFill(24, 20);
-    expect(plan.shortfallSec).toBe(0);
-    expect(plan.slowdownRatio).toBe(1);
-  });
-});
-
-/* ═══════════ 2. tekort onder 2× ═══════════ */
-
-describe("RONDE 111 — a small shortfall is still absorbed by slowing", () => {
-  it("18s of montage in a 20s scene slows 1.11x and is fully covered", () => {
-    const plan = planCoverageFill(18, 20);
-    expect(plan.action).toBe("slow");
-    expect(plan.slowdownRatio).toBeCloseTo(20 / 18, 5);
-    expect(plan.stillShortSec).toBe(0);
-  });
-});
-
-/* ═══════════ 3. tekort boven 2× ═══════════ */
-
-describe("RONDE 111 — a large shortfall is NOT absorbed by slowing", () => {
-  it("the ratio never exceeds the cap, whatever the shortfall", () => {
-    for (const [montage, target] of [[8, 20], [4, 20], [2, 20], [0.5, 30], [1, 120]]) {
-      const plan = planCoverageFill(montage!, target!);
-      expect(plan.slowdownRatio, `${montage}s in ${target}s`).toBeLessThanOrEqual(
-        MAX_COVERAGE_SLOWDOWN
-      );
-    }
-  });
-
-  it("the old uncapped 10x case is now 2x plus a named remainder", () => {
-    const plan = planCoverageFill(2, 20);
-    expect(plan.uncappedRatio).toBe(10);
-    expect(plan.slowdownRatio).toBe(2);
-    expect(plan.stillShortSec).toBe(16);
-    expect(plan.action).toBe("hold_frame");
-  });
-
-  it("a scene below the floor triggers the extra searching, and one above it does not", () => {
-    expect(coverageFloorSec(20)).toBe(10);
-    // 12s of montage in a 20s scene: 1.67x, under the cap → no extra wall clock spent.
-    expect(12).toBeGreaterThanOrEqual(coverageFloorSec(20));
-    // 8s: 2.5x → would hold a frame, so it earns the extra rounds.
-    expect(8).toBeLessThan(coverageFloorSec(20));
-    expect(PIPELINE).toContain("const floor = coverageFloorSec(scene.duration);");
-    // RONDE 112 restated this line in the report's key=value shape; the rule is unchanged.
-    expect(PIPELINE).toContain("within the ${MAX_COVERAGE_SLOWDOWN}x budget, no extra search needed");
-  });
-});
 
 /* ═══════════ 4. meerdere korte maar geschikte clips ═══════════ */
 
@@ -145,72 +86,11 @@ describe("RONDE 111 — a short clip is no longer refused from a short slot", ()
     expect(CURATED).toContain("if (outDur < minSource) {");
     expect(CURATED).toContain("for a ${duration.toFixed(2)}s slot");
   });
-
-  it("the short-clip round asks for short holds, which is what unlocks those candidates", () => {
-    expect(PIPELINE).toContain(
-      "const shortHold = Math.max(MIN_STITCHABLE_SOURCE_SEC, Math.min(2.5, scene.duration / 4));"
-    );
-    // ...and it runs several times, so several short clips get stitched.
-    expect(PIPELINE).toContain("for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++)");
-  });
-
-  it("those clips go through the SAME beat chain — no filler is invented", () => {
-    const idx = PIPELINE.indexOf("Round A — ask for SHORT holds.");
-    const body = PIPELINE.slice(idx, idx + 2200);
-    // The same per-beat filler every other clip comes from, with this beat's own semantic profile.
-    expect(body).toContain("await ensureBeatVisualFilled(");
-    expect(body).toContain("semanticProfiles.get(beat.index)");
-    expect(body).toContain("pushSceneClip(clipPath, sec, beat.index)");
-    /**
-     * ...and pushSceneClip is the one that still consults the relevance gate.
-     *
-     * RENDER 564 made that gate async: it now asks for a verdict when the clip has none, because
-     * a barrier over a ledger can only turn away what somebody already judged. What this test
-     * protects — that these short-hold clips go through the same gate as every other clip —
-     * is unchanged, so the assertion follows the call rather than being dropped. The `await`
-     * matters in its own right: without it the gate returns a Promise, which is always truthy.
-     */
-    expect(PIPELINE).toContain("if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;");
-  });
-
-  it("the beat it searches on is the one that is actually short, not an arbitrary one", () => {
-    const idx = PIPELINE.indexOf("Round A — ask for SHORT holds.");
-    expect(PIPELINE.slice(idx, idx + 2200)).toContain("pickVoiceBackfillBeatIndex(");
-  });
 });
 
 /* ═══════════ 5. geen geschikte kandidaten ═══════════ */
 
 describe("RONDE 111 — when no new candidate exists, the scene's own footage moves", () => {
-  it("round B re-uses the last real clip in motion rather than freezing it", () => {
-    const idx = PIPELINE.indexOf("Round B — re-use this scene's OWN footage, in motion.");
-    expect(idx).toBeGreaterThan(-1);
-    /**
-     * Widened from 2400 in RONDE 143, which put this loop behind the same extend-hold budget the
-     * per-beat rescue ladder already used and documented why; the comment pushed the
-     * `"rescue_extend"` assertion below past the old edge. The window is a way of saying "inside
-     * round B" and nothing more — both assertions are unchanged, and both still fail if the line
-     * they name is deleted.
-     */
-    const body = PIPELINE.slice(idx, idx + 3600);
-    expect(body).toContain("await extendLastClip(source,");
-    expect(body).toContain('"rescue_extend"');
-    // RONDE 143: and round B is budgeted like every other route into extendLastClip.
-    expect(body).toContain("mayExtendAgain({ state: dedup.extendHold, sourceClipPath: source, holdSec: need })");
-  });
-
-  it("extendLastClip keeps the picture moving — a loop under a zoom, never a still", () => {
-    const idx = PIPELINE.indexOf("async function extendLastClip(");
-    // Bounded by the function's own end, not a character count: RONDE 167 documented a new
-    // parameter and a fixed +N window stopped reaching the ffmpeg command it is asserting about.
-    const end = PIPELINE.indexOf("guaranteedTextOverlayDurationSec", idx);
-    expect(end).toBeGreaterThan(idx);
-    const body = PIPELINE.slice(idx, end);
-    expect(body).toContain("-stream_loop -1");
-    expect(body).toContain("zoompan=z=");
-    // d=1 advances one output frame per real input frame, so nothing is ever held static.
-    expect(body).toContain(":d=1:s=");
-  });
 
   it("it is recorded as a rescue, never as a verified fit for the beat", () => {
     // rescue_extend maps to held_frame coverage in the quality report — it counts as a stand-in.
@@ -225,25 +105,6 @@ describe("RONDE 111 — when no new candidate exists, the scene's own footage mo
       .toBe("held_frame");
     // And a held frame can never be the beat's verified own visual, whatever the gate said.
     expect(adoptionPolicyFor("rescue_extend").countsAsVerifiedVisual).toBe(false);
-  });
-
-  it("with no real clip at all it says so instead of pretending it filled the scene", () => {
-    // RONDE 112 gave every held-frame exit a machine-readable reason. Same exit, named.
-    expect(PIPELINE).toContain("resolution=held_frame reason=no_real_clip_to_reuse");
-  });
-});
-
-/* ═══════════ 6. absolute laatste fallback ═══════════ */
-
-describe("RONDE 111 — the held frame is the last resort and is labelled as one", () => {
-
-  it("the last line before compose says what compose is about to do", () => {
-    // RONDE 112: now with the numbers rather than the sentence — the applied slow-motion factor
-    // and the seconds that will actually be held.
-    expect(PIPELINE).toContain("resolution=held_frame reason=exhausted");
-    expect(PIPELINE).toContain(
-      "slowdown=${plan.slowdownRatio.toFixed(2)}x held=${plan.stillShortSec.toFixed(1)}s"
-    );
   });
 });
 
@@ -304,11 +165,6 @@ describe("RONDE 111 — a photo keeps moving all the way to its last frame", () 
 /* ═══════════ logging ═══════════ */
 
 describe("RONDE 111 — the decision is visible afterwards, per video", () => {
-  it("every coverage decision is kept, not only printed", () => {
-    expect(PIPELINE).toContain("coverageDecisions: string[];");
-    expect(PIPELINE).toContain("coverageDecisions: [],");
-    expect(PIPELINE).toContain("dedup.coverageDecisions.push(text);");
-  });
 
   it("it reaches the stored pipeline report the admin reads", () => {
     expect(PIPELINE).toContain('pipelineReport.addAll("warnings", visualDedup.coverageDecisions);');

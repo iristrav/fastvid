@@ -29,7 +29,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { composeScopeVerdict, formatComposeScopeDecision } from "./composeEligibility";
+import {   } from "./composeEligibility";
 import {
   preparationCounters,
   preparationKey,
@@ -50,83 +50,6 @@ afterEach(() => {
     resetPreparationScope(d);
     fs.rmSync(d, { recursive: true, force: true });
   }
-});
-
-/* ═══════════ 1. an expired budget is not a verdict on what was already found ═══════════ */
-
-describe("R233 §1 — RONDE 136 cannot come back", () => {
-  it("AN ADOPTED CLIP SURVIVES AN ABORTED SCOPE", () => {
-    const v = composeScopeVerdict({
-      scopeAborted: true,
-      adopted: true,
-      priorMeasurementUsable: null,
-    });
-    expect(v.decision, "video 558's fourteen discarded clips are possible again").toBe("pass");
-    if (v.decision !== "pass") throw new Error("unreachable");
-    expect(v.basis).toBe("already_adopted");
-  });
-
-  it("A PRIOR MEASUREMENT ALSO CARRIES IT — RONDE 138's rule, intact", () => {
-    const v = composeScopeVerdict({
-      scopeAborted: true,
-      adopted: false,
-      priorMeasurementUsable: true,
-    });
-    expect(v.decision).toBe("pass");
-    if (v.decision !== "pass") throw new Error("unreachable");
-    expect(v.basis).toBe("prior_measurement");
-  });
-
-  it("AN UNEXAMINED FILE STILL DOES NOT GET IN — the gate did not become a door", () => {
-    /**
-     * `pad_combined_*.mp4` and the text-overlay output are written moments before the gate and
-     * never examined. They must not inherit a parent's clearance.
-     */
-    const v = composeScopeVerdict({
-      scopeAborted: true,
-      adopted: false,
-      priorMeasurementUsable: null,
-    });
-    expect(v.decision, "an unexamined derivative reached the montage").not.toBe("pass");
-  });
-
-  it("A MEASUREMENT THAT SAID NO IS STILL A NO", () => {
-    const v = composeScopeVerdict({
-      scopeAborted: true,
-      adopted: false,
-      priorMeasurementUsable: false,
-    });
-    expect(v.decision).not.toBe("pass");
-  });
-
-  it("A LIVE SCOPE CHANGES NOTHING — the full gate still runs", () => {
-    for (const adopted of [true, false]) {
-      const v = composeScopeVerdict({ scopeAborted: false, adopted, priorMeasurementUsable: null });
-      expect(v.decision).toBe("run_full_gate");
-    }
-  });
-
-  it("every decision is announced — no clip leaves without a line", () => {
-    for (const input of [
-      { scopeAborted: true, adopted: true, priorMeasurementUsable: null },
-      { scopeAborted: true, adopted: false, priorMeasurementUsable: null },
-      { scopeAborted: false, adopted: false, priorMeasurementUsable: null },
-    ] as const) {
-      const line = formatComposeScopeDecision({
-        sceneIndex: 1,
-        clipIndex: 0,
-        basename: "scene_1_b5_archive_0.mp4",
-        verdict: composeScopeVerdict(input),
-      });
-      expect(line.length, "a compose decision was made silently").toBeGreaterThan(0);
-      expect(line).toContain("scene_1_b5_archive_0.mp4");
-    }
-  });
-
-  it("THE PRODUCTION GATE ASKS THIS MODULE, and asks the ledger about the exact path", () => {
-    expect(PIPE).toContain("const verdict = composeScopeVerdict({");
-    expect(PIPE).toContain("adopted: get_activeSourcingCache()?.lineage?.adoptedAtPath(clipPath) ?? false,");
-  });
 });
 
 /* ═══════════ 2. one render cannot be handed another render's file ═══════════ */
@@ -219,42 +142,5 @@ describe("R233 §3 — delivery identity", () => {
 
   it("A RENDER THAT DID NOT DELIVER IS NEVER SILENT", () => {
     expect(PIPE).toContain("route=cinematic_timeline NOT_DELIVERED ");
-  });
-});
-
-/* ═══════════ 4. the stream check, asserted where it lives ═══════════ */
-
-describe("R233 §4 — the range rules (structural: the validator is module-private)", () => {
-  const fn = () => {
-    const at = PIPE.indexOf("function montageStreamMetaUsable(");
-    expect(at, "the compose stream check is gone").toBeGreaterThan(0);
-    return PIPE.slice(at, PIPE.indexOf("\n}", at));
-  };
-
-  it("A DEGENERATE FRAME IS REFUSED", () => {
-    expect(fn()).toContain("if (meta.width < 2 || meta.height < 2) return false;");
-  });
-
-  it("A MEASURED, GENUINELY SHORT CLIP IS REFUSED", () => {
-    expect(fn()).toContain(
-      "if (Number.isFinite(meta.durationSec) && meta.durationSec > 0 && meta.durationSec <= 0.15)"
-    );
-  });
-
-  it("A CLIP SHORTER THAN ITS OWN TRIM START IS REFUSED", () => {
-    expect(fn()).toContain("if (meta.durationSec > 0.15 && meta.durationSec <= trimStart + 0.15) return false;");
-  });
-
-  it("AN UNMEASURABLE DURATION IS NOT TREATED AS A REFUSAL — that distinction is deliberate", () => {
-    /**
-     * ffprobe reports 0 for streams whose duration it cannot determine. Refusing those would throw
-     * away real footage for a property of the probe rather than of the clip.
-     */
-    expect(fn()).toContain("meta.durationSec > 0 &&");
-    expect(fn()).toContain("return true;");
-  });
-
-  it("and the gate calls it on both paths through the compose barrier", () => {
-    expect((PIPE.match(/montageStreamMetaUsable\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
 });

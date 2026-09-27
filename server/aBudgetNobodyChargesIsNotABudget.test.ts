@@ -78,11 +78,13 @@ describe("1. a budget with no call site is a budget that does not exist", () => 
       .map(read)
       .join("\n");
     const kinds = Object.keys(BUDGETS) as BudgetKind[];
-    expect(kinds.length).toBeGreaterThanOrEqual(4);
+    expect(kinds.length).toBeGreaterThanOrEqual(3);
     for (const kind of kinds) {
+      /** The per-beat query ceiling is enforced by the compose ladder, which is handed this number. */
       const charged =
         production.includes(`budgetAllows(dedup.beatBudget, scene.index, beat.index, "${kind}")`) ||
-        production.includes(`chargeAmbientBudget("${kind}")`);
+        production.includes(`chargeAmbientBudget("${kind}")`) ||
+        production.includes(`maxComposeSearches: BUDGETS.${kind}()`);
       expect(charged, `budget "${kind}" is declared but nothing charges it`).toBe(true);
     }
   });
@@ -96,12 +98,6 @@ describe("1. a budget with no call site is a budget that does not exist", () => 
 
   it("preparations are charged where a real preparation starts", () => {
     expect(PREP).toContain('chargeAmbientBudget("preparations")');
-  });
-
-  it("rescues are charged where the ladder is entered", () => {
-    const at = PIPE.indexOf("async function rescueBeatVisualWhenEmpty(");
-    const body = PIPE.slice(at, PIPE.indexOf("async function rescueBeatVisualWhenEmptyInner", at));
-    expect(body).toContain('budgetAllows(dedup.beatBudget, scene.index, beat.index, "rescues")');
   });
 
   /**
@@ -266,21 +262,6 @@ describe("4. exhaustion says so, in a shape the callers already know", () => {
     const body = PREP.slice(at, at + 700);
     expect(body).toContain('status: "FAILED"');
     expect(body).toContain("BUDGETS.preparations()");
-  });
-
-  it("the rescue refusal stands aside out loud", () => {
-    const at = PIPE.indexOf("async function rescueBeatVisualWhenEmpty(");
-    const body = PIPE.slice(at, PIPE.indexOf("async function rescueBeatVisualWhenEmptyInner", at));
-    expect(body).toContain("console.warn");
-    expect(body).toContain("standing aside");
-    expect(body).toContain("return false;");
-  });
-
-  /** The rescue charge is on the wrapper, so re-entry is counted however deep the ladder goes. */
-  it("the rescue charge runs before the ladder is entered", () => {
-    const at = PIPE.indexOf("async function rescueBeatVisualWhenEmpty(");
-    const body = PIPE.slice(at, PIPE.indexOf("async function rescueBeatVisualWhenEmptyInner", at));
-    expect(body.indexOf('"rescues"')).toBeLessThan(body.indexOf("withBeatProvenance(beat, scene"));
   });
 });
 

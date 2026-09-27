@@ -2,7 +2,7 @@ import { readFileSync } from "fs";
 import path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  cachedClipHasBakedEditText,
+  
   overlayChecksSpent,
   resetOverlayBudget,
 } from "./archiveClipFilter";
@@ -57,100 +57,11 @@ describe("RONDE 25 — beatClipTextFilterMaxChecks", () => {
   );
 });
 
-describe("RONDE 25 — the overlay budget is spent on misses only", () => {
-  // With the overlay filter switched off the detector short-circuits before any ffprobe/ffmpeg or
-  // vision call, so these exercise the real caching/accounting code without needing a media file.
-  let prevOverlay: string | undefined;
-
-  beforeEach(() => {
-    prevOverlay = process.env[OVERLAY_OFF];
-    process.env[OVERLAY_OFF] = "false";
-    resetOverlayBudget();
-  });
-
-  afterEach(() => {
-    if (prevOverlay === undefined) delete process.env[OVERLAY_OFF];
-    else process.env[OVERLAY_OFF] = prevOverlay;
-    resetOverlayBudget();
-  });
-
-  it("charges one check per distinct clip", async () => {
-    for (const key of ["a", "b", "c"]) {
-      await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", key, 10);
-    }
-    expect(overlayChecksSpent()).toBe(3);
-  });
-
-  it("charges nothing for a clip already judged — re-offering an asset is free", async () => {
-    for (let i = 0; i < 5; i++) {
-      await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", "same-clip", 10);
-    }
-    expect(overlayChecksSpent()).toBe(1);
-  });
-
-  it("stops spending once the ceiling is reached", async () => {
-    for (const key of ["a", "b", "c", "d", "e"]) {
-      await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", key, 2);
-    }
-    expect(overlayChecksSpent()).toBe(2);
-  });
-
-  it("lets clips past the ceiling through rather than rejecting them", async () => {
-    await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", "a", 1);
-    const overBudget = await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", "b", 1);
-    expect(overBudget).toBe(false);
-  });
-
-  it("does not memoise a skipped check, so a later render still judges the clip", async () => {
-    await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", "a", 1);
-    await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", "skipped", 1);
-    expect(overlayChecksSpent()).toBe(1);
-
-    // Same key, room in the budget: if the skip had been cached as "clean" this would be a hit
-    // and cost nothing. It costs a check, which proves the skip left no verdict behind.
-    await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", "skipped", 10);
-    expect(overlayChecksSpent()).toBe(2);
-  });
-
-  it("treats an omitted ceiling as unlimited (ingestion-style callers keep working)", async () => {
-    for (const key of ["a", "b", "c", "d"]) {
-      await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", key);
-    }
-    expect(overlayChecksSpent()).toBe(4);
-  });
-
-  it("spends nothing at all when the ceiling is 0", async () => {
-    const verdict = await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", "a", 0);
-    expect(verdict).toBe(false);
-    expect(overlayChecksSpent()).toBe(0);
-  });
-
-  it("resetOverlayBudget clears both the counter and the memo", async () => {
-    await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", "a", 10);
-    expect(overlayChecksSpent()).toBe(1);
-
-    resetOverlayBudget();
-    expect(overlayChecksSpent()).toBe(0);
-
-    // A cleared memo means the same clip is judged again instead of inheriting last render's
-    // verdict — which is what keeps the map from growing without bound in a long-lived worker.
-    await cachedClipHasBakedEditText("/tmp/x.mp4", "video/mp4", "a", 10);
-    expect(overlayChecksSpent()).toBe(1);
-  });
-});
-
 const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const watchdogSrc = readFileSync(path.join(__dirname, "renderWatchdog.ts"), "utf8");
 const ingestionSrc = readFileSync(path.join(__dirname, "archiveIngestion.ts"), "utf8");
 
 describe("RONDE 25 — the cap is wired into both text-check callers", () => {
-  it("the beat gate passes the per-render ceiling", () => {
-    const helper = pipelineSrc.slice(
-      pipelineSrc.indexOf("async function beatClipHasBakedText("),
-      pipelineSrc.indexOf("async function beatClipHasBakedText(") + 600,
-    );
-    expect(helper).toContain("beatClipTextFilterMaxChecks()");
-  });
 
   it("archive ingestion passes it too", () => {
     expect(ingestionSrc).toContain("beatClipTextFilterMaxChecks()");

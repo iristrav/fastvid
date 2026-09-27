@@ -146,12 +146,6 @@ describe("FASE 7.2 Test 3 — VisionGate resolves its own CLIP query embedding w
 });
 
 describe("FASE 7.2 Test 5 — non-funnel VisionGate paths are unchanged", () => {
-  it("the two non-funnel call sites still pass what they passed before (null / a CLIP vector)", () => {
-    // Call site A passes an explicit null (VisionGate resolves its own) — unchanged.
-    expect(pipelineSrc).toMatch(/evaluateClipVisionGate\([\s\S]{0,400}gateVisualDesc,\s*\n\s*undefined,\s*\n\s*null,/);
-    // Call site B passes `queryEmb`, which is fed by resolveBeatVisionQueryEmbedding (CLIP).
-    expect(pipelineSrc).toMatch(/beatQueryEmb = await resolveBeatVisionQueryEmbedding\(visionCtx\)/);
-  });
 
   it("no threshold or scoring constant was touched by FASE 7.2", () => {
     const localSrc = readFileSync(path.join(__dirname, "localClipVision.ts"), "utf8");

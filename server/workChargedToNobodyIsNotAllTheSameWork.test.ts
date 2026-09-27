@@ -144,12 +144,12 @@ describe("4. the report says which is which", () => {
 });
 
 describe("5. no budget was added, moved or invented", () => {
-  it("the four ceilings are the numbers they were", async () => {
+  /** Three: the rescue ceiling went with the rescue ladder it bounded. */
+  it("the three ceilings are the numbers they were", async () => {
     const { BUDGETS } = await import("./retrievalBudget");
     expect(BUDGETS.queries()).toBe(24);
     expect(BUDGETS.downloads()).toBe(12);
     expect(BUDGETS.preparations()).toBe(10);
-    expect(BUDGETS.rescues()).toBe(3);
   });
 
   it("and there is no scene-level ceiling pretending to be one", async () => {

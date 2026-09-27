@@ -122,7 +122,6 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
   });
 });
 
-
 describe("RONDE 62 #2 — the YouTube duration comes from the call that works", () => {
   it("reads lengthSeconds however the provider spells it", () => {
     expect(rapidApiYoutubeMetaDurationSec({ lengthSeconds: "2400" })).toBe(2400);
@@ -293,14 +292,6 @@ describe("RONDE 62 #6 — the protest gate can finally fire", () => {
     }
   });
 
-  it("with no provider text the gate reads the file name instead of nothing", () => {
-    const src = PIPELINE();
-    const idx = src.indexOf("function beatClipIsOffTopicProtest(");
-    const block = src.slice(idx, idx + 1600);
-    expect(block).toContain("path\n      .basename(clipPath)");
-    expect(block).toContain("__pid_");
-  });
-
   it("and the funnel now registers the real title, so the fallback is rarely needed", () => {
     const src = PIPELINE();
     expect(src).toContain("providerText: { ...existingMeta.providerText, title: candidate.title },");
@@ -323,27 +314,10 @@ describe("RONDE 62 #7 — the render can measure its own visual mix", () => {
 });
 
 describe("RONDE 62 #5 — the stock rescue stops asking once the answer is clearly no", () => {
-  it("a miss streak stands the source down for the rest of the render", () => {
-    const src = PIPELINE();
-    expect(src).toContain("dedup.planRescueMissStreak < PLAN_RESCUE_MISS_STREAK_TRIP");
-    expect(src).toContain("dedup.planRescueMissStreak++;");
-    // A hit resets it — this must never be a one-way latch.
-    expect(src).toContain("dedup.planRescueMissStreak = 0;");
-  });
 
   it("the streak is render-scoped state, initialised at zero", () => {
     const src = PIPELINE();
     expect(src).toContain("planRescueMissStreak: number;");
     expect(src).toContain("planRescueMissStreak: 0,");
-  });
-
-  it("the trip point is more forgiving than the provider breakers", () => {
-    const src = PIPELINE();
-    const m = /const PLAN_RESCUE_MISS_STREAK_TRIP = (\d+);/.exec(src);
-    expect(m).not.toBeNull();
-    const trip = Number(m![1]);
-    expect(trip).toBeGreaterThan(3);
-    // Render 532 ran six rounds on fourteen beats; this caps the waste at a quarter of that.
-    expect(trip).toBeLessThanOrEqual(6);
   });
 });

@@ -380,32 +380,6 @@ export function isFastShortVideoLength(videoLength?: string | null): boolean {
   return targetVideoDurationMinutes(videoLength) <= 1;
 }
 
-/** Parallel beat fills on fast path. Was tuned for Railway's 24 vCPU box; the current
- *  Hetzner host has 4 vCPU total, shared with archive downloads, compose, and montage
- *  encodes — 6-way beat concurrency on top of that oversubscribed the box badly enough
- *  that per-clip probe checks (ComposeGate) routinely starved past their own timeout.
- *  isRailway is accepted but no longer used to scale this up — the box is what it is. */
-export function fastBeatConcurrency(isRailway = false): number {
-  const raw = process.env.FAST_BEAT_CONCURRENCY?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 1 && n <= 12) return n;
-  }
-  return 2;
-}
-
-/** Weak-beat archive polish before compose (always on when strict voice↔visual match). */
-export function polishBeforeComposeEnabled(
-  videoLength?: string | null,
-  fastMode = false
-): boolean {
-  if (process.env.ENABLE_POLISH_BEFORE_COMPOSE === "false") return false;
-  if (isFastShortVideoLength(videoLength)) return false;
-  if (strictVoiceVisualMatchEnabled()) return true;
-  if (fastMode && isFastShortVideoLength(videoLength)) return false;
-  return true;
-}
-
 /** Parallel scene compose jobs. Was tuned for Railway's 24 vCPU/24GB RAM box; the current
  *  Hetzner host has 4 vCPU, so this now stays modest regardless of video length rather than
  *  scaling up for longer videos. Override via COMPOSE_PARALLELISM. */
@@ -534,25 +508,6 @@ export function metadataVisualBlocksEnabled(): boolean {
   return process.env.ENABLE_METADATA_VISUAL_BLOCKS === "true";
 }
 
-/**
- * When no clip passes strict CLIP match, run a degraded rescue ladder instead of failing export.
- * Default ON — rescue uses lower CLIP floor, then stock, AI, then neutral placeholder still.
- */
-export function beatVisualRescueEnabled(): boolean {
-  return process.env.BEAT_VISUAL_RESCUE !== "false";
-}
-
-/** Max AI-generated clips in rescue tier only (strict match still blocks normal AI). */
-export function beatVisualRescueAiMaxClips(videoLength?: string | null): number {
-  if (!beatVisualRescueEnabled()) return 0;
-  const raw = process.env.BEAT_VISUAL_RESCUE_AI_MAX?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 0 && n <= 6) return n;
-  }
-  return isFastShortVideoLength(videoLength) ? 2 : 3;
-}
-
 /** Skip LLM semantic rerank when CLIP pre-rank top score ≥ this (default 8). */
 export function semanticRerankClipSkipMin(): number {
   const raw = process.env.SEMANTIC_RERANK_CLIP_SKIP_MIN?.trim();
@@ -596,17 +551,6 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
 
-/** Stock clips on 1-min fast path — slightly lower bar than archive (7 vs 8) for speed. */
-export function stockClipQualityFloor(videoLength?: string | null): number {
-  if (isFastShortVideoLength(videoLength) && strictVoiceVisualMatchEnabled()) return 7;
-  const raw = process.env.MIN_CLIP_QUALITY_SCORE?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 5 && n <= 10) return n;
-  }
-  return 8;
-}
-
 /** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 24s). */
 // F3-23: this used to default to 24s (allowed range 12-24s) — on the 1-min fast/short path
 // (isFastShortVideoLength), this value is used directly as several beats' holdSec (see e.g.
@@ -645,24 +589,7 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
 function escalationThresholdMs(videoLength: string | null | undefined, fraction: number): number {
   return Math.round(maxPipelineWallClockMin(videoLength) * 60_000 * fraction);
 }
-
-/** Ladder order must hold — turbo < rush < emergency — against the same clock. */
-const TURBO_FRACTION     = 0.25;
 const EMERGENCY_FRACTION = 0.45;
-
-/** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 12s; 3min on 1-min quality path). */
-export function visualSourcingTurboMs(videoLength?: string | null): number {
-  const raw = process.env.VISUAL_SOURCING_TURBO_MS?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 8_000 && n <= 300_000) return n;
-  }
-  // RONDE 8 (render 518): 3min was too tight — the visual stage for a 3-scene 1-min video
-  // took ~5min (scenes fill partly sequentially; IA search+metadata dominates), so the LAST
-  // scene always landed in 12s turbo budgets and dropped its beats. The wall-clock hard cap
-  // for 1-min videos is 22min, so 5min turbo still leaves ample headroom.
-  return escalationThresholdMs(videoLength, TURBO_FRACTION);
-}
 
 /** Max ms per beat spent trying archive candidates before moving on. Beats are processed
  *  concurrently (fastBeatConcurrency) so this does NOT add up serially. Archive lookup
@@ -762,36 +689,6 @@ export function composeMayFetchForStarvedScene(params: {
   if (clipsOnDisk * 2 >= clipsNeeded) return false;
   if (remainingWallClockMs == null || !Number.isFinite(remainingWallClockMs)) return false;
   return remainingWallClockMs - SOURCING_RESERVE_MS > 0;
-}
-
-/**
- * RONDE 20: hard wall-clock cap for ONE scene's compose-time rescue (recoverSceneClipsIfEmpty).
- *
- * That path was the only major stage with no time bound at all: it loops up to ~7 fallback texts,
- * each running the full external cascade (Internet Archive, YouTube CC, Wikimedia, GDELT, ...).
- * Render 526 spent 1084s of its 25 min there — the single largest cost — and render 527 HUNG in it
- * outright: one await never settled after a GDELT "Archive TV metadata" timeout, so the pipeline
- * sat at zero activity until the watchdog gave up 22 minutes later. A cap turns "hangs forever"
- * into "returns what it found so far and moves on".
- *
- * Deliberately generous — this is a safety valve, not a pacing knob: it must not cut short a
- * rescue that is genuinely still finding footage, only stop an unbounded one.
- */
-/**
- * RONDE 23: run the baked-in-text check on EXTERNALLY sourced beat clips, not just curated ones.
- *
- * archiveClipHasBakedEditText existed but was wired into exactly one call site: the curated
- * archive's own adoption path. Every external source — YouTube CC, GDELT TV news, Internet
- * Archive, SepiaSearch, Wikimedia, Openverse, SerpAPI, stock — reached the timeline with no
- * text check at all. GDELT is the clearest case: it serves CNN/FOX/MSNBC/BBC broadcast segments,
- * which essentially always carry lower-thirds and news tickers.
- *
- * Default on. Turn off with ENABLE_BEAT_CLIP_TEXT_FILTER=false. The underlying check has its own
- * independent kill switch (ENABLE_ARCHIVE_OVERLAY_FILTER) and returns "no text" when it has no
- * vision key, so this stays inert rather than rejecting everything when unconfigured.
- */
-export function beatClipTextFilterEnabled(): boolean {
-  return envFlagIsNotOff("ENABLE_BEAT_CLIP_TEXT_FILTER");
 }
 
 /**
@@ -1357,29 +1254,6 @@ export function sceneBeatCapForCadence(
   return Math.max(minBeats, Math.min(maxBeats, Math.max(target, cappedFloor)));
 }
 
-/**
- * Beat cap per scene.
- *
- * RONDE 30: the comment here used to say "on 1-min fast path one archive clip covers the full
- * beat window", which stopped being true when the body was changed to always use the standard
- * 6s cadence (see the inline note below — that change was deliberate and is kept). Two
- * consequences were left behind: this comment described behaviour that no longer existed, and
- * `videoLength` became an ignored parameter — the exact shape of bug that made the protest
- * filter inert. Renamed to `_videoLength` so the signature says out loud that it is not read;
- * callers are unaffected because it is positional.
- */
-export function sceneBeatCapForCadenceForVideo(
-  sceneDurationSec: number,
-  perfFloor = 1,
-  _videoLength?: string | null,
-  beatSec?: number
-): number {
-  // Always use the standard cadence (archiveVisualBeatSec = 6s) so beat count scales
-  // with actual voiceover duration regardless of the configured target video length.
-  const cadence = beatSec ?? archiveVisualBeatSec();
-  return sceneBeatCapForCadence(sceneDurationSec, perfFloor, cadence);
-}
-
 /** Prefer moving archive video over Ken Burns stills (default on). */
 export function archivePreferVideoClips(): boolean {
   return process.env.ARCHIVE_PREFER_VIDEO !== "false";
@@ -1519,7 +1393,7 @@ export function maxMotionGraphicsPerVideo(): number {
  * pipeline had switched on. One definition, so a report cannot contradict the code it describes.
  */
 export { envFlagIsOn, envFlagIsNotOff } from "./envFlag";
-import { envFlagIsOn, envFlagIsNotOff } from "./envFlag";
+import { envFlagIsOn } from "./envFlag";
 
 /** YouTube clips — off unless ENABLE_YOUTUBE_SOURCING=true and keys set. */
 export function youtubeSourcingEnabled(): boolean {
@@ -1654,11 +1528,6 @@ export function youtubeReadinessWarnings(): string[] {
 /** Archive clip pick driven by asset.tags + title (default on). Set ENABLE_ARCHIVE_TAG_MATCH=false for semantic-only. */
 export function archiveTagsPrimaryMatching(): boolean {
   return process.env.ENABLE_ARCHIVE_TAG_MATCH !== "false";
-}
-
-/** Stability AI image-gen fallback — off (out of credits); set STABILITY_AI_ENABLED=true to re-enable. */
-export function stabilityAiEnabled(): boolean {
-  return process.env.STABILITY_AI_ENABLED === "true";
 }
 
 /** Europeana EU heritage API — real, license-verified video (F3-30 web-wide discovery tier).

@@ -3,7 +3,6 @@
  * Indexes archive frames on upload; scores adopt candidates via text↔image similarity + luma.
  */
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { spawn } from "child_process";
 import { foldSearchText } from "./searchTextNormalize";
@@ -15,7 +14,6 @@ import {
   asVideoTitleString,
   coerceVisionString,
 } from "./stringCoercion";
-import { beatVisualDescriptionFromIntent } from "./scriptVisualKeywords";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { throwIfActiveRenderCancelled } from "./videoGenerationCancel";
 import { recordGateVerdict } from "./gateFiringStats";
@@ -473,30 +471,6 @@ async function evaluateModernContentMismatch(
   return verdict;
 }
 
-/** Frame-path convenience wrapper. Unused today (both live call sites already hold image
- *  embeddings); kept as-is from before FASE 7.3 rather than deleted, so this phase's diff
- *  stays limited to the evidence rules. */
-async function modernContentMismatchAgainstBeat(
-  framePaths: string[],
-  beatQueryEmb: number[],
-  beatText: string,
-  videoTitle?: string
-): Promise<boolean> {
-  const imageEmbeddings: number[][] = [];
-  for (const fp of framePaths.slice(0, Math.min(MODERN_EVIDENCE_MAX_FRAMES, framePaths.length))) {
-    const emb = await embedImageFromPath(fp);
-    if (emb) imageEmbeddings.push(emb);
-  }
-  const verdict = await evaluateModernContentMismatch(
-    imageEmbeddings,
-    beatQueryEmb,
-    beatText,
-    videoTitle,
-    framePaths[0] ?? "unknown"
-  );
-  return verdict.mismatch;
-}
-
 const TEXT_EMBED_CACHE_MAX = 320;
 const textEmbeddingCache = new Map<string, number[]>();
 let modernMismatchEmbCache: number[][] | null = null;
@@ -673,27 +647,6 @@ export async function resolveBeatQueryEmbedding(
   videoTitle?: string
 ): Promise<number[] | null> {
   return resolveBeatVisionQueryEmbedding({ beatText, visualDescription, videoTitle });
-}
-
-/** Rich CLIP gate context — script [visual:] cues, beat description, semantic summary. */
-export function beatGateVisualDescription(
-  beat: { text: string; visualDescription?: string; searchQuery?: string; powerWord?: string },
-  semanticProfile?: { summary?: string }
-): string | undefined {
-  const parts: string[] = [];
-  const cue = beat.text.match(/\[visual:\s*([^\]]+)\]/i)?.[1];
-  if (cue?.trim()) parts.push(cue.trim());
-  for (const raw of [
-    beat.visualDescription,
-    beatVisualDescriptionFromIntent(beat.text),
-    semanticProfile?.summary,
-    beat.searchQuery,
-    beat.powerWord,
-  ]) {
-    const v = coerceVisionString(raw)?.trim();
-    if (v && !parts.some((p) => p.toLowerCase() === v.toLowerCase())) parts.push(v);
-  }
-  return parts.length ? parts.join(". ").slice(0, 320) : undefined;
 }
 
 function significantBeatTokens(beatText: string, videoTitle?: string): Set<string> {

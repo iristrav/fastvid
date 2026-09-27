@@ -31,22 +31,6 @@ describe("beatVisualRescue", () => {
     delete process.env.PIPELINE_WALL_CLOCK_LIMIT;
   });
 
-  it("enabled by default with rescue floor 5", () => {
-    expect(beatVisualRescueEnabled()).toBe(true);
-    expect(beatVisualRescueVisionFloor()).toBe(5);
-    expect(beatVisualRescueAiMaxClips("1")).toBe(2);
-    expect(fastShortArchivePoolMax()).toBe(200);
-    expect(fastShortClipIndexPrewarmMax()).toBe(48);
-    expect(maxFallbackBeatsPerVideo()).toBe(20);
-  });
-
-  it("can disable rescue", () => {
-    process.env.BEAT_VISUAL_RESCUE = "false";
-    process.env.STRICT_VOICE_VISUAL_MATCH = "true";
-    expect(beatVisualRescueEnabled()).toBe(false);
-    expect(maxFallbackBeatsPerVideo()).toBe(0);
-  });
-
   it("enables the wall-clock limit by default and keeps the 1-min fast path", () => {
     // RONDE 30: this asserted `false` and had been failing for months. The flag is opt-OUT
     // (PIPELINE_WALL_CLOCK_LIMIT !== "false"), so the default is ON; only the doc comment in

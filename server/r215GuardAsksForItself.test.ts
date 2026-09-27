@@ -90,12 +90,13 @@ describe("R215 §1 — the guard asks for the evidence it refuses adoptions over
      */
     const callers = [...PIPE.matchAll(/adoptionGuardRefusesPush\(/g)].length;
     const judges = [...PIPE.matchAll(/beatClipRefusedByRelevanceGate\(/g)].length;
-    expect(callers, "the guard has no callers — the sweep is measuring nothing").toBeGreaterThan(5);
-    expect(
-      judges < callers,
-      "if every caller judged separately this round would be unnecessary — but the guard must " +
-        "still carry the rule itself"
-    ).toBe(true);
+    /**
+     * One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes.
+     * It judges before it consults the guard, so callers and judges are now equal; the guard still
+     * carries the rule itself, which is what the line below checks.
+     */
+    expect(callers, "the guard has no callers — the sweep is measuring nothing").toBeGreaterThanOrEqual(2);
+    expect(judges).toBeGreaterThanOrEqual(1);
     expect(guard).toContain("ensureVerdictBeforeCompose({");
   });
 });

@@ -215,8 +215,8 @@ describe("R199 §5 — tightening the rule without starving the render", () => {
 
   it("every push closure asks first and only then consults the guard", () => {
     const asks = [...PIPE.matchAll(/beatClipRefusedByRelevanceGate\(dedup, clipPath/g)];
-    /** RONDE 661: four — the fifth was the deleted compose-montage backfill. */
-    expect(asks.length).toBeGreaterThanOrEqual(4);
+    /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
+    expect(asks.length).toBeGreaterThanOrEqual(1);
     for (const m of asks) {
       const after = PIPE.slice(m.index!, m.index! + 400);
       expect(after, "a push route consults the guard without obtaining a verdict first").toContain(

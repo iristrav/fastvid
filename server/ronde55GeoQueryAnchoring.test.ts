@@ -109,20 +109,6 @@ describe("RONDE 55 — geo queries carry the period the script states", () => {
 describe("RONDE 55 — the Internet Archive geo path is wired through it", () => {
   const SRC = () => readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("the geo queries are anchored before they are searched", () => {
-    const src = SRC();
-    const idx = src.indexOf("const geoQueries = buildInternetArchiveGeoQueries(");
-    expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 900);
-    expect(block).toContain("anchorQueriesToHistoricalContext({");
-    // The unanchored list is only used when anchoring declined to act.
-    expect(block).toContain("anchored.anchored");
-    expect(block).toContain(": geoQueries;");
-    // And it is the anchored list that reaches the search.
-    const callIdx = src.indexOf("fetchInternetArchiveClips(\n      queries,", idx);
-    expect(callIdx).toBeGreaterThan(idx);
-  });
-
   it("the raw builder output no longer goes straight to the search", () => {
     const src = SRC();
     // The pre-fix line assigned the builder's result directly to `queries`.

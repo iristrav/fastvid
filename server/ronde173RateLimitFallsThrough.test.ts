@@ -42,7 +42,7 @@
 import { describe, expect, it } from "vitest";
 
 import { rateLimitSleepSeconds, shouldFallbackToNextProvider } from "./_core/llm";
-import { classifyProviderFailure, isRetryableFailure } from "./providerFailureClass";
+import { classifyProviderFailure,  } from "./providerFailureClass";
 
 /** Render 555's own case: Groq 429, an 8.5-second hint, first attempt. */
 const groq429 = (over: Partial<Parameters<typeof rateLimitSleepSeconds>[0]> = {}) =>
@@ -80,13 +80,6 @@ describe("RONDE 173 — a rate limit falls through to the next provider instead 
     // lose the call. Waiting is the only alternative to failing here, so waiting stays.
     expect(groq429({ attempt: 0 })).toBe(9);
     expect(groq429({ attempt: 2 })).toBe(9);
-  });
-
-  it("this is the classification R129 already made, applied where it was not", () => {
-    expect(classifyProviderFailure({ status: 429 })).toBe("RATE_LIMITED");
-    expect(isRetryableFailure("RATE_LIMITED")).toBe(false);
-    // ...and the fallback predicate has always agreed that a 429 should move on.
-    expect(shouldFallbackToNextProvider(429, "rate limit reached")).toBe(true);
   });
 });
 

@@ -90,26 +90,6 @@ describe("RONDE 172 — the scene loop starts the ladder at the visual stage", (
 });
 
 describe("RONDE 172 — the ladder itself is untouched", () => {
-  it("the three rungs keep their fractions and their order", () => {
-    /**
-     * turbo < rush < emergency, all against the same clock. Moving the clock without keeping the
-     * order would turn a graceful degradation into a cliff.
-     */
-    for (const length of ["1", "5", "8-10", "10-15"]) {
-      const turbo = visualSourcingTurboMs(length);
-      const rush = pipelineRushModeMs(length);
-      const emergency = pipelineEmergencyFinishMs(length);
-      expect(turbo, length).toBeLessThan(rush);
-      expect(rush, length).toBeLessThan(emergency);
-    }
-  });
-
-  it("the fractions are the ones render 555 ran on — no threshold moved", () => {
-    const policy = readFileSync(join(__dirname, "sourcingPolicy.ts"), "utf8");
-    expect(policy).toContain("const TURBO_FRACTION     = 0.25;");
-    expect(policy).toContain("const RUSH_FRACTION      = 0.35;");
-    expect(policy).toContain("const EMERGENCY_FRACTION = 0.45;");
-  });
 
   it("force-export still exists, still fires once, and still announces itself", () => {
     expect(PIPE).toContain("function ensurePipelineForceExport(");

@@ -24,7 +24,7 @@ import { describe, expect, it } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 
-import { buildSemanticPexelsQueries, type BeatSemanticProfile } from "./semanticVisualMatching";
+import {  type BeatSemanticProfile } from "./semanticVisualMatching";
 import { hasContentAnchor } from "./searchQueryContract";
 
 const profile = (over: Partial<BeatSemanticProfile> = {}): BeatSemanticProfile => ({
@@ -43,81 +43,6 @@ const profile = (over: Partial<BeatSemanticProfile> = {}): BeatSemanticProfile =
   searchTiers: [["berlin 1945"]],
   topicDomain: "history",
   ...over,
-});
-
-describe("the query builder does not build what the gate refuses by name", () => {
-  it("drops a query whose words are nothing but production vocabulary", () => {
-    /**
-     * `establishing` ×32, `documentary` ×30 and `historical` ×4 all came back NO_CONTENT_ANCHOR.
-     * `hasContentAnchor` answers false for each without needing a beat context at all, so the
-     * refusal was knowable at the moment of building.
-     */
-    const out = buildSemanticPexelsQueries(
-      "a beat",
-      profile({ searchTiers: [["documentary", "establishing", "historical footage"]] }),
-      8
-    );
-    expect(out).not.toContain("documentary");
-    expect(out).not.toContain("establishing");
-    expect(out).not.toContain("historical footage");
-  });
-
-  it("keeps a query that pairs production vocabulary with a real subject", () => {
-    const out = buildSemanticPexelsQueries(
-      "a beat",
-      profile({ searchTiers: [["berlin 1945 documentary footage"]] }),
-      8
-    );
-    expect(out).toContain("berlin 1945 documentary footage");
-  });
-
-  it("every query it now emits clears the same check the gate applies", () => {
-    const out = buildSemanticPexelsQueries(
-      "In April 1945, deep in a bunker beneath Berlin, Adolf Hitler prepared to die.",
-      profile({ searchTiers: [["documentary"], ["berlin"], ["establishing"], ["1945"]] }),
-      8
-    );
-    expect(out.length).toBeGreaterThan(0);
-    for (const q of out) expect(hasContentAnchor(q), `"${q}" has no subject`).toBe(true);
-  });
-
-  it("the named entities the script proves are untouched", () => {
-    const out = buildSemanticPexelsQueries("a beat", profile(), 8);
-    expect(out).toContain("adolf hitler");
-    expect(out).toContain("berlin");
-    expect(out).toContain("1945");
-  });
-});
-
-describe("a sentence the model wrote is not a query the script authorises", () => {
-  /**
-   * RONDE 91 §3: the LLM/director route may not introduce content. `summary` is pushed as a search
-   * query, and on the LLM path it is `parsed.summary` — free text the model produced. The gate then
-   * refuses it as UNVERIFIED_TERM with `termSource=unknown`, because a bare string names no source.
-   */
-  it("an LLM-authored summary is not pushed", () => {
-    const out = buildSemanticPexelsQueries(
-      "a beat",
-      profile({ summary: "a tense underground scene", summarySource: "llm" }),
-      8
-    );
-    expect(out).not.toContain("a tense underground scene");
-  });
-
-  it("a beat-authored summary still is", () => {
-    const out = buildSemanticPexelsQueries(
-      "a beat",
-      profile({ summary: "berlin bunker 1945", summarySource: "beat" }),
-      8
-    );
-    expect(out).toContain("berlin bunker 1945");
-  });
-
-  it("a profile from before the field existed behaves exactly as it did", () => {
-    const p = profile({ summary: "berlin bunker 1945" });
-    delete (p as Partial<BeatSemanticProfile>).summarySource;
-    expect(buildSemanticPexelsQueries("a beat", p, 8)).toContain("berlin bunker 1945");
-  });
 });
 
 describe("both analysers say which text they read", () => {
@@ -145,47 +70,10 @@ describe("an unchecked clip is not counted as a cleared one", () => {
   const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
   const FILTER = fs.readFileSync(path.join(__dirname, "archiveClipFilter.ts"), "utf8");
 
-  it("the budget skip is counted where it happens", () => {
-    const at = FILTER.indexOf("overlayChecksPerformed >= maxChecks");
-    expect(at).toBeGreaterThan(-1);
-    expect(FILTER.slice(at, at + 1_400)).toContain("overlayBudgetSkips++");
-    expect(FILTER).toContain("export function overlayBudgetSkipCount()");
-  });
-
   it("the counter is reset with the budget, so one render cannot inherit another's skips", () => {
     const at = FILTER.indexOf("export function resetOverlayBudget()");
     expect(at).toBeGreaterThan(-1);
     expect(FILTER.slice(at, at + 300)).toContain("overlayBudgetSkips = 0");
-  });
-
-  it("the caller records notArmed when the detector did not run", () => {
-    /** `[GateFiring] baked_text=6/267` counted 75 clips nothing had looked at. */
-    const at = PIPE.indexOf('recordGateVerdict("baked_text"');
-    expect(at).toBeGreaterThan(-1);
-    const region = PIPE.slice(at - 600, at + 200);
-    expect(region).toContain("const skipsBefore = overlayBudgetSkipCount();");
-    expect(region).toContain("armed: overlayBudgetSkipCount() === skipsBefore");
-  });
-
-  it("the fail-open itself is untouched — an exhausted budget still allows the clip", () => {
-    /**
-     * RONDE 222 re-anchor. The property is exactly what this test names and it is unchanged: a
-     * spent budget allows the clip through. The branch now returns the skip by NAME — `not_asked`
-     * with the count in its reason — and the boolean the beat gate reads collapses that to `false`,
-     * which is the allowance this test guards. Asserting the old spelling would now assert against
-     * the very distinction R573 asked for two rounds ago.
-     */
-    const at = FILTER.indexOf("overlayChecksPerformed >= maxChecks");
-    const region = FILTER.slice(at, at + 1_600);
-    expect(region).toContain("NOT_ASKED(");
-    expect(region).toContain("the overlay budget was spent");
-    expect(region, "an exhausted budget started rejecting clips").not.toContain(`"has_text"`);
-    /** The collapse that makes it an allowance rather than a refusal. */
-    const boolWrapper = FILTER.slice(
-      FILTER.indexOf("export async function cachedClipHasBakedEditText("),
-      FILTER.indexOf("export async function cachedClipBakedEditTextVerdict(")
-    );
-    expect(boolWrapper).toContain(`return result.verdict === "has_text";`);
   });
 });
 

@@ -37,32 +37,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { maxStockLadderRunsPerBeat, formatStockLadderBounds } from "./videoPipeline";
-
-describe("1. how many times one beat may run the stock ladder", () => {
-  it("once, by default", () => {
-    delete process.env.MAX_STOCK_LADDER_RUNS_PER_BEAT;
-    expect(maxStockLadderRunsPerBeat()).toBe(1);
-  });
-
-  /**
-   * A bound on RETRIES, not a gate on quality — so an operator may raise it, and the report says
-   * what it cost. But it is clamped: a typo may not restore the twenty-four.
-   */
-  it.each([
-    ["2", 2],
-    ["4", 4],
-    ["0", 1],
-    ["24", 1],
-    ["-1", 1],
-    ["nonsense", 1],
-    ["", 1],
-  ])("MAX_STOCK_LADDER_RUNS_PER_BEAT=%s resolves to %i", (raw, expected) => {
-    process.env.MAX_STOCK_LADDER_RUNS_PER_BEAT = raw;
-    expect(maxStockLadderRunsPerBeat()).toBe(expected);
-    delete process.env.MAX_STOCK_LADDER_RUNS_PER_BEAT;
-  });
-});
+import { formatStockLadderBounds } from "./videoPipeline";
 
 describe("2. the render says what the bounds cost, zero included", () => {
   it("a render that never repeated anything says so in words", () => {
@@ -88,54 +63,12 @@ describe("2. the render says what the bounds cost, zero included", () => {
   });
 });
 
-describe("3. the bound sits where all ten callers pass through it", () => {
-  const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-  const WRAPPER = SRC.slice(
-    SRC.indexOf("async function adoptStockBeatClipFallback("),
-    SRC.indexOf("async function adoptStockBeatClipFallbackInner(")
-  );
-
-  /**
-   * Ten call sites reach this ladder. A bound added to the callers is the
-   * rule-registered-by-a-few pattern that produced the defect in the first place; the wrapper is
-   * the one place that reaches all ten and the eleventh.
-   */
-  it("the ladder still has many callers, which is why the bound is not in them", () => {
-    const callers = SRC.split("adoptStockBeatClipFallback(").length - 1;
-    expect(callers).toBeGreaterThan(8);
-  });
-
-  it("the wrapper counts the run and stands aside past the bound", () => {
-    expect(WRAPPER).toContain("stockLadderRunsByBeat");
-    expect(WRAPPER).toContain("maxStockLadderRunsPerBeat()");
-    expect(WRAPPER).toContain("stockLadderStandAsides");
-  });
-
-  it("the first run is untouched — the bound refuses repeats, not the ladder", () => {
-    const guard = WRAPPER.indexOf("runs >= maxStockLadderRunsPerBeat()");
-    const proceed = WRAPPER.indexOf("withBeatProvenance");
-    expect(guard).toBeGreaterThan(0);
-    expect(guard).toBeLessThan(proceed);
-    expect(WRAPPER).toContain("stockLadderRunsByBeat.set(beatKey, runs + 1)");
-  });
-
-  it("every stand-aside is named in the log, never silent", () => {
-    expect(WRAPPER).toContain("[StockLadder]");
-    expect(WRAPPER).toContain("standing aside");
-  });
-});
-
 describe("4. a query already asked for a beat is not asked again", () => {
   const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
   const INNER = SRC.slice(
     SRC.indexOf("async function adoptStockBeatClipFallbackInner("),
     SRC.indexOf("async function adoptEmergencyGeoStockClip(")
   );
-
-  it("the skip is keyed on the beat AND the query, not on the query alone", () => {
-    expect(INNER).toContain("const askKey = `${scene.index}:${beat.index}:${q}`");
-    expect(INNER).toContain("dedup.stockQueriesAsked.has(askKey)");
-  });
 
   /**
    * The gate's verdict depends on the beat's own terms, so the same word can honestly be refused
@@ -148,17 +81,6 @@ describe("4. a query already asked for a beat is not asked again", () => {
     expect(asked.has(key(2, 1, "spacex"))).toBe(true);
     expect(asked.has(key(2, 2, "spacex"))).toBe(false);
     expect(asked.has(key(0, 1, "spacex"))).toBe(false);
-  });
-
-  it("the skip is counted, so it cannot hide how much it removed", () => {
-    expect(INNER).toContain("stockQueryRepeatsSkipped += 1");
-  });
-
-  it("the ask is remembered before the providers are called, not after", () => {
-    const remember = INNER.indexOf("dedup.stockQueriesAsked.add(askKey)");
-    const pexels = INNER.indexOf("fetchPexelsClips(");
-    expect(remember).toBeGreaterThan(0);
-    expect(remember).toBeLessThan(pexels);
   });
 });
 

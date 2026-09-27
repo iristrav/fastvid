@@ -99,23 +99,20 @@ describe("RONDE 114 — but it no longer refuses", () => {
   it("the verdict is still recorded at both sites, so the signal is not lost", () => {
     expect(
       (PIPELINE.match(/recordGateVerdict\("off_topic_visual",/g) ?? []).length,
-      "both call sites must still record"
-    ).toBe(2);
+      "the remaining call site must still record (the similar-match site was deleted)"
+    ).toBe(1);
   });
 
   it("both sites say out loud that they flagged rather than refused", () => {
     expect(
       (PIPELINE.match(/flagged, not rejected; the relevance gate decides/g) ?? []).length
-    ).toBeGreaterThanOrEqual(3); // off_topic_protest's line plus this round's two
+    ).toBeGreaterThanOrEqual(1); // adoptClip's; off_topic_protest's and the similar-match one were deleted
   });
 
   it("the decider it used to stand in front of is still there, on both paths", () => {
     // Site 1: adoptClip's own beat image gate.
     expect(PIPELINE).toContain("!(await beatClipPassesImageGate(p, contentKey, beatText, opts, workDir, sceneIndex, beatIndex, dedup))");
-    // Site 2: the similar-match path calls the vision gate immediately after the flag.
-    const idx = PIPELINE.indexOf("if (similarProviderTitle) recordGateVerdict(");
-    expect(idx).toBeGreaterThan(-1);
-    expect(PIPELINE.slice(idx, idx + 900)).toContain("const vision = await beatClipPassesVisionGate(");
+    // Site 2, the similar-match path, was deleted with `adoptBestSimilarBeatClip`.
   });
 });
 
@@ -140,37 +137,9 @@ describe("RONDE 114 — the demote list matches reality", () => {
     // ...while a gate that IS supposed to be able to fire still gets caught.
     expect(silent).toContain("baked_text");
   });
-
-  it("every listed name is one the pipeline actually records", () => {
-    /**
-     * The list is only a safety net if its entries match real gate names. An entry naming a gate
-     * that does not exist protects nothing while looking like it does.
-     */
-    for (const gate of INTENTIONALLY_NON_FIRING_GATES) {
-      expect(PIPELINE, gate).toContain(`recordGateVerdict("${gate}"`);
-    }
-  });
 });
 
 describe("RONDE 114 — the checks that read PIXELS keep their veto", () => {
-  it("baked_text still refuses", () => {
-    // A burnt-in chyron is a defect in the file, not a claim about the subject.
-    //
-    // The call gained a third argument — `{ armed }` — after render 573 reported
-    // `[GateFiring] baked_text=6/267` while 75 of those 267 were overlay-budget skips where the
-    // detector never ran. The verdict passed is still `hasBakedText` and the veto below is
-    // untouched; only the honesty of the COUNT changed. Anchored on the two arguments that carry
-    // the decision rather than on the semicolon, so the shape is pinned and the evidence field is
-    // free to grow.
-    expect(PIPELINE).toContain('recordGateVerdict("baked_text", hasBakedText, {');
-    // NOT ARMED is the bucket for "the gate did not judge this candidate" — never a silent pass.
-    expect(PIPELINE).toContain("armed: overlayBudgetSkipCount() === skipsBefore,");
-    // Unlike the three demoted gates, this one still refuses — it reads the pixels.
-    expect(PIPELINE).toContain(
-      'recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text", queryLabel);'
-    );
-    expect(PIPELINE).toContain("return { pass: false, worstScore10: null, skipped: false, fromCache: false };");
-  });
 
   it("the beat image gate is still the one that decides", () => {
     expect(PIPELINE).toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');

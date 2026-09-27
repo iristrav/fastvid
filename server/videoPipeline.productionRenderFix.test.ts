@@ -91,21 +91,6 @@ describe("Problem 10/11 — assertVisualCoverageExportGate (hard final validatio
   });
 });
 
-describe("Problem 3/10/11 — guaranteedTextOverlayDurationSec (scene-level placeholder duration cap)", () => {
-  it("Test 6 — a long scene duration is capped to archiveVisualMaxClipSec(), never 90s", async () => {
-    const { guaranteedTextOverlayDurationSec } = await freshPipeline();
-    const { archiveVisualMaxClipSec } = await import("./sourcingPolicy");
-    const capped = guaranteedTextOverlayDurationSec(600);
-    expect(capped).toBe(archiveVisualMaxClipSec());
-    expect(capped).toBeLessThanOrEqual(8);
-  }, 30_000); // first freshPipeline() import of the whole videoPipeline.ts module is slow (cold ffmpeg-binary detection etc.) when this file runs in isolation
-
-  it("Test 7 — a very short requested duration still gets at least the 3s floor", async () => {
-    const { guaranteedTextOverlayDurationSec } = await freshPipeline();
-    expect(guaranteedTextOverlayDurationSec(0.5)).toBe(3);
-  });
-});
-
 describe("Problem 10 — VisualDedupState.sceneRescueColorFallbackCount", () => {
   it("Test 8 — createVisualDedupState initializes the new counter to 0", async () => {
     const { createVisualDedupState } = await freshPipeline();

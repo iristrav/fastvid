@@ -351,7 +351,8 @@ describe("a sentence with no searchable subject yields no query, not the word th
 
   it("the two stock fetchers drop an empty query instead of searching for nothing", () => {
     const occurrences = SRC.split('.filter((q) => q.trim().length > 0)').length - 1;
-    expect(occurrences).toBeGreaterThanOrEqual(3);
+    /** Two — the others were in the deleted stock fallback ladder and AI prompt builders. */
+    expect(occurrences).toBeGreaterThanOrEqual(2);
   });
 
   it("the word form rule itself is unchanged — this reuses it, it does not restate it", () => {

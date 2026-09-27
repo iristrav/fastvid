@@ -167,31 +167,6 @@ describe("RONDE 167 — the extension is on the record now", () => {
     const src = l.allRecords().find((r) => !r.parentLineageId)!;
     expect(src.currentFilename).toBe("src_loc.mp4");
   });
-
-  it("extendLastClip links at every path that returns a file", () => {
-    // Three: the zoom, the stream copy and the re-encode fallback. A silent one is the bug again.
-    const idx = PIPE.indexOf("async function extendLastClip(");
-    const block = PIPE.slice(idx, PIPE.indexOf("guaranteedTextOverlayDurationSec", idx));
-    expect((block.match(/linkExtension\(\);/g) ?? []).length).toBe(3);
-    expect((block.match(/return out;/g) ?? []).length).toBe(3);
-    /**
-     * And it links the way an extension must: the source clip is not retired by it.
-     *
-     * Matched inside the linkDerivedPath CALL, not anywhere in the block. A plain toContain here
-     * passed against a mutation that removed the option, because the comment above the call also
-     * contains the words — the same false-anchor shape RONDE 165's budget test had.
-     */
-    expect(block).toMatch(/linkDerivedPath\([\s\S]{0,160}?supersedesParent: false,/);
-  });
-
-  it("both call sites hand it the ledger — an optional argument nobody passes is dead too", () => {
-    expect(PIPE).toContain(
-      "extendLastClip(dedup.lastRealClip, holdSec, scene.index, beat.index, workDir, dedup.sourcingCache?.lineage)"
-    );
-    expect(PIPE).toContain(
-      "extendLastClip(source, need, scene.index, 900 + attempt, workDir, dedup.sourcingCache?.lineage)"
-    );
-  });
 });
 
 describe("RONDE 167 — F3: the curated route has no path, only a key", () => {

@@ -10,7 +10,7 @@ import {
   effectiveVisionSampleCount,
   cascadeVisionGateEnabled,
   cascadeVisionExpandBelow,
-  effectiveMinClipQualityScore,
+  
 } from "./visualQualityGate";
 import {
   filenameLexicalBoost,
@@ -99,13 +99,6 @@ describe("localClipVision helpers", () => {
       visualDescription: "World War II soldiers marching in Berlin",
     });
     expect(q.indexOf("World War II")).toBeLessThan(q.indexOf("Something abstract"));
-  });
-
-  it("effectiveMinClipQualityScore stays at minClipQualityScore when strict voice visual match is on", () => {
-    const prev = process.env.STRICT_VOICE_VISUAL_MATCH;
-    process.env.STRICT_VOICE_VISUAL_MATCH = "true";
-    expect(effectiveMinClipQualityScore(true, true)).toBe(minClipQualityScore());
-    process.env.STRICT_VOICE_VISUAL_MATCH = prev;
   });
 
   // Production finding (Vision Gate root-cause fix, test F): buildBeatVisionQueryText used to
