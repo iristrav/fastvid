@@ -457,40 +457,6 @@ export type QueryProvenance = {
   provider: string;
 };
 
-export function queryProvenance(
-  intent: BeatVisualIntent | null | undefined,
-  query: string,
-  provider: string
-): QueryProvenance {
-  return {
-    sceneIndex: intent?.sceneIndex ?? -1,
-    beatIndex: intent?.beatIndex ?? -1,
-    subject: intent?.subject ?? "",
-    event: intent?.event[0] ?? "",
-    place: intent?.location[0] ?? "",
-    period: intent?.period[0] ?? "",
-    action: intent?.action[0] ?? "",
-    shotIntent: intent?.preferredShot ?? "",
-    query: (query ?? "").trim(),
-    provider: (provider ?? "").trim() || "unknown",
-  };
-}
-
-/** One line, and the empty fields are omitted for the same reason `formatVisualIntent` omits them. */
-export function formatQueryProvenance(p: QueryProvenance): string {
-  const parts = [`s${p.sceneIndex}b${p.beatIndex}`, `provider=${p.provider}`, `query="${p.query}"`];
-  const add = (label: string, value: string) => {
-    if (value) parts.push(`${label}=${value}`);
-  };
-  add("subject", p.subject);
-  add("event", p.event);
-  add("place", p.place);
-  add("period", p.period);
-  add("action", p.action);
-  add("shotIntent", p.shotIntent);
-  return `[QueryProvenance] ${parts.join(" ")}`;
-}
-
 /**
  * The two fields the planner supplies and `VerifiedQueryContext` does not, shaped for the query
  * builder. Kept here rather than in the builder so there is one definition of what the planner

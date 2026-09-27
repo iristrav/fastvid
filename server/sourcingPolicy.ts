@@ -5,30 +5,6 @@ import fs from "fs";
 import os from "os";
 import { targetVideoDurationMinutes } from "../shared/videoLengths";
 
-/**
- * Archive-first mode: prefer the curated/admin media archive per beat. When a scene ends up
- * short, recoverSceneClipsIfEmpty() tops it up using the full external sourcing cascade
- * (Internet Archive, YouTube CC, Wikimedia, NARA, Flickr, SepiaSearch, Vimeo, media.ccc, NASA,
- * Europeana, Openverse, then Pexels/Pixabay last) — that cascade is a fallback for underfilled
- * scenes, not the primary per-beat path.
- */
-export function curatedArchiveOnlyVisuals(): boolean {
-  return process.env.CURATED_ARCHIVE_ONLY !== "false";
-}
-
-// F3-39: CURATED_ARCHIVE_ONLY's own doc comment above already says the external cascade is
-// meant to run as a scene-level fallback in this mode — but getPipelinePerfProfile() forced
-// enableArchival to false unconditionally whenever curatedArchiveOnlyVisuals() was true,
-// which made that fallback structurally unreachable (fetchInternetArchiveClips/
-// fetchHistoricalBeatVideo's internet_archive tier both gate on perf.enableArchival) instead of
-// merely deprioritized. This flag controls only that override — the primary per-beat path
-// (beatPrimaryFetch) never consults perf.enableArchival either way, so curated-archive-first
-// behavior for the primary path is unaffected regardless of this flag's value. Default true
-// (fallback reachable); set "false" to restore the old fully-archive-only behavior.
-export function curatedArchiveExternalFallbackEnabled(): boolean {
-  return process.env.CURATED_ARCHIVE_EXTERNAL_FALLBACK !== "false";
-}
-
 // ─── Visual Matching Engine V2 (build-out, off until proven — see /server/visualMatchingV2) ──
 
 /** V2 VideoContext layer (one LLM call per video, cached/reused across videos). Inert until read by the active pipeline. */
@@ -136,9 +112,7 @@ export function externalVisualSourcingEnabled(): boolean {
 
 /** Openverse CC stills — off in archive-first mode (unvetted random internet photos). */
 export function openverseStillsEnabled(): boolean {
-  if (process.env.ENABLE_OPENVERSE_STILLS === "false") return false;
-  if (curatedArchiveOnlyVisuals()) return false;
-  return true;
+  return process.env.ENABLE_OPENVERSE_STILLS !== "false";
 }
 
 /** Openverse for geo/urban documentary beats even in archive-first strict mode. */
@@ -146,12 +120,6 @@ export function openverseGeoDocumentaryEnabled(): boolean {
   if (process.env.ENABLE_OPENVERSE_GEO === "false") return false;
   if (process.env.ENABLE_OPENVERSE_GEO === "true") return true;
   return strictVoiceVisualMatchEnabled() || visualFootageFocusEnabled();
-}
-
-/** Wikimedia Commons still photos — on when V1 matching is on (not random Openverse). */
-export function wikimediaInternetStillsEnabled(): boolean {
-  if (process.env.ENABLE_WIKIMEDIA_STILLS === "false") return false;
-  return visualMatchingV1Enabled();
 }
 
 /** When true, voiceover uses ElevenLabs only (no Fish Audio). */
@@ -210,50 +178,6 @@ export function archivePexelsFallbackEnabled(): boolean {
 /** Pexels/Pixabay after Wikimedia + archive misses (default on). */
 export function archivePexelsHybridEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
-}
-
-/** Cap licensed stock (Pexels/Pixabay) per video — last resort; 0 when strict visual focus. */
-export function curatedMaxStockBeatsPerVideo(videoLength?: string | null): number {
-  if (!archivePexelsFallbackEnabled()) return 0;
-  if (visualFootageFocusEnabled() && strictVoiceVisualMatchEnabled()) {
-    const mins = targetVideoDurationMinutes(videoLength);
-    if (mins <= 1) return 12;
-    return 2;
-  }
-  const raw = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
-  if (raw !== undefined && raw !== "") {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 0) return n;
-  }
-  const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 1;
-  if (mins <= 10) return 2;
-  return 3;
-}
-
-/** Max AI-generated clips when stock cap is full — 0 under visual focus (archive/stock only). */
-export function curatedAiFallbackMaxClips(videoLength?: string | null): number {
-  if (visualFootageFocusEnabled()) return 0;
-  const raw = process.env.MAX_AI_CLIPS_PER_VIDEO?.trim();
-  if (raw !== undefined && raw !== "") {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 0) return n;
-  }
-  const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 12;
-  if (mins <= 10) return 20;
-  return 28;
-}
-
-/** When true (default in archive-first mode), Pexels/Pixabay are tightly capped per video. */
-export function curatedMinimizeStockFootage(): boolean {
-  return process.env.MINIMIZE_STOCK_FOOTAGE !== "false";
-}
-
-/** Fail generation rather than loop, pad, or reuse any clip content in a video. */
-export function strictNoVisualRepeat(): boolean {
-  if (process.env.STRICT_NO_VISUAL_REPEAT === "false") return false;
-  return curatedArchiveOnlyVisuals();
 }
 
 /** Generation wall-clock minutes allowed per 1 minute of finished video (default 10:1). */
@@ -369,18 +293,6 @@ export function maxPipelineWallClockHardMin(videoLength?: string | null): number
   const mins = targetVideoDurationMinutes(videoLength);
   if (mins <= 1) return 22;
   return Math.ceil(maxPipelineWallClockMin(videoLength) * pipelineWallClockGraceFactor());
-}
-
-/** After this many ms on 1-min fast path, prefer licensed stock over slow archive retries. */
-export function pipelineRushModeMs(videoLength?: string | null): number {
-  const raw = process.env.PIPELINE_RUSH_MODE_MS?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 90_000 && n <= 540_000) return n;
-  }
-  // RONDE 8: keeps its position ABOVE the widened 5min turbo threshold (ladder order
-  // turbo < rush < emergency must hold — each rung is compared against the same clock).
-  return escalationThresholdMs(videoLength, RUSH_FRACTION);
 }
 
 /** Near hard cap — finish compose before wall-clock hard fail (quality path keeps archive longer on 1-min). */
@@ -605,7 +517,6 @@ export function deferFacelessSubtitlesToCompose(): boolean {
   return process.env.ENABLE_DEFER_FACELESS_SUBTITLES !== "false";
 }
 
-
 /**
  * Strict voice↔visual CLIP matching — every beat must pass vision gate (default ON).
  * Set STRICT_VOICE_VISUAL_MATCH=false to restore relaxed fast-path scoring.
@@ -623,23 +534,12 @@ export function metadataVisualBlocksEnabled(): boolean {
   return process.env.ENABLE_METADATA_VISUAL_BLOCKS === "true";
 }
 
-
 /**
  * When no clip passes strict CLIP match, run a degraded rescue ladder instead of failing export.
  * Default ON — rescue uses lower CLIP floor, then stock, AI, then neutral placeholder still.
  */
 export function beatVisualRescueEnabled(): boolean {
   return process.env.BEAT_VISUAL_RESCUE !== "false";
-}
-
-/** Min CLIP score (0–10) for rescue-tier archive/stock (default 5). */
-export function beatVisualRescueVisionFloor(): number {
-  const raw = process.env.BEAT_VISUAL_RESCUE_FLOOR?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 4 && n <= 7) return n;
-  }
-  return 5;
 }
 
 /** Max AI-generated clips in rescue tier only (strict match still blocks normal AI). */
@@ -652,57 +552,6 @@ export function beatVisualRescueAiMaxClips(videoLength?: string | null): number 
   }
   return isFastShortVideoLength(videoLength) ? 2 : 3;
 }
-
-/** 1-min archive pool warm — candidates pre-ranked for the whole video (default 200). */
-export function fastShortArchivePoolMax(): number {
-  const raw = process.env.FAST_ARCHIVE_POOL_MAX?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 60 && n <= 480) return n;
-  }
-  return 200;
-}
-
-/** Wall-clock ms to warm archive pool before 1-min visual stage (default 18s). */
-export function fastShortArchivePoolWarmMs(): number {
-  const raw = process.env.FAST_ARCHIVE_POOL_WARM_MS?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 8_000 && n <= 45_000) return n;
-  }
-  return 18_000;
-}
-
-/** CLIP index pre-warm before 1-min visuals — max assets / budget ms. */
-export function fastShortClipIndexPrewarmMax(): number {
-  const raw = process.env.FAST_CLIP_INDEX_PREWARM_MAX?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 12 && n <= 120) return n;
-  }
-  return 48;
-}
-
-export function fastShortClipIndexPrewarmMs(): number {
-  const raw = process.env.FAST_CLIP_INDEX_PREWARM_MS?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 15_000 && n <= 90_000) return n;
-  }
-  return 45_000;
-}
-
-/** Max grey color-fallback beats per video (0 when strict match is on). */
-export function maxFallbackBeatsPerVideo(): number {
-  const raw = process.env.MAX_FALLBACK_BEATS_PER_VIDEO?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 0 && n <= 20) return n;
-  }
-  if (beatVisualRescueEnabled()) return 20;
-  return strictVoiceVisualMatchEnabled() ? 0 : 6;
-}
-
 
 /** Skip LLM semantic rerank when CLIP pre-rank top score ≥ this (default 8). */
 export function semanticRerankClipSkipMin(): number {
@@ -799,7 +648,6 @@ function escalationThresholdMs(videoLength: string | null | undefined, fraction:
 
 /** Ladder order must hold — turbo < rush < emergency — against the same clock. */
 const TURBO_FRACTION     = 0.25;
-const RUSH_FRACTION      = 0.35;
 const EMERGENCY_FRACTION = 0.45;
 
 /** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 12s; 3min on 1-min quality path). */
@@ -1454,16 +1302,6 @@ export function youtubeMinFormatHeight(): number {
   return 480;
 }
 
-export function composeRescueWallClockMs(videoLength?: string | null): number {
-  const raw = process.env.COMPOSE_RESCUE_WALL_CLOCK_MS?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 30_000 && n <= 900_000) return n;
-  }
-  if (isFastShortVideoLength(videoLength)) return 90_000;
-  return 240_000;
-}
-
 /** Target on-screen duration per archive clip (seconds). */
 export function archiveVisualBeatSec(): number {
   const raw = process.env.ARCHIVE_VISUAL_BEAT_SEC?.trim();
@@ -1540,21 +1378,6 @@ export function sceneBeatCapForCadenceForVideo(
   // with actual voiceover duration regardless of the configured target video length.
   const cadence = beatSec ?? archiveVisualBeatSec();
   return sceneBeatCapForCadence(sceneDurationSec, perfFloor, cadence);
-}
-
-/** Max on-screen clip length — 1-min fast path allows full beat holds (default 20s). */
-export function archiveVisualMaxClipSecForVideo(videoLength?: string | null): number {
-  if (!isFastShortVideoLength(videoLength)) return archiveVisualMaxClipSec();
-  return archiveVisualBeatSecForVideo(videoLength);
-}
-
-/** Pipeline perf floor: enough beats for the longest typical scene in this video length. */
-export function curatedPerfBeatsFloor(videoLength: string): number {
-  const totalSec = targetVideoDurationMinutes(videoLength) * 60;
-  const scenes =
-    videoLength === "1" ? 3 : videoLength === "8-10" ? 18 : videoLength === "10-15" ? 25 : 35;
-  const typicalSceneSec = totalSec / scenes;
-  return sceneBeatCapForCadenceForVideo(typicalSceneSec, 1, videoLength);
 }
 
 /** Prefer moving archive video over Ken Burns stills (default on). */
@@ -1684,26 +1507,6 @@ export function maxMotionGraphicsPerVideo(): number {
   }
   return 5;
 }
-
-/**
- * Visual Matching Engine V1: Wikimedia Commons as a free/public fallback source.
- * On by default (Wikimedia needs no API key). Disable via VISUAL_MATCHING_V1=false.
- */
-export function visualMatchingV1Enabled(): boolean {
-  return process.env.VISUAL_MATCHING_V1 !== "false";
-}
-
-/** Lowest CLIP score still accepted as “looks similar” when strict match found nothing (default 5). */
-export function archiveSimilarMatchVisionFloor(): number {
-  const raw = process.env.ARCHIVE_SIMILAR_VISION_FLOOR?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 4 && n <= 7) return n;
-  }
-  return 5;
-}
-
-
 
 /**
  * Case/whitespace-tolerant env boolean parsing. A Railway variable set to "TRUE" or " true "

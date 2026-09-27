@@ -10,7 +10,6 @@ import {
 import {
   archiveVisualMaxClipSec,
   archiveVisualMinClipSec,
-  curatedArchiveOnlyVisuals,
   vidrushDocumentaryQualityEnabled,
 } from "./sourcingPolicy";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
@@ -125,7 +124,7 @@ export function montageSharpScaleChain(width: number, height: number): string {
 }
 
 export function vidrushStillPhotoScale(): number {
-  return curatedArchiveOnlyVisuals() ? 0.86 : 0.72;
+  return 0.72;
 }
 
 export function isNonDocumentaryVisualHay(hay: string): boolean {
@@ -171,22 +170,6 @@ export function inferBeatGeoRegion(beatText: string, videoTitle?: string): BeatG
   if (geoTags.some((t) => /netherlands|holland|dutch|nederland|amsterdam/.test(t))) return "nl";
   if (geoTags.some((t) => /america|usa|united states|american/.test(t))) return "us";
   return inferPrimaryGeoFromTitle(videoTitle);
-}
-
-/** Sticky segment — stay in NL or US block until beat explicitly switches. */
-export function resolveSegmentGeoLock(
-  beatRegion: BeatGeoRegion,
-  priorLock: BeatGeoRegion | null,
-  videoTitle?: string
-): BeatGeoRegion {
-  if (beatRegion === "nl" || beatRegion === "us") return beatRegion;
-  if (beatRegion === "both") {
-    if (priorLock === "nl" || priorLock === "us") return priorLock;
-    return "nl";
-  }
-  if (priorLock && priorLock !== "neutral" && priorLock !== "both") return priorLock;
-  const fromTitle = inferPrimaryGeoFromTitle(videoTitle);
-  return fromTitle === "both" ? "nl" : fromTitle;
 }
 
 /** Re-export for tests and legacy imports. */
@@ -398,23 +381,6 @@ export function judgeDocumentaryBeatGate(
 
 /** @deprecated Use clipPassesDocumentaryBeatGate — kept as alias for imports. */
 export const clipPassesGeoUrbanBeatGate = clipPassesDocumentaryBeatGate;
-
-/** Wikimedia / stock metadata gate — same rules as adoptClip, all topics. */
-export function visualMetadataPassesBeatGate(
-  metadataHay: string,
-  beatText: string,
-  videoTitle?: string
-): boolean {
-  if (!vidrushDocumentaryQualityEnabled()) return true;
-  const hay = metadataHay.toLowerCase();
-  if (isNonDocumentaryVisualHay(hay)) return false;
-  if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, beatText)) return false;
-  const lockRegion = resolveBeatRegionLock(beatText, videoTitle);
-  if (lockRegion !== "neutral" && lockRegion !== "both" && isWrongRegionForSegmentLock(hay, lockRegion)) {
-    return false;
-  }
-  return true;
-}
 
 function pathBasename(p: string): string {
   const parts = p.replace(/\\/g, "/").split("/");

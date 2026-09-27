@@ -21,7 +21,6 @@ import { archiveUploadRequestTimeoutMs } from "../archiveVideoSplitter";
 import { getConfiguredAppUrl, registerCanonicalAppUrl } from "./appUrl";
 import {
   archivePexelsFallbackEnabled,
-  curatedArchiveOnlyVisuals,
   externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
   facelessSubtitlesEnabled,
@@ -322,12 +321,6 @@ async function startServer() {
     formatYoutubeReadiness()
   );
   for (const warning of youtubeReadinessWarnings()) console.log(warning);
-  console.log(
-    "[Fastvid] Visual sourcing:",
-    curatedArchiveOnlyVisuals()
-      ? "✓ Wikimedia → archief → Pexels/Pixabay per beat (local CLIP quality gate)"
-      : "✗ full external sourcing enabled"
-  );
   const visionQa = getVisionQaStatus();
   console.log(
     "[Fastvid] Local vision QA:",
@@ -634,7 +627,6 @@ async function startServer() {
         ),
         fishAudioFallback: fishAudioFallbackEnabled(),
         googleTtsFallback: googleTtsFallbackEnabled(),
-        curatedArchiveOnly: curatedArchiveOnlyVisuals(),
         externalVisualSourcingEnabled: externalVisualSourcingEnabled(),
         // Legacy keys below — configured but unused while archive-only visuals are enforced
         PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,

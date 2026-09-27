@@ -158,18 +158,6 @@ export function beatSpend(
   return { ...spendFor(state, sceneIndex, beatIndex) };
 }
 
-/** Was this beat stopped by a budget rather than by a lack of candidates? */
-export function budgetExhaustedFor(
-  state: RetrievalBudgetState | undefined,
-  sceneIndex: number,
-  beatIndex: number
-): BudgetKind[] {
-  if (!state) return [];
-  return state.exhausted
-    .filter((e) => e.sceneIndex === sceneIndex && e.beatIndex === beatIndex)
-    .map((e) => e.kind);
-}
-
 /**
  * ── RONDE 231 — THE THREE BUDGETS THAT WERE NEVER CHARGED ───────────────────────────────────
  *

@@ -379,8 +379,6 @@ export type BeatLabelInput = BeatYearInput & {
   highlightWords?: string[];
 };
 
-export type VoiceBeatWindow = { start: number; dur: number };
-
 function beatsHaveTtsWindows(beats: BeatYearInput[]): boolean {
   return (
     beats.length > 0 &&
@@ -441,38 +439,6 @@ export function fillPartialTtsVoiceStarts(beats: BeatYearInput[], voiceDur: numb
     }
   }
   return out;
-}
-
-/** Word-weighted or TTS voice span per beat — TTS uses inter-beat cut points. */
-export function computeVoiceBeatWindows(
-  beats: BeatYearInput[],
-  sceneDuration: number,
-  sceneStartSec = 0
-): VoiceBeatWindow[] {
-  if (beatsHaveTtsWindows(beats)) {
-    return beats.map((b, i) => {
-      const start = b.voiceStartSec!;
-      const nextStart =
-        i < beats.length - 1
-          ? beats[i + 1]!.voiceStartSec!
-          : Math.max(b.voiceEndSec!, sceneDuration);
-      const dur = Math.max(0.35, nextStart - start);
-      return { start: sceneStartSec + start, dur };
-    });
-  }
-
-  const wordCounts = beats.map((b) => {
-    const n = b.text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length;
-    return Math.max(1, n);
-  });
-  const totalWords = wordCounts.reduce((s, n) => s + n, 0) || beats.length;
-  let t = sceneStartSec;
-  return beats.map((_, i) => {
-    const dur = sceneDuration * (wordCounts[i]! / totalWords);
-    const start = t;
-    t += dur;
-    return { start, dur };
-  });
 }
 
 export type TtsMontagePlan = {
@@ -541,40 +507,6 @@ export function computeTtsHardCutMontagePlan(
   });
 
   return { durations, cutStartsSec, xfadeSec: 0, ttsHardCut: true };
-}
-
-/** Pick the beat that still needs the most montage time (prefer later voice gaps). */
-export function pickVoiceBackfillBeatIndex(
-  beats: BeatYearInput[],
-  voiceDur: number,
-  clipBeatIndices: number[],
-  clipDurations: number[],
-  xfadeSec = 0
-): number {
-  if (beats.length === 0) return 0;
-  const windows = computeVoiceBeatWindows(beats, voiceDur);
-  const allocated = new Array<number>(beats.length).fill(0);
-  for (let i = 0; i < clipBeatIndices.length; i++) {
-    const bi = clipBeatIndices[i] ?? 0;
-    if (bi < 0 || bi >= beats.length) continue;
-    allocated[bi] += clipDurations[i] ?? 0;
-  }
-  for (let i = 1; i < clipBeatIndices.length; i++) {
-    if (clipBeatIndices[i] === clipBeatIndices[i - 1]) {
-      const bi = clipBeatIndices[i]!;
-      if (bi >= 0 && bi < beats.length) allocated[bi] -= xfadeSec;
-    }
-  }
-  let bestIdx = beats.length - 1;
-  let bestGap = -Infinity;
-  for (let b = 0; b < beats.length; b++) {
-    const gap = windows[b]!.dur - allocated[b]!;
-    if (gap > bestGap) {
-      bestGap = gap;
-      bestIdx = b;
-    }
-  }
-  return bestIdx;
 }
 
 export type TimedYearLabel = {

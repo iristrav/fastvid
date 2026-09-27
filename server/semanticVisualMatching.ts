@@ -458,47 +458,6 @@ export async function analyzeBeatSemantics(
   return profile;
 }
 
-/** Batch-analyze all beats in a scene (parallel with cap). */
-export async function analyzeBeatsSemanticsBatch(
-  beatTexts: string[],
-  videoTitle?: string,
-  opts?: { fastMode?: boolean; literalViewerVisuals?: (string | undefined)[] }
-): Promise<Map<number, BeatSemanticProfile>> {
-  const title = coerceVideoTitleString(videoTitle);
-  const out = new Map<number, BeatSemanticProfile>();
-  if (opts?.fastMode) {
-    beatTexts.forEach((text, i) => {
-      if (text?.trim()) out.set(i, analyzeBeatSemanticsFallback(text, title));
-    });
-    return out;
-  }
-  const concurrency = 4;
-  let idx = 0;
-
-  async function worker() {
-    while (idx < beatTexts.length) {
-      const i = idx++;
-      const text = beatTexts[i];
-      if (!text?.trim()) continue;
-      try {
-        out.set(
-          i,
-          await analyzeBeatSemantics(text, title, opts?.literalViewerVisuals?.[i])
-        );
-      } catch (err) {
-        console.warn(
-          `[Semantic] Beat ${i} analysis failed — using fallback:`,
-          (err as Error).message?.slice(0, 100)
-        );
-        out.set(i, analyzeBeatSemanticsFallback(text, title));
-      }
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, beatTexts.length) }, () => worker()));
-  return out;
-}
-
 export function buildAssetSemanticDocument(asset: Partial<Pick<MediaArchiveAsset, "title" | "tags" | "sourceNote">>): string {
   const tags = normalizeMediaTags(asset.tags ?? []).join(" ");
   const note = asset.sourceNote?.trim() ?? "";

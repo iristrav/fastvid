@@ -330,33 +330,6 @@ async function runWorkListBackfill(
   return { indexed, skipped, missing };
 }
 
-/**
- * Pre-warm index before visual stage — indexes up to maxAssets but stops after maxWaitMs.
- */
-export async function backfillClipEmbeddingsWithBudget(
-  maxAssets: number,
-  maxWaitMs: number,
-  options?: { ignoreActiveJobCap?: boolean }
-): Promise<{ indexed: number; timedOut: boolean }> {
-  if (!backfillEnabled()) return { indexed: 0, timedOut: false };
-  const started = Date.now();
-  let indexed = 0;
-  let timedOut = false;
-
-  while (indexed < maxAssets && Date.now() - started < maxWaitMs) {
-    const batch = Math.min(24, maxAssets - indexed);
-    const result = await backfillMissingClipEmbeddings(batch, options);
-    indexed += result.indexed;
-    if (result.indexed === 0) break;
-    if (Date.now() - started >= maxWaitMs) {
-      timedOut = true;
-      break;
-    }
-  }
-
-  return { indexed, timedOut };
-}
-
 async function runStartupClipIndexBurst(): Promise<void> {
   const deadline = Date.now() + 3 * 60_000;
   let totalIndexed = 0;

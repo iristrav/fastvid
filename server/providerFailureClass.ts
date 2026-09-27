@@ -170,31 +170,6 @@ export function shouldRetryAfterFailure(params: {
   return { retry: true, reason: "OK", kind };
 }
 
-/** The line the pipeline logs when it decides NOT to retry. */
-export function formatRetryGuard(params: {
-  operation: string;
-  attempt: number;
-  maxAttempts: number;
-  decision: RetryDecision;
-  remainingBudgetMs?: number;
-  estimatedCostMs?: number;
-}): string {
-  const { decision } = params;
-  const budget =
-    typeof params.remainingBudgetMs === "number"
-      ? ` remainingBudget=${(params.remainingBudgetMs / 1000).toFixed(1)}s`
-      : "";
-  const cost =
-    typeof params.estimatedCostMs === "number"
-      ? ` estimatedCost=${(params.estimatedCostMs / 1000).toFixed(1)}s`
-      : "";
-  return (
-    `[RetryGuard] ${params.operation} attempt=${params.attempt + 1}/${params.maxAttempts} ` +
-    `failure=${decision.kind} retryable=${isRetryableFailure(decision.kind)}${budget}${cost} ` +
-    `action=${decision.retry ? "RETRY" : "SKIP"} reason=${decision.reason}`
-  );
-}
-
 /**
  * How long a provider should be left alone after one failure of this kind.
  *

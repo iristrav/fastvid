@@ -208,33 +208,6 @@ export function noteBeatAdopted(
   rec.selected = basename || rec.selected;
 }
 
-export function noteBeatPlaceholder(
-  audit: BeatOutcomeAudit | undefined,
-  sceneIndex: number,
-  beatIndex: number
-): void {
-  if (!audit) return;
-  beatRecord(audit, sceneIndex, beatIndex).placeholder = true;
-}
-
-/**
- * §20 — which rung of the guaranteed ladder ended up filling this beat.
- *
- * Recorded separately from `placeholder` because the two answer different questions. `placeholder`
- * says "every real strategy was exhausted"; the tier says WHAT the viewer then sees, and those are
- * not the same outcome: the ladder's first two rungs return real footage. A render that reported
- * `placeholder=7` was telling the truth about the search and nothing at all about the picture.
- */
-export function noteBeatFillTier(
-  audit: BeatOutcomeAudit | undefined,
-  sceneIndex: number,
-  beatIndex: number,
-  tier: BeatFillTier | undefined
-): void {
-  if (!audit || !tier) return;
-  beatRecord(audit, sceneIndex, beatIndex).fillTier = tier;
-}
-
 /**
  * One VERDICT from the beat image gate, attributed to the beat it was asked about.
  *

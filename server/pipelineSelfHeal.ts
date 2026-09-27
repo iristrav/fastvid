@@ -2,13 +2,7 @@
  * Geo stock queries, script expansion, and the pre-render refusal of an indefensible render.
  */
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
-import {
-  buildGeoStockSearchQueries,
-  resolveRequiredGeoTagsForBeat,
-} from "./curatedMediaSourcing";
-import { extractTitleGeoPlaceTags, isComparisonGeoTitle } from "./worldGeoSlugs";
 import { hasContentAnchor } from "./searchQueryContract";
-import type { BeatGeoRegion } from "./vidrushQuality";
 import {
   checkScriptMeetsBudget,
   stripVisualTagsFromScript,
@@ -51,46 +45,6 @@ export function buildDocumentaryShotQueries(baseQuery: string, beatIndex: number
   ];
   const start = beatIndex % variants.length;
   return [variants[start]!, variants[(start + 1) % variants.length]!];
-}
-
-/** Pexels/Pixabay queries anchored to beat + title geography (wrong-country stock avoided). */
-export function buildEmergencyGeoStockQueries(
-  beatText: string,
-  videoTitle?: string,
-  segmentLock?: BeatGeoRegion | null
-): string[] {
-  const required = resolveRequiredGeoTagsForBeat(beatText, videoTitle, segmentLock);
-  const titleGeo = extractTitleGeoPlaceTags(videoTitle);
-  const beatGeo = buildGeoStockSearchQueries(beatText, videoTitle);
-
-  const anchored = [
-    ...required.map((t) => `${t} city aerial`),
-    ...required.map((t) => `${t} skyline timelapse`),
-    ...titleGeo.map((t) => `${t} urban planning aerial`),
-    ...titleGeo.map((t) => `${t} city street`),
-    ...beatGeo,
-  ];
-
-  if (!isComparisonGeoTitle(videoTitle) && titleGeo.length > 0) {
-    const beatSeed = beatText.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-    for (const t of titleGeo.slice(0, 3)) {
-      anchored.push(`${t} documentary b-roll`);
-      anchored.push(`${t} infrastructure aerial`);
-      anchored.push(...buildDocumentaryShotQueries(`${t} city`, beatSeed + t.length));
-    }
-  }
-
-  /**
-   * RONDE 88A P4 — same rule on the way out, because this list has two sources.
-   *
-   * The templates above anchor on a geo tag and are safe by construction, but `beatGeo` comes from
-   * `buildGeoStockSearchQueries` and the `${t} ...` templates take whatever `titleGeo` returned. A
-   * title of "documentary" produced the literal queries "documentary documentary footage" and
-   * "documentary" — the second is exactly the 68-times-refused line in render 568's audit.
-   */
-  return [
-    ...new Set(anchored.filter((q) => q.trim().length >= 4 && hasContentAnchor(q))),
-  ].slice(0, 10);
 }
 
 export type ScriptExpandFn = (userPrompt: string) => Promise<string>;

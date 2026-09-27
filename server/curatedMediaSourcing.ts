@@ -14,49 +14,7 @@ import {
 } from "./sourceFloorMemo";
 import { containCenterFilter, stillImageMaxSec, stillKenBurnsEnabled, stillZoomOutExpr } from "./stillImagePolicy";
 import { preparationKey, runPreparation } from "./preparationCache";
-import {
-  extractVisualSearchTags,
-  extractSceneSearchTags,
-  extractEntitySearchTags,
-  extractPrimaryVisualAnchor,
-  extractSalientBeatTokens,
-  extractRequiredVisualTags,
-  extractBeatGeoPlaceTags,
-  isGenericPeopleAsset,
-  isWrongGeoForBeat,
-  inferVideoVisualTopic,
-  isWwiiWarArchiveAsset,
-  refineVisualSearchTagsForTopic,
-  expandBeatTagsWithTranslations,
-  expandBeatTagsWithSynonyms,
-  isGeoWelcomeBeat,
-  buildGeoWelcomeVisualQueries,
-  isCyclingBeat,
-  extractBeatCyclingTags,
-  buildCyclingVisualQueries,
-  assetShowsCycling,
-  isCarBeat,
-  extractBeatCarTags,
-  buildCarVisualQueries,
-  assetShowsCars,
-  isGovernmentBeat,
-  extractBeatGovernmentTags,
-  buildGovernmentVisualQueries,
-  assetShowsGovernment,
-  isUrbanPlanningBeat,
-  extractBeatUrbanPlanningTags,
-  buildUrbanPlanningVisualQueries,
-  assetShowsUrbanPlanning,
-  isInfrastructureBeat,
-  extractBeatInfrastructureTags,
-  buildInfrastructureVisualQueries,
-  assetShowsInfrastructure,
-  assetIsOffTopicProtest,
-  beatMentionsWwiiContent,
-  isClipTitleIrrelevantToBeat,
-  effectiveArchiveAssetTags,
-  type VideoVisualTopic,
-} from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, expandBeatTagsWithTranslations, expandBeatTagsWithSynonyms, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, extractBeatCyclingTags, assetShowsCycling, isCarBeat, extractBeatCarTags, assetShowsCars, isGovernmentBeat, extractBeatGovernmentTags, assetShowsGovernment, isUrbanPlanningBeat, extractBeatUrbanPlanningTags, buildUrbanPlanningVisualQueries, assetShowsUrbanPlanning, isInfrastructureBeat, extractBeatInfrastructureTags, buildInfrastructureVisualQueries, assetShowsInfrastructure, assetIsOffTopicProtest, beatMentionsWwiiContent, isClipTitleIrrelevantToBeat, effectiveArchiveAssetTags, type VideoVisualTopic } from "./visualBeatTags";
 import { promisify } from "util";
 import { pipeline } from "stream/promises";
 import { withForkRetry } from "./_core/execForkRetry";
@@ -67,44 +25,13 @@ import * as path from "path";
 import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
 import { archiveClipHasBakedEditText } from "./archiveClipFilter";
-import {
-  buildArchiveStillFilterComplex,
-  buildArchiveStillFilterComplexBoxBlur,
-  buildFitGrayVideoVF,
-  buildFitGrayGradedVideoVF,
-  buildMontageBranchNormVF,
-  classifyDocGradeSourceKind,
-  buildMatFramedStillVF,
-  buildStillEncodeArgs,
-  archiveStillKenBurnsVariant,
-  resolveStillKenBurnsVariant,
-  standardArchiveKenBurnsZoomEnd,
-  kenBurnsCenterXExpr,
-} from "./documentaryStyle";
+import { buildArchiveStillFilterComplex, buildArchiveStillFilterComplexBoxBlur, buildFitGrayGradedVideoVF, classifyDocGradeSourceKind, buildMatFramedStillVF, buildStillEncodeArgs, resolveStillKenBurnsVariant, standardArchiveKenBurnsZoomEnd, kenBurnsCenterXExpr } from "./documentaryStyle";
 import {
   resolveStillImageFilterComplex,
   type MotionGraphicsBudget,
   type StillStyleContext,
 } from "./motionGraphicsEngine";
-import {
-  curatedArchiveOnlyVisuals,
-  archiveBlurFillStillsEnabled,
-  archiveVisualMaxClipSec,
-  archiveVisualMinClipSec,
-  archivePreferVideoClips,
-  framedArchiveStillsEnabled,
-  archivePexelsHybridEnabled,
-  vidrushDocumentaryQualityEnabled,
-  maxVisualCandidatesPerBeatTry,
-  visualFootageFocusEnabled,
-  archiveTagsPrimaryMatching,
-  pipelineWallClockLimitEnabled,
-  isFastShortVideoLength,
-  semanticRerankClipSkipMin,
-  metadataVisualBlocksEnabled,
-  ffmpegThreadFlag,
-  literalVisualGateEnabled,
-} from "./sourcingPolicy";
+import { archiveBlurFillStillsEnabled, archiveVisualMinClipSec, archivePreferVideoClips, framedArchiveStillsEnabled, archivePexelsHybridEnabled, vidrushDocumentaryQualityEnabled, maxVisualCandidatesPerBeatTry, visualFootageFocusEnabled, archiveTagsPrimaryMatching, pipelineWallClockLimitEnabled, isFastShortVideoLength, semanticRerankClipSkipMin, metadataVisualBlocksEnabled, ffmpegThreadFlag, literalVisualGateEnabled } from "./sourcingPolicy";
 import {
   assetHasNlMarkers,
   assetHasUsMarkers,
@@ -113,7 +40,7 @@ import {
   isComparisonGeoTitle,
   geoTagsForRegion,
 } from "./worldGeoSlugs";
-import { asVideoTitleString, coerceVisionString, queryStringsMinLen } from "./stringCoercion";
+import { asVideoTitleString, coerceVisionString } from "./stringCoercion";
 import { hydrateBeatScriptVisuals } from "./scriptVisualKeywords";
 import {
   isNonDocumentaryVisualHay,
@@ -303,43 +230,6 @@ export function isCuratedPreparedVideoClip(filePath: string): boolean {
   return /_curated_a\d+\.mp4$/i.test(path.basename(filePath)) && !isCuratedPreparedStillClip(filePath);
 }
 
-export type ArchiveVisualSourcesStatus = {
-  ok: boolean;
-  activeArchives: number;
-  totalAssets: number;
-  message?: string;
-};
-
-/** Pipeline startup check when visuals are archive-only. */
-export async function archiveVisualSourcesReady(): Promise<ArchiveVisualSourcesStatus> {
-  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1 && a.slug !== STOCK_ARCHIVE_SLUG);
-  if (!archives.length) {
-    return {
-      ok: false,
-      activeArchives: 0,
-      totalAssets: 0,
-      message:
-        "No active media archive — upload clips in Admin → Media Archive and mark the archive active",
-    };
-  }
-
-  let totalAssets = 0;
-  for (const archive of archives) {
-    totalAssets += (await getMediaArchiveAssets(archive.id)).length;
-  }
-  if (totalAssets === 0) {
-    return {
-      ok: false,
-      activeArchives: archives.length,
-      totalAssets: 0,
-      message:
-        "Media archive is empty — upload tagged clips or images in Admin → Media Archive",
-    };
-  }
-
-  return { ok: true, activeArchives: archives.length, totalAssets };
-}
-
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
@@ -349,9 +239,7 @@ function ffprobeBin(): string {
 }
 
 function clampHoldSec(holdSec: number): number {
-  if (curatedArchiveOnlyVisuals()) {
-    return Math.max(archiveVisualMinClipSec(), Math.min(archiveVisualMaxClipSec(), holdSec));
-  }
+  
   return Math.max(CLIP_MIN_SEC, Math.min(CLIP_MAX_SEC, holdSec));
 }
 
@@ -362,15 +250,6 @@ const QUERY_STOP_WORDS = new Set([
   "rise", "fall", "story", "world", "life", "video", "documentary", "history", "historical",
   "them", "they", "then", "than", "just", "amidst",
 ]);
-
-function tagsOverlap(a: string[], b: string[]): boolean {
-  for (const x of a) {
-    for (const y of b) {
-      if (x === y || x.includes(y) || y.includes(x)) return true;
-    }
-  }
-  return false;
-}
 
 /** High-signal topic tokens from the video title/prompt (e.g. hitler, titanic). */
 const SHORT_TOPIC_TOKENS = new Set([
@@ -1619,15 +1498,6 @@ export function applyCrossVideoVarietyDegrade(
   return pool;
 }
 
-/** Use prefetch when non-empty; empty [] or null triggers a fresh search. */
-export async function resolvePrefetchedArchiveCandidates(
-  prefetched: CuratedCandidatePick[] | null | undefined,
-  search: () => Promise<CuratedCandidatePick[]>
-): Promise<CuratedCandidatePick[]> {
-  if (prefetched != null && prefetched.length > 0) return prefetched;
-  return search();
-}
-
 export function orderCuratedCandidatesForBeat(
   candidates: CuratedCandidatePick[],
   preferImages = false
@@ -2646,76 +2516,6 @@ export function stubPowerWordFromSceneText(text: string): string {
    * means no query.
    */
   return best;
-}
-
-/** One-time per-video archive pool — avoids re-scanning every asset on each beat. */
-export async function buildVideoArchiveCandidatePool(
-  videoTitle: string | undefined,
-  combinedSceneText: string,
-  options?: {
-    assetsCache?: Map<number, ArchiveAssetRow[]>;
-    crossVideoExcludeIds?: Set<number>;
-    excludeIds?: Set<number>;
-    excludeStorageUrls?: Set<string>;
-    maxPool?: number;
-  }
-): Promise<CuratedCandidatePick[]> {
-  const text = combinedSceneText.trim().slice(0, 1200);
-  const stubKeywords = text.split(/\s+/).filter((w) => w.length > 3).slice(0, 12);
-  /**
-   * RONDE 223 — NO SCENE TEXT MEANS NO QUERY, NOT THE WORD "DOCUMENTARY".
-   *
-   * Both fields fell back to the literal string "documentary" when the scene had nothing to derive
-   * a query from. That is a production word: `hasContentAnchor("documentary")` is false, so the
-   * search gate refuses it on sight — which is the correct behaviour and also proof that the
-   * fallback could never once have worked. Render 575 (rmtulyr50) sent it anyway:
-   *
-   *     query="documentary" term="documentary" reason=NO_CONTENT_ANCHOR  × 80
-   *
-   * built, sent to two providers, refused, logged, and built again on the next pass, while the
-   * scene it was for ran out of time and the export gate then refused it for having no footage.
-   *
-   * An invented query is a silent substitution of a made-up subject for a missing one, and it is
-   * worse than an empty one: an empty query searches nothing and costs nothing, while this
-   * searched for the word "documentary" and told the log a subject had been requested. The absence
-   * is now carried honestly and said out loud once, so a scene arriving here with no text is a
-   * visible fault rather than a stream of refusals.
-   */
-  if (!text) {
-    console.warn(
-      "[CuratedSourcing] scene text is empty — no query can be derived from it; " +
-        "searching with nothing rather than inventing a subject"
-    );
-  }
-  const stubBeat: CuratedBeatContext = {
-    index: 0,
-    text,
-    keywords: stubKeywords,
-    searchQuery: text.split(/\s+/).slice(0, 8).join(" "),
-    powerWord: stubPowerWordFromSceneText(text),
-  };
-  const stubScene: CuratedSceneContext = { text, pexelsQuery: stubBeat.searchQuery };
-  const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(
-    stubBeat,
-    stubScene,
-    videoTitle
-  );
-  const geoRequired = extractBeatGeoPlaceTags(text);
-  const listed = await listCuratedArchiveCandidates(
-    beatTags,
-    options?.excludeIds ?? new Set(),
-    options?.excludeStorageUrls ?? new Set(),
-    topicAnchors,
-    allTags,
-    text,
-    options?.crossVideoExcludeIds ?? new Set(),
-    options?.assetsCache,
-    true,
-    geoRequired.length > 0,
-    videoVisualTopic
-  );
-  const maxPool = options?.maxPool ?? 480;
-  return orderCuratedCandidatesForBeat(listed).slice(0, maxPool);
 }
 
 /** Per-sentence archive search — scores all assets against this beat's narration. */

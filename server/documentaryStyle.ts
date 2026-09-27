@@ -80,15 +80,6 @@ export function buildFitGrayGradedVideoVF(sourceKind?: DocGradeSourceKind): stri
   return `${base},${buildPerClipDocumentaryGradeVF(sourceKind)}`;
 }
 
-/** Montage branch: scale/pad/fps + per-clip grade when documentary style is on. */
-export function buildMontageBranchNormVF(sourceKind?: DocGradeSourceKind): string {
-  const base = `${buildFitGrayVideoMontageChain()},fps=25,format=yuv420p,setsar=1`;
-  if (!documentaryStyleEnabled()) return base;
-  // format=yuv420p at the end ensures grade filters (colorbalance, vignette) don't
-  // leave an incompatible pixel format that causes libx264 to fail on init.
-  return `${base},${buildPerClipDocumentaryGradeVF(sourceKind)},format=yuv420p`;
-}
-
 /** Final scene pass — grain only when doc style is on, otherwise pass through. */
 export function buildFinalSceneGradeVF(sourceKind?: DocGradeSourceKind): string {
   if (!documentaryStyleEnabled()) return "copy";
@@ -412,21 +403,6 @@ export function buildFitGrayVideoVF(): string {
   );
 }
 
-/** Montage prep chain after trim — fit entire clip, gray letterbox. */
-export function buildFitGrayVideoMontageChain(): string {
-  const w = DOC_STYLE_VIDEO_WIDTH;
-  const h = DOC_STYLE_VIDEO_HEIGHT;
-  // 1. Normalize format/SAR before scale so variable-resolution clips don't cause reinit errors.
-  // 2. Use -2 instead of force_divisible_by=2: -2 tells FFmpeg to compute the other
-  //    dimension while guaranteeing it's divisible by 2 — more compatible across builds.
-  // 3. Two-pass scale: fit to target, then round to exact target via a second scale.
-  return (
-    `format=yuv420p,setsar=1/1,` +
-    `scale='if(gt(iw/ih,${w}/${h}),${w},-2)':'if(gt(iw/ih,${w}/${h}),-2,${h})',` +
-    `pad=${w}:${h}:(${w}-iw)/2:(${h}-ih)/2:color=0x2a2a2a`
-  );
-}
-
 /** Polaroid white frame on light gray canvas (no rotate — fragile on minimal FFmpeg builds). */
 export function buildPolaroidStillVF(duration: number): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
@@ -575,36 +551,5 @@ export async function renderHighlightCaptionOverlay(
     /* non-fatal */
   }
   return null;
-}
-
-/**
- * Wikimedia documentary style (Visual Matching Engine V1 — AFBEELDING STIJL):
- * - Background: same image, full-screen, strongly blurred, darkened (brightness -0.15)
- * - Foreground: centered, max 80% of frame, with subtle dark shadow border
- * - Ken Burns slow zoom
- */
-export function buildWikimediaDocumentaryVF(
-  duration: number,
-  yAnchor: "center" | "top" = "center",
-  sceneIndex = 0,
-  beatIndex = 0,
-): string {
-  const w = DOC_STYLE_VIDEO_WIDTH;
-  const h = DOC_STYLE_VIDEO_HEIGHT;
-  const fgScale = 0.80;
-  const shadowPad = 10;
-  const fgY = yAnchor === "top" ? "(H-h)/4" : "(H-h)/2";
-  const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
-  const zoomEnd = documentaryKenBurnsZoomEnd(duration);
-  const ken = buildKenBurnsTail(duration, zoomEnd, yAnchor, variant);
-  return (
-    `[0:v]split=2[orig][orig2];` +
-    `[orig]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},` +
-    `gblur=sigma=42,eq=brightness=-0.15:contrast=0.9[bg];` +
-    `[orig2]scale='min(${w}*${fgScale}/iw\\,${h}*${fgScale}/ih)*iw':-2,` +
-    `pad=iw+${shadowPad * 2}:ih+${shadowPad * 2}:${shadowPad}:${shadowPad}:color=0x0c0c0c[fg];` +
-    `[bg][fg]overlay=(W-w)/2:${fgY}[composed];` +
-    `[composed]${ken}[vout]`
-  );
 }
 

@@ -724,16 +724,6 @@ export async function evaluateClipVisionGate(
   return { pass: result.pass, worstScore10: result.worstScore, skipped: false, fromCache: false };
 }
 
-/** Target vision score for high-quality beat adoption (0–10). */
-export function targetClipVisionScore(): number {
-  const raw = process.env.TARGET_CLIP_VISION_SCORE?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 5 && n <= 10) return n;
-  }
-  return 8;
-}
-
 /** Score clip against narration for post-adoption QA (returns null when local vision unavailable). */
 export async function scoreAdoptedClipQuality(
   clipPath: string,

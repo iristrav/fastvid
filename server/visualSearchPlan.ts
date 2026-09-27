@@ -1005,29 +1005,3 @@ export function searchPlanRounds(plan: VisualSearchPlan): Array<{
     return { label, queries: sorted.map((s) => s.query), scored: sorted };
   });
 }
-
-/**
- * Log a retrieval round result (call after each round attempt).
- */
-export function logRetrievalRound(
-  sceneIndex: number,
-  beatIndex: number,
-  round: { label: string; queries: string[]; scored: ScoredQuery[] },
-  hit: boolean,
-  hitQuery?: string
-): void {
-  if (hit) {
-    const winner = round.scored.find((s) => s.query === hitQuery) ?? round.scored[0];
-    console.log(
-      `[Retrieval] s${sceneIndex}b${beatIndex} Round "${round.label}" → HIT\n` +
-        `  Winner:  "${hitQuery ?? round.queries[0]}"\n` +
-        `  Reason:  ${winner?.reason ?? "—"}\n` +
-        `  Confidence: ${winner?.confidence.toFixed(2) ?? "—"}`
-    );
-  } else {
-    const topQ = round.queries.slice(0, 3).join(", ");
-    console.log(
-      `[Retrieval] s${sceneIndex}b${beatIndex} Round "${round.label}" → miss  (tried: ${topQ})`
-    );
-  }
-}
