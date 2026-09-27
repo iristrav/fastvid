@@ -1151,7 +1151,13 @@ export type QueryRejectReason =
    * did — a builder appending "aerial" and a language model inventing a bunker are different
    * problems with different fixes.
    */
-  | "LLM_UNPROVEN_CONTENT";
+  | "LLM_UNPROVEN_CONTENT"
+  /**
+   * RONDE 663: the beat names something — a person, a place, an object, a proper noun, a year — and
+   * this query names none of it. Every word may stand in the script ("his inner", "monumental
+   * task") and still ask for nothing a camera could have filmed.
+   */
+  | "SUBJECT_NOT_NAMED";
 
 export type QueryValidation = {
   ok: boolean;
@@ -1677,7 +1683,62 @@ export function validateSearchQuery(
   // RONDE 95 moved the check itself above the context-less early return, since it needs no
   // context; a query reaching this line has already passed it. Re-testing here would be a second
   // implementation of the same question, which is what this file's own history warns about.
+
+  /**
+   * ── I. RONDE 663 — A BEAT THAT NAMES SOMETHING IS SEARCHED BY NAME.
+   *
+   * Render 607 sent 501 admitted queries; about 90 named nothing the beat names: "his inner",
+   * "monumental task", "millions suffered above", "ideology twisted escape". Every word stood in
+   * the script, so C proved them all — and Wikimedia answered with a Big Ben clock face, a theatre
+   * mask and a Manet painting, each refused later at the cost of the scene's time and the
+   * provider's rate limit. No clip in a delivered film came from such a query; the one that got
+   * close ("investigate", Pexels) is the clip render 604 was blocked on.
+   *
+   * The subjects are read from the context, never from a list of topics: typed persons, places,
+   * countries and objects, the script's proper nouns (a capital that is not the start of a
+   * sentence), and years. Events and actions alone are not subjects — "suicide" and "escape"
+   * name what happened, not what is on screen. A beat that names nothing keeps the old rule, so a
+   * beat about cyclists on a canal still searches for "canal cyclists".
+   */
+  const named = namedSubjectStems(ctx);
+  if (named.size > 0) {
+    const namesOne = words.some(
+      (raw) => /^\d{3,4}$/.test(raw) || evidenceStems(raw).some((form) => named.has(form))
+    );
+    if (!namesOne) return { ok: false, reason: "SUBJECT_NOT_NAMED", offendingTerm: q, blockedTerms: [] };
+  }
   return { ok: true };
+}
+
+/** RONDE 663 — the stems of what this beat's context names: see check I in `validateSearchQuery`. */
+function namedSubjectStems(ctx: VerifiedQueryContext): Set<string> {
+  const out = new Set<string>();
+  const addWords = (text: string) => {
+    for (const w of text.split(/[^\p{L}\p{N}'’-]+/u)) {
+      if (!w || isFunctionWord(w) || isPronounToken(w) || isProductionWord(foldSearchText(w))) continue;
+      for (const form of evidenceStems(w)) out.add(form);
+    }
+  };
+  for (const list of [ctx.persons, ctx.places, ctx.countries, ctx.objects, ctx.years]) {
+    for (const token of list) if (token.verified) addWords(token.term);
+  }
+  /**
+   * A proper noun: a capital anywhere in the word ("Germany", "iPhone", "WWII"), where a sentence
+   * does not start — the first word of a sentence proves nothing.
+   */
+  for (const sentence of (ctx.evidence ?? "").split(/[.!?:;]\s+|\n+/)) {
+    for (const raw of sentence.trim().split(/\s+/).slice(1)) {
+      const w = raw.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+      if (/\p{Lu}/u.test(w)) addWords(w);
+    }
+  }
+  /**
+   * The user's own prompt (RONDE 160's topic channel) names the film's subject in the person's own
+   * words, and people type prompts in lower case ("wwii") — so every content word of it counts,
+   * capital or not. It is what they asked for; that is what makes it a subject.
+   */
+  addWords(ctx.topic ?? "");
+  return out;
 }
 
 /**
