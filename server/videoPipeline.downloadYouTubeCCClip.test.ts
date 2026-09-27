@@ -201,6 +201,45 @@ describe("downloadYouTubeCCClip cloud-DL path (F3-05 group 5)", () => {
     expect(ok).toBe(false);
     expect(fs.readFileSync(outPath).equals(existingContent)).toBe(true);
   });
+
+  it("RONDE 647 — two identical requests for one file make ONE transfer, and both get the clip", async () => {
+    const payload = realMp4(5);
+    let downloads = 0;
+    await startServer((req, res) => {
+      if (req.url?.startsWith("/download")) downloads++;
+      setTimeout(() => { res.writeHead(200); res.end(payload); }, 300);
+    });
+    const outPath = path.join(dir, "scene_0_ytfu_0__pid_youtube_cc-same.mp4");
+    const second: { status?: string; reason?: string } = {};
+
+    const [a, b] = await Promise.all([
+      downloadYouTubeCCClip(videoId, 5, 0, outPath, 0, "Test video"),
+      downloadYouTubeCCClip(videoId, 5, 0, outPath, 2, "Test video", undefined, false, second as never),
+    ]);
+
+    expect([a, b]).toEqual([true, true]);
+    expect(downloads).toBe(1);
+    expect(second.reason).toBe("same_request_just_delivered");
+    expect(fs.readFileSync(outPath).equals(payload)).toBe(true);
+  });
+
+  it("RONDE 647 — other seconds of the same file are not handed the first request's clip", async () => {
+    const payload = realMp4(5);
+    const starts: string[] = [];
+    await startServer((req, res) => {
+      if (req.url?.startsWith("/download")) starts.push(new URL(req.url, baseUrl).searchParams.get("start") ?? "");
+      setTimeout(() => { res.writeHead(200); res.end(payload); }, 100);
+    });
+    const outPath = path.join(dir, "scene_0_ytfu_0__pid_youtube_cc-other.mp4");
+
+    const [a, b] = await Promise.all([
+      downloadYouTubeCCClip(videoId, 5, 0, outPath, 0, "Test video"),
+      downloadYouTubeCCClip(videoId, 5, 30, outPath, 1, "Test video"),
+    ]);
+
+    expect([a, b]).toEqual([true, true]);
+    expect(starts).toEqual(["0", "30"]);
+  });
 });
 
 // RapidAPI path (F3-05 group 5): same streaming conversion, same 50KB-80MB thresholds as before,

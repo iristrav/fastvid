@@ -296,6 +296,11 @@ describe("R260 §4 — the numbers, all of them, unchanged", () => {
   });
 
   it("and the download still funnels through the one function it always did", () => {
-    expect(callSitesOf(CODE, "downloadYouTubeCCClip")).toHaveLength(2);
+    /** RONDE 647: plus exactly one re-entry from inside, which queues calls writing the same file. */
+    const own = CODE.indexOf("export async function downloadYouTubeCCClip(");
+    const ownEnd = CODE.indexOf("export async function fetchYouTubeCCClips(", own);
+    const sites = callSitesOf(CODE, "downloadYouTubeCCClip");
+    expect(sites.filter((at) => at < own || at > ownEnd)).toHaveLength(2);
+    expect(sites.filter((at) => at > own && at < ownEnd)).toHaveLength(1);
   });
 });

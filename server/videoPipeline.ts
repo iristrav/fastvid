@@ -16342,6 +16342,23 @@ export function googlevideoLinkLock(url: string): "ip_locked" | "not_ip_locked" 
   return signed.includes("ip") && u.searchParams.has("ip") ? "ip_locked" : "not_ip_locked";
 }
 
+/**
+ * RONDE 647 — THE FILE A YOUTUBE TRANSFER IS WRITING, AND WHO IS WRITING IT.
+ *
+ * Every beat that picks the same YouTube candidate is handed the same `outPath` (the lineage tag
+ * is per asset), and render 610 ran up to three of them at once. They shared the RapidAPI temp
+ * file too, so the call that was not holding it deleted the source another had just been told to
+ * keep: `2SZXsrm0HQQ` was held once, re-cut once, then fetched four more times, each after a
+ * 44-59 s cloud timeout.
+ *
+ * A call for a file already being written waits for that write. If it asked for the same seconds
+ * and the write succeeded, the file on disk is its answer — the same seconds of the same video,
+ * not a substitute. Otherwise it runs exactly as before, after the other, when a held source is
+ * there to be re-cut.
+ */
+const youtubeTransfersByFile = new Map<string, { seconds: string; done: Promise<boolean> }>();
+let youtubeTransferReentry: string | null = null;
+
 export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
@@ -16469,6 +16486,32 @@ export async function downloadYouTubeCCClip(
       });
     }
   };
+
+  /**
+   * RONDE 647 — ONE TRANSFER PER FILE AT A TIME; see `youtubeTransfersByFile`. Everything above
+   * is synchronous, so the re-entry below is recognised as itself and nothing else can be.
+   */
+  if (youtubeTransferReentry === outPath) youtubeTransferReentry = null;
+  else {
+    const seconds = `${clipStart}|${duration}`;
+    for (let ahead = youtubeTransfersByFile.get(outPath); ahead; ahead = youtubeTransfersByFile.get(outPath)) {
+      if ((await ahead.done.catch(() => false)) && ahead.seconds === seconds && fs.existsSync(outPath)) {
+        reportDownload("DOWNLOAD_SUCCESS", "same_request_just_delivered");
+        return true;
+      }
+    }
+    youtubeTransferReentry = outPath;
+    const done = downloadYouTubeCCClip(
+      videoId, duration, clipStart, outPath, sceneIndex, title, sourcingCache, startIsExact,
+      outcome, budgetMs, onlyRoute
+    );
+    youtubeTransfersByFile.set(outPath, { seconds, done });
+    try {
+      return await done;
+    } finally {
+      if (youtubeTransfersByFile.get(outPath)?.done === done) youtubeTransfersByFile.delete(outPath);
+    }
+  }
 
   // F3-41: cloud/yt-dlp service tried FIRST — this is the intended primary route (see the F3-40
   // diagnosis: it runs yt-dlp with an ANDROID_VR client workaround on its own infrastructure,
