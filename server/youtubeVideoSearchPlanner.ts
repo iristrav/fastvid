@@ -84,6 +84,20 @@ function stem(w: string): string {
   return w.length > 5 ? w.slice(0, 5) : w;
 }
 
+/**
+ * The same word for the SUBJECT check: equal stems, or one inflection letter apart — video 612's
+ * "Rome" against its subject "The Roman Empire" (`rome` vs `roman`). The shorter word must have
+ * four letters, so "war" never matches "warsaw".
+ */
+function sameSubjectWord(a: string, b: string): boolean {
+  if (stem(a) === stem(b)) return true;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (short.length < 4) return false;
+  let common = 0;
+  while (common < short.length && short[common] === long[common]) common++;
+  return common >= short.length - 1;
+}
+
 function containsWord(text: string, w: string): boolean {
   const s = stem(w.toLowerCase());
   return words(text).some((t) => t.startsWith(s));
@@ -176,12 +190,12 @@ export function refuseQuery(
       return "'archival' on a modern subject — ask for footage of the subject itself";
     }
     const subject = ctx.mainSubject ? contentWords(ctx.mainSubject) : [];
-    if (subject.length && !subject.some((w) => cw.some((x) => stem(x) === stem(w)))) {
+    if (subject.length && !subject.some((w) => cw.some((x) => sameSubjectWord(x, w)))) {
       return `the video's main subject "${ctx.mainSubject}" is not in the query`;
     }
     if (!ctx.allowSingleScene) {
       /** Not one scene: of the words beyond the main subject, at most one may come from a single scene. */
-      const extra = cw.filter((w) => !subject.some((sw) => stem(sw) === stem(w)));
+      const extra = cw.filter((w) => !subject.some((sw) => sameSubjectWord(sw, w)));
       const singleScene = extra.filter((w) => scenesOf(ctx.analysis, w).size <= 1 && !/^\d{4}$/.test(w));
       if (singleScene.length > 1) {
         return `built on one scene (${singleScene.join(", ")} each appear in only one scene) — use subjects that recur through the video`;

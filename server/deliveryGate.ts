@@ -67,6 +67,8 @@ export type DeliveryGateInput = {
   voiceoverSec?: number | null;
   /** How far the delivered duration may sit from the voiceover before it is a fault. */
   durationToleranceSec?: number;
+  /** `finalTimelineFootageRefusal` on the rendered timeline — set when one footage fills the film. */
+  footageRefusal?: string | null;
 };
 
 export type DeliveryGateFailureCode =
@@ -79,7 +81,8 @@ export type DeliveryGateFailureCode =
   | "DELIVERED_FILE_UNREADABLE"
   | "DELIVERED_FILE_NO_VIDEO"
   | "DELIVERED_FILE_NO_AUDIO"
-  | "DELIVERED_DURATION_WRONG";
+  | "DELIVERED_DURATION_WRONG"
+  | "ONE_FOOTAGE_FILLS_FILM";
 
 export type DeliveryGateVerdict =
   | { allow: true; checked: number; lines: string[] }
@@ -118,6 +121,11 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
       code: "TIMELINE_MISSING",
       detail: "the route claims the authoritative timeline and no timeline was recorded",
     });
+  }
+
+  /* Video 612 — one piece of footage held under the whole narration is not a film. */
+  if (input.footageRefusal?.trim()) {
+    failures.push({ code: "ONE_FOOTAGE_FILLS_FILM", detail: input.footageRefusal });
   }
 
   /* §11 — every production media clip, one by one. */

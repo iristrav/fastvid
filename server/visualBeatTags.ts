@@ -48,7 +48,7 @@ const PLACE_ENTRIES: TagEntry[] = [
   { pattern: /\boostenrijk\b|\baustria\b|\bvienna\b|\bwien\b/i, searchTags: ["austria", "vienna"], label: "OOSTENRIJK" },
   { pattern: /\brusland\b|\brussia\b|\brussian\b|\bsoviet\b|\bsovjet\b|\burss\b/i, searchTags: ["russia", "soviet", "moscow"], label: "RUSland" },
   { pattern: /\bitalië\b|\bitalie\b|\bitaly\b|\bitalian\b|\brome\b|\bromeinen\b/i, searchTags: ["italy", "italian", "rome"], label: "ITALIË" },
-  { pattern: /\bamerika\b|\bamerica\b|\bamerican\b|\bunited states\b|\busa\b|\bu\.?s\.?\b/i, searchTags: ["america", "usa", "united states", "american"], label: "AMERIKA" },
+  { pattern: /\bamerika\b|\bamerica\b|\bamerican\b|\bunited states\b|\busa\b|\bu\.s\.?(?![a-z])/i, searchTags: ["america", "usa", "united states", "american"], label: "AMERIKA" },
   { pattern: /\bnederland\b|\bnetherlands\b|\bdutch\b|\bholland\b|\bnederlands\b/i, searchTags: ["netherlands", "holland", "dutch", "amsterdam", "nederland"], label: "NEDERLAND" },
   { pattern: /\bamsterdam\b/i, searchTags: ["amsterdam", "netherlands", "holland", "dutch"], label: "AMSTERDAM" },
   { pattern: /\brotterdam\b/i, searchTags: ["rotterdam", "netherlands", "holland"], label: "ROTTERDAM" },
@@ -587,12 +587,12 @@ export function refineVisualSearchTagsForTopic(
     out.add("public transport");
     out.add("urban planning");
   }
-  if (/america|american|united states|\bu\.?s\.?\b|usa\b/.test(lower)) {
+  if (/america|american|united states|\bu\.s\.?(?![a-z])|\busa\b/.test(lower)) {
     out.add("united states");
     out.add("american city");
     out.add("usa skyline");
   }
-  if (/transit|metro|subway|u-bahn|sbahn|train|trein|tram|bus|public transport|ov\b/.test(lower)) {
+  if (/\b(transit|metro|subway|u-bahn|s-?bahn|trains?|trein|trams?|bus|buses|public transport|ov)\b/.test(lower)) {
     out.add("public transport");
     out.add("metro");
     out.add("subway");
@@ -651,9 +651,6 @@ export function refineVisualSearchTagsForTopic(
       out.add("cycling infrastructure");
     }
   }
-  out.add("city skyline");
-  out.add("urban street");
-  out.add("modern city");
   return [...out].slice(0, 20);
 }
 
@@ -822,7 +819,7 @@ export function buildCarVisualQueries(
   const context = `${beatText} ${sceneText ?? ""} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   const wantsUs =
     geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
-    /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
+    /\bamerica|american|united states|\bu\.s\.?(?![a-z])|\busa\b/.test(context);
   const wantsNl =
     geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t)) ||
     contextMentionsNetherlands(beatText, sceneText, videoTitle);
@@ -893,7 +890,7 @@ export function buildGovernmentVisualQueries(
   const context = `${beatText} ${sceneText ?? ""} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   const wantsUs =
     geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
-    /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
+    /\bamerica|american|united states|\bu\.s\.?(?![a-z])|\busa\b/.test(context);
   const wantsNl =
     geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t)) ||
     contextMentionsNetherlands(beatText, sceneText, videoTitle);
@@ -976,7 +973,7 @@ export function buildInfrastructureVisualQueries(
   const context = `${beatText} ${sceneText ?? ""} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   const wantsUs =
     geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
-    /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
+    /\bamerica|american|united states|\bu\.s\.?(?![a-z])|\busa\b/.test(context);
   const wantsNl =
     geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t)) ||
     contextMentionsNetherlands(beatText, sceneText, videoTitle);
@@ -1073,7 +1070,7 @@ export function buildUrbanPlanningVisualQueries(
   const context = `${beatText} ${sceneText ?? ""} ${asVideoTitleString(videoTitle)}`.toLowerCase();
   const wantsUs =
     geoTags.some((t) => /america|usa|united states|american/.test(t)) ||
-    /\bamerica|american|united states|\bu\.?s\.?\b|usa\b/.test(context);
+    /\bamerica|american|united states|\bu\.s\.?(?![a-z])|\busa\b/.test(context);
   const wantsNl =
     geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t)) ||
     contextMentionsNetherlands(beatText, sceneText, videoTitle);

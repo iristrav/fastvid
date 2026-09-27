@@ -37,6 +37,7 @@ import {
   finishRenderJob,
   getRenderJobById,
   getVideoById,
+  getMediaArchiveAssetById,
   getVideoRenderAttempt,
   getStoredTimeline,
   getVideoScenes,
@@ -97,6 +98,8 @@ import {
   formatDeliveryBlock,
   TIMELINE_ARCHIVE_REFERENCE,
 } from "./deliveryGate";
+import { finalTimelineFootageRefusal } from "./deliveredScreenTime";
+import { youtubeVideoIdsForArchiveAssets } from "./youtubeFootageInFilm";
 import type { ProjectTimeline } from "./projectTimeline";
 import { audioTrackOf, videoTrack } from "./projectTimeline";
 
@@ -1089,6 +1092,12 @@ export async function runRenderJob(params: {
       },
       /** Null when this film has no narration — then there is nothing to align to. */
       voiceoverSec: voiceEnd > 0 ? voiceEnd : null,
+      /** Video 612 — the timeline that was rendered, measured after its holds and pieces. */
+      footageRefusal: finalTimelineFootageRefusal(
+        videoTrack(timeline),
+        undefined,
+        await youtubeVideoIdsForArchiveAssets(videoTrack(timeline), getMediaArchiveAssetById)
+      ),
     });
     for (const line of gate.lines) {
       if (gate.allow) console.log(line);

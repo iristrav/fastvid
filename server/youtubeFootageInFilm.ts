@@ -65,6 +65,26 @@ export function youtubeIdFromUrl(url: string | null | undefined): string | null 
   return null;
 }
 
+/**
+ * Video 612 audit — the original YouTube video behind each archive asset of a timeline, read the
+ * same way as `youtubeFootageInTimeline` below: the archive row's own platform and watch URL. An
+ * asset whose row cannot be read, or is not YouTube, is simply left out.
+ */
+export async function youtubeVideoIdsForArchiveAssets(
+  clips: readonly { source?: { archiveAssetId?: number | null } }[],
+  loadRow: (id: number) => Promise<{ sourcePlatform?: string | null; sourceUrl?: string | null } | undefined | null>
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  const ids = Array.from(new Set(clips.flatMap((c) => (c.source?.archiveAssetId != null ? [c.source.archiveAssetId] : []))));
+  for (const id of ids) {
+    const row = await loadRow(id).catch(() => undefined);
+    if (!row || (row.sourcePlatform ?? "").toLowerCase() !== YOUTUBE_PROVIDER_ID) continue;
+    const videoId = youtubeIdFromUrl(row.sourceUrl);
+    if (videoId) out.set(id, videoId);
+  }
+  return out;
+}
+
 const clipSeconds = (c: TimelineVideoClip): number =>
   Math.max(0, (Number(c.timelineEnd) || 0) - (Number(c.timelineStart) || 0));
 

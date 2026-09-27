@@ -329,16 +329,51 @@ export function youtubeVideoPoolEnabled(env: NodeJS.ProcessEnv = process.env): b
   return env.YOUTUBE_SEARCH_MODE?.trim().toLowerCase() !== "per_beat";
 }
 
+/** Videos whose pool finished WITHOUT a usable YouTube answer — see `poolGaveNoYoutube`. */
+const poolsWithoutYoutube = new Set<number>();
+
+/**
+ * Video 612 — did the central route actually bring back YouTube footage?
+ *
+ * Only a video that a pool SEARCH found (`from` 1 or 2) and the triage judged usable counts. So
+ * all of these are "no answer about YouTube", and the beats may search per beat:
+ *   - the planner found no query (nothing was searched);
+ *   - the search failed — HTTP error or network error both leave no candidates;
+ *   - the search answered, but no video could be judged usable (including a triage that failed).
+ * The archive's own items (`from` 0) are not a YouTube search result and do not count.
+ */
+export function poolGaveNoYoutube(pool: Pick<VideoYoutubePool, "candidates">): boolean {
+  return !pool.candidates.some((c) => c.usable && (c.from === 1 || c.from === 2));
+}
+
 export function registerVideoYoutubePool(videoId: number, pool: Promise<VideoYoutubePool>): void {
   pools.set(videoId, pool);
+  poolsWithoutYoutube.delete(videoId);
+  void pool.then(
+    (p) => {
+      if (pools.get(videoId) === pool && poolGaveNoYoutube(p)) poolsWithoutYoutube.add(videoId);
+    },
+    () => {
+      if (pools.get(videoId) === pool) poolsWithoutYoutube.add(videoId);
+    }
+  );
 }
 
 export function hasVideoYoutubePool(videoId: number | undefined | null): boolean {
   return videoId != null && pools.has(videoId);
 }
 
+/**
+ * True once this video's pool has finished without usable YouTube. Its beats then search YouTube
+ * per beat, through the existing per-beat route, instead of reading an empty pool.
+ */
+export function videoYoutubePoolGaveNoYoutube(videoId: number | undefined | null): boolean {
+  return videoId != null && poolsWithoutYoutube.has(videoId);
+}
+
 export function releaseVideoYoutubePool(videoId: number): void {
   pools.delete(videoId);
+  poolsWithoutYoutube.delete(videoId);
 }
 
 /** The pool, waited for at most `maxWaitMs` — a beat never blocks on YouTube for longer than it can afford. */

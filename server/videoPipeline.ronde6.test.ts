@@ -87,14 +87,14 @@ describe("RONDE 6 P1-A — the pipeline chain wiring", () => {
     expect(pipelineSrc).toContain("resolvePersonFromSurnameAnchor(surnameAnchor, scriptPersonNames)");
   });
 
-  it("the script-name fallback stays last in the chain (pre-existing behavior preserved)", () => {
-    // RONDE 11 moved a validated anchor-resolution earlier in the chain; the raw scriptPersonNames[0]
-    // fallback still exists as the final resort. Anchor on the primaryPerson chain, not the first
-    // resolvePersonFromSurnameAnchor occurrence (there are now two).
-    const chainStart = pipelineSrc.indexOf("const primaryPerson =");
+  it("the script-name fallback stays last in the chain — and only takes a name the topic names", () => {
+    // Video 612: the raw scriptPersonNames[0] fallback locked "Scipio Africanus" on a video about
+    // the Roman Empire. The last resort is now the first script name the prompt/title/topic names.
+    const chainStart = pipelineSrc.indexOf("const candidate =\n    extractPrimaryPersonFromText(input.prompt)");
     expect(chainStart).toBeGreaterThan(-1);
     const tail = pipelineSrc.slice(chainStart, chainStart + 400);
-    expect(tail).toContain("scriptPersonNames[0]");
+    expect(tail).toContain("scriptPersonNames.find(namedByTopic)");
+    expect(tail).not.toContain("scriptPersonNames[0]");
   });
 
   it("the person lock log line itself is untouched", () => {

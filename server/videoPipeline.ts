@@ -34,6 +34,7 @@ import { providerLimiter } from "./_core/providerLimiters";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, getMediaArchiveAssetById, getCuratedArchiveProvenance, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
 import {
   computeScreenTimeShare,
+  finalTimelineFootageRefusal,
   formatScreenTimeShare,
   screenTimeFindings,
   type DeliveredClip,
@@ -291,9 +292,11 @@ import {
   buildVideoYoutubePool,
   emptyVideoYoutubePool,
   hasVideoYoutubePool,
+  poolGaveNoYoutube,
   poolRowsForBeat,
   registerVideoYoutubePool,
   releaseVideoYoutubePool,
+  videoYoutubePoolGaveNoYoutube,
   youtubeVideoPoolEnabled,
 } from "./youtubeVideoPool";
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
@@ -603,6 +606,7 @@ import {
   requiredYoutubeSeconds,
   unmeasuredFootage,
   youtubeFootageInTimeline,
+  youtubeVideoIdsForArchiveAssets,
   type ArchiveOrigin,
 } from "./youtubeFootageInFilm";
 import {
@@ -15379,7 +15383,8 @@ export async function searchYoutubeVideoCandidates(
    * a search the budget did not grant. `YOUTUBE_SEARCH_MODE=per_beat` restores the old behaviour.
    */
   const renderVideoId = getActiveVideoId();
-  if (youtubeVideoPoolEnabled() && renderVideoId != null) {
+  /** Video 612 — unless the pool brought back no usable YouTube: then the beats search for themselves. */
+  if (youtubeVideoPoolEnabled() && renderVideoId != null && !videoYoutubePoolGaveNoYoutube(renderVideoId)) {
     console.log(
       `[YouTubeSearchBudget] REFUSED video=${renderVideoId} scene=${sceneIndex} route=per_beat_search ` +
         `query=${JSON.stringify(query.slice(0, 80))} — this video's searches come from its pool only`
@@ -15899,16 +15904,28 @@ export async function fetchYouTubeCCClips(
    * this beat; the download, the ceiling, the dedup and the picture editor are unchanged.
    */
   const poolVideoId = getActiveVideoId();
-  const poolMode = youtubeVideoPoolEnabled() && poolVideoId != null && hasVideoYoutubePool(poolVideoId);
-  const rowsFromPool = async () => {
+  let poolMode = youtubeVideoPoolEnabled() && poolVideoId != null && hasVideoYoutubePool(poolVideoId);
+  let poolRows: ReturnType<typeof poolRowsForBeat> = [];
+  if (poolMode) {
     const wait = Math.max(0, Math.min(90_000, remainingScopeMs() - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS));
     const pool = await awaitVideoYoutubePool(poolVideoId!, Number.isFinite(wait) ? wait : 90_000);
     if (!pool) {
       console.log(`[YouTubeSearchPlan] video=${poolVideoId} scene=${sceneIndex} pool not ready within ${Math.round(wait / 1000)}s — no YouTube for this beat`);
+    } else if (poolGaveNoYoutube(pool)) {
+      /**
+       * Video 612 — the central planner refused every query, so the pool never searched and stayed
+       * empty. A pool that never asked YouTube — or whose search failed, or found nothing usable —
+       * is no answer about YouTube: this beat searches for itself through the per-beat route below,
+       * exactly as with the pool switched off.
+       */
+      console.log(`[YouTubeSearchPlan] video=${poolVideoId} scene=${sceneIndex} the pool brought back no usable YouTube — this beat searches YouTube itself`);
+      poolMode = false;
+    } else {
+      poolRows = poolRowsForBeat(pool, scriptGuided?.beatText ?? uniqueQueries[0] ?? "", relevanceKeywords, requiredPersonName);
     }
-    /** An inner helper, not an exit of the fetcher: the turn still ends on the fetcher's own exits. */
-    return pool ? poolRowsForBeat(pool, scriptGuided?.beatText ?? uniqueQueries[0] ?? "", relevanceKeywords, requiredPersonName) : [];
-  };
+  }
+  /** An inner helper, not an exit of the fetcher: the turn still ends on the fetcher's own exits. */
+  const rowsFromPool = async () => poolRows;
 
   for (const [queryIndex, query] of uniqueQueries.slice(0, 2).entries()) {
     if (poolMode && queryIndex > 0) break;
@@ -16649,6 +16666,79 @@ export function resolvePersonFromSurnameAnchor(anchor: string, names: string[]):
 
 function extractPrimaryPersonFromTitle(title?: string, corroboration = ""): string {
   return extractPrimaryPersonFromText(title, corroboration);
+}
+
+/** The spoken text of a script: markdown headings (`# title`, `## scene`) are not narration. */
+export function narrationWithoutHeadings(script: string): string {
+  return (script ?? "").replace(/^[ \t]*#{1,6}[ \t].*$/gm, "");
+}
+
+/**
+ * Does the narration SAY this name — every word, in order, each written with a capital as a name
+ * is? "Rome dominated despite …" does not say "Dominated Despite".
+ */
+export function nameIsSpokenInNarration(name: string, narration: string): boolean {
+  const tokens = coercePersonName(name).split(/\s+/).filter(Boolean);
+  if (!tokens.length) return false;
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")}(?![\\p{L}\\p{N}])`, "giu");
+  for (const m of narration.matchAll(re)) {
+    if (m[0].split(/\s+/).every((w) => w[0] === w[0]!.toUpperCase() && w[0] !== w[0]!.toLowerCase())) return true;
+  }
+  return false;
+}
+
+/**
+ * The render's person lock — the existing chain, fed the narration instead of the whole script.
+ *
+ * Video 612: the script's `# Why the Roman Empire Dominated Despite Its Limitations` heading was
+ * read as narration and its capitalised pair "Dominated Despite" became the lock. Headings are
+ * removed before names are read, and whatever the chain returns only locks when the narration
+ * itself says that name.
+ */
+export function resolvePrimaryPersonLock(input: {
+  prompt: string;
+  videoTitle: string;
+  topicContext: string;
+  script: string;
+}): string {
+  const narration = narrationWithoutHeadings(input.script);
+  // P1-A: a title like "Why Hitler Lost the War" yields no full name (the old code fabricated
+  // "Why Hitler" here), but it does yield the surname anchor "Hitler" — resolved against the
+  // full names the script itself states, so the lock becomes the script's real "Adolf Hitler".
+  const scriptPersonNames = extractPersonNamesFromText(narration);
+  const surnameAnchor =
+    extractPersonSurnameAnchor(input.prompt) ||
+    extractPersonSurnameAnchor(input.videoTitle) ||
+    extractPersonSurnameAnchor(input.topicContext);
+  // RONDE 11 (render 521): a title like "Hitler's Final Hours: The Suicide Pact" made the weak
+  // two-capitalized-word guess return "Suicide Pact" BEFORE the chain reached the surname anchor.
+  // The anchor is always validated against the script's real stated names, so it must win over
+  // any title/topic guess: resolve it first, and only fall through to the guesses when it is empty.
+  const anchorResolvedPerson = resolvePersonFromSurnameAnchor(surnameAnchor, scriptPersonNames);
+  /**
+   * The FIRST person the narration names is not the video's subject. Video 612 ("The Roman
+   * Empire…") locked "Scipio Africanus" that way. A narration name locks only when the prompt,
+   * title or topic names that person too — "Who Was Julius Caesar?".
+   */
+  const topicText = `${input.prompt} ${input.videoTitle} ${input.topicContext}`;
+  const namedByTopic = (name: string): boolean => {
+    const tokens = name.split(/\s+/).filter(Boolean);
+    if (!tokens.length) return false;
+    const body = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
+    return new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "iu").test(topicText);
+  };
+  const candidate =
+    extractPrimaryPersonFromText(input.prompt) ||
+    anchorResolvedPerson ||
+    extractPrimaryPersonFromText(input.videoTitle) ||
+    extractPrimaryPersonFromText(input.topicContext) ||
+    scriptPersonNames.find(namedByTopic) ||
+    "";
+  if (candidate && !nameIsSpokenInNarration(candidate, narration)) {
+    console.log(`[Pipeline] person lock refused: "${candidate}" is not said in the narration`);
+    return "";
+  }
+  return candidate;
 }
 
 function isPersonCelebrityTopic(topicContext?: string): boolean {
@@ -32307,27 +32397,12 @@ async function _runVideoPipelineInner(
     || "AI Generated Video";
   const topicContext = asVideoTitleString(buildTopicContext(userPrompt ?? videoRow?.prompt, videoTitle));
   const muskLocked = isMuskTeslaTopic(topicContext, script);
-  // P1-A: a title like "Why Hitler Lost the War" yields no full name (the old code fabricated
-  // "Why Hitler" here), but it does yield the surname anchor "Hitler" — resolved against the
-  // full names the script itself states, so the lock becomes the script's real "Adolf Hitler".
-  const scriptPersonNames = extractPersonNamesFromText(script);
-  const surnameAnchor =
-    extractPersonSurnameAnchor(userPrompt ?? videoRow?.prompt ?? "") ||
-    extractPersonSurnameAnchor(videoTitle) ||
-    extractPersonSurnameAnchor(topicContext);
-  // RONDE 11 (render 521): a title like "Hitler's Final Hours: The Suicide Pact" made the weak
-  // two-capitalized-word guess return "Suicide Pact" BEFORE the chain reached the surname anchor.
-  // The anchor is always validated against the script's real stated names, so it must win over
-  // any title/topic guess: resolve it first, and only fall through to the guesses when it is empty.
-  const anchorResolvedPerson = resolvePersonFromSurnameAnchor(surnameAnchor, scriptPersonNames);
-  const primaryPerson =
-    extractPrimaryPersonFromText(userPrompt ?? videoRow?.prompt ?? "") ||
-    anchorResolvedPerson ||
-    extractPrimaryPersonFromText(videoTitle) ||
-    extractPrimaryPersonFromText(topicContext) ||
-    resolvePersonFromSurnameAnchor(surnameAnchor, scriptPersonNames) ||
-    scriptPersonNames[0] ||
-    "";
+  const primaryPerson = resolvePrimaryPersonLock({
+    prompt: userPrompt ?? videoRow?.prompt ?? "",
+    videoTitle,
+    topicContext,
+    script,
+  });
   const personLocked = Boolean(primaryPerson) || isPersonCelebrityTopic(topicContext);
   getRenderCtx().videoTopic = { videoTitle, primaryPerson };
 
@@ -35503,7 +35578,23 @@ async function _runVideoPipelineInner(
         let cinematicRefusal: string | null = null;
         /** R195 — read once, here, because the flag lives behind this block's dynamic import. */
         cinematicProgress.enabled = cinematicRenderPathEnabled();
-        if (outcome.ok && cinematicProgress.enabled) {
+        /**
+         * Video 612 — the timeline as it will be rendered, after its holds and YouTube pieces. When
+         * one piece of footage fills it, nothing is rendered: the render job's delivery gate would
+         * refuse the same film five minutes later, on the same measurement.
+         */
+        const footageRefusal = outcome.ok
+          ? finalTimelineFootageRefusal(
+              videoTrack(outcome.timeline),
+              undefined,
+              await youtubeVideoIdsForArchiveAssets(videoTrack(outcome.timeline), getMediaArchiveAssetById)
+            )
+          : null;
+        if (footageRefusal) {
+          cinematicRefusal = `ONE_FOOTAGE_FILLS_FILM — ${footageRefusal}`;
+          console.error(pipelineReport.add("summary", `[DeliveryGate] video=${videoId} not rendered: ${cinematicRefusal}`));
+        }
+        if (outcome.ok && cinematicProgress.enabled && !footageRefusal) {
           try {
             const { claimRenderAttempt, createRenderJob, claimQueuedRenderJob, getRenderJobById } =
               await import("./db");
