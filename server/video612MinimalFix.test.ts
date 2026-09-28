@@ -932,3 +932,80 @@ describe("J. video 614 — our own subtitle no longer refuses a clip; text is as
     expect(plan).toEqual({ queries: ["Kris Jenner"], from: "previous" });
   });
 });
+
+/* ═══════════ K — subtitles in pieces with the voice; short videos can plan a search; more time to find pictures ═══════════ */
+
+describe("K. subtitles, the whole-video search on short videos, and the picture-finding time", () => {
+  it("a long sentence becomes pieces of at most two 42-character lines, ending at a pause where one falls", async () => {
+    const { planSubtitleChunks, SUBTITLE_CHARS_PER_LINE } = await import("./cinematicEditingEngine/captionPlanner");
+    const text =
+      "Kim Kardashian built a billion-dollar fortune from skincare, shapewear and a reality show that ran for twenty seasons on cable television.";
+    const chunks = planSubtitleChunks(text, 10, 8);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      const lines: string[] = [];
+      for (const w of c.text.split(" ")) {
+        const last = lines[lines.length - 1];
+        if (last !== undefined && (last + " " + w).length <= SUBTITLE_CHARS_PER_LINE) lines[lines.length - 1] = last + " " + w;
+        else lines.push(w);
+      }
+      expect(lines.length, c.text).toBeLessThanOrEqual(2);
+    }
+    expect(chunks[0]!.text.endsWith("skincare,")).toBe(true);
+    /** Every word once, in order; the pieces follow each other and fill the beat exactly. */
+    expect(chunks.map((c) => c.text).join(" ")).toBe(text);
+    expect(chunks[0]!.startSec).toBe(10);
+    expect(chunks[chunks.length - 1]!.endSec).toBe(18);
+    for (let i = 1; i < chunks.length; i++) expect(chunks[i]!.startSec).toBe(chunks[i - 1]!.endSec);
+  });
+
+  it("with the voice's word timing, each piece starts when its first word is spoken", async () => {
+    const { planSubtitleChunks } = await import("./cinematicEditingEngine/captionPlanner");
+    const text = "Rome offered its enemies citizenship, and they became Romans within a single generation of peace.";
+    const words = text.split(" ").map((word, i) => ({ word, startSec: 20 + i * 0.5, endSec: 20 + i * 0.5 + 0.4 }));
+    const chunks = planSubtitleChunks(text, 20, 8, words);
+    expect(chunks.length).toBe(2);
+    expect(chunks[1]!.text.startsWith("and they")).toBe(true);
+    expect(chunks[1]!.startSec).toBe(words[5]!.startSec);
+  });
+
+  it("the subtitle caption is split, and only when the video asks for subtitles", async () => {
+    const { planCaptions } = await import("./cinematicEditingEngine/captionPlanner");
+    const intent = {
+      spokenText: "Kim Kardashian built a billion-dollar fortune from skincare, shapewear and a reality show that ran for twenty seasons.",
+      events: [], people: [], visualLocation: "", visualTime: "", historicalContext: "",
+    } as never;
+    const on = planCaptions(intent, 0, 7, { includeSubtitle: true }).filter((c) => c.captionType === "subtitle");
+    expect(on.length).toBeGreaterThan(1);
+    expect(planCaptions(intent, 0, 7, { includeSubtitle: false }).filter((c) => c.captionType === "subtitle")).toEqual([]);
+    const EDL = fs.readFileSync(path.join(__dirname, "cinematicEditingEngine/edlGenerator.ts"), "utf8");
+    expect(EDL).toContain("wordTimings: input.wordTimings,");
+  });
+
+  it("render 614's whole-video question is no longer refused as 'built on one scene'", () => {
+    const kardashians = {
+      prompt: "How the Kardashians built their wealth",
+      title: "Kardashian Wealth",
+      sceneTexts: [
+        "The Kardashians turned fame into a business. Their TV show made them household names.",
+        "Kourtney Kardashian filmed in Los Angeles for years. The Kardashians sold the TV show to Hulu.",
+        "Kylie Jenner and Kim Kardashian built empires on Instagram.",
+      ],
+    };
+    const a = analyzeVideo(kardashians);
+    const allow = (): GateVerdict => ({ ok: true });
+    /** "Los Angeles" is one subject; TV recurs in two sentences of a three-scene video. */
+    expect(refuseQuery("Kardashian TV Los Angeles", { analysis: a, mainSubject: "Kardashian", gate: allow })).toBeNull();
+    expect(refuseQuery("Kardashian Los Angeles", { analysis: a, mainSubject: "Kardashian", gate: allow })).toBeNull();
+    /** Two genuinely different one-scene subjects are still refused. */
+    expect(refuseQuery("Kardashian Hulu Instagram", { analysis: a, mainSubject: "Kardashian", gate: allow })).toContain("built on one scene");
+  });
+
+  it("a one-minute video gets about 40% of its render time to find pictures, the total unchanged", async () => {
+    const { computeRenderBudget } = await import("./renderBudget");
+    const b = computeRenderBudget(3, 60, "1");
+    expect(b.perSceneRetrieveMs * 3).toBeGreaterThanOrEqual(150_000);
+    expect(b.perSceneRetrieveMs).toBeLessThanOrEqual(55_000);
+    expect(b.totalMs).toBe(computeRenderBudget(3, 60, "1").totalMs);
+  });
+});

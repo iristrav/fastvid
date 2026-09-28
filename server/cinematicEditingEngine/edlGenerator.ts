@@ -93,6 +93,7 @@ export function generateEDL(inputs: CinematicEditingInput[], options: EdlOptions
       isFirstBeatOfScene: i === 0,
       continuity,
       includeSubtitle: options.includeSubtitles === true,
+      wordTimings: input.wordTimings,
     });
     const motionGraphics = planMotionGraphics(input.intent, input.scene, input.beatVoiceStartSec, input.beatVoiceDurationSec);
     const effects = planVisualEffects(shot, input.bestCandidate, pacing);

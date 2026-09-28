@@ -149,6 +149,52 @@ export function analyzeVideo(input: PlannerInput): VideoAnalysis {
 }
 
 /** Which scenes mention a word. */
+/**
+ * Does this word run through the video? In two scenes — or, in a short video of at most three
+ * scenes, in two sentences. Video 614 had three short scenes: hardly any name came back in a second
+ * scene, every query was refused as "built on one scene", and the whole-video search found nothing.
+ * Two sentences is the recurrence this planner's own fallback already accepts (`r.beats >= 2`).
+ */
+function recursThroughVideo(analysis: VideoAnalysis, w: string): boolean {
+  if (scenesOf(analysis, w).size >= 2) return true;
+  if (new Set(analysis.sentenceScene).size > 3) return false;
+  return analysis.sentences.filter((sentence) => containsWord(sentence, w)).length >= 2;
+}
+
+/**
+ * The multi-word name this word belongs to, as the NARRATION writes it ("los" → "los angeles"
+ * when a sentence says "… in Los Angeles"), provided the query carries that whole name; otherwise
+ * the word itself. Read from the narration, not the query: a query capitalises every word it holds.
+ */
+function nameRunOf(analysis: VideoAnalysis, query: string, w: string): string {
+  const q = ` ${words(query).join(" ")} `;
+  for (const sentence of analysis.sentences) {
+    const tokens = sentence.split(/\s+/).filter(Boolean);
+    let run: string[] = [];
+    const flush = (): string | null => {
+      const name = run.join(" ");
+      run = [];
+      return name.includes(" ") && ` ${name} `.includes(` ${w} `) && q.includes(` ${name} `) ? name : null;
+    };
+    for (const t of tokens) {
+      const clean = t.toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, "");
+      if (/^\p{Lu}/u.test(t) && clean) {
+        run.push(clean);
+        if (/[.,;:!?]$/.test(t)) {
+          const hit = flush();
+          if (hit) return hit;
+        }
+      } else {
+        const hit = flush();
+        if (hit) return hit;
+      }
+    }
+    const hit = flush();
+    if (hit) return hit;
+  }
+  return w;
+}
+
 function scenesOf(analysis: VideoAnalysis, w: string): Set<number> {
   const out = new Set<number>();
   analysis.sentences.forEach((s, i) => {
@@ -207,10 +253,15 @@ export function refuseQuery(
       return `the video's main subject "${ctx.mainSubject}" is not in the query`;
     }
     if (!ctx.allowSingleScene) {
-      /** Not one scene: of the words beyond the main subject, at most one may come from a single scene. */
+      /** Not one scene: of the SUBJECTS beyond the main subject, at most one may come from a single scene. */
       const extra = cw.filter((w) => !subject.some((sw) => sameSubjectWord(sw, w)));
-      const singleScene = extra.filter((w) => scenesOf(ctx.analysis, w).size <= 1 && !/^\d{4}$/.test(w));
-      if (singleScene.length > 1) {
+      const singleScene = extra.filter((w) => !recursThroughVideo(ctx.analysis, w) && !/^\d{4}$/.test(w));
+      /**
+       * Video 614 — "Los Angeles" is one place, not two single-scene words. A run of capitalised
+       * words in the query is counted once, so a two-word name no longer reads as two subjects.
+       */
+      const subjects = new Set(singleScene.map((w) => nameRunOf(ctx.analysis, q, w)));
+      if (subjects.size > 1) {
         return `built on one scene (${singleScene.join(", ")} each appear in only one scene) — use subjects that recur through the video`;
       }
     }

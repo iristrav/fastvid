@@ -85,7 +85,8 @@ describe("RONDE 81 §A — render budget", () => {
     // The <= 3 min branch of totalRenderMinutes was deliberately left alone.
     const b = budgetFor("1");
     expect(b.basePerSceneComposeMs).toBe(88_000);
-    expect(b.perSceneRetrieveMs).toBe(32_000);
+    /** Video 614 — finding pictures now gets 40% of the same 8 minutes, capped at 55 s a scene. */
+    expect(b.perSceneRetrieveMs).toBe(55_000);
     expect(b.concatMs).toBe(60_000);
   });
 });

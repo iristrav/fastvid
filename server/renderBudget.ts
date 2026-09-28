@@ -194,7 +194,15 @@ export function computeRenderBudget(
 
   // ── Base formula allocations ─────────────────────────────────────────────
   const formulaComposeMs   = clampMs((totalMs * 0.55) / scenes, PER_SCENE_COMPOSE_MIN_MS,  PER_SCENE_COMPOSE_MAX_MS);
-  const formulaRetrieveMs  = clampMs((totalMs * 0.20) / scenes, PER_SCENE_RETRIEVE_MIN_MS, PER_SCENE_RETRIEVE_MAX_MS);
+  /**
+   * Video 614 — finding pictures gets 40% of the render's time, not 20%.
+   *
+   * A one-minute video has 8 minutes; 20% of it was 32 s a scene, 96 s for the whole visual phase,
+   * while one YouTube download through the cloud route takes 25–30 s. Render 614 ran out: ten
+   * downloads were never started and its third scene was never searched. The time comes from the
+   * same 8 minutes — the total is unchanged — and the per-scene ceiling still bounds it.
+   */
+  const formulaRetrieveMs  = clampMs((totalMs * 0.40) / scenes, PER_SCENE_RETRIEVE_MIN_MS, PER_SCENE_RETRIEVE_MAX_MS);
   const concatMaxMs        = Math.max(CONCAT_MAX_BASE_MS, Math.round(expectedVideoSec * CONCAT_MS_PER_VIDEO_SEC));
   const formulaConcatMs    = clampMs(totalMs * 0.10, CONCAT_MIN_MS,     concatMaxMs);
   const formulaUploadMs    = clampMs(totalMs * 0.12, UPLOAD_MIN_MS,     UPLOAD_MAX_MS);
