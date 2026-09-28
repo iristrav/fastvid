@@ -263,7 +263,8 @@ describe("RONDE 60 — the planner uses it", () => {
     const src = SRC();
     const idx = src.indexOf("export async function planScriptGuidedClip(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 4200);
+    /** Video 616: the whole planner, not a fixed 4200 characters of it — the known-length skip grew it. */
+    const block = src.slice(idx, src.indexOf("export async function planBestScriptGuidedClip(", idx));
     // Every non-transcript route now goes through the duration-aware fallback.
     expect(block).not.toContain("startSec: 12,");
     expect(block).not.toContain("Math.min(30, segments[0].startSec + 5) : 8");

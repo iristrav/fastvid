@@ -686,6 +686,22 @@ export function youtubeDownloadRefusal(videoId: string): string | null {
   return permanentDownloadRefusal(youtubeRefusalKey(videoId));
 }
 
+/**
+ * VIDEO 616 — the same memo, for one FRAGMENT of a YouTube video rather than the whole video.
+ *
+ * A fragment refused for what its pixels show (on-screen text, black frames) is refused again if
+ * the same seconds are fetched again, so they are not fetched again this render. Another start in
+ * the same video is another key. The key is built by the pipeline (`youtubeFragmentKeyFor`).
+ */
+export function noteYoutubeFragmentRefusal(fragmentKey: string, reason: string): void {
+  if (fragmentKey) notePermanentDownloadRefusal(fragmentKey, reason);
+}
+
+/** Why this fragment was already refused this render, or null when it has not been. */
+export function youtubeFragmentRefusal(fragmentKey: string): string | null {
+  return fragmentKey ? permanentDownloadRefusal(fragmentKey) : null;
+}
+
 /** What the memo holds and what it saved — reported at the end of a render. */
 export function permanentDownloadRefusalStats(): { refused: number; prevented: number } {
   return { refused: permanentDownloadRefusals.size, prevented: permanentRefusalsPrevented };

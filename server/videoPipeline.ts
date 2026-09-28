@@ -47,7 +47,7 @@ import {
 } from "./curatedProvenanceRepair";
 import { formatPreparationCache, preparationKey, resetPreparationScope, runPreparation } from "./preparationCache";
 import { BUDGETS, chargeAmbientBudget, createRetrievalBudgetState, formatRetrievalBudgets, setBudgetResolver, type RetrievalBudgetState } from "./retrievalBudget";
-import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteYoutubeSourceFile, permanentDownloadRefusal, resetPermanentDownloadRefusals, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, noteRapidApiLinkLocked, noteRapidApiTransferOk, rapidApiLinkLocked, youtubeDownloadRefusal, youtubeSourceFile, formatYoutubeSourceReuse, resetYoutubeSourceFiles, youtubeServiceRefusalReason } from "./providerFailureClass";
+import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteYoutubeSourceFile, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, noteRapidApiLinkLocked, noteRapidApiTransferOk, rapidApiLinkLocked, youtubeDownloadRefusal, youtubeSourceFile, formatYoutubeSourceReuse, resetYoutubeSourceFiles, youtubeServiceRefusalReason } from "./providerFailureClass";
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
@@ -298,6 +298,7 @@ import {
   releaseVideoYoutubePool,
   videoYoutubePoolGaveNoYoutube,
   youtubeVideoPoolEnabled,
+  noteVideoYoutubePoolRefusal,
 } from "./youtubeVideoPool";
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 
@@ -16270,8 +16271,17 @@ export async function fetchYouTubeCCClips(
               );
             }
 
+            /** VIDEO 616 — these exact seconds were refused earlier this render: the next candidate. */
+            const fragmentRefused = youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, clipStart, clipDur));
+            if (fragmentRefused) {
+              console.log(
+                `[Pipeline] Scene ${sceneIndex}: skipping YouTube ${videoId} @${clipStart}s — this fragment ` +
+                  `was refused earlier this render (${fragmentRefused}), no download slot spent`
+              );
+              continue;
+            }
             const outPath = tagPathWithProviderAsset(
-              path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}.mp4`),
+              path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}_${youtubeFragmentFileTag(clipStart, clipDur)}.mp4`),
               "youtube_cc",
               videoId,
               sourcingCache,
@@ -22311,6 +22321,47 @@ export function clipContentKey(filePath: string): string {
   }
 }
 
+/**
+ * VIDEO 616 — WHICH SECONDS OF WHICH YOUTUBE VIDEO A CLIP FILE HOLDS.
+ *
+ * The lineage record and `clipContentKey` are per VIDEO (`youtube_cc:<hash>`), so neither can say
+ * which fragment a refusal was about. Render 616 downloaded 13 times and got 4 fragments: the same
+ * seconds of the same four videos, refused for on-screen text or black frames on every beat that
+ * picked them, while the rest of the pool was never tried. `fetchYouTubeCCClips` names the file
+ * after the seconds it asked for, and a refusal of that file is remembered under the same key in
+ * the render's refusal memo (`noteYoutubeFragmentRefusal`), so exactly that fragment is not
+ * fetched again this render. Another start in the same video stays a different fragment.
+ */
+export function youtubeFragmentFileTag(startSec: number, durationSec: number): string {
+  return `t${Math.round(startSec * 10)}d${Math.round(durationSec * 10)}`;
+}
+
+export function youtubeFragmentKeyFor(videoId: string, startSec: number, durationSec: number): string {
+  return `${providerAssetKey("youtube_cc", videoId)}@${youtubeFragmentFileTag(startSec, durationSec)}`;
+}
+
+/** The same key read back from a file `fetchYouTubeCCClips` named, or null for any other file. */
+export function youtubeFragmentKey(clipPath: string): string | null {
+  const base = path.basename(clipPath).replace(/_transformed(?=\.mp4)/, "");
+  const fragment = /_(t\d+d\d+)__pid_youtube_cc-/.exec(base);
+  const tag = base.match(PROVIDER_ASSET_TAG_RE);
+  if (!fragment || !tag || tag[1] !== "youtube_cc") return null;
+  return `${tag[1]}:${tag[2]}@${fragment[1]}`;
+}
+
+/** Remember a refused YouTube fragment for this render, and tell the video's pool. */
+function rememberRefusedYoutubeFragment(dedup: VisualDedupState, clipPath: string, reason: string): void {
+  const key = youtubeFragmentKey(clipPath);
+  if (!key) return;
+  noteYoutubeFragmentRefusal(key, reason);
+  const ledger = dedup.sourcingCache?.lineage;
+  const record = ledger?.resolve(clipPath, clipContentKey(clipPath)) ?? null;
+  const root = record && ledger ? ledger.rootOf(record.lineageId) ?? record : record;
+  const youtubeVideoId = root?.providerAssetId?.trim();
+  const videoId = getActiveVideoId();
+  if (youtubeVideoId && videoId != null) noteVideoYoutubePoolRefusal(videoId, youtubeVideoId);
+}
+
 function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number {
   
   const words = text.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length;
@@ -24119,6 +24170,10 @@ async function adoptClip(
        */
       const refuse = (reason: string): true => {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, reason, sourceQuery);
+        /** VIDEO 616 — a YouTube fragment refused for what its pixels show is not fetched again. */
+        if (reason === "mostly_black" || reason === "baked_edit_text_before_vision") {
+          rememberRefusedYoutubeFragment(dedup, p, reason);
+        }
         return true;
       };
       if (!fs.existsSync(p) && refuse("file_missing")) continue;
@@ -32665,7 +32720,10 @@ async function _runVideoPipelineInner(
           .catch((err: Error) => {
             console.warn(`[YouTubeSearchPlan] video=${videoId} pool failed: ${err.message?.slice(0, 160)} — beats go on without YouTube`);
             return emptyVideoYoutubePool(videoId);
-          })
+          }),
+        /** VIDEO 616 — the same build, asked again with the videos refused on screen. */
+        (refusedVideoIds) =>
+          productionVideoPoolDeps(poolInput).then((deps) => buildVideoYoutubePool(deps, poolInput, { refusedVideoIds }))
       );
     }
 

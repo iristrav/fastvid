@@ -313,10 +313,12 @@ export async function planScriptGuidedClip(
     2_500,
     Math.min(youtubeVideoContextTimeoutMs(), options.deadlineMs - Date.now())
   );
-  const pageDuration = (await fetchYoutubeVideoContext(candidate.videoId, contextMs)).durationSec;
+  /** VIDEO 616 — a known length asks youtube.com nothing (InnerTube 400, watch page 429, captions). */
+  const lengthKnown = durationSec > 0;
+  const pageDuration = lengthKnown ? 0 : (await fetchYoutubeVideoContext(candidate.videoId, contextMs)).durationSec;
   if (durationSec <= 0) durationSec = pageDuration;
 
-  const segments = await fetchYoutubeTranscript(candidate.videoId, transcriptMs);
+  const segments = lengthKnown ? [] : await fetchYoutubeTranscript(candidate.videoId, transcriptMs);
   // A caption track also states the length, for the case where the page did not.
   if (durationSec <= 0 && segments.length > 0) {
     durationSec = segments[segments.length - 1]!.startSec;

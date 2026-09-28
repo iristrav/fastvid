@@ -143,8 +143,16 @@ async function judge(
 }
 
 /** The agreed rules for search #2, measured on the pool as it stands. Empty when none applies. */
-export function search2Reasons(pool: Pick<VideoYoutubePool, "candidates" | "sentences">): string[] {
-  const usable = pool.candidates.filter((c) => c.usable);
+export function search2Reasons(
+  pool: Pick<VideoYoutubePool, "candidates" | "sentences">,
+  /**
+   * VIDEO 616 — pool videos whose downloaded fragment this render refused (on-screen text, black).
+   * Found on paper is not usable on screen: they do not count as usable here, and three of them
+   * are a reason of their own. Empty when the pool is first judged, which is exactly as before.
+   */
+  refused: ReadonlySet<string> = new Set()
+): string[] {
+  const usable = pool.candidates.filter((c) => c.usable && !refused.has(c.videoId));
   const beats = pool.sentences.length;
   const covered = new Set(usable.flatMap((c) => c.serves)).size;
   const distinct = new Set(usable.map((c) => c.videoId)).size;
@@ -153,6 +161,10 @@ export function search2Reasons(pool: Pick<VideoYoutubePool, "candidates" | "sent
   if (usable.length < need) reasons.push(`usable candidates ${usable.length} < max(6, beats/2)=${need}`);
   if (distinct < 4) reasons.push(`distinct usable videos ${distinct} < 4`);
   if (covered < beats / 2) reasons.push(`coverage ${covered}/${beats} < 50%`);
+  const refusedInPool = pool.candidates.filter((c) => c.usable && refused.has(c.videoId)).length;
+  if (refusedInPool >= POOL_REFUSALS_FOR_SEARCH2) {
+    reasons.push(`refused in this render ${refusedInPool} >= ${POOL_REFUSALS_FOR_SEARCH2}`);
+  }
   return reasons;
 }
 
@@ -160,9 +172,24 @@ export function coverageOf(candidates: PoolCandidate[]): number {
   return new Set(candidates.filter((c) => c.usable).flatMap((c) => c.serves)).size;
 }
 
-function uncoveredOf(pool: VideoYoutubePool): number[] {
-  const covered = new Set(pool.candidates.filter((c) => c.usable).flatMap((c) => c.serves));
+/** VIDEO 616 — distinct pool videos refused on screen before search #2 is asked for. */
+export const POOL_REFUSALS_FOR_SEARCH2 = 3;
+
+function uncoveredOf(pool: VideoYoutubePool, refused: ReadonlySet<string> = new Set()): number[] {
+  const covered = new Set(pool.candidates.filter((c) => c.usable && !refused.has(c.videoId)).flatMap((c) => c.serves));
   return pool.sentences.map((_, i) => i).filter((i) => !covered.has(i));
+}
+
+/**
+ * The beats search #2 is aimed at. Normally the ones no usable candidate serves. VIDEO 616 — when
+ * the pool covered every beat on paper and its videos were then refused on screen, the gap is the
+ * beats those refused videos were meant to serve (every beat, when they served none in particular).
+ */
+function gapOf(pool: VideoYoutubePool, refused: ReadonlySet<string>): number[] {
+  const uncovered = uncoveredOf(pool, refused);
+  if (uncovered.length || refused.size === 0) return uncovered;
+  const lost = [...new Set(pool.candidates.filter((c) => refused.has(c.videoId)).flatMap((c) => c.serves))];
+  return lost.length ? lost.sort((a, b) => a - b) : pool.sentences.map((_, i) => i);
 }
 
 function mergeCandidates(a: PoolCandidate[], b: PoolCandidate[]): PoolCandidate[] {
@@ -195,8 +222,14 @@ export function formatSearchPlan(pool: VideoYoutubePool): string {
  */
 export async function buildVideoYoutubePool(
   deps: PoolDeps,
-  input: PlannerInput & { videoId: number }
+  input: PlannerInput & { videoId: number },
+  /**
+   * VIDEO 616 — asked again during the render once the pool proved unusable on screen: the stored
+   * pool is reloaded, nothing already spent is spent again, and only search #2 can still run.
+   */
+  opts: { refusedVideoIds?: readonly string[] } = {}
 ): Promise<VideoYoutubePool> {
+  const refused = new Set(opts.refusedVideoIds ?? []);
   const log = deps.log ?? ((l: string) => console.log(l));
   const analysis: VideoAnalysis = analyzeVideo(input);
   const empty: VideoYoutubePool = {
@@ -241,13 +274,13 @@ export async function buildVideoYoutubePool(
     );
 
   /** A later attempt of the same video: its searches are spent, its candidates are reused. */
-  if (pool.decided || pool.searches >= 2) {
+  if (pool.searches >= 2 || (pool.decided && refused.size === 0)) {
     log(`[YouTubeSearchPlan] video=${input.videoId} REUSED searches=${pool.searches} candidates=${pool.candidates.length} — no new search`);
     return pool;
   }
 
   /* ── search #1 ── */
-  if (pool.searches === 0) {
+  if (pool.searches === 0 && !pool.decided) {
     if (deps.inCooldown?.()) {
       log(`[YouTubeSearchPlan] video=${input.videoId} search #1 not spent — the official API is in its quota cooldown`);
       return pool;
@@ -276,7 +309,7 @@ export async function buildVideoYoutubePool(
   }
 
   /* ── the archive joins the pool; it never replaces search #1 ── */
-  const archiveItems = await deps.archive(analysis.sentences).catch(() => [] as SearchItem[]);
+  const archiveItems = pool.decided ? [] : await deps.archive(analysis.sentences).catch(() => [] as SearchItem[]);
   const known = new Set(pool.candidates.map((c) => c.videoId));
   const archiveNew = archiveItems.filter((i) => !known.has(i.videoId));
   /**
@@ -287,17 +320,17 @@ export async function buildVideoYoutubePool(
   const archiveDetails = archiveNew.length ? await deps.details(archiveNew.map((i) => i.videoId)).catch(() => null) : null;
   const archiveJudged = await judge(deps, archiveNew, archiveDetails ?? new Map(), 0, input.title, analysis.sentences);
   pool.candidates = mergeCandidates(pool.candidates, archiveJudged);
-  pool.archiveUsable = archiveJudged.filter((c) => c.usable).length;
+  if (!pool.decided) pool.archiveUsable = archiveJudged.filter((c) => c.usable).length;
 
   /* ── enough? ── */
-  const reasons = search2Reasons(pool);
+  const reasons = search2Reasons(pool, refused);
   pool.search2Needed = reasons.length > 0;
   pool.search2Reason = reasons.join("; ");
   await persist({ archiveUsable: pool.archiveUsable, search2Needed: pool.search2Needed ? 1 : 0, search2Reason: pool.search2Reason });
 
   /* ── search #2: only for a real gap, only a different question, and the last one ── */
   if (pool.search2Needed && pool.searches === 1 && !deps.inCooldown?.()) {
-    const plan = await planGapQuery(deps, input, analysis, { query1: pool.query1 ?? "", uncovered: uncoveredOf(pool) });
+    const plan = await planGapQuery(deps, input, analysis, { query1: pool.query1 ?? "", uncovered: gapOf(pool, refused) });
     if (plan && (await claimYoutubeSearch(deps.store, input.videoId, 2, log))) {
       pool.searches = 2;
       pool.query2 = plan.query;
@@ -369,8 +402,43 @@ export function poolGaveNoYoutube(pool: Pick<VideoYoutubePool, "candidates">): b
   return !pool.candidates.some((c) => c.usable && (c.from === 1 || c.from === 2));
 }
 
-export function registerVideoYoutubePool(videoId: number, pool: Promise<VideoYoutubePool>): void {
+/**
+ * VIDEO 616 — the pool asked again when it proves unusable on screen.
+ *
+ * `topUp` is the render's own `buildVideoYoutubePool` call, given the refused videos: it reloads the
+ * stored pool and can run only search #2, under the same budget and gate. Asked at most once per
+ * render, when the third distinct pool video is refused; the beats read the topped-up pool on their
+ * next turn. A top-up that fails leaves the pool exactly as it was.
+ */
+const poolTopUps = new Map<number, (refusedVideoIds: string[]) => Promise<VideoYoutubePool>>();
+const poolRefusals = new Map<number, Set<string>>();
+
+export function noteVideoYoutubePoolRefusal(videoId: number, youtubeVideoId: string): void {
+  const topUp = poolTopUps.get(videoId);
+  const current = pools.get(videoId);
+  if (!topUp || !current || !youtubeVideoId) return;
+  const refused = poolRefusals.get(videoId) ?? new Set<string>();
+  poolRefusals.set(videoId, refused);
+  if (refused.has(youtubeVideoId)) return;
+  refused.add(youtubeVideoId);
+  if (refused.size !== POOL_REFUSALS_FOR_SEARCH2) return;
+  poolTopUps.delete(videoId);
+  console.log(
+    `[YouTubeSearchPlan] video=${videoId} ${refused.size} pool videos refused on screen ` +
+      `(${[...refused].join(",")}) — the pool is asked whether search #2 is due`
+  );
+  pools.set(videoId, current.then((before) => topUp([...refused]).catch(() => before)));
+}
+
+export function registerVideoYoutubePool(
+  videoId: number,
+  pool: Promise<VideoYoutubePool>,
+  topUp?: (refusedVideoIds: string[]) => Promise<VideoYoutubePool>
+): void {
   pools.set(videoId, pool);
+  poolRefusals.delete(videoId);
+  if (topUp) poolTopUps.set(videoId, topUp);
+  else poolTopUps.delete(videoId);
   poolsWithoutYoutube.delete(videoId);
   void pool.then(
     (p) => {
@@ -396,6 +464,8 @@ export function videoYoutubePoolGaveNoYoutube(videoId: number | undefined | null
 
 export function releaseVideoYoutubePool(videoId: number): void {
   pools.delete(videoId);
+  poolTopUps.delete(videoId);
+  poolRefusals.delete(videoId);
   poolsWithoutYoutube.delete(videoId);
 }
 
