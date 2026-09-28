@@ -135,6 +135,43 @@ function sentenceWords(text: string): string[] {
 }
 
 /**
+ * Video 614 — the words a sentence writes as NAMES.
+ *
+ * A capital in the middle of a sentence is a name ("… Kourtney Kardashian in Los Angeles").
+ * A capital on the sentence's FIRST word is only grammar ("Let's", "Centuries later", "Yet"),
+ * unless the scene writes that word as a name elsewhere too — with a capital in the middle of a
+ * sentence, or with a capital more than once ("Rome offered … Rome was small").
+ */
+export function sentenceNameWords(sentence: string, sceneText = "", knownNames: Iterable<string> = []): Set<string> {
+  const names = new Set<string>();
+  const openers = new Set<string>();
+  const capitalCount = new Map<string, number>();
+  const read = (text: string, own: boolean) => {
+    for (const part of (text ?? "").split(/(?<=[.!?])\s+/)) {
+      part.split(/\s+/).filter(Boolean).forEach((raw, i) => {
+        if (!/^[^\p{L}\p{N}]*\p{Lu}/u.test(raw)) return;
+        const w = sentenceWords(raw)[0] ?? "";
+        if (!w || FILLER_WORDS.has(w) || FUNCTION_WORDS.has(w) || GLUE_WORDS.has(w)) return;
+        capitalCount.set(w, (capitalCount.get(w) ?? 0) + 1);
+        if (i > 0) names.add(w);
+        else if (own) openers.add(w);
+      });
+    }
+  };
+  const scene = (sceneText ?? "").trim();
+  read(sentence, true);
+  if (scene && scene !== (sentence ?? "").trim()) read(scene.replace((sentence ?? "").trim(), " "), false);
+  /** Also a name when FastVid already knows it as one — a place its geography recognises ("Rome"). */
+  const known = new Set([...knownNames].flatMap((k) => sentenceWords(k)));
+  for (const w of openers) if ((capitalCount.get(w) ?? 0) > 1 || known.has(w)) names.add(w);
+  /** An era or unit abbreviation is not a subject: "146 BC", "AD 79", "TV". */
+  for (const w of ["bc", "ad", "bce", "ce", "tv"]) names.delete(w);
+  /** Only the sentence's own words count: a name from elsewhere in the scene was only evidence. */
+  const own = new Set(sentenceWords(sentence));
+  return new Set([...names].filter((w) => own.has(w)));
+}
+
+/**
  * Video 612/613 — A YOUTUBE QUERY FOR A SENTENCE HOLDS ONLY WORDS FROM THAT SENTENCE.
  *
  * The builders add words of their own: "archival footage", "documentary footage", "news report",
@@ -143,16 +180,20 @@ function sentenceWords(text: string): string[] {
  *   - every word the sentence does not contain;
  *   - the sentence's verb ("Scipio Africanus led", "Kim Kardashian built");
  *   - filler words ("citizenship instead") and pronouns ("Its");
- *   - a one-word question that is not a name the sentence capitalises ("Empire" from the title).
+ *   - a question that names nobody and nothing ("examining true", "Let", "Empire").
  * What is left is deduplicated, and short questions go first: a query of more than four words
  * ("Scipio Africanus Hannibal Barca Tunisia") is asked after the shorter ones.
  */
-export function sentenceOnlyYoutubeQueries(queries: readonly string[], sentence: string, verb = ""): string[] {
+export function sentenceOnlyYoutubeQueries(
+  queries: readonly string[],
+  sentence: string,
+  verb = "",
+  sceneText = "",
+  knownNames: Iterable<string> = []
+): string[] {
   const allowed = new Set(sentenceWords(sentence));
-  /** Words the sentence itself writes with a capital: names ("Rome", "Carthage"), not "empire". */
-  const named = new Set(
-    (sentence ?? "").split(/[^\p{L}\p{N}'’-]+/u).filter((w) => /^\p{Lu}/u.test(w)).flatMap((w) => sentenceWords(w))
-  );
+  /** The names the sentence writes (who, where, which brand): see `sentenceNameWords`. */
+  const named = sentenceNameWords(sentence, sceneText, knownNames);
   const verbWord = verb.trim().toLowerCase();
   const out: string[] = [];
   const seen = new Set<string>();
@@ -169,8 +210,12 @@ export function sentenceOnlyYoutubeQueries(queries: readonly string[], sentence:
     while (kept.length && GLUE_WORDS.has(sentenceWords(kept[0]!)[0] ?? "")) kept.shift();
     while (kept.length && GLUE_WORDS.has(sentenceWords(kept[kept.length - 1]!)[0] ?? "")) kept.pop();
     if (!kept.some((raw) => !GLUE_WORDS.has(sentenceWords(raw)[0] ?? ""))) continue;
-    /** A one-word question must be a name the sentence writes as one; "Empire" alone finds anything. */
-    if (kept.length === 1 && !named.has(sentenceWords(kept[0]!)[0] ?? "")) continue;
+    /**
+     * Video 614 — every question names someone or something: a person, a place, a brand.
+     * "examining true", "climax uncovers" and "Let" (the first word of "Let's …") name nothing,
+     * find nothing and still cost a search. A one-word "Empire" is dropped by the same rule.
+     */
+    if (!kept.some((raw) => named.has(sentenceWords(raw)[0] ?? ""))) continue;
     const query = kept.join(" ").trim();
     const key = query.toLowerCase();
     if (!query || seen.has(key)) continue;

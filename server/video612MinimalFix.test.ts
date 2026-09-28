@@ -21,7 +21,7 @@ import {
   type PoolDeps,
 } from "./youtubeVideoPool";
 import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, isRejectedStockClip, buildBeatYoutubeQueries, youtubeQueriesForSentence, youtubeQueryPlanForSentence } from "./videoPipeline";
-import { sentenceOnlyYoutubeQueries, neighbourSentences, namesInSentence, youtubeResultIsShort, YOUTUBE_SHORT_MAX_SEC } from "./youtubeNonFootage";
+import { sentenceOnlyYoutubeQueries, neighbourSentences, namesInSentence, youtubeResultIsShort, YOUTUBE_SHORT_MAX_SEC, sentenceNameWords } from "./youtubeNonFootage";
 import { youtubeSearchDurationForPass } from "./sourcingPolicy";
 import { extractVisualSearchTags, extractBeatGeoPlaceTags, inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
 import { searchGateStrict, withSearchProvenance } from "./searchQueryContract";
@@ -865,5 +865,70 @@ describe("I. a YouTube Short is never downloaded, on any route", () => {
     expect(byId.get("archNoLen00")?.usable).toBe(false);
     expect(byId.get("archLong000")?.usable).toBe(true);
     expect(triaged.sort()).toEqual(["archLong000", "documentary"]);
+  });
+});
+
+/* ═══════════ J — video 614: no burnt-in subtitle, text asked before vision, every question names something ═══════════ */
+
+describe("J. video 614 — our own subtitle no longer refuses a clip; text is asked first; no nameless questions", () => {
+  const fnBody = (name: string) => {
+    const at = PIPE.indexOf(name);
+    const next = PIPE.slice(at + 1).search(/\n(?:export\s+)?(?:async\s+)?function\s/);
+    return PIPE.slice(at, at + 1 + next);
+  };
+
+  it("the fair-use transform burns no narration subtitle into the clip any more", () => {
+    const body = fnBody("async function transformClipForFairUse(");
+    expect(body).not.toContain("drawtext");
+    /** The transformation itself stays: reframing, grade, vignette. */
+    expect(body).toContain("vignette=angle=");
+    expect(body).toContain("eq=contrast=");
+  });
+
+  it("the on-screen-text question comes before the picture editor, under the archive's own key", () => {
+    const at = PIPE.indexOf('refuse("baked_edit_text_before_vision")');
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeGreaterThan(PIPE.indexOf('if ((await isMostlyBlackClip(p)) && refuse("mostly_black")) continue;'));
+    const loopEnd = PIPE.indexOf("async function tryStockSources(");
+    const judged = PIPE.slice(at, loopEnd).search(/judgeBeatClipRelevance|clipPassesVisionGate|beatClipPassesVisionGate/);
+    expect(judged, "the picture editor is asked after the text check").toBeGreaterThan(0);
+    /** Same key expression as the push gate's remoteUrl, so the verdict is read back, not paid twice. */
+    const key = fnBody("function onScreenTextVerdictKey(");
+    const push = fnBody("async function ensureArchiveBackedBeforePush(");
+    expect(key).toContain("root?.sourceUrl ?? root?.originalUrl ?? cached?.canonicalUrl ?? null");
+    expect(push).toContain("remoteUrl: root.sourceUrl ?? root.originalUrl ?? cached?.canonicalUrl ?? null");
+  });
+
+  it("render 614's nameless questions are not sent", () => {
+    expect(sentenceOnlyYoutubeQueries(["examining true"], "We are examining the true story of the family.")).toEqual([]);
+    expect(sentenceOnlyYoutubeQueries(["climax uncovers"], "The climax uncovers what the cameras never showed.")).toEqual([]);
+    expect(sentenceOnlyYoutubeQueries(["Let"], "Let's look at how they built it.")).toEqual([]);
+  });
+
+  it("questions that name someone or something still go out", () => {
+    expect(
+      sentenceOnlyYoutubeQueries(["Kourtney Kardashian Los Angeles"], "The show followed Kourtney Kardashian in Los Angeles.")
+    ).toEqual(["Kourtney Kardashian Los Angeles"]);
+    expect(sentenceOnlyYoutubeQueries(["Instagram"], "Their fame moved to Instagram.")).toEqual(["Instagram"]);
+    expect(sentenceOnlyYoutubeQueries(["Kim Kardashian"], "Kim Kardashian built a fortune.")).toEqual(["Kim Kardashian"]);
+    /** A first word is a name when FastVid knows the place, or the scene writes it again. */
+    expect(sentenceOnlyYoutubeQueries(["Rome citizenship"], "Rome offered citizenship.", "", "", ["rome"])).toEqual(["Rome citizenship"]);
+    expect(
+      sentenceOnlyYoutubeQueries(["Rome"], "Rome was small.", "", "Rome offered citizenship. Rome was small.")
+    ).toEqual(["Rome"]);
+  });
+
+  it("an opening capital is grammar, an era abbreviation is no subject", () => {
+    expect([...sentenceNameWords("Let's look at how they built it.")]).toEqual([]);
+    expect([...sentenceNameWords("Centuries later, Washington borrowed the idea.")]).toEqual(["washington"]);
+    expect([...sentenceNameWords("Carthage fell in 146 BC.")]).toEqual([]);
+    expect([...sentenceNameWords("Carthage fell in 146 BC.", "Rome fought Carthage. Carthage fell in 146 BC.")]).toEqual(["carthage"]);
+  });
+
+  it("a sentence whose question named nothing borrows its neighbour's name instead", () => {
+    const sentences = ["Kris Jenner saw the chance.", "Let's look at how she built it."];
+    const sceneText = sentences.join(" ");
+    const plan = youtubeQueryPlanForSentence(["Let", "Kris Jenner archival footage"], sentences[1], sceneText);
+    expect(plan).toEqual({ queries: ["Kris Jenner"], from: "previous" });
   });
 });

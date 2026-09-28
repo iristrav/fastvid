@@ -56,7 +56,7 @@ import { markYoutubeKeySpent, usableYoutubeSearchKeys } from "./youtubeApiKeys";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { sanitizeForDrawtextStrict } from "./ffmpegSanitize";
 import { buildSimpleKenBurnsVF, buildMatFramedStillVF, buildStillEncodeArgs, documentaryStyleEnabled, resolveStillCompositionVF, stillOutputFrameCount } from "./documentaryStyle";
-import { extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor } from "./visualBeatTags";
+import { extractBeatGeoPlaceTags, extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor } from "./visualBeatTags";
 import {
   MIN_MIX_SAMPLE,
   movingShareDeficit,
@@ -139,8 +139,8 @@ import {
   summarizeArchiveSourcing,
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
-import { resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, sceneBeatCapForCadence, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, visualStageWallClockMin, isFastShortVideoLength, composeLocalClipsOnly, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, type YoutubeLicenseMode, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, youtubeSearchPassesPerQuery, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, youtubeFirstPerBeatEnabled, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_PARALLEL_BEATS, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
+import { cachedClipBakedEditTextVerdict, resetOverlayBudget } from "./archiveClipFilter";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, sceneBeatCapForCadence, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, visualStageWallClockMin, isFastShortVideoLength, composeLocalClipsOnly, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, type YoutubeLicenseMode, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, youtubeSearchPassesPerQuery, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, youtubeFirstPerBeatEnabled, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_PARALLEL_BEATS, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -4823,7 +4823,7 @@ export function youtubeQueryPlanForSentence(
   sceneText?: string
 ): { queries: string[]; from: "sentence" | "previous" | "next" | "none" } {
   const cut = (text: string, extra: readonly string[] = []) =>
-    sentenceOnlyYoutubeQueries([...queries, ...extra], text, extractActionCue(text) ?? "");
+    sentenceOnlyYoutubeQueries([...queries, ...extra], text, extractActionCue(text) ?? "", sceneText ?? "", extractBeatGeoPlaceTags(text));
   const own = cut(sentence ?? "");
   if (own.length > 0) return { queries: own, from: "sentence" };
   const { previous, next } = neighbourSentences(sceneText, sentence);
@@ -16572,17 +16572,20 @@ async function transformClipForFairUse(
     `eq=contrast=${grade.contrast}:saturation=${grade.saturation}:brightness=${grade.brightness},` +
     `vignette=angle=${vignetteAngle}:mode=forward`;
 
-  const subtitle = sanitizeForDrawtextStrict(sceneText, 72);
-  if (subtitle && ffmpegSupportsDrawtext()) {
-    filterChain +=
-      `,drawtext=text='${subtitle}':fontcolor=white:fontsize=30:x=(w-text_w)/2:y=h-72:` +
-      `box=1:boxcolor=black@0.55:boxborderw=10`;
-  }
+  /**
+   * Video 614 — no narration subtitle is burnt into the clip any more.
+   *
+   * It broke two of the operator's rules at once. Subtitles appear only when the video asks for
+   * them (RONDE 649), and this one was burnt in regardless. And the archive's text check then read
+   * our own subtitle as someone else's on-screen text (`BAKED_EDIT_TEXT`), so every transformed
+   * YouTube and web clip was refused at the push gate — render 614's two APPROVED YouTube shots
+   * among them. The grade, the vignette and the reframing stay: they are the transformation.
+   */
+  void sceneText;
 
   const TRANSFORM_TIMEOUT_MS = timeoutMs;
   console.log(
-    `[Pipeline] Scene ${sceneIndex}: fair-use transform clip ${clipIndex} (${path.basename(inputPath)})` +
-      (subtitle ? " + narration subtitle" : "")
+    `[Pipeline] Scene ${sceneIndex}: fair-use transform clip ${clipIndex} (${path.basename(inputPath)})`
   );
   try {
     const { spawn: spawnChild } = await import('child_process');
@@ -24111,6 +24114,22 @@ async function adoptClip(
       if (isRejectedStockClip(p, sourceQuery) && refuse("rejected_stock")) continue;
       if (isPipelineFallbackClip(p) && refuse("pipeline_fallback")) continue;
       if ((await isMostlyBlackClip(p)) && refuse("mostly_black")) continue;
+      /**
+       * Video 614 — the on-screen-text question, asked BEFORE the picture editor.
+       *
+       * Someone else's subtitle, title bar or logo never enters the film (the operator's rule), and
+       * the archive refuses it at the push gate. Render 614 asked it last: two YouTube shots were
+       * downloaded, APPROVED, transformed — and then refused for an E! logo, with the beat's time
+       * spent. Asked here, on the downloaded file, a clip with text is passed over and the time goes
+       * to the next candidate. The verdict is memoised under the key the archive uses, so the push
+       * gate reads it back instead of paying for it twice.
+       */
+      if (clipRequiresFairUseTransform(p)) {
+        const text = await cachedClipBakedEditTextVerdict(
+          p, "video/mp4", onScreenTextVerdictKey(dedup, p, contentKey), beatClipTextFilterMaxChecks()
+        ).catch(() => null);
+        if (text?.verdict === "has_text" && refuse("baked_edit_text_before_vision")) continue;
+      }
       if (!opts.scriptImageFallback) {
         if (muskTopic && isOffTopicVisualForMusk(sourceQuery, p)) continue;
         if (
@@ -28295,6 +28314,22 @@ function beatVisualContext(
 type ArchivePushVerdict =
   | { ok: true; reason: "not_external" | "already_archived" | "exempt_source" | "ingestion_stopped" | "stored" }
   | { ok: false; reason: string };
+
+/**
+ * Video 614 — the key under which the archive's on-screen-text verdict for this clip is memoised.
+ * The same expression `ensureArchiveBackedBeforePush` hands the archive as `remoteUrl`, so an answer
+ * given before the picture editor is the answer the push gate reads back.
+ */
+function onScreenTextVerdictKey(dedup: VisualDedupState, clipPath: string, contentKey: string): string {
+  const ledger = dedup.sourcingCache?.lineage;
+  const record = ledger?.resolve(clipPath, contentKey) ?? null;
+  const root = record && ledger ? ledger.rootOf(record.lineageId) ?? record : record;
+  const provider = root?.provider?.trim().toLowerCase() || "unknown";
+  const providerAssetId = root?.providerAssetId?.trim() || null;
+  const cached = providerAssetId ? getCachedProviderAsset(dedup.sourcingCache, provider, providerAssetId) : null;
+  const remoteUrl = root?.sourceUrl ?? root?.originalUrl ?? cached?.canonicalUrl ?? null;
+  return remoteUrl || `${provider}:${providerAssetId ?? "unknown"}:${path.basename(clipPath)}`;
+}
 
 async function ensureArchiveBackedBeforePush(
   dedup: VisualDedupState,
