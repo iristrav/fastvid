@@ -51,7 +51,7 @@ import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadR
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
-import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyYoutubeQueries, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
+import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyYoutubeQueries, YOUTUBE_SHORT_MAX_SEC, youtubeResultIsShort, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
 import { markYoutubeKeySpent, usableYoutubeSearchKeys } from "./youtubeApiKeys";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { sanitizeForDrawtextStrict } from "./ffmpegSanitize";
@@ -15336,6 +15336,26 @@ export type YoutubeSearchRow = {
  * is unchanged. Defensive parsing — the scraped payload shape is not contractually stable — and
  * fails open to [] on anything unexpected. Never used for the strict-CC path (caller-enforced).
  */
+/**
+ * Video 613 — a Short is never downloaded. The scraped RapidAPI search has no duration filter, so
+ * a result is kept only when its own length says it is longer than a Short can be; a result with
+ * no length is not kept, because nothing proves it is not one.
+ */
+function rapidSearchRowsLongerThanAShort<T extends { lengthText?: string }>(all: T[], query: string): T[] {
+  const lengthSec = (t?: string) =>
+    /^\d+(?::\d{1,2}){1,2}$/.test((t ?? "").trim())
+      ? (t as string).trim().split(":").reduce((acc, part) => acc * 60 + Number(part), 0)
+      : 0;
+  const kept = all.filter((r) => lengthSec(r.lengthText) > YOUTUBE_SHORT_MAX_SEC);
+  if (kept.length < all.length) {
+    console.log(
+      `[YouTubeNotFootage] RapidAPI search "${query.slice(0, 60)}": ${all.length - kept.length} of ${all.length} ` +
+        `result(s) not kept — a Short, or no length to prove it is not one`
+    );
+  }
+  return kept;
+}
+
 async function searchYoutubeViaRapidApi(
   query: string,
   sceneIndex: number,
@@ -15363,10 +15383,13 @@ async function searchYoutubeViaRapidApi(
         title?: string;
         description?: string;
         thumbnail?: Array<{ url?: string }>;
+        lengthText?: string;
       }>;
     };
-    const rows = (data.data ?? [])
-      .filter((r) => r?.type === "video" && typeof r.videoId === "string" && r.videoId.length > 0)
+    const all = (data.data ?? []).filter((r) => r?.type === "video" && typeof r.videoId === "string" && r.videoId.length > 0);
+    const longEnough = rapidSearchRowsLongerThanAShort(all, query);
+    const rows = longEnough
+      .filter((r) => !youtubeResultIsShort(r.title, r.description))
       .slice(0, maxResults)
       .map((r) => ({
         id: { videoId: r.videoId },
@@ -15588,13 +15611,15 @@ export async function searchYoutubeVideoCandidates(
     .filter((item) => {
       // RONDE 649 — a parody, a reaction video or an audiobook is never a shot; see youtubeNonFootage.
       const genre = youtubeTitleIsNotFootage(item.snippet?.title);
-      if (genre) {
+      /** Video 613 — never a Short, whatever the route; see `youtubeResultIsShort`. */
+      const short = youtubeResultIsShort(item.snippet?.title, item.snippet?.description);
+      if (genre || short) {
         console.log(
-          `[YouTubeNotFootage] video=${item.id?.videoId ?? "?"} genre=${genre} ` +
+          `[YouTubeNotFootage] video=${item.id?.videoId ?? "?"} genre=${genre ?? `youtube short (${short})`} ` +
             `title="${(item.snippet?.title ?? "").slice(0, 70)}" — not downloaded`
         );
       }
-      return !genre;
+      return !genre && !short;
     })
     .map((item) => {
       const title = item.snippet?.title ?? "";

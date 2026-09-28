@@ -15,6 +15,7 @@
  * `search.list` only, and it is kept by the database (`youtubeSearchBudget.ts`), so a retry, a
  * requeue after a deploy, a second replica or a user trying again never gets a fresh budget.
  */
+import { youtubeResultIsShort } from "./youtubeNonFootage";
 import { claimYoutubeSearch, type YoutubeSearchBudgetStore } from "./youtubeSearchBudget";
 import {
   analyzeVideo,
@@ -109,8 +110,13 @@ async function judge(
     const genre = deps.notFootage(it.title);
     const d = details?.get(it.videoId) ?? null;
     let why = "ok";
+    /** Video 613 — a Short is never downloaded: by its hashtag, or by its measured length. */
+    const short = youtubeResultIsShort(it.title, it.description, d?.durationSec ?? null);
     if (genre) why = `title genre ${genre}`;
+    else if (short) why = `youtube short (${short})`;
     else if (details && !d) why = "no details";
+    /** A search result whose length is unknown could be a Short; the archive (from 0) was fetched before. */
+    else if (from !== 0 && !d) why = "no details — length unknown, may be a Short";
     else if (d?.live) why = "live";
     else if (d && d.durationSec > 0 && d.durationSec < MIN_SOURCE_SEC) why = `too short ${d.durationSec}s`;
     else if (d && d.durationSec > MAX_SOURCE_SEC) why = `too long ${Math.round(d.durationSec / 60)}min (download ceiling)`;
@@ -214,6 +220,17 @@ export async function buildVideoYoutubePool(
     try {
       const stored = JSON.parse(row.poolJson) as VideoYoutubePool;
       if (Array.isArray(stored.candidates)) pool = { ...stored, sentences: analysis.sentences, videoId: input.videoId };
+      /**
+       * Video 613 — a pool stored by an earlier attempt was judged before the Shorts rule. Its
+       * candidates are asked again here, so a reused pool can never hand a beat a Short.
+       */
+      pool.candidates = pool.candidates.map((c) => {
+        if (!c.usable) return c;
+        const short = youtubeResultIsShort(c.title, c.description, c.durationSec || null);
+        if (short) return { ...c, usable: false, serves: [], why: `youtube short (${short})` };
+        if (c.from !== 0 && !(c.durationSec > 0)) return { ...c, usable: false, serves: [], why: "no details — length unknown, may be a Short" };
+        return c;
+      });
     } catch {
       /* a damaged record is an empty pool, never a fresh budget */
     }

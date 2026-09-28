@@ -21,7 +21,8 @@ import {
   type PoolDeps,
 } from "./youtubeVideoPool";
 import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, isRejectedStockClip, buildBeatYoutubeQueries, youtubeQueriesForSentence, youtubeQueryPlanForSentence } from "./videoPipeline";
-import { sentenceOnlyYoutubeQueries, neighbourSentences, namesInSentence } from "./youtubeNonFootage";
+import { sentenceOnlyYoutubeQueries, neighbourSentences, namesInSentence, youtubeResultIsShort, YOUTUBE_SHORT_MAX_SEC } from "./youtubeNonFootage";
+import { youtubeSearchDurationForPass } from "./sourcingPolicy";
 import { extractVisualSearchTags, extractBeatGeoPlaceTags, inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
 import { searchGateStrict, withSearchProvenance } from "./searchQueryContract";
 import { youtubeVideoIdsForArchiveAssets } from "./youtubeFootageInFilm";
@@ -709,5 +710,94 @@ describe("H. video 613 — failed stays failed; a failed run stops; Openverse cl
     expect(body).toContain("tagPathWithProviderAsset(");
     expect(body).toContain('searchRoute: "searchWebWideVideoClips"');
     expect(body).toContain("recordProviderDownloadOutcome(sourcingCache, outPath, madeClip");
+  });
+});
+
+/* ═══════════ I — a YouTube Short is never downloaded ═══════════ */
+
+describe("I. a YouTube Short is never downloaded, on any route", () => {
+  it("a Short is recognised by its hashtag or by a length of three minutes or less", () => {
+    expect(youtubeResultIsShort("Oh No khloe even didn't Notice kim kardashian Revenge😂 #yts")).toBe("shorts hashtag");
+    expect(youtubeResultIsShort("Kim Kardashian interview", "#Shorts #kim")).toBe("shorts hashtag");
+    expect(youtubeResultIsShort("Kim Kardashian interview", "", 45)).toContain("Short length");
+    expect(youtubeResultIsShort("Kim Kardashian interview", "", YOUTUBE_SHORT_MAX_SEC)).toContain("Short length");
+    expect(youtubeResultIsShort("Kim Kardashian interview", "", YOUTUBE_SHORT_MAX_SEC + 1)).toBeNull();
+    expect(youtubeResultIsShort("Rome: the rise of an empire (documentary)", "Full episode", 1500)).toBeNull();
+    expect(youtubeResultIsShort("The short history of Rome")).toBeNull();
+  });
+
+  it("the per-beat search never asks YouTube for the under-4-minute slice", () => {
+    for (let pass = 0; pass < 4; pass++)
+      for (const count of [1, 2, 3])
+        for (const q of [undefined, 0, 1, 2, 3]) expect(youtubeSearchDurationForPass(pass, count, q)).toBe("medium");
+  });
+
+  it("the per-beat result filter and the RapidAPI fallback both refuse Shorts before download", () => {
+    expect(PIPE).toContain("const short = youtubeResultIsShort(item.snippet?.title, item.snippet?.description);");
+    expect(PIPE).toContain("return !genre && !short;");
+    expect(PIPE).toContain("const longEnough = rapidSearchRowsLongerThanAShort(all, query);");
+    expect(PIPE).toContain("const kept = all.filter((r) => lengthSec(r.lengthText) > YOUTUBE_SHORT_MAX_SEC);");
+    expect(PIPE).toContain(".filter((r) => !youtubeResultIsShort(r.title, r.description))");
+  });
+
+  const poolDeps = (store = memoryYoutubeSearchBudgetStore(), details?: () => Promise<Map<string, { durationSec: number; embeddable: boolean; live: boolean }>>): PoolDeps => ({
+    store,
+    llm: async () => ({ choices: [{ message: { content: JSON.stringify({ mainSubject: "Rome", recurringSubjects: [], query: "Rome Carthage" }) } }] }),
+    gate: () => ({ ok: true }),
+    search: async () => ({
+      status: 200,
+      items: [
+        { videoId: "shortlen000", title: "Rome Carthage", description: "", channel: "c", thumb: "t" },
+        { videoId: "hashtag0000", title: "Rome Carthage #shorts", description: "", channel: "c", thumb: "t" },
+        { videoId: "documentary", title: "Rome and Carthage — the Punic Wars", description: "", channel: "c", thumb: "t" },
+      ],
+    }),
+    details:
+      details ??
+      (async () =>
+        new Map([
+          ["shortlen000", { durationSec: 58, embeddable: true, live: false }],
+          ["hashtag0000", { durationSec: 600, embeddable: true, live: false }],
+          ["documentary", { durationSec: 900, embeddable: true, live: false }],
+        ])),
+    triage: async () => ({ footageType: "real_footage", servesBeats: [0], depicts: "" }),
+    archive: async () => [],
+    notFootage: () => null,
+    log: () => {},
+  });
+
+  it("the whole-video pool drops a Short by its measured length and by its hashtag", async () => {
+    const pool = await buildVideoYoutubePool(poolDeps(), { ...roman, videoId: 613_301 });
+    const byId = new Map(pool.candidates.map((c) => [c.videoId, c]));
+    expect(byId.get("shortlen000")?.usable).toBe(false);
+    expect(byId.get("shortlen000")?.why).toContain("youtube short");
+    expect(byId.get("hashtag0000")?.usable).toBe(false);
+    expect(byId.get("hashtag0000")?.why).toContain("shorts hashtag");
+    expect(byId.get("documentary")?.usable).toBe(true);
+  });
+
+  it("a search result whose length could not be read is not fetched", async () => {
+    const pool = await buildVideoYoutubePool(poolDeps(undefined, async () => { throw new Error("videos.list down"); }), { ...roman, videoId: 613_302 });
+    expect(pool.candidates.filter((c) => c.from !== 0).every((c) => !c.usable)).toBe(true);
+    expect(pool.candidates.find((c) => c.videoId === "documentary")?.why).toContain("length unknown");
+  });
+
+  it("a pool stored by an earlier attempt is asked again: its Shorts are no longer usable", async () => {
+    const store = memoryYoutubeSearchBudgetStore();
+    const cand = (videoId: string, durationSec: number, title = "Rome Carthage") => ({
+      videoId, title, description: "", thumb: "t", durationSec, footageType: "real_footage" as const, serves: [0], from: 1 as const, usable: true, why: "ok",
+    });
+    await store.record(613_303, {
+      poolJson: JSON.stringify({
+        videoId: 613_303, sentences: [], query1: "Rome Carthage", query2: null, searches: 1,
+        candidates: [cand("oldshort000", 40), cand("oldtagged00", 700, "Rome #yts"), cand("olddocument", 1200)],
+        coverage1: 1, archiveUsable: 0, search2Needed: false, search2Reason: "", finalCoverage: 1, decided: true,
+      }),
+    } as never);
+    const pool = await buildVideoYoutubePool(poolDeps(store), { ...roman, videoId: 613_303 });
+    const byId = new Map(pool.candidates.map((c) => [c.videoId, c]));
+    expect(byId.get("oldshort000")?.usable).toBe(false);
+    expect(byId.get("oldtagged00")?.usable).toBe(false);
+    expect(byId.get("olddocument")?.usable).toBe(true);
   });
 });

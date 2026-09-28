@@ -39,6 +39,29 @@ export function youtubeTitleIsNotFootage(title: string | null | undefined): stri
 }
 
 /**
+ * Video 613 — A YOUTUBE SHORT IS NEVER DOWNLOADED.
+ *
+ * Render 613 downloaded "Oh No khloe even didn't Notice kim kardashian Revenge😂 #yts" — a 360x640
+ * vertical Short with captions — and several like it. The operator's rule is absolute: no Short is
+ * fetched at all. A Short is at most three minutes long; before a download, what can be known is
+ * its length (from the video's details) and the hashtag its uploader gave it.
+ */
+export const YOUTUBE_SHORT_MAX_SEC = 180;
+
+const SHORTS_TAG = /#(?:shorts?|ytshorts?|youtubeshorts?|yts)\b/i;
+
+/** Why this search result is (or may be) a Short, or null when it is not. */
+export function youtubeResultIsShort(
+  title: string | null | undefined,
+  description?: string | null,
+  durationSec?: number | null
+): string | null {
+  if (SHORTS_TAG.test(`${title ?? ""} ${description ?? ""}`)) return "shorts hashtag";
+  if (durationSec != null && durationSec > 0 && durationSec <= YOUTUBE_SHORT_MAX_SEC) return `${durationSec}s — Short length`;
+  return null;
+}
+
+/**
  * RONDE 650 — A YOUTUBE QUERY SAYS WHO OR WHAT IT IS ABOUT.
  *
  * Render 607 sent "escape archival footage" and "suicide archival footage" to YouTube — a beat's

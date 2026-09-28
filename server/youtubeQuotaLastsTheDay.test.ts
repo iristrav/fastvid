@@ -35,13 +35,11 @@ describe("1 — one search per query", () => {
     expect(youtubeSearchPassesPerQuery()).toBe(1);
   });
 
-  it("with one pass, the two queries cover both duration slices", () => {
-    expect(youtubeSearchDurationForPass(0, 1, 0)).toBe("short");
+  it("with one pass, every query asks for medium — video 613: no Short is ever searched for", () => {
+    expect(youtubeSearchDurationForPass(0, 1, 0)).toBe("medium");
     expect(youtubeSearchDurationForPass(0, 1, 1)).toBe("medium");
-    // Callers that do not say which query keep the old one-pass answer.
     expect(youtubeSearchDurationForPass(0, 1)).toBe("medium");
-    // With several passes, the passes alternate exactly as before.
-    expect(youtubeSearchDurationForPass(0, 3, 1)).toBe("short");
+    expect(youtubeSearchDurationForPass(0, 3, 1)).toBe("medium");
     expect(youtubeSearchDurationForPass(1, 3, 0)).toBe("medium");
   });
 

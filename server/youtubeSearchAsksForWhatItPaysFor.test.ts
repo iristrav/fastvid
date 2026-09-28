@@ -132,10 +132,11 @@ describe("the call site", () => {
  * no note and no test.
  */
 describe("the duration slice", () => {
-  it("alternates across the passes, so both slices are searched", () => {
-    expect(youtubeSearchDurationForPass(0, 3)).toBe("short");
+  it("video 613 — every pass asks for medium: the under-4-minute slice is where every Short lives", () => {
+    /** The operator's rule: a YouTube Short is never downloaded. `short` is no longer asked for. */
+    expect(youtubeSearchDurationForPass(0, 3)).toBe("medium");
     expect(youtubeSearchDurationForPass(1, 3)).toBe("medium");
-    expect(youtubeSearchDurationForPass(2, 3)).toBe("short");
+    expect(youtubeSearchDurationForPass(2, 3)).toBe("medium");
   });
 
   it("A SINGLE PASS KEEPS MEDIUM — rotating alone would swap a slice, not add one", () => {
@@ -161,7 +162,9 @@ describe("the duration slice", () => {
      */
     const slices = [0, 1, 2, 3, 4].map((i) => youtubeSearchDurationForPass(i, 3));
     expect(slices).not.toContain("long");
-    expect(new Set(slices)).toEqual(new Set(["short", "medium"]));
+    /** Video 613 — nor `short`: see the Shorts rule on `YoutubeSearchDuration`. */
+    expect(slices).not.toContain("short");
+    expect(new Set(slices)).toEqual(new Set(["medium"]));
   });
 });
 

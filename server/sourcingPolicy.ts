@@ -899,7 +899,14 @@ export function youtubeSearchPageSize(): number {
  * WHOLE source and only then trims, under an 80 MB ceiling. A forty-minute upload spends a
  * download slot and the scene's remaining time to arrive at a file the size guard then refuses.
  */
-export type YoutubeSearchDuration = "short" | "medium";
+/**
+ * Video 613 — `short` (under 4 min) is where every YouTube Short lives, and Shorts are never
+ * downloaded: the operator's rule. `medium` is 4–20 min, which YouTube itself guarantees is no Short
+ * (a Short is at most 3 min). The price is stated plainly: sub-4-minute archive clips are no longer
+ * searched per beat. The whole-video pool still sees every length, and drops Shorts by their
+ * measured length before any download (`youtubeVideoPool.ts`).
+ */
+export type YoutubeSearchDuration = "medium";
 
 /**
  * BOTH SLICES GET SEARCHED, WITHOUT ONE EXTRA API CALL.
@@ -929,21 +936,12 @@ export type YoutubeSearchDuration = "short" | "medium";
  * would not widen the render's supply, it would swap one slice for the other.
  */
 export function youtubeSearchDurationForPass(
-  passIndex: number,
-  passCount: number,
-  /**
-   * RONDE 650 — with ONE pass per query, the two queries alternate instead: the first asks for
-   * `short`, the second for `medium`. Both slices are still covered, for one call per query.
-   * Absent (the old callers) keeps the one-pass answer above: `medium`.
-   */
-  queryIndex?: number
+  _passIndex: number,
+  _passCount: number,
+  _queryIndex?: number
 ): YoutubeSearchDuration {
-  if (!Number.isFinite(passIndex) || passIndex < 0) return "medium";
-  if (!Number.isFinite(passCount) || passCount <= 1) {
-    if (queryIndex == null || !Number.isFinite(queryIndex) || queryIndex < 0) return "medium";
-    return queryIndex % 2 === 0 ? "short" : "medium";
-  }
-  return passIndex % 2 === 0 ? "short" : "medium";
+  /** Video 613 — never `short`: see `YoutubeSearchDuration`. */
+  return "medium";
 }
 
 /**
