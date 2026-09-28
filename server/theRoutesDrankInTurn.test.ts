@@ -82,10 +82,16 @@ describe("R260 §1 — YouTube hands out shares", () => {
     expect(youtubeRouteShareMs(Number.POSITIVE_INFINITY)).toBe(0);
   });
 
-  it("THE CLOUD ROUTE IS CAPPED BY ITS SHARE — this is the line render 586 needed", () => {
+  it("VIDEO 615 — the chosen cloud cut gets the whole scope, no longer half of it", () => {
+    /**
+     * Deliberately changed: render 615's cloud cuts finished in the service after being hung up on
+     * at their half, while RapidAPI answered 403 every time. The share rule itself is unchanged
+     * (tested above); the cloud leg no longer applies it.
+     */
     expect(CODE).toContain(
-      "const cloudWindowMs = Math.max(\n      YOUTUBE_MIN_DOWNLOAD_WINDOW_MS,\n      youtubeRouteShareMs(remainingForCloud)\n    );"
+      "const cloudWindowMs = Math.max(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS, remainingForCloud);"
     );
+    expect(CODE).not.toContain("youtubeRouteShareMs(remainingForCloud)");
     expect(CODE, "the cloud call still asks for everything the scope has").toContain(
       "Math.min(youtubeDownloadTimeoutMs(budgetMs), cloudWindowMs)"
     );

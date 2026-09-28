@@ -1109,3 +1109,11 @@ describe("M. video 615 — the cloud cut is waited for, a sentence starts two do
     expect(SVC).toContain("ydl.process_info = timed_process_info");
   });
 });
+
+describe("N. a chosen YouTube candidate gets the time to arrive", () => {
+  it("the cloud cut is granted everything the scope has left, under the 180 s base — not half", () => {
+    const at = PIPE.indexOf("const cloudWindowMs =");
+    expect(PIPE.slice(at, at + 120)).toContain("const cloudWindowMs = Math.max(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS, remainingForCloud);");
+    expect(PIPE).toContain("Math.min(youtubeDownloadTimeoutMs(budgetMs), cloudWindowMs)");
+  });
+});

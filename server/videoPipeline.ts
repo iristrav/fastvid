@@ -14481,10 +14481,20 @@ export async function downloadYouTubeCCClip(
      * Deliberately NOT "try the fast one first". That bets on which route is broken today; this
      * holds whichever of the two it turns out to be tomorrow.
      */
-    const cloudWindowMs = Math.max(
-      YOUTUBE_MIN_DOWNLOAD_WINDOW_MS,
-      youtubeRouteShareMs(remainingForCloud)
-    );
+    /**
+     * VIDEO 615 — A CHOSEN CANDIDATE GETS THE TIME TO ARRIVE.
+     *
+     * The half above was written when this route hung and RapidAPI delivered. Render 615 was the
+     * reverse: every cloud cut that was hung up on at its half (12–55 s) finished in the service
+     * anyway — 34, 44, 51, 54, 60 s — while every RapidAPI transfer answered `http_403:ip_locked`.
+     * The half kept for the fallback bought nothing, and cost the candidate that had been found,
+     * filtered and chosen.
+     *
+     * So the cut that is started gets everything the scope has left, under the same 180 s base.
+     * The fallback still runs when this route answers with an error, which is when it answers
+     * quickly; `youtubeRouteShareMs` stays the rule for splitting, it is just no longer applied here.
+     */
+    const cloudWindowMs = Math.max(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS, remainingForCloud);
     // F3-05: streams to a tmpPath (never directly to outPath) so a network drop mid-download
     // can never leave a corrupt/partial file at outPath — outPath is only ever touched by the
     // atomic fs.renameSync below, and only once the download is complete and size-validated.
