@@ -1065,3 +1065,47 @@ describe("L. an approval that rests on a guess about who is on screen is refused
     expect(GATE).toContain("const judgement = refuseGuessedIdentity(judgementAsGiven, beatText, params.anchors?.subject);");
   });
 });
+
+describe("M. video 615 — the cloud cut is waited for, a sentence starts two downloads, the service says where the time goes", () => {
+  it("two RapidAPI 403s on a link signed for another address close RapidAPI for the render; a success or a new render opens it", async () => {
+    const f = await import("./providerFailureClass");
+    f.resetCloudEgressBlocked();
+    expect(f.rapidApiLinkLocked()).toBe(false);
+    expect(f.noteRapidApiLinkLocked()).toBe(false);
+    expect(f.rapidApiLinkLocked()).toBe(false);
+    expect(f.noteRapidApiLinkLocked()).toBe(true);
+    expect(f.rapidApiLinkLocked()).toBe(true);
+    expect(f.noteRapidApiLinkLocked()).toBe(false); // announced once
+    f.noteRapidApiTransferOk();
+    expect(f.rapidApiLinkLocked()).toBe(false);
+    f.noteRapidApiLinkLocked();
+    f.noteRapidApiLinkLocked();
+    f.resetCloudEgressBlocked();
+    expect(f.rapidApiLinkLocked()).toBe(false);
+  });
+
+  it("only a 403 on an ip-locked link counts, and a latched RapidAPI gives the cloud route the whole window", () => {
+    expect(PIPE).toContain('if (dlResp.status === 403 && googlevideoLinkLock(format.url) === "ip_locked" && noteRapidApiLinkLocked())');
+    expect(PIPE).toContain("const cloudIsOnlyRoute = Boolean(onlyRoute) || rapidApiLinkLocked();");
+    expect(PIPE).toMatch(/cloudTimeoutMs = rapidApiLinkLocked\(\) && Number\.isFinite\(remainingForCloud\)\s*\?\s*remainingForCloud/);
+    expect(PIPE).toMatch(/"rapidapi_links_ip_locked_this_render"\);\s*\} else if \(RAPIDAPI_KEY && onlyRoute !== "cloud"\) \{/);
+    expect(PIPE).toContain('note("rapidapi", "DOWNLOAD_FAILED", "rapidapi_links_ip_locked_this_render");');
+    expect(PIPE).toMatch(/noteRapidApiTransferOk\(\);\s*note\("rapidapi", "DOWNLOAD_SUCCESS"/);
+  });
+
+  it("a YouTube turn starts at most `count` downloads, counted when the slot is claimed", () => {
+    const fn = PIPE.slice(PIPE.indexOf("export async function fetchYouTubeCCClips("));
+    const body = fn.slice(0, fn.indexOf("\n}\n"));
+    expect(body).toContain("const attemptsSpent = (): boolean => attemptedThisTurn >= Math.max(1, count);");
+    expect(body.match(/if \(attemptsSpent\(\)\) break;/g)?.length).toBe(3);
+    // claimed, then counted — a candidate skipped before the slot costs nothing
+    expect(body).toMatch(/if \(!claimDownloadSlot\(\)\) \{[\s\S]{0,400}?break;\s*\}\s*attemptedThisTurn\+\+;/);
+  });
+
+  it("the download service logs the lookup and the transfer apart", () => {
+    const SVC = fs.readFileSync(path.join(__dirname, "..", "services", "ytdlp-download", "main.py"), "utf8");
+    expect(SVC).toContain('attempt=%s extract_ms=%s download_ms=%s');
+    expect(SVC).toContain('ydl.download([f"https://www.youtube.com/watch?v={id}"])');
+    expect(SVC).toContain("ydl.process_info = timed_process_info");
+  });
+});

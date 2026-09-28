@@ -604,6 +604,43 @@ export function resetCloudEgressBlocked(): void {
   cloudEgressBlocked = null;
   cloudEgressPreflightAt = 0;
   consecutiveEgressRefusals = 0;
+  resetRapidApiLinkLock();
+}
+
+/**
+ * VIDEO 615 — RAPIDAPI HANDS OUT LINKS THIS WORKER MAY NOT USE.
+ *
+ * Render 615: every RapidAPI file transfer answered `http_403:ip_locked`. The googlevideo link it
+ * returns is signed for RapidAPI's own address (`sparams` lists `ip`), so from this worker the
+ * transfer can never succeed. Meanwhile the cloud route was hung up on at half the scene window to
+ * keep the other half for this fallback — and at least ten cloud cuts finished after the hang-up.
+ *
+ * Two such refusals in a row are evidence enough that the fallback is dead for this render. From
+ * then on the cloud route is the only route and gets the whole window, as it already does for a
+ * caller that asked for one route. A RapidAPI transfer that succeeds opens the latch again; every
+ * render starts with it open.
+ */
+const RAPIDAPI_LINK_LOCKS_TO_LATCH = 2;
+let consecutiveRapidApiLinkLocks = 0;
+
+/** Record one RapidAPI transfer refused with 403 on a link signed for another address. */
+export function noteRapidApiLinkLocked(): boolean {
+  consecutiveRapidApiLinkLocks += 1;
+  return consecutiveRapidApiLinkLocks === RAPIDAPI_LINK_LOCKS_TO_LATCH;
+}
+
+/** A RapidAPI transfer delivered a file: whatever refused it before, it is not refused now. */
+export function noteRapidApiTransferOk(): void {
+  consecutiveRapidApiLinkLocks = 0;
+}
+
+/** Whether RapidAPI's file transfers are dead for the rest of this render. */
+export function rapidApiLinkLocked(): boolean {
+  return consecutiveRapidApiLinkLocks >= RAPIDAPI_LINK_LOCKS_TO_LATCH;
+}
+
+export function resetRapidApiLinkLock(): void {
+  consecutiveRapidApiLinkLocks = 0;
 }
 
 /** The memo key for a YouTube video, so the read and the write can never disagree about it. */

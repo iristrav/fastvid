@@ -675,17 +675,56 @@ def _retryable(message: str) -> bool:
     return any(marker in text for marker in _RETRYABLE)
 
 
-def _fetch_window(id: str, out_path: Path, start: float, end: float) -> None:
-    """One cut, asked again once when the failure was about the moment. Raises the last error."""
+def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dict | None = None) -> None:
+    """One cut, asked again once when the failure was about the moment. Raises the last error.
+
+    VIDEO 615 — where the time goes. Cuts took 20–60 s through the proxy and nobody could say
+    whether that was the lookup (the watch page, the player JavaScript challenge, the format list)
+    or the transfer and cut itself. yt-dlp calls `process_info` once the lookup is done and the
+    format is chosen, right before the transfer starts, so that call is the line between the two:
+    `extract_ms` is everything before it, `download_ms` everything after. `ydl.download` itself is
+    unchanged. A lookup that fails never reaches the line and reports `download_ms=None`.
+    `timing` receives the numbers of the last attempt, and `attempt` which one that was.
+    """
+    timing = timing if timing is not None else {}
     for attempt in range(1, _ATTEMPTS + 1):
+        timing.update(attempt=attempt, extract_ms=None, download_ms=None)
+        began = time.monotonic()
+        lookup_done: list[float] = []
+        hooked: list[bool] = []
+
+        def settle() -> None:
+            if not hooked:
+                return  # no line to split on: say nothing rather than call the whole cut a lookup
+            ended = time.monotonic()
+            split = lookup_done[0] if lookup_done else ended
+            timing["extract_ms"] = int((split - began) * 1000)
+            timing["download_ms"] = int((ended - split) * 1000) if lookup_done else None
+
         try:
             with yt_dlp.YoutubeDL(_ydl_options(out_path, start, end)) as ydl:
+                # A measurement, never a condition: without the hook the cut runs exactly as before.
+                process_info = getattr(ydl, "process_info", None)
+                if callable(process_info):
+
+                    def timed_process_info(info_dict, _inner=process_info):
+                        if not lookup_done:
+                            lookup_done.append(time.monotonic())
+                        return _inner(info_dict)
+
+                    ydl.process_info = timed_process_info
+                    hooked.append(True)
                 ydl.download([f"https://www.youtube.com/watch?v={id}"])
+            settle()
             return
         except yt_dlp.utils.DownloadError as err:
+            settle()
             if attempt >= _ATTEMPTS or not _retryable(str(err)):
                 raise
-            log.info("retrying id=%s start=%.2f after: %s", id, start, str(err).strip()[:120])
+            log.info(
+                "retrying id=%s start=%.2f extract_ms=%s download_ms=%s after: %s",
+                id, start, timing.get("extract_ms"), timing.get("download_ms"), str(err).strip()[:120],
+            )
             for leftover in out_path.parent.glob("*"):
                 leftover.unlink(missing_ok=True)
 
@@ -696,14 +735,18 @@ def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileR
     cleanup = BackgroundTask(shutil.rmtree, work, ignore_errors=True)
     end = start + duration
 
+    timing: dict = {}
     try:
-        _fetch_window(id, out_path, start, end)
+        _fetch_window(id, out_path, start, end, timing)
     except yt_dlp.utils.DownloadError as err:
         # The message is the useful part — "Sign in to confirm you're not a bot" and "Video
         # unavailable" need completely different responses from an operator, and collapsing them
         # into 500 is what made the RapidAPI route's failures unreadable for so long.
         detail = str(err).strip().replace("\n", " ")[:300]
-        log.warning("download failed id=%s start=%.2f dur=%.2f: %s", id, start, duration, detail)
+        log.warning(
+            "download failed id=%s start=%.2f dur=%.2f attempt=%s extract_ms=%s download_ms=%s: %s",
+            id, start, duration, timing.get("attempt"), timing.get("extract_ms"), timing.get("download_ms"), detail,
+        )
         cleanup.func(*cleanup.args, **cleanup.kwargs)
         raise HTTPException(status_code=502, detail=detail) from err
     except Exception as err:  # noqa: BLE001 - the response must say something either way
@@ -745,8 +788,9 @@ def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileR
         )
 
     log.info(
-        "ok id=%s start=%.2f dur=%.2f bytes=%d salvage=%s proxy=%s",
+        "ok id=%s start=%.2f dur=%.2f bytes=%d salvage=%s proxy=%s attempt=%s extract_ms=%s download_ms=%s",
         id, start, duration, size, salvage, bool(PROXY_URL),
+        timing.get("attempt"), timing.get("extract_ms"), timing.get("download_ms"),
     )
     # Kept under its key BEFORE the response goes out, so it survives a caller that has already
     # hung up. A cache that cannot be written costs only the reuse; the response is unchanged.

@@ -47,7 +47,7 @@ import {
 } from "./curatedProvenanceRepair";
 import { formatPreparationCache, preparationKey, resetPreparationScope, runPreparation } from "./preparationCache";
 import { BUDGETS, chargeAmbientBudget, createRetrievalBudgetState, formatRetrievalBudgets, setBudgetResolver, type RetrievalBudgetState } from "./retrievalBudget";
-import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteYoutubeSourceFile, permanentDownloadRefusal, resetPermanentDownloadRefusals, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, youtubeDownloadRefusal, youtubeSourceFile, formatYoutubeSourceReuse, resetYoutubeSourceFiles, youtubeServiceRefusalReason } from "./providerFailureClass";
+import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteYoutubeSourceFile, permanentDownloadRefusal, resetPermanentDownloadRefusals, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, noteRapidApiLinkLocked, noteRapidApiTransferOk, rapidApiLinkLocked, youtubeDownloadRefusal, youtubeSourceFile, formatYoutubeSourceReuse, resetYoutubeSourceFiles, youtubeServiceRefusalReason } from "./providerFailureClass";
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
@@ -14524,15 +14524,22 @@ export async function downloadYouTubeCCClip(
      * there the scope is the limit. Every render call passes no route and keeps the share, the
      * floor and the base exactly as they were.
      */
-    const cloudTimeoutMs =
-      onlyRoute && Number.isFinite(remainingForCloud)
+    /**
+     * VIDEO 615 — and the same holds once RapidAPI is latched dead for this render
+     * (`rapidApiLinkLocked`): there is no second route left to keep half the window for, so the
+     * cut that is already running is waited for instead of hung up on.
+     */
+    const cloudIsOnlyRoute = Boolean(onlyRoute) || rapidApiLinkLocked();
+    const cloudTimeoutMs = rapidApiLinkLocked() && Number.isFinite(remainingForCloud)
+      ? remainingForCloud
+      : onlyRoute && Number.isFinite(remainingForCloud)
         ? remainingForCloud
         : Math.min(youtubeDownloadTimeoutMs(budgetMs), cloudWindowMs);
     const cloudStartedAtMs = Date.now();
     const reportCloudTiming = (outcome: string): void => {
       console.log(
         `[YouTubeCloudTiming] video=${videoId} scene=${sceneIndex} outcome=${outcome} ` +
-          `ms=${Date.now() - cloudStartedAtMs} grantedMs=${cloudWindowMs} ` +
+          `ms=${Date.now() - cloudStartedAtMs} grantedMs=${cloudIsOnlyRoute ? cloudTimeoutMs : cloudWindowMs} ` +
           `scopeLeftAtStartMs=${remainingForCloud}`
       );
     };
@@ -14782,7 +14789,9 @@ export async function downloadYouTubeCCClip(
 
   // F3-41: RapidAPI fallback — tried when the cloud/yt-dlp service is not configured, errored,
   // or didn't return a usable file. Unchanged from before this fix other than moving second.
-  if (RAPIDAPI_KEY && onlyRoute !== "cloud") {
+  if (RAPIDAPI_KEY && onlyRoute !== "cloud" && rapidApiLinkLocked()) {
+    note("rapidapi", "DOWNLOAD_FAILED", "rapidapi_links_ip_locked_this_render");
+  } else if (RAPIDAPI_KEY && onlyRoute !== "cloud") {
     const tmpPath = outPath.replace(/\.mp4$/, "_rapid_tmp.mp4");
     /**
      * RONDE 637 — whether this render is HOLDING `tmpPath` as the source for `videoId`.
@@ -14888,6 +14897,12 @@ export async function downloadYouTubeCCClip(
              * worker's. Recorded as a fact about the link, so the log says which of the two it was.
              */
             note("rapidapi", "DOWNLOAD_FAILED", `http_${dlResp.status}:${googlevideoLinkLock(format.url)}`);
+            if (dlResp.status === 403 && googlevideoLinkLock(format.url) === "ip_locked" && noteRapidApiLinkLocked()) {
+              console.warn(
+                `[Pipeline] RapidAPI file links are signed for another address (2x http_403:ip_locked) — ` +
+                  `RapidAPI is skipped for the rest of this render and the cloud route gets the whole window`
+              );
+            }
           } else if (bytesWritten === null) {
             note("rapidapi", "DOWNLOAD_EMPTY", "no_response_body");
           }
@@ -14949,6 +14964,7 @@ export async function downloadYouTubeCCClip(
                   `YouTube CC RapidAPI scene ${sceneIndex}`
                 )
               ) {
+                noteRapidApiTransferOk();
                 note("rapidapi", "DOWNLOAD_SUCCESS", `${rapidFileSize}_bytes`);
                 console.log(
                   `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via RapidAPI: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
@@ -15942,6 +15958,18 @@ export async function fetchYouTubeCCClips(
   const claimDownloadSlot = (): boolean =>
     claimYoutubeDownloadSlot(sourcingCache, maxDownloadAttempts);
 
+  /**
+   * VIDEO 615 — THE BEST `count`, NOT EVERY CANDIDATE UNTIL `count` ARRIVE.
+   *
+   * `fetched` counts only arrivals, so a turn whose downloads failed kept starting new ones: up to
+   * five candidates per query, per licence pass. Render 615 had eight and more cuts running for one
+   * sentence through the same proxy, each slower for the others, and most were hung up on before
+   * they finished. A turn now starts at most `count` downloads — the best-ranked ones — and leaves
+   * the proxy to finish those.
+   */
+  let attemptedThisTurn = 0;
+  const attemptsSpent = (): boolean => attemptedThisTurn >= Math.max(1, count);
+
   /** RONDE 648 — the fetcher's own deadline must not end the operator's two minutes early. */
   const ytDeadline =
     Date.now() + (youtubeFirstPerBeatEnabled() ? YOUTUBE_FIRST_TURN_MS : IS_RAILWAY ? 88_000 : 55_000);
@@ -16022,12 +16050,14 @@ export async function fetchYouTubeCCClips(
   for (const [queryIndex, query] of uniqueQueries.slice(0, 2).entries()) {
     if (poolMode && queryIndex > 0) break;
     if (fetched >= count) break;
+    if (attemptsSpent()) break;
     if (downloadsSoFar() >= maxDownloadAttempts) break;
     if (Date.now() > ytDeadline) break;
 
     for (const [passIndex, pass] of licensePasses.entries()) {
       if (poolMode && passIndex > 0) break;
       if (fetched >= count) break;
+      if (attemptsSpent()) break;
       if (downloadsSoFar() >= maxDownloadAttempts) break;
       if (Date.now() > ytDeadline) break;
       if (pass.license === "any" && fetched >= count) break;
@@ -16122,6 +16152,7 @@ export async function fetchYouTubeCCClips(
 
         for (const row of ordered.slice(0, 5)) {
           if (fetched >= count) break;
+          if (attemptsSpent()) break;
           if (Date.now() > ytDeadline) break;
           if (downloadsSoFar() >= maxDownloadAttempts) {
             console.log(
@@ -16330,6 +16361,7 @@ export async function fetchYouTubeCCClips(
               );
               break;
             }
+            attemptedThisTurn++;
             /** RONDE 115 — the box the fetcher drops its status into; see its `outcome` parameter. */
             const dl: {
               status?: YoutubeDownloadStatus;
