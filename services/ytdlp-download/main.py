@@ -213,6 +213,13 @@ def _ydl_options(out_path: Path, start: float, end: float) -> dict:
         # Enabling a runtime does not fetch anything: `yt-dlp-ejs` in requirements.txt supplies
         # the components locally, which is why `remote_components` stays off.
         "js_runtimes": {"deno": {}, "node": {}},
+        # VIDEO 614 — ffmpeg reads the range straight from googlevideo, through the proxy, and a
+        # dropped connection ended the cut: `ffmpeg exited with code 251` (and 8, 187) on about half
+        # of render 614's fresh downloads, the same ids succeeding a minute later. Told to reconnect,
+        # ffmpeg resumes the stream instead of giving up on the first reset.
+        "external_downloader_args": {
+            "ffmpeg_i": ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4"],
+        },
     }
     if PROXY_URL:
         opts["proxy"] = PROXY_URL
@@ -653,6 +660,36 @@ def download(
             done.set()
 
 
+# VIDEO 614 — the failures that are about the moment, not the video.
+#
+# `ffmpeg exited with code …` is a stream that dropped mid-cut; `bot_check` is the proxy handing out
+# an address YouTube distrusted. Both came back fine on the next attempt in render 614's own log
+# (0fIJzO7EIYI, pvGoGXpUj58, fO16eDq9vPw). "Video unavailable", a country block or a removed video
+# will say the same thing twice, so those are not asked again.
+_RETRYABLE = ("ffmpeg exited with code", "confirm you", "not a bot", "timed out", "connection reset")
+_ATTEMPTS = 2
+
+
+def _retryable(message: str) -> bool:
+    text = message.lower()
+    return any(marker in text for marker in _RETRYABLE)
+
+
+def _fetch_window(id: str, out_path: Path, start: float, end: float) -> None:
+    """One cut, asked again once when the failure was about the moment. Raises the last error."""
+    for attempt in range(1, _ATTEMPTS + 1):
+        try:
+            with yt_dlp.YoutubeDL(_ydl_options(out_path, start, end)) as ydl:
+                ydl.download([f"https://www.youtube.com/watch?v={id}"])
+            return
+        except yt_dlp.utils.DownloadError as err:
+            if attempt >= _ATTEMPTS or not _retryable(str(err)):
+                raise
+            log.info("retrying id=%s start=%.2f after: %s", id, start, str(err).strip()[:120])
+            for leftover in out_path.parent.glob("*"):
+                leftover.unlink(missing_ok=True)
+
+
 def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileResponse:
     work = Path(tempfile.mkdtemp(prefix="ytdl-"))
     out_path = work / f"{uuid.uuid4().hex}.mp4"
@@ -660,8 +697,7 @@ def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileR
     end = start + duration
 
     try:
-        with yt_dlp.YoutubeDL(_ydl_options(out_path, start, end)) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={id}"])
+        _fetch_window(id, out_path, start, end)
     except yt_dlp.utils.DownloadError as err:
         # The message is the useful part — "Sign in to confirm you're not a bot" and "Video
         # unavailable" need completely different responses from an operator, and collapsing them

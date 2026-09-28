@@ -1009,3 +1009,59 @@ describe("K. subtitles, the whole-video search on short videos, and the picture-
     expect(b.totalMs).toBe(computeRenderBudget(3, 60, "1").totalMs);
   });
 });
+
+/* ═══════════ L — the picture editor's guessed identity is not an approval ═══════════ */
+
+describe("L. an approval that rests on a guess about who is on screen is refused", () => {
+  const fits = (depicts: string, reason: string) => ({ verdict: "fits" as const, depicts, reason });
+
+  it("render 614's two guessed approvals are refused", async () => {
+    const { approvalRestsOnAGuess } = await import("./beatImageRelevanceGate");
+    const line = "Kim Kardashian and her sisters turned a reality show into an empire.";
+    expect(
+      approvalRestsOnAGuess(
+        fits("Woman wearing eyeglasses seated indoors, modern setting.", "The subject appears to be one of the Kardashians mentioned in the narration, fitting the description of reality TV stars."),
+        line
+      )
+    ).toBe(true);
+    expect(
+      approvalRestsOnAGuess(
+        fits("A well-known person seated in a restaurant or similar setting. E! logo visible.", "The person shown is part of the Kardashian family or associated with them. The E! logo suggests a connection."),
+        line
+      )
+    ).toBe(true);
+  });
+
+  it("an approval where the judge names the person it sees stays, hedged or not", async () => {
+    const { approvalRestsOnAGuess } = await import("./beatImageRelevanceGate");
+    expect(
+      approvalRestsOnAGuess(
+        fits("Adolf Hitler giving a speech, likely during World War II era.", "Adolf Hitler is on screen, likely during the war."),
+        "Adolf Hitler chose suicide over escape in April 1945."
+      )
+    ).toBe(false);
+    expect(
+      approvalRestsOnAGuess(
+        fits("An outdoor scene with a woman in a blue bikini, Kris Jenner, crew, and an elephant.", "Kris Jenner is on screen, which matches the narration."),
+        "Kris Jenner steered the family business."
+      )
+    ).toBe(false);
+  });
+
+  it("an approval for the place or the period, or under a line that names nobody, is untouched", async () => {
+    const { approvalRestsOnAGuess } = await import("./beatImageRelevanceGate");
+    expect(
+      approvalRestsOnAGuess(fits("Berlin in ruins, 1945.", "The place and period the line describes; likely spring 1945."), "The investigation began in Berlin in 1945.")
+    ).toBe(false);
+    expect(
+      approvalRestsOnAGuess(fits("A crowded street market.", "It appears to be the kind of market the line describes."), "Trade made the city rich.")
+    ).toBe(false);
+    expect(approvalRestsOnAGuess({ verdict: "does_not_fit", depicts: "x", reason: "appears to be someone" }, "Kim Kardashian spoke.")).toBe(false);
+  });
+
+  it("the refusal is applied to fresh and to stored verdicts alike", () => {
+    const GATE = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
+    expect(GATE).toContain("storedRaw ? refuseGuessedIdentity(storedRaw, beatText, params.anchors?.subject) : null");
+    expect(GATE).toContain("const judgement = refuseGuessedIdentity(judgementAsGiven, beatText, params.anchors?.subject);");
+  });
+});

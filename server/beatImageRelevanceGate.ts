@@ -587,6 +587,58 @@ function formatAnchors(anchors: BeatSubjectAnchors | undefined): string[] {
  * Exported so its wording can be held by tests: this text IS the gate's behaviour, and it was
  * unreachable from a test while it was a local function.
  */
+/**
+ * Video 614 — AN APPROVAL THAT RESTS ON A GUESS ABOUT WHO IS ON SCREEN IS NOT AN APPROVAL.
+ *
+ *     s1b0 fits  depicts="Woman wearing eyeglasses seated indoors, modern setting."
+ *                reason="The subject appears to be one of the Kardashians mentioned in the narration"
+ *     s0b0 fits  depicts="A well-known person seated in a restaurant … E! logo visible."
+ *                reason="The person shown is part of the Kardashian family or associated with them."
+ *
+ * Neither frame showed anyone the judge could name; it guessed from the line. When the narration
+ * names a person and the approval is a hedged identification ("appears to be", "likely", "one of")
+ * of someone the judge's own description of the frame does not name, it is read as what it is: not
+ * seen. An approval for any other reason — the place, the period, a named person the description
+ * DOES name ("Adolf Hitler giving a speech, likely during WWII") — is untouched.
+ */
+const HEDGE_RE =
+  /\b(appears? to be|seems? to be|looks? like|likely|possibly|probably|presumably|could be|may be|might be|one of the|or associated|suggests?|suggesting|assum\w*)\b/i;
+const IDENTITY_RE = /\b(person|subject|individual|figure|family|celebrity|someone|woman|man|people)\b/i;
+
+/** Names of people the line (or the shot's resolved subject) writes: runs of two or more capitalised words. */
+function namedPeople(beatText: string, subject?: string): string[] {
+  const runs = [...`${beatText} . ${subject ?? ""}`.matchAll(/\b\p{Lu}[\p{L}'’-]+(?:\s+\p{Lu}[\p{L}'’-]+)+/gu)].map((m) => m[0]);
+  return [...new Set(runs)];
+}
+
+export function approvalRestsOnAGuess(
+  judgement: Pick<BeatImageJudgement, "verdict" | "depicts" | "reason">,
+  beatText: string,
+  subject?: string
+): boolean {
+  if (judgement.verdict !== "fits") return false;
+  const people = namedPeople(beatText, subject);
+  if (people.length === 0) return false;
+  const reason = judgement.reason ?? "";
+  if (!HEDGE_RE.test(reason)) return false;
+  const tokens = people.flatMap((p) => p.toLowerCase().split(/\s+/)).filter((t) => t.length >= 3);
+  const reasonLower = reason.toLowerCase();
+  const aboutIdentity = IDENTITY_RE.test(reason) || tokens.some((t) => reasonLower.includes(t.replace(/s$/, "")));
+  if (!aboutIdentity) return false;
+  const depicts = (judgement.depicts ?? "").toLowerCase();
+  return !tokens.some((t) => depicts.includes(t.replace(/s$/, "")));
+}
+
+/** The judgement a guessed identity becomes: a refusal that says why. */
+function refuseGuessedIdentity<T extends Pick<BeatImageJudgement, "verdict" | "depicts" | "reason">>(
+  judgement: T,
+  beatText: string,
+  subject?: string
+): T {
+  if (!approvalRestsOnAGuess(judgement, beatText, subject)) return judgement;
+  return { ...judgement, verdict: "does_not_fit", reason: `identity guessed, not seen: ${judgement.reason}`.slice(0, 160) };
+}
+
 export function buildBeatImagePrompt(
   beatText: string,
   frameCount: number,
@@ -853,7 +905,10 @@ export async function judgeBeatImage(params: {
    * A store that is absent, disabled or broken returns null, which is indistinguishable from a
    * miss. It can make the gate cheaper; it can never make it decide differently.
    */
-  const stored = await lookupVerdict(seenKey).catch(() => null);
+  const stored = await lookupVerdict(seenKey).catch(() => null).then((storedRaw) =>
+    /** Video 614 — a stored guess is read the same way a fresh one is. */
+    storedRaw ? refuseGuessedIdentity(storedRaw, beatText, params.anchors?.subject) : null
+  );
   if (stored) {
     const fromStore: BeatImageJudgement = {
       verdict: stored.verdict,
@@ -952,7 +1007,7 @@ export async function judgeBeatImage(params: {
      */
     recordVisionAsk(asker, "judged");
     const provider = response.provider;
-    const judgement: BeatImageJudgement = {
+    const judgementAsGiven: BeatImageJudgement = {
       verdict: parsed.belongs ? "fits" : "does_not_fit",
       /**
        * `normaliseShotType` is the vocabulary's own reader, so "unclear" and anything the model
@@ -967,6 +1022,14 @@ export async function judgeBeatImage(params: {
       evaluated: true,
       ...(provider ? { provider } : {}),
     };
+    /** Video 614 — see `approvalRestsOnAGuess`. */
+    const judgement = refuseGuessedIdentity(judgementAsGiven, beatText, params.anchors?.subject);
+    if (judgement !== judgementAsGiven) {
+      console.log(
+        `[BeatImageGate] identity guessed, not seen — refused: depicts="${judgement.depicts.slice(0, 80)}" ` +
+          `reason="${judgementAsGiven.reason.slice(0, 100)}"`
+      );
+    }
     // RONDE 119: the provider that answered is counted here, at the one point where a verdict is
     // known to have come off the wire rather than out of a cache.
     if (provider) {
