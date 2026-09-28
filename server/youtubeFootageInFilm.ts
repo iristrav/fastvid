@@ -170,11 +170,21 @@ export function judgeYoutubeRequirement(f: YoutubeFootage, requiredSec: number |
 export function formatYoutubeFootage(
   videoId: number,
   f: YoutubeFootage,
-  funnel?: { found?: number; downloaded?: number; adopted?: number }
+  funnel?: { found?: number; downloaded?: number; adopted?: number },
+  /**
+   * VIDEO 616 — `delivered: false` marks a timeline the delivery gate refused: measured, so an
+   * archive clip of YouTube origin is counted as YouTube, and said to be a film nobody received.
+   * `adopted` is this render's fresh YouTube adoptions; archive clips of YouTube origin are counted
+   * separately, from the timeline, as `adoptedViaArchive`.
+   */
+  opts: { delivered?: boolean } = {}
 ): string {
-  const tail = funnel
-    ? ` found=${funnel.found ?? "?"} downloaded=${funnel.downloaded ?? "?"} adopted=${funnel.adopted ?? "?"}`
-    : "";
+  const viaArchiveVideos = new Set(f.clips.filter((c) => c.origin === "youtube_via_archive").map((c) => c.videoId ?? c.clipId)).size;
+  const tail =
+    (funnel
+      ? ` found=${funnel.found ?? "?"} downloaded=${funnel.downloaded ?? "?"} adopted=${funnel.adopted ?? "?"}` +
+        (viaArchiveVideos > 0 ? ` adoptedViaArchive=${viaArchiveVideos}` : "")
+      : "") + (opts.delivered === false && f.basis !== "unmeasured" ? " — NOT DELIVERED (measured on the refused timeline)" : "");
   if (f.basis === "unmeasured") {
     return `[YouTubeInFilm] video=${videoId} basis=unmeasured — the delivered film has no readable timeline${tail}`;
   }

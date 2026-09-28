@@ -33,6 +33,48 @@ const TRIAGE_SCHEMA = {
   },
 };
 
+/**
+ * VIDEO 616 — WHAT THE VIDEO SHOWS, NOT WHAT IT IS ABOUT.
+ *
+ * The triage used to be told to look past a thumbnail's headline text and presenter and "judge the
+ * underlying footage". Render 616 shows what that admits: "How the Kardashians Made Their BILLIONS",
+ * "THE KARDASHIAN CULT", "You Will NEVER BELIEVE How Kris Jenner…" — explainer and commentary
+ * channels, all judged real footage because the thumbnail carried the right face, all refused later
+ * for burnt-in captions and logos, none of them usable. The same six categories and the same
+ * `judge` rule decide; the question is sharpened: someone talking ABOUT the subject, or a video
+ * dressed in captions and branding, is not footage OF it. A real interview WITH the subject, a red
+ * carpet, a press event, paparazzi or archival film stays real or archival footage.
+ */
+export function youtubeTriagePrompt(
+  item: Pick<SearchItem, "title" | "channel" | "description">,
+  title: string,
+  sentences: string[]
+): string {
+  return (
+    `Video being made: "${title}".\nYouTube result: "${item.title}" (channel: ${item.channel}).\n` +
+    (item.description ? `Description: ${item.description.slice(0, 200)}\n` : "") +
+    "This is the result's THUMBNAIL. Judge what the VIDEO ITSELF shows on screen for most of its running time — " +
+    "not what the thumbnail advertises. A thumbnail with the right face proves nothing: channels that explain or " +
+    "comment on a subject put that face in their thumbnails too.\n" +
+    "footageType:\n" +
+    "- real_footage: filmed real-world scenes OF the subject — events, appearances, red carpets, press conferences, " +
+    "paparazzi, TV or press interviews in which the subject is on camera, news film of the event itself.\n" +
+    "- archival_footage: historical film or photographs of the subject.\n" +
+    "- talking_head: someone ELSE talking ABOUT the subject — a presenter, commentator, YouTuber, podcast, " +
+    "reaction, explainer, analysis, 'story of', 'untold story', 'the truth about', news commentary. " +
+    "An interview WITH the subject is real_footage, not talking_head.\n" +
+    "- text_or_graphic: listicles and top-10s, compilations dressed in large captions or burnt-in subtitles, " +
+    "headline text, logos or channel branding over the picture, slides, infographics, screenshots.\n" +
+    "- animation_or_game, other.\n" +
+    "Signs of talking_head or text_or_graphic: clickbait titles (ALL CAPS, 'you won't believe', 'explained', " +
+    "'untold', 'dark secret', 'top 10', 'how X became'), a commentary or explainer channel, a thumbnail built from " +
+    "big text, arrows, circles or a collage. When the video is more likely commentary than footage, say so.\n" +
+    "servesBeats: the numbers of the beats below that real footage from this video could honestly be shown under " +
+    "(empty if none). Be strict: the subject must match, not just the theme.\n\nBeats:\n" +
+    sentences.map((s, i) => `[${i}] ${s}`).join("\n")
+  );
+}
+
 function isoDurationSec(iso: string | undefined): number {
   const m = /^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso ?? "");
   if (!m) return 0;
@@ -155,15 +197,7 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
             content: [
               {
                 type: "text",
-                text:
-                  `Video being made: "${title}".\nYouTube result: "${item.title}" (channel: ${item.channel}).\n` +
-                  "This is the result's THUMBNAIL. Thumbnails often carry added headline text or a presenter's face; judge " +
-                  "the underlying footage the video most likely contains.\nfootageType: real_footage (filmed real-world " +
-                  "scenes), archival_footage (historical film or photo), talking_head (presenter, interview, podcast, " +
-                  "reaction), text_or_graphic (slides, infographics, text), animation_or_game, other.\nservesBeats: the " +
-                  "numbers of the beats below that real footage from this video could honestly be shown under (empty if " +
-                  "none). Be strict: the subject must match, not just the theme.\n\nBeats:\n" +
-                  sentences.map((s, i) => `[${i}] ${s}`).join("\n"),
+                text: youtubeTriagePrompt(item, title, sentences),
               },
               {
                 type: "image_url",

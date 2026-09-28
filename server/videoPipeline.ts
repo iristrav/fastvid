@@ -15355,6 +15355,8 @@ export type YoutubeSearchRow = {
   desc: string;
   thumb?: string;
   rel: number;
+  /** VIDEO 616 — the length the video's pool already measured (`videos.list`), when it came from there. */
+  durationSec?: number;
 };
 
 /**
@@ -16209,12 +16211,20 @@ export async function fetchYouTubeCCClips(
              * skipped, and then `pickLongVideoStartSec`'s existing fallback picks the start — which
              * is exactly what already happens whenever RapidAPI has nothing to say about a video.
              */
+            /**
+             * VIDEO 616 — the pool measured every candidate's length with `videos.list` before any
+             * beat ran. That number is used first; RapidAPI's metadata and the video context are
+             * asked only for a candidate whose length the pool does not know.
+             */
+            const poolDurationSec = row.durationSec && row.durationSec > 0 ? row.durationSec : 0;
             const probe = shouldProbeYoutubeDuration({
               remainingMs: remainingScopeMs(),
               downloadFloorMs: YOUTUBE_MIN_DOWNLOAD_WINDOW_MS,
             });
-            if (!probe.probe) console.log(formatYoutubeProbeSkip(sceneIndex, videoId, probe));
+            if (!probe.probe && !poolDurationSec) console.log(formatYoutubeProbeSkip(sceneIndex, videoId, probe));
+            /** `||` short-circuits: with the pool's length, RapidAPI is not asked at all. */
             const sourceDurationSec =
+              poolDurationSec ||
               rapidApiYoutubeMetaDurationSec(
                 await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache, {
                   onlyIfCached: !probe.probe,
@@ -16272,7 +16282,24 @@ export async function fetchYouTubeCCClips(
             }
 
             /** VIDEO 616 — these exact seconds were refused earlier this render: the next candidate. */
-            const fragmentRefused = youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, clipStart, clipDur));
+            let fragmentRefused = youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, clipStart, clipDur));
+            /**
+             * A black fragment is usually a moment — a fade, a title gap — not the video: one other
+             * window of the same video is tried, once. On-screen text is the edit's own style and
+             * gets no second window. The other window is itself a fragment, remembered like any other.
+             */
+            if (fragmentRefused === "mostly_black") {
+              const altStart = alternativeYoutubeStartSec(videoId, sourceDurationSec, clipDur, clipStart);
+              if (altStart != null && !youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, altStart, clipDur))) {
+                console.log(
+                  `[Pipeline] Scene ${sceneIndex}: YouTube ${videoId} @${clipStart}s was black earlier this ` +
+                    `render — trying its other window @${altStart}s`
+                );
+                clipStart = altStart;
+                startIsExact = false;
+                fragmentRefused = null;
+              }
+            }
             if (fragmentRefused) {
               console.log(
                 `[Pipeline] Scene ${sceneIndex}: skipping YouTube ${videoId} @${clipStart}s — this fragment ` +
@@ -22338,6 +22365,33 @@ export function youtubeFragmentFileTag(startSec: number, durationSec: number): s
 
 export function youtubeFragmentKeyFor(videoId: string, startSec: number, durationSec: number): string {
   return `${providerAssetKey("youtube_cc", videoId)}@${youtubeFragmentFileTag(startSec, durationSec)}`;
+}
+
+/**
+ * VIDEO 616 — the one other window of a video whose first window was black.
+ *
+ * The same start rule as the first (`pickLongVideoStartSec`), seeded differently, and at least
+ * `YOUTUBE_ALT_START_MIN_GAP_SEC` away from the refused start — moved by that gap when the seed
+ * lands too close. Null when the length is unknown or the video has no room for a second window.
+ */
+export const YOUTUBE_ALT_START_MIN_GAP_SEC = 30;
+
+export function alternativeYoutubeStartSec(
+  videoId: string,
+  sourceDurationSec: number,
+  clipDurationSec: number,
+  refusedStartSec: number
+): number | null {
+  if (!(sourceDurationSec > 0) || !(clipDurationSec > 0)) return null;
+  const lastStart = sourceDurationSec - clipDurationSec;
+  if (lastStart <= 0) return null;
+  let alt = pickLongVideoStartSec(sourceDurationSec, clipDurationSec, `${videoId}#2`);
+  if (Math.abs(alt - refusedStartSec) < YOUTUBE_ALT_START_MIN_GAP_SEC) {
+    const later = refusedStartSec + YOUTUBE_ALT_START_MIN_GAP_SEC;
+    const earlier = refusedStartSec - YOUTUBE_ALT_START_MIN_GAP_SEC;
+    alt = later <= lastStart ? later : earlier >= 0 ? earlier : Number.NaN;
+  }
+  return Number.isFinite(alt) ? Math.round(alt * 10) / 10 : null;
 }
 
 /** The same key read back from a file `fetchYouTubeCCClips` named, or null for any other file. */
@@ -35373,6 +35427,8 @@ async function _runVideoPipelineInner(
       clips: TimelineVideoClip[];
       basis: "rendered_timeline" | "planned_timeline";
     } | null = null;
+    /** VIDEO 616 — the timeline the delivery gate refused, kept only so its YouTube share can be reported. */
+    let refusedTimelineClips: TimelineVideoClip[] | null = null;
     /**
      * The cinematic refusal, hoisted so the final gate can read it.
      *
@@ -35838,6 +35894,7 @@ async function _runVideoPipelineInner(
             )
           : null;
         if (footageRefusal) {
+          if (outcome.ok) refusedTimelineClips = videoTrack(outcome.timeline);
           cinematicRefusal = `ONE_FOOTAGE_FILLS_FILM — ${footageRefusal}`;
           console.error(pipelineReport.add("summary", `[DeliveryGate] video=${videoId} not rendered: ${cinematicRefusal}`));
         }
@@ -36534,25 +36591,37 @@ async function _runVideoPipelineInner(
     let youtubeFootageVerdict: ReturnType<typeof judgeYoutubeRequirement> = { ok: true };
     try {
       let footage = unmeasuredFootage();
-      if (cinematicDeliveredUrl && deliveredTimeline) {
+      /**
+       * VIDEO 616 — a film the delivery gate refused still had a timeline, and on it an archive
+       * clip of YouTube origin filled 100%. It was reported as "no readable timeline", which read as
+       * "no YouTube". The refused timeline is now measured too and labelled NOT DELIVERED; every
+       * number that describes the delivered film — the requirement, `timelineClips` — stays zero.
+       */
+      const delivered = Boolean(cinematicDeliveredUrl && deliveredTimeline);
+      const measured = delivered
+        ? deliveredTimeline
+        : refusedTimelineClips
+          ? { clips: refusedTimelineClips, basis: "planned_timeline" as const }
+          : null;
+      if (measured) {
         const origins = new Map<number, ArchiveOrigin>();
         const assetIds = Array.from(
-          new Set(deliveredTimeline.clips.flatMap((c) => (c.source?.archiveAssetId != null ? [c.source.archiveAssetId] : [])))
+          new Set(measured.clips.flatMap((c) => (c.source?.archiveAssetId != null ? [c.source.archiveAssetId] : [])))
         );
         for (const id of assetIds) {
           const row = await getMediaArchiveAssetById(id).catch(() => undefined);
           if (row) origins.set(id, { sourcePlatform: row.sourcePlatform ?? null, sourceUrl: row.sourceUrl ?? null });
         }
-        footage = youtubeFootageInTimeline(deliveredTimeline.clips, origins, deliveredTimeline.basis);
+        footage = youtubeFootageInTimeline(measured.clips, origins, measured.basis);
       }
       const lineage = visualDedup.sourcingCache?.lineage;
       const totals = lineage ? youtubeLifecycleTotals(traceYoutubeLifecycle(lineage, visualDedup.beatRelevance)) : null;
       const line = formatYoutubeFootage(videoId, footage, totals
         ? { found: totals.youtubeFound, downloaded: totals.youtubeDownloaded, adopted: totals.youtubeAdopted }
-        : undefined);
+        : undefined, { delivered });
       if (footage.youtubeSec > 0) console.log(pipelineReport.add("summary", line));
       else console.warn(pipelineReport.add("summary", line));
-      youtubeFootageVerdict = judgeYoutubeRequirement(footage, requiredYoutubeSeconds());
+      youtubeFootageVerdict = judgeYoutubeRequirement(delivered ? footage : unmeasuredFootage(), requiredYoutubeSeconds());
       /**
        * RONDE 658 — what the video's one or two searches finally became, on the same row as the
        * searches themselves: downloads tried, downloads that arrived, YouTube clips in the delivered
@@ -36562,14 +36631,15 @@ async function _runVideoPipelineInner(
         const outcome = {
           downloads: providerMetrics(visualDedup.sourcingCache, "youtube_cc").downloadSlotsClaimed,
           downloadsOk: totals?.youtubeDownloaded ?? 0,
-          timelineClips: footage.clips.length,
-          fallbackUsed: Math.max(0, (deliveredTimeline?.clips.length ?? 0) - footage.clips.length),
+          timelineClips: delivered ? footage.clips.length : 0,
+          fallbackUsed: Math.max(0, (deliveredTimeline?.clips.length ?? 0) - (delivered ? footage.clips.length : 0)),
         };
         console.log(
           pipelineReport.add(
             "summary",
             `[YouTubeSearchOutcome] video=${videoId} downloads=${outcome.downloads} downloadsOk=${outcome.downloadsOk} ` +
-              `timelineClips=${outcome.timelineClips} fallbackClips=${outcome.fallbackUsed}`
+              `timelineClips=${outcome.timelineClips} fallbackClips=${outcome.fallbackUsed}` +
+              (!delivered && measured ? ` refusedTimelineYoutubeClips=${footage.clips.length} (not delivered)` : "")
           )
         );
         void dbYoutubeSearchBudgetStore.record(videoId, outcome).catch(() => {});

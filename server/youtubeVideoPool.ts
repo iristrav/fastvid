@@ -187,9 +187,20 @@ function uncoveredOf(pool: VideoYoutubePool, refused: ReadonlySet<string> = new 
  */
 function gapOf(pool: VideoYoutubePool, refused: ReadonlySet<string>): number[] {
   const uncovered = uncoveredOf(pool, refused);
-  if (uncovered.length || refused.size === 0) return uncovered;
-  const lost = [...new Set(pool.candidates.filter((c) => refused.has(c.videoId)).flatMap((c) => c.serves))];
-  return lost.length ? lost.sort((a, b) => a - b) : pool.sentences.map((_, i) => i);
+  if (uncovered.length) return uncovered;
+  if (refused.size > 0) {
+    const lost = [...new Set(pool.candidates.filter((c) => refused.has(c.videoId)).flatMap((c) => c.serves))];
+    if (lost.length) return lost.sort((a, b) => a - b);
+  }
+  /**
+   * Video 616, round two — search #2 is due (too few usable candidates) while every beat is covered
+   * on paper by the few that are left: the gap is the beats with the fewest usable candidates.
+   * Without this a pool the triage thinned correctly got a reason for search #2 and no question.
+   */
+  const usable = pool.candidates.filter((c) => c.usable && !refused.has(c.videoId));
+  const perBeat = pool.sentences.map((_, i) => usable.filter((c) => c.serves.includes(i)).length);
+  const fewest = Math.min(...perBeat);
+  return perBeat.flatMap((n, i) => (n === fewest ? [i] : []));
 }
 
 function mergeCandidates(a: PoolCandidate[], b: PoolCandidate[]): PoolCandidate[] {
@@ -512,6 +523,8 @@ export type PoolRow = {
   desc: string;
   thumb: string;
   rel: number;
+  /** VIDEO 616 — measured by `videos.list` when the pool was judged; 0 when unknown. */
+  durationSec: number;
 };
 
 /**
@@ -548,6 +561,7 @@ export function poolRowsForBeat(
       desc: c.description,
       thumb: c.thumb,
       rel: serves ? Math.max(3, text + 3) : text,
+      durationSec: c.durationSec > 0 ? c.durationSec : 0,
     });
   }
   return rows.sort((a, b) => b.rel - a.rel);
