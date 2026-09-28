@@ -21076,8 +21076,16 @@ function isRejectedPexelsVideo(video: { url?: string }): boolean {
   return BLOCKED_STOCK_VISUAL_RE.test(slug) || BLOCKED_MUSK_COMPETITOR_RE.test(slug);
 }
 
-function isRejectedStockClip(filePath: string, sourceQuery = ""): boolean {
-  const combined = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
+export function isRejectedStockClip(filePath: string, sourceQuery = ""): boolean {
+  /**
+   * Video 613 — FastVid adds "archival footage" to its own search queries (`askForFootage`, the
+   * YouTube planner), and "archival" is on the stock block lists below. Every YouTube clip found
+   * with such a query was refused as stock before the picture editor ever saw it. The words this
+   * pipeline added itself say nothing about the clip, so they are not tested; the rest of the query
+   * and the file name are tested exactly as before.
+   */
+  const ownQuery = sourceQuery.replace(/\barchival footage\b/gi, " ");
+  const combined = `${ownQuery} ${path.basename(filePath)}`.toLowerCase();
   if (BLOCKED_STOCK_VISUAL_RE.test(combined)) return true;
   if (hasBlockedStockTags(combined)) return true;
   return false;

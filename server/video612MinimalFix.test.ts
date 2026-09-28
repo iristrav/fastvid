@@ -20,7 +20,7 @@ import {
   videoYoutubePoolGaveNoYoutube,
   type PoolDeps,
 } from "./youtubeVideoPool";
-import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat } from "./videoPipeline";
+import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, isRejectedStockClip } from "./videoPipeline";
 import { extractVisualSearchTags, extractBeatGeoPlaceTags, inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
 import { searchGateStrict, withSearchProvenance } from "./searchQueryContract";
 import { youtubeVideoIdsForArchiveAssets } from "./youtubeFootageInFilm";
@@ -490,5 +490,28 @@ describe("D2. the footage check groups archive segments by their original YouTub
     const ids = await youtubeVideoIdsForArchiveAssets(clips, async (id) => (id === 99999 ? undefined : rows[id]));
     expect(ids.has(99999)).toBe(false);
     expect(finalTimelineFootageRefusal(clips, undefined, ids)).toBeNull();
+  });
+});
+
+/* ═══════════ E — video 613: our own "archival footage" is not a reason to refuse a clip ═══════════ */
+
+describe("E. the stock filter does not refuse a clip for the words FastVid added to its own query", () => {
+  const YT = "/tmp/fastvid_613/scene_1_ytfu_0__pid_youtube_cc-86c1ddee3279c7ac.mp4";
+
+  it("a YouTube clip found with '… archival footage' reaches the picture editor", () => {
+    expect(isRejectedStockClip(YT, "Kim Kardashian archival footage")).toBe(false);
+    expect(isRejectedStockClip(YT, "Rome citizenship instead archival footage")).toBe(false);
+    expect(isRejectedStockClip(YT, "Scipio Africanus Archival Footage")).toBe(false);
+  });
+
+  it("real stock refusals are unchanged", () => {
+    expect(isRejectedStockClip(YT, "space shuttle launch archival footage")).toBe(true);
+    expect(isRejectedStockClip(YT, "highway night driving")).toBe(true);
+    expect(isRejectedStockClip("/tmp/old-nasa-archival-reel.mp4", "rocket")).toBe(true);
+    expect(isRejectedStockClip(YT, "vintage archival reel")).toBe(true);
+  });
+
+  it("the adoption loop still asks the same filter with the clip's own query", () => {
+    expect(PIPE).toContain('if (isRejectedStockClip(p, sourceQuery) && refuse("rejected_stock")) continue;');
   });
 });
