@@ -19452,6 +19452,12 @@ interface SceneBeat {
 }
 
 export interface VisualDedupState {
+  /**
+   * VIDEO 617 — each scene's approved clips while it is still running, by scene index. The chunk's
+   * deadline reads it for a scene that has not returned, so a picture already approved is kept.
+   * The lists are the scene's own; the deadline takes a copy.
+   */
+  sceneClipsSoFar?: Map<number, { clips: string[]; beatDurations: number[] }>;
   usedPaths: Set<string>;
   usedPexelsIds: Set<number>;
   usedPixabayIds: Set<number>;
@@ -30053,6 +30059,7 @@ async function fetchSceneVisualsInner(
   await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration, dedup, scene.index);
   const clips: string[] = [];
   const beatDurations: number[] = [];
+  (dedup.sceneClipsSoFar ??= new Map()).set(scene.index, { clips, beatDurations });
   const archiveBeatFilled = new Set<number>();
 
   // ── Editorial Sequence Planner: enrich beats with shot-level visual descriptions ──
@@ -32272,6 +32279,25 @@ async function fetchSceneVisualsInner(
   return { clips: usable, beatDurations: beatDurations.slice(0, usable.length) };
 }
 
+/**
+ * VIDEO 617 — what a scene that is still running at the visual deadline has already approved: a
+ * copy of its pushed clips (the scene may still push after the deadline, into lists nobody reads),
+ * with any pipeline fallback left out, exactly as the scene's own return filters it.
+ */
+export function sceneClipsKeptAtDeadline(
+  soFar: { clips: readonly string[]; beatDurations: readonly number[] } | undefined
+): SceneVisualsResult {
+  const clips: string[] = [];
+  const beatDurations: number[] = [];
+  if (!soFar) return { clips, beatDurations };
+  soFar.clips.forEach((c, i) => {
+    if (!c || isPipelineFallbackClip(c)) return;
+    clips.push(c);
+    beatDurations.push(soFar.beatDurations[i] ?? 0);
+  });
+  return { clips, beatDurations };
+}
+
 export async function probeVideoDurationSec(filePath: string): Promise<number> {
   for (const probe of FFPROBE_PATHS()) {
     try {
@@ -33623,6 +33649,24 @@ async function _runVideoPipelineInner(
     }
     chunkClosed = true;
     for (let si = chunk.start; si < chunk.end; si++) {
+      /**
+       * VIDEO 617 — a scene still running at the deadline used to be written off whole. Scene 0
+       * returned 4.6 s late holding an approved clip (#58020), was counted as empty, and the
+       * render stopped on "no picture for any of its beats". The clips it had already pushed —
+       * through the relevance gate and the adoption guard — are kept; the beats it had not reached
+       * stay gaps, exactly as before.
+       */
+      if (!sceneVisualResults[si]) {
+        const kept = sceneClipsKeptAtDeadline(visualDedup.sceneClipsSoFar?.get(scenes[si]!.index));
+        if (kept.clips.length > 0) {
+          console.log(
+            `[Pipeline] Scene ${scenes[si]!.index}: visual deadline reached while it was still running — ` +
+              `keeping ${kept.clips.length} clip(s) it had already approved`
+          );
+          /** Fills an empty slot and replaces nothing, like the gap below. */
+          sceneVisualResults[si] ??= kept;
+        }
+      }
       sceneVisualResults[si] ??= { clips: [], beatDurations: [] };
     }
 
