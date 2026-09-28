@@ -20,8 +20,8 @@ import {
   videoYoutubePoolGaveNoYoutube,
   type PoolDeps,
 } from "./youtubeVideoPool";
-import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, isRejectedStockClip, buildBeatYoutubeQueries, youtubeQueriesForSentence } from "./videoPipeline";
-import { sentenceOnlyYoutubeQueries } from "./youtubeNonFootage";
+import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, isRejectedStockClip, buildBeatYoutubeQueries, youtubeQueriesForSentence, youtubeQueryPlanForSentence } from "./videoPipeline";
+import { sentenceOnlyYoutubeQueries, neighbourSentences, namesInSentence } from "./youtubeNonFootage";
 import { extractVisualSearchTags, extractBeatGeoPlaceTags, inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
 import { searchGateStrict, withSearchProvenance } from "./searchQueryContract";
 import { youtubeVideoIdsForArchiveAssets } from "./youtubeFootageInFilm";
@@ -558,7 +558,7 @@ describe("F. a sentence's YouTube query never carries a word the sentence does n
       .toEqual(["Kim Kardashian", "Rome citizenship"]);
   });
 
-  it("a sentence that names nobody gets no name added — no YouTube question at all", () => {
+  it("a sentence that names nobody, and no neighbour to borrow from, gets no YouTube question at all", () => {
     expect(queriesFor(SENTENCES[2]![0], "")).toEqual([]);
     expect(queriesFor(SENTENCES[9]![0], "Kim Kardashian", "How the Kardashians Built an Empire")).toEqual([]);
   });
@@ -578,8 +578,8 @@ describe("F. a sentence's YouTube query never carries a word the sentence does n
   });
 
   it("the single YouTube door and the lookahead both cut the queries to the sentence", () => {
-    expect(PIPE).toContain("queries: youtubeQueriesForSentence(input.queries, input.beat.text)");
-    expect(PIPE).toContain("youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text)");
+    expect(PIPE).toContain("const req: CentralYoutubeRequest = { ...input, queries: plan.queries };");
+    expect(PIPE).toContain("youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text, scene.text)");
   });
 
   it("the whole-video planner sends no production word, whatever the model answers", async () => {
@@ -599,5 +599,70 @@ describe("F. a sentence's YouTube query never carries a word the sentence does n
     expect(planned?.query).toBeTruthy();
     expect(planned!.query).not.toMatch(/\b(archival|footage|documentary)\b/i);
     for (const l of lines) expect(l).not.toMatch(/query="[^"]*\b(archival|footage|documentary)\b/i);
+  });
+});
+
+/* ═══════════ G — a sentence that names nobody borrows from the sentence before, then after ═══════════ */
+
+describe("G. no who/what/where in the sentence → the previous sentence, then the next, same scene only", () => {
+  const plan = (sentences: string[], i: number, person = "", title = PROMPT) => {
+    const sceneText = sentences.join(" ");
+    const text = sentences[i]!;
+    return youtubeQueryPlanForSentence(
+      buildBeatYoutubeQueries({ text, index: 1, searchQuery: "" } as never, { text: sceneText, visualCue: "", pexelsQuery: "" } as never, title, person),
+      text,
+      sceneText
+    );
+  };
+  const KIM = ["Kim Kardashian built a billion-dollar fortune from skincare.", "She turned reality TV fame into business."];
+  const KYLIE = ["It started with a single product.", "Kylie Jenner turned lip kits into a cosmetics empire."];
+  const ROME = ["Rome offered its enemies citizenship instead of chains.", "Rome was small, resource-strained.", "Yet it thrived by granting conquered peoples citizenship."];
+
+  it("'She …' borrows the name of the sentence before it", () => {
+    expect(plan(KIM, 1, "Kim Kardashian", "How the Kardashians Built an Empire")).toEqual({ queries: ["Kim Kardashian"], from: "previous" });
+    expect(plan(ROME, 2)).toEqual({ queries: ["Rome"], from: "previous" });
+  });
+
+  it("the first sentence of a scene borrows from the one after it", () => {
+    expect(plan(KYLIE, 0, "Kylie Jenner", "How the Kardashians Built an Empire")).toEqual({ queries: ["Kylie Jenner"], from: "next" });
+  });
+
+  it("the previous sentence goes before the next one", () => {
+    const three = ["Kris Jenner saw the chance.", "She signed the deal.", "Kylie Jenner took over later."];
+    expect(plan(three, 1, "", "How the Kardashians Built an Empire")).toEqual({ queries: ["Kris Jenner"], from: "previous" });
+  });
+
+  it("a sentence that names something itself never borrows", () => {
+    expect(plan(KIM, 0, "Kim Kardashian", "How the Kardashians Built an Empire").from).toBe("sentence");
+    expect(plan(ROME, 1).from).toBe("sentence");
+  });
+
+  it("every borrowed word is a word of that neighbour — nothing added", () => {
+    for (const [sentences, i] of [[KIM, 1], [KYLIE, 0], [ROME, 2]] as const) {
+      const p = plan([...sentences], i);
+      const neighbour = p.from === "previous" ? sentences[i - 1]! : sentences[i + 1]!;
+      const said = new Set(neighbour.toLowerCase().split(/[^\p{L}\p{N}'’-]+/u).filter(Boolean));
+      for (const q of p.queries) for (const w of q.toLowerCase().split(/\s+/)) expect(said.has(w), `${w} / ${neighbour}`).toBe(true);
+    }
+  });
+
+  it("never another scene: no neighbour when the sentence is alone in its scene or not in its text", () => {
+    expect(neighbourSentences("She signed the deal.", "She signed the deal.")).toEqual({ previous: undefined, next: undefined });
+    expect(neighbourSentences("Kris Jenner saw the chance.", "The decision was hers alone.")).toEqual({});
+    expect(youtubeQueryPlanForSentence(["Kris Jenner archival footage"], "She signed the deal.", "She signed the deal.")).toEqual({ queries: [], from: "none" });
+  });
+
+  it("an opening capital is not a name ('Centuries later …'); a name the scene repeats is ('Rome')", () => {
+    expect(namesInSentence("Centuries later, Washington borrowed the idea.")).toEqual(["Washington"]);
+    expect(namesInSentence("Rome was small.", [], ROME.join(" "))).toEqual(["Rome"]);
+    expect(namesInSentence("Rome was small.")).toEqual([]);
+    expect(namesInSentence("Scipio won the Battle of Zama.")).toEqual(["Battle of Zama"]);
+    expect(namesInSentence("Scipio won the Battle of Zama.", ["Scipio Africanus"])).toEqual(["Scipio", "Battle of Zama"]);
+  });
+
+  it("the door logs which sentence was used, and the lookahead passes the scene too", () => {
+    expect(PIPE).toContain("youtubeQueryPlanForSentence(input.queries, input.beat.text, input.scene?.text)");
+    expect(PIPE).toContain("sentence names nothing — ");
+    expect(PIPE).toContain("youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text, scene.text)");
   });
 });

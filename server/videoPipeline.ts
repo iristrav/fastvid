@@ -51,7 +51,7 @@ import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadR
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
-import { askForFootage, queriesThatNameSomething, sentenceOnlyYoutubeQueries, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
+import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyYoutubeQueries, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
 import { markYoutubeKeySpent, usableYoutubeSearchKeys } from "./youtubeApiKeys";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { sanitizeForDrawtextStrict } from "./ffmpegSanitize";
@@ -4595,8 +4595,15 @@ const YOUTUBE_OUTCOME_LEAVES_TURN_OPEN = new Set<string>([
 export async function runCentralYoutubeTurn(
   input: CentralYoutubeRequest
 ): Promise<CentralYoutubeResult> {
-  /** Video 612/613 — every route's queries, cut to the words this sentence itself says. */
-  const req: CentralYoutubeRequest = { ...input, queries: youtubeQueriesForSentence(input.queries, input.beat.text) };
+  /** Video 612/613 — every route's queries, cut to the words this sentence (or its neighbour) says. */
+  const plan = youtubeQueryPlanForSentence(input.queries, input.beat.text, input.scene?.text);
+  if (plan.from === "previous" || plan.from === "next") {
+    console.log(
+      `[YouTubeQuery] scene=${input.sceneIndex} beat=${input.beat.index} sentence names nothing — ` +
+        `using the ${plan.from} sentence: ${JSON.stringify(plan.queries.slice(0, 2))}`
+    );
+  }
+  const req: CentralYoutubeRequest = { ...input, queries: plan.queries };
   const { beat, sceneIndex, dedup } = req;
   const turnKey = youtubeTurnKey(sceneIndex, beat.index);
 
@@ -4797,9 +4804,35 @@ export async function runCentralYoutubeTurn(
  * without its verb or filler, short ones first. See `sentenceOnlyYoutubeQueries`. Used at the one
  * door and by the lookahead, so both hold exactly the same list.
  */
-export function youtubeQueriesForSentence(queries: readonly string[], sentence: string | undefined): string[] {
-  const text = sentence ?? "";
-  return sentenceOnlyYoutubeQueries(queries, text, extractActionCue(text) ?? "");
+export function youtubeQueriesForSentence(
+  queries: readonly string[],
+  sentence: string | undefined,
+  sceneText?: string
+): string[] {
+  return youtubeQueryPlanForSentence(queries, sentence, sceneText).queries;
+}
+
+/**
+ * Video 612/613 — a sentence that names nobody ("She turned reality TV fame into business.") borrows
+ * from the sentence before it in the same scene, then from the one after it. The borrowed query
+ * still holds only words that neighbour says; nothing is added, and another scene is never asked.
+ */
+export function youtubeQueryPlanForSentence(
+  queries: readonly string[],
+  sentence: string | undefined,
+  sceneText?: string
+): { queries: string[]; from: "sentence" | "previous" | "next" | "none" } {
+  const cut = (text: string, extra: readonly string[] = []) =>
+    sentenceOnlyYoutubeQueries([...queries, ...extra], text, extractActionCue(text) ?? "");
+  const own = cut(sentence ?? "");
+  if (own.length > 0) return { queries: own, from: "sentence" };
+  const { previous, next } = neighbourSentences(sceneText, sentence);
+  for (const [from, text] of [["previous", previous], ["next", next]] as const) {
+    if (!text) continue;
+    const borrowed = cut(text, namesInSentence(text, queries, sceneText));
+    if (borrowed.length > 0) return { queries: borrowed, from };
+  }
+  return { queries: [], from: "none" };
 }
 
 /** Milliseconds the enclosing scope is still holding back for YouTube. Zero once released. */
@@ -4909,7 +4942,7 @@ function startSceneYoutubeLookahead(
   let queued = 0;
   for (const beat of beats) {
     hydrateSceneBeatInPlace(beat);
-    const queries = youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text);
+    const queries = youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text, scene.text);
     if (queries.length === 0) continue;
     const beatKey = youtubeTurnKey(scene.index, beat.index);
     const started = registry.start(beatKey, queries, async () => {

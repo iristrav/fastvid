@@ -157,3 +157,65 @@ export function sentenceOnlyYoutubeQueries(queries: readonly string[], sentence:
   const words = (q: string) => q.split(/\s+/).length;
   return [...out.filter((q) => words(q) <= 4), ...out.filter((q) => words(q) > 4)];
 }
+
+/**
+ * The sentence right before and right after `sentence` inside its scene's own text. Nothing when
+ * the sentence cannot be found there: then there is no neighbour to borrow from.
+ */
+export function neighbourSentences(sceneText: string | undefined, sentence: string | undefined): { previous?: string; next?: string } {
+  const scene = (sceneText ?? "").replace(/\s+/g, " ").trim();
+  const own = (sentence ?? "").replace(/\s+/g, " ").trim();
+  if (!scene || !own) return {};
+  const at = scene.indexOf(own);
+  if (at < 0) return {};
+  const split = (t: string) => t.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
+  const before = split(scene.slice(0, at));
+  const after = split(scene.slice(at + own.length));
+  return { previous: before[before.length - 1], next: after[0] };
+}
+
+/**
+ * The names a sentence writes: runs of capitalised words ("Kim Kardashian", "Battle of Zama").
+ * A lone capital at the very start of the sentence is only a capital ("Centuries later …"), unless
+ * one of `alsoNamedIn` carries the same word too, or the scene writes it as a name elsewhere: with a
+ * capital in the middle of a sentence, or with a capital more than once ("Rome was … Rome sealed").
+ */
+export function namesInSentence(sentence: string, alsoNamedIn: readonly string[] = [], sceneText = ""): string[] {
+  const tokens = (sentence ?? "").split(/\s+/).filter(Boolean);
+  const known = new Set(alsoNamedIn.flatMap((q) => sentenceWords(q)));
+  const capitalCount = new Map<string, number>();
+  for (const part of (sceneText ?? "").split(/(?<=[.!?])\s+/)) {
+    part.split(/\s+/).filter(Boolean).forEach((raw, i) => {
+      if (!/^[^\p{L}\p{N}]*\p{Lu}/u.test(raw)) return;
+      const w = sentenceWords(raw)[0] ?? "";
+      if (!w) return;
+      if (i > 0) known.add(w);
+      capitalCount.set(w, (capitalCount.get(w) ?? 0) + 1);
+    });
+  }
+  for (const [w, n] of capitalCount) if (n > 1) known.add(w);
+  const runs: string[] = [];
+  let run: string[] = [];
+  let runStart = -1;
+  const close = () => {
+    while (run.length && GLUE_WORDS.has(sentenceWords(run[run.length - 1]!)[0] ?? "")) run.pop();
+    const first = sentenceWords(run[0] ?? "")[0] ?? "";
+    const loneOpening = run.length === 1 && runStart === 0 && !known.has(first);
+    if (run.length && !loneOpening) runs.push(run.map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/['’]s$/, "")).join(" "));
+    run = [];
+    runStart = -1;
+  };
+  tokens.forEach((raw, i) => {
+    const w = sentenceWords(raw)[0] ?? "";
+    const capital = /^[^\p{L}\p{N}]*\p{Lu}/u.test(raw) && !FILLER_WORDS.has(w) && !FUNCTION_WORDS.has(w) && !GLUE_WORDS.has(w);
+    if (capital) {
+      if (!run.length) runStart = i;
+      run.push(raw);
+    } else if (run.length && GLUE_WORDS.has(w) && /^\p{Ll}/u.test(raw)) {
+      run.push(raw);
+    } else if (run.length) close();
+    if (run.length && /[.,;:!?)]$/.test(raw)) close();
+  });
+  if (run.length) close();
+  return [...new Set(runs.filter(Boolean))];
+}
