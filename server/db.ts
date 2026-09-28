@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, getTableColumns, inArray, like, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, getTableColumns, inArray, like, notInArray, or, sql } from "drizzle-orm";
 import { AUTO_ARCHIVES, STOCK_ARCHIVE_SLUG, type AutoArchiveKind } from "./stockArchive";
 import type { RenderLockStore } from "./renderLock";
 import { drizzle } from "drizzle-orm/mysql2";
@@ -655,7 +655,28 @@ export async function updateVideoProgress(id: number, progressStep: string, prog
       progressPercent: sql`GREATEST(COALESCE(${videos.progressPercent}, 0), ${progressPercent})`,
       updatedAt: new Date(),
     })
-    .where(eq(videos.id, id));
+    /** Video 613 — a tick is never news about a video that already ended; see `advanceRunningVideoStatus`. */
+    .where(and(eq(videos.id, id), notInArray(videos.status, ENDED_VIDEO_STATUSES)));
+}
+
+/** A video in one of these states has ended; only a new run (claim, retry) may move it again. */
+const ENDED_VIDEO_STATUSES: ("failed" | "completed")[] = ["failed", "completed"];
+
+/**
+ * Video 613 — the stage badge a running render reports, never written over an ended video.
+ *
+ * The render threw ("no picture was found … 10108") and was marked failed. Its beats and downloads
+ * were still running and kept reporting progress for another 47 s; each report wrote the status
+ * back to generating_visuals. The stall sweep then saw a "running" video without a heartbeat and
+ * re-queued it — three times, 40 minutes, before it failed as "stalled" with the wrong reason.
+ */
+export async function advanceRunningVideoStatus(id: number, status: InsertVideo["status"]) {
+  const db = await getDb();
+  if (!db) return;
+  await db
+    .update(videos)
+    .set({ status })
+    .where(and(eq(videos.id, id), notInArray(videos.status, ENDED_VIDEO_STATUSES)));
 }
 
 /** Mark an in-flight video as cancelled (user or admin request). */

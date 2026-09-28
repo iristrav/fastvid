@@ -54,6 +54,9 @@ const ALL_DOWNLOADING_FETCHERS = [
   // Wikimedia IMAGES — a sibling of fetchWikimediaVideos that never opened a record — and the
   // Pexels b-roll path. Leaving them out would have made "every provider is covered" false.
   "fetchPixabayClips", "fetchWikimediaImages", "fetchBrollClips",
+  // Video 613: the web-wide (Openverse) discovery route downloaded outside the ledger, so an
+  // APPROVED "Kris Jenner" was refused as FUNNEL_WITHOUT_EVIDENCE.
+  "searchWebWideVideoClips",
 ] as const;
 
 /**

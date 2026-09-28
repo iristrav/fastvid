@@ -12904,6 +12904,8 @@ export async function searchWebWideVideoClips(
   count: number = 1
 ): Promise<WebWideVideoCandidate[]> {
   const results: WebWideVideoCandidate[] = [];
+  /** The render's ledger, from its context — see `tagPathWithProviderAsset`. */
+  const sourcingCache = get_activeSourcingCache() ?? undefined;
   const cancelled = () => {
     const videoId = getActiveVideoId();
     return videoId != null && isVideoGenerationCancelRequested(videoId);
@@ -12944,7 +12946,25 @@ export async function searchWebWideVideoClips(
         if (!/\.(jpg|jpeg|png|webp)(\?|$)/i.test(item.url)) continue;
 
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_webwide_${results.length}_tmp.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_webwide_${results.length}.mp4`);
+        /**
+         * Video 613 — the picture editor APPROVED "Kris Jenner" from this route and the adoption
+         * guard still refused it (FUNNEL_WITHOUT_EVIDENCE): the file had no lineage record, so it
+         * could never be eligible. Opened here like every other provider's download.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_webwide_${results.length}.mp4`),
+          "openverse",
+          item.id?.trim() || item.url,
+          sourcingCache,
+          {
+            sceneIndex,
+            sourceUrl: item.foreign_landing_url || item.url,
+            mediaType: "image",
+            query,
+            searchRoute: "searchWebWideVideoClips",
+            title: item.title,
+          }
+        );
         try {
           /**
            * RONDE 243 — THE ENOENT WAS A WRITE INTO A DIRECTORY THE RENDER HAD ALREADY DELETED.
@@ -12989,7 +13009,9 @@ export async function searchWebWideVideoClips(
             tmpPath, outPath, duration, `Web-wide image to video scene ${sceneIndex}`, false, sceneIndex, 0
           );
 
-          if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+          const madeClip = fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000;
+          recordProviderDownloadOutcome(sourcingCache, outPath, madeClip, madeClip ? undefined : "still_to_video_failed");
+          if (madeClip) {
             results.push({
               path: outPath,
               sourceUrl: item.foreign_landing_url || item.url,
@@ -32327,6 +32349,18 @@ export async function runVideoPipeline(
   });
   try {
     return await Promise.race([pipelineRun, cancelWatch.abandoned]);
+  } catch (err) {
+    /**
+     * Video 613 — a render that ended in an error ends for its own beats too.
+     *
+     * The throw ("no picture was found … 10108") stopped the main line only. Its beats kept
+     * searching and downloading for another 47 s, into a work directory already removed
+     * (`onDisk=false`), spending YouTube and RapidAPI on a render that no longer existed. The
+     * run's own token is the signal every checkpoint already reads (`throwIfActiveRenderCancelled`);
+     * it is this run's alone, so a later attempt for the same video starts untouched.
+     */
+    renderRun.abandoned = true;
+    throw err;
   } finally {
     cancelWatch.stop();
     unregisterActiveRender(videoId, productionRenderId);

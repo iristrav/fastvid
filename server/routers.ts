@@ -46,7 +46,7 @@ import {
   getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
   getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
   countMediaArchiveAssets, filterMediaArchiveAssets, listMediaArchiveAssetsPaginated, normalizeMediaTags, readVideoMetadataObject,
-  isGenerationRunSuperseded, bumpGenerationAttempt,
+  isGenerationRunSuperseded, bumpGenerationAttempt, advanceRunningVideoStatus,
   getVideoScenes,
   updateVideoScenes,
   affectedRowCount,} from "./db";
@@ -741,7 +741,7 @@ async function _runVideoGeneration(
         visuals: "generating_visuals",
         finish: "generating_effects",
       };
-      await updateVideoStatus(videoId, statusForKey[key]).catch(() => {});
+      await advanceRunningVideoStatus(videoId, statusForKey[key]).catch(() => {});
     };
 
     const pipelineHeartbeat = setInterval(() => {

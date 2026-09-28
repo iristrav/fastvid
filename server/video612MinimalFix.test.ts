@@ -666,3 +666,48 @@ describe("G. no who/what/where in the sentence → the previous sentence, then t
     expect(PIPE).toContain("youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text, scene.text)");
   });
 });
+
+/* ═══════════ H — video 613: a failed render stays failed, stops its own work, keeps its provenance ═══════════ */
+
+describe("H. video 613 — failed stays failed; a failed run stops; Openverse clips carry lineage", () => {
+  const DB = fs.readFileSync(path.join(__dirname, "db.ts"), "utf8");
+  const ROUTERS = fs.readFileSync(path.join(__dirname, "routers.ts"), "utf8");
+
+  it("A. a progress tick never writes over a failed or completed video", () => {
+    const tick = DB.slice(DB.indexOf("export async function updateVideoProgress("), DB.indexOf("export async function advanceRunningVideoStatus("));
+    expect(tick).toContain("notInArray(videos.status, ENDED_VIDEO_STATUSES)");
+    expect(DB).toMatch(/ENDED_VIDEO_STATUSES: \("failed" \| "completed"\)\[\] = \["failed", "completed"\]/);
+    const advance = DB.slice(DB.indexOf("export async function advanceRunningVideoStatus("));
+    expect(advance.slice(0, 400)).toContain("notInArray(videos.status, ENDED_VIDEO_STATUSES)");
+  });
+
+  it("A. the render's stage badge goes through the guarded write, not the unconditional one", () => {
+    const push = ROUTERS.slice(ROUTERS.indexOf("const pushStep = async"), ROUTERS.indexOf("const pipelineHeartbeat"));
+    expect(push).toContain("await advanceRunningVideoStatus(videoId, statusForKey[key])");
+    expect(push).not.toContain("await updateVideoStatus(videoId, statusForKey[key])");
+    /** The failure itself is still the unconditional write. */
+    expect(ROUTERS).toContain(`await updateVideoStatus(videoId, "failed", {
+      errorMessage: normalizeStoredError(error),`);
+  });
+
+  it("B. a run that did not deliver marks its own token abandoned, so its checkpoints throw", async () => {
+    expect(PIPE).toMatch(/\} catch \(err\) \{[\s\S]{0,900}renderRun\.abandoned = true;\s*throw err;\s*\} finally \{/);
+    const { runWithActiveVideoId, throwIfActiveRenderCancelled, isVideoGenerationCancelRequested } = await import("./videoGenerationCancel");
+    const failedRun = { abandoned: false };
+    const nextRun = { abandoned: false };
+    failedRun.abandoned = true;
+    expect(() => runWithActiveVideoId(613, () => throwIfActiveRenderCancelled(), 1, failedRun)).toThrow("Video generation cancelled");
+    /** Only that run: the next attempt for the same video is untouched, and no video-wide flag is set. */
+    expect(() => runWithActiveVideoId(613, () => throwIfActiveRenderCancelled(), 1, nextRun)).not.toThrow();
+    expect(isVideoGenerationCancelRequested(613)).toBe(false);
+  });
+
+  it("C. the Openverse web-wide route opens a lineage record and records the outcome", () => {
+    const start = PIPE.indexOf("export async function searchWebWideVideoClips(");
+    const body = PIPE.slice(start, start + 9000);
+    expect(body).toContain('"openverse",');
+    expect(body).toContain("tagPathWithProviderAsset(");
+    expect(body).toContain('searchRoute: "searchWebWideVideoClips"');
+    expect(body).toContain("recordProviderDownloadOutcome(sourcingCache, outPath, madeClip");
+  });
+});
