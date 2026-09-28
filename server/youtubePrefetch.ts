@@ -36,6 +36,7 @@
  *   · Not a promise about the first render on a new subject. That render finds the videos; the
  *     ones after it are the ones that get them.
  */
+import { youtubeResultIsShort } from "./youtubeNonFootage";
 import { youtubeVideoPoolEnabled } from "./youtubeVideoPool";
 import fs from "fs";
 import path from "path";
@@ -534,6 +535,17 @@ export async function prefetchOneVideo(
   try {
     deps.forgetRefusal?.(row.videoId);
     const sourceSec = await deps.sourceDurationSec(row.videoId).catch(() => 0);
+    /**
+     * Video 613 — a YouTube Short is never downloaded, and the queue still held what 613's search
+     * had found: at 07:31, an hour after the render, this loop fetched one of its Kardashian
+     * results. A Short (by hashtag, or at most three minutes long) is refused here, before a byte
+     * moves; so is a video whose length could not be read, since nothing proves it is not one.
+     */
+    const short = youtubeResultIsShort(row.title, null, sourceSec || null) ?? (sourceSec > 0 ? null : "length unknown");
+    if (short) {
+      videoRefusal = `youtube_short (${short})`;
+      return { segments, interrupted, videoRefusal, stoppedEarlyFor };
+    }
     const planned = prefetchSegmentStarts(sourceSec, PREFETCH_SEGMENT_SEC, segmentsWanted);
     /** Unknown length: one segment, and the download layer picks its start from the real file. */
     const starts = planned ?? [15];

@@ -262,10 +262,11 @@ describe("§5 — the fetch yields to a render, and always cleans up", () => {
     expect(r.segments).toHaveLength(3);
   });
 
-  it("an unknown length asks for one segment and lets the download layer pick its start", async () => {
+  it("video 613 — an unknown length is not fetched: nothing proves it is not a YouTube Short", async () => {
     const deps = fakeDeps({ sourceDurationSec: async () => 0 });
-    await prefetchOneVideo(row, deps, 3);
-    expect(deps.log.filter((l) => l.startsWith("download"))).toEqual(["download 15 exact=false"]);
+    const r = await prefetchOneVideo(row, deps, 3);
+    expect(deps.log.filter((l) => l.startsWith("download"))).toEqual([]);
+    expect(r.videoRefusal).toContain("youtube_short");
   });
 
   it("A RENDER STARTING STOPS THE FETCH BEFORE THE NEXT SEGMENT", async () => {

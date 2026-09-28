@@ -114,9 +114,8 @@ async function judge(
     const short = youtubeResultIsShort(it.title, it.description, d?.durationSec ?? null);
     if (genre) why = `title genre ${genre}`;
     else if (short) why = `youtube short (${short})`;
-    else if (details && !d) why = "no details";
-    /** A search result whose length is unknown could be a Short; the archive (from 0) was fetched before. */
-    else if (from !== 0 && !d) why = "no details — length unknown, may be a Short";
+    /** A result whose length is unknown could be a Short: it is not looked at. */
+    else if (!d) why = "no details — length unknown, may be a Short";
     else if (d?.live) why = "live";
     else if (d && d.durationSec > 0 && d.durationSec < MIN_SOURCE_SEC) why = `too short ${d.durationSec}s`;
     else if (d && d.durationSec > MAX_SOURCE_SEC) why = `too long ${Math.round(d.durationSec / 60)}min (download ceiling)`;
@@ -228,7 +227,7 @@ export async function buildVideoYoutubePool(
         if (!c.usable) return c;
         const short = youtubeResultIsShort(c.title, c.description, c.durationSec || null);
         if (short) return { ...c, usable: false, serves: [], why: `youtube short (${short})` };
-        if (c.from !== 0 && !(c.durationSec > 0)) return { ...c, usable: false, serves: [], why: "no details — length unknown, may be a Short" };
+        if (!(c.durationSec > 0)) return { ...c, usable: false, serves: [], why: "no details — length unknown, may be a Short" };
         return c;
       });
     } catch {
@@ -279,7 +278,14 @@ export async function buildVideoYoutubePool(
   /* ── the archive joins the pool; it never replaces search #1 ── */
   const archiveItems = await deps.archive(analysis.sentences).catch(() => [] as SearchItem[]);
   const known = new Set(pool.candidates.map((c) => c.videoId));
-  const archiveJudged = await judge(deps, archiveItems.filter((i) => !known.has(i.videoId)), null, 0, input.title, analysis.sentences);
+  const archiveNew = archiveItems.filter((i) => !known.has(i.videoId));
+  /**
+   * Video 613 — the archive's YouTube items are measured too before their thumbnail is looked at:
+   * a Short an earlier render archived without a hashtag is known by its length. One videos.list
+   * call, the same 1 unit as the search's own.
+   */
+  const archiveDetails = archiveNew.length ? await deps.details(archiveNew.map((i) => i.videoId)).catch(() => null) : null;
+  const archiveJudged = await judge(deps, archiveNew, archiveDetails ?? new Map(), 0, input.title, analysis.sentences);
   pool.candidates = mergeCandidates(pool.candidates, archiveJudged);
   pool.archiveUsable = archiveJudged.filter((c) => c.usable).length;
 

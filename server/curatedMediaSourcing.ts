@@ -1,6 +1,7 @@
 /**
  * Curated media archive — pick tagged assets from admin libraries for pipeline beats.
  */
+import { youtubeResultIsShort } from "./youtubeNonFootage";
 import pLimit from "p-limit";
 import { exec as execCb } from "child_process";
 import { foldSearchText } from "./searchTextNormalize";
@@ -2217,6 +2218,18 @@ export async function prepareCuratedArchiveClip(
         );
         throw new Error(`curated asset ${asset.id} video too low-res (${verdict.detail})`);
       }
+      /**
+       * Video 613 — a YouTube Short is never looked at. One an earlier render archived without a
+       * hashtag is known by its frame: taller than it is wide. Refused here, on the measurement,
+       * before the text check or the picture editor ever sees it.
+       */
+      if (dims && /youtube/i.test(asset.sourcePlatform ?? "") && dims.height > dims.width) {
+        console.warn(
+          `[YouTubeNotFootage] archive asset ${asset.id} s${sceneIndex}b${beatIndex} is a vertical YouTube video ` +
+            `(${dims.width}x${dims.height}) — the Short format, never used`
+        );
+        throw new Error(`curated asset ${asset.id} is a vertical YouTube video (${dims.width}x${dims.height}) — Short format`);
+      }
       if (verdict.belowQualityBar && dims) {
         console.log(
           formatBelowQualityBar({
@@ -2346,7 +2359,13 @@ async function loadArchiveAssetsForSearch(
   assetsCache?: Map<number, ArchiveAssetRow[]>
 ): Promise<ArchiveAssetRow[]> {
   if (assetsCache?.has(archiveId)) return assetsCache.get(archiveId)!;
-  const assets = await getMediaArchiveAssets(archiveId);
+  /**
+   * Video 613 — a YouTube Short is never looked at, and that includes one an earlier render put
+   * in the archive before the rule existed. Its title still carries the uploader's hashtag.
+   */
+  const assets = (await getMediaArchiveAssets(archiveId)).filter(
+    (a) => !(/youtube/i.test(a.sourcePlatform ?? "") && youtubeResultIsShort(a.title))
+  );
   assetsCache?.set(archiveId, assets);
   return assets;
 }

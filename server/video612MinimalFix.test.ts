@@ -800,4 +800,70 @@ describe("I. a YouTube Short is never downloaded, on any route", () => {
     expect(byId.get("oldtagged00")?.usable).toBe(false);
     expect(byId.get("olddocument")?.usable).toBe(true);
   });
+
+  it("the background downloader skips a Short before any download — by hashtag, length, or unknown length", async () => {
+    const { prefetchOneVideo, decidePrefetchVerdict } = await import("./youtubePrefetch");
+    const downloads: string[] = [];
+    const deps = (sec: number) => ({
+      isIdle: () => true,
+      sourceDurationSec: async () => sec,
+      download: async (p: { videoId: string }) => { downloads.push(p.videoId); return { ok: false, reason: "test" }; },
+      videoRefusal: () => null,
+      probeDurationSec: async () => 0,
+      ingest: async () => ({ status: "refused", reasonCode: "UNKNOWN", reasonDetail: "test" }) as never,
+      release: () => {},
+      makeWorkDir: () => "/tmp/fastvid-test-prefetch-none",
+      removeWorkDir: () => {},
+    });
+    const row = (videoId: string, title: string) => ({ videoId, title, query: "Kim Kardashian", licenseMode: null });
+    for (const [r, sec] of [
+      [row("k7zrnzAk9oE", "Oh No khloe even didn't Notice kim kardashian Revenge😂 #yts"), 600],
+      [row("shortlength", "Kim Kardashian at the Met Gala"), 42],
+      [row("nolength000", "Kim Kardashian at the Met Gala"), 0],
+    ] as const) {
+      const got = await prefetchOneVideo(r, deps(sec));
+      expect(got.videoRefusal).toContain("youtube_short");
+      expect(decidePrefetchVerdict({ attempts: 1, segments: got.segments, videoRefusal: got.videoRefusal, interrupted: false, now: 0 }).status).toBe("refused");
+    }
+    expect(downloads, "no Short may reach the downloader").toEqual([]);
+    /** A real documentary still downloads. */
+    await prefetchOneVideo(row("documentary", "Kim Kardashian: the full story"), deps(1500));
+    expect(downloads.length).toBeGreaterThan(0);
+    expect(new Set(downloads)).toEqual(new Set(["documentary"]));
+  });
+
+  it("the archive: a YouTube asset with a Shorts hashtag is never offered; a vertical one is refused before any look", () => {
+    const CURATED = fs.readFileSync(path.join(__dirname, "curatedMediaSourcing.ts"), "utf8");
+    expect(CURATED).toContain('(a) => !(/youtube/i.test(a.sourcePlatform ?? "") && youtubeResultIsShort(a.title))');
+    const vertical = CURATED.indexOf("dims.height > dims.width");
+    expect(vertical).toBeGreaterThan(-1);
+    /** Before the text check and the picture editor. */
+    expect(vertical).toBeLessThan(CURATED.indexOf("hasBakedText = await archiveClipHasBakedEditText(rawPath, asset.mimeType);"));
+  });
+
+  it("the pool measures the archive's YouTube items too, and never triages a Short's thumbnail", async () => {
+    const triaged: string[] = [];
+    const deps: PoolDeps = {
+      ...poolDeps(undefined, async () =>
+        new Map([
+          ["shortlen000", { durationSec: 58, embeddable: true, live: false }],
+          ["hashtag0000", { durationSec: 600, embeddable: true, live: false }],
+          ["documentary", { durationSec: 900, embeddable: true, live: false }],
+          ["archShort00", { durationSec: 30, embeddable: true, live: false }],
+          ["archLong000", { durationSec: 1200, embeddable: true, live: false }],
+        ])),
+      archive: async () => [
+        { videoId: "archShort00", title: "Rome", description: "", channel: "archive", thumb: "t" },
+        { videoId: "archLong000", title: "Rome", description: "", channel: "archive", thumb: "t" },
+        { videoId: "archNoLen00", title: "Rome", description: "", channel: "archive", thumb: "t" },
+      ],
+      triage: async (it) => { triaged.push(it.videoId); return { footageType: "real_footage", servesBeats: [0], depicts: "" }; },
+    };
+    const pool = await buildVideoYoutubePool(deps, { ...roman, videoId: 613_304 });
+    const byId = new Map(pool.candidates.map((c) => [c.videoId, c]));
+    expect(byId.get("archShort00")?.usable).toBe(false);
+    expect(byId.get("archNoLen00")?.usable).toBe(false);
+    expect(byId.get("archLong000")?.usable).toBe(true);
+    expect(triaged.sort()).toEqual(["archLong000", "documentary"]);
+  });
 });
