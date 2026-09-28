@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Railway__get-logs",
+      "mcp__Railway__list-deployments",
+      "mcp__Railway__get-status",
+      "mcp__Railway__get-deployment-diagnosis"
+    ]
+  }
+}
