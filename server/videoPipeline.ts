@@ -51,7 +51,7 @@ import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadR
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
-import { askForFootage, queriesThatNameSomething, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
+import { askForFootage, queriesThatNameSomething, sentenceOnlyYoutubeQueries, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
 import { markYoutubeKeySpent, usableYoutubeSearchKeys } from "./youtubeApiKeys";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { sanitizeForDrawtextStrict } from "./ffmpegSanitize";
@@ -2932,7 +2932,7 @@ function youtubeBeatSearchBudgetMs(): number {
   return 60_000;
 }
 
-function buildBeatYoutubeQueries(
+export function buildBeatYoutubeQueries(
   beat: SceneBeat,
   scene: Scene,
   videoTitle: string | undefined,
@@ -4593,8 +4593,10 @@ const YOUTUBE_OUTCOME_LEAVES_TURN_OPEN = new Set<string>([
  * the reserve's release, and the terminal reason.
  */
 export async function runCentralYoutubeTurn(
-  req: CentralYoutubeRequest
+  input: CentralYoutubeRequest
 ): Promise<CentralYoutubeResult> {
+  /** Video 612/613 — every route's queries, cut to the words this sentence itself says. */
+  const req: CentralYoutubeRequest = { ...input, queries: youtubeQueriesForSentence(input.queries, input.beat.text) };
   const { beat, sceneIndex, dedup } = req;
   const turnKey = youtubeTurnKey(sceneIndex, beat.index);
 
@@ -4790,6 +4792,16 @@ export async function runCentralYoutubeTurn(
   return finish(refusedNow > 0 ? "YOUTUBE_VISION_REJECTED" : "YOUTUBE_NO_USABLE_CANDIDATE", null);
 }
 
+/**
+ * Video 612/613 — the queries YouTube may be asked for one sentence: only words the sentence says,
+ * without its verb or filler, short ones first. See `sentenceOnlyYoutubeQueries`. Used at the one
+ * door and by the lookahead, so both hold exactly the same list.
+ */
+export function youtubeQueriesForSentence(queries: readonly string[], sentence: string | undefined): string[] {
+  const text = sentence ?? "";
+  return sentenceOnlyYoutubeQueries(queries, text, extractActionCue(text) ?? "");
+}
+
 /** Milliseconds the enclosing scope is still holding back for YouTube. Zero once released. */
 function currentYoutubeReserveMs(): number {
   const scope = sceneFetchScopeStorage.getStore();
@@ -4897,7 +4909,7 @@ function startSceneYoutubeLookahead(
   let queued = 0;
   for (const beat of beats) {
     hydrateSceneBeatInPlace(beat);
-    const queries = buildBeatYoutubeQueries(beat, scene, videoTitle, personName);
+    const queries = youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text);
     if (queries.length === 0) continue;
     const beatKey = youtubeTurnKey(scene.index, beat.index);
     const started = registry.start(beatKey, queries, async () => {

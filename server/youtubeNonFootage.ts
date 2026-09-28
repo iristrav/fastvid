@@ -85,3 +85,75 @@ export function askForFootage(query: string): string {
   if (!q || FOOTAGE_WORD.test(q)) return q;
   return `${q} archival footage`;
 }
+
+/** Filler words that say nothing about what is on screen ("citizenship instead"). */
+const FILLER_WORDS = new Set([
+  "instead", "also", "even", "just", "only", "still", "already", "again", "ever", "never", "too",
+  "very", "rather", "quite", "then", "now", "yet", "once", "soon", "later", "really", "simply",
+]);
+
+/** Small words a query may keep inside a name ("Battle of Zama"), never at its ends or on their own. */
+const GLUE_WORDS = new Set(["of", "the", "a", "an", "and", "in", "on", "at", "de", "von", "van", "bin", "al"]);
+
+/** Pronouns and function words: they name nothing a camera could film, so they are never sent. */
+const FUNCTION_WORDS = new Set([
+  "its", "it", "this", "that", "these", "those", "his", "her", "hers", "their", "our", "your", "my",
+  "he", "she", "they", "we", "i", "you", "him", "them", "is", "was", "were", "are", "be", "been",
+  "by", "for", "with", "from", "to", "as", "into", "but", "or", "so", "not", "no", "why", "how",
+  "what", "when", "where", "who", "which", "despite", "every", "all", "some", "any",
+]);
+
+function sentenceWords(text: string): string[] {
+  return (text ?? "")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}'’-]+/u)
+    .map((w) => w.replace(/['’]s$/, "").replace(/^['’-]+|['’-]+$/g, ""))
+    .filter(Boolean);
+}
+
+/**
+ * Video 612/613 — A YOUTUBE QUERY FOR A SENTENCE HOLDS ONLY WORDS FROM THAT SENTENCE.
+ *
+ * The builders add words of their own: "archival footage", "documentary footage", "news report",
+ * the video's title, a person the scene names but this sentence does not. None of that is said in
+ * the sentence, so none of it is sent. Words are only ever REMOVED here, never added:
+ *   - every word the sentence does not contain;
+ *   - the sentence's verb ("Scipio Africanus led", "Kim Kardashian built");
+ *   - filler words ("citizenship instead") and pronouns ("Its");
+ *   - a one-word question that is not a name the sentence capitalises ("Empire" from the title).
+ * What is left is deduplicated, and short questions go first: a query of more than four words
+ * ("Scipio Africanus Hannibal Barca Tunisia") is asked after the shorter ones.
+ */
+export function sentenceOnlyYoutubeQueries(queries: readonly string[], sentence: string, verb = ""): string[] {
+  const allowed = new Set(sentenceWords(sentence));
+  /** Words the sentence itself writes with a capital: names ("Rome", "Carthage"), not "empire". */
+  const named = new Set(
+    (sentence ?? "").split(/[^\p{L}\p{N}'’-]+/u).filter((w) => /^\p{Lu}/u.test(w)).flatMap((w) => sentenceWords(w))
+  );
+  const verbWord = verb.trim().toLowerCase();
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const q of queries) {
+    const kept = (q ?? "")
+      .split(/\s+/)
+      .filter((raw) => {
+        const w = sentenceWords(raw)[0];
+        if (!w) return false;
+        if (FILLER_WORDS.has(w) || FUNCTION_WORDS.has(w)) return false;
+        if (verbWord && w === verbWord) return false;
+        return allowed.has(w);
+      });
+    while (kept.length && GLUE_WORDS.has(sentenceWords(kept[0]!)[0] ?? "")) kept.shift();
+    while (kept.length && GLUE_WORDS.has(sentenceWords(kept[kept.length - 1]!)[0] ?? "")) kept.pop();
+    if (!kept.some((raw) => !GLUE_WORDS.has(sentenceWords(raw)[0] ?? ""))) continue;
+    /** A one-word question must be a name the sentence writes as one; "Empire" alone finds anything. */
+    if (kept.length === 1 && !named.has(sentenceWords(kept[0]!)[0] ?? "")) continue;
+    const query = kept.join(" ").trim();
+    const key = query.toLowerCase();
+    if (!query || seen.has(key)) continue;
+    seen.add(key);
+    out.push(query);
+  }
+  const words = (q: string) => q.split(/\s+/).length;
+  return [...out.filter((q) => words(q) <= 4), ...out.filter((q) => words(q) > 4)];
+}

@@ -157,6 +157,19 @@ function scenesOf(analysis: VideoAnalysis, w: string): Set<number> {
   return out;
 }
 
+/**
+ * Video 612/613 — the video's query holds only words the narration or prompt say. Production words
+ * ("footage", "archival", "documentary" …) are never appended; one the model added is removed.
+ */
+export function withoutProductionWords(query: string): string {
+  return query
+    .split(/\s+/)
+    .filter((w) => !PRODUCTION.has(w.toLowerCase().replace(/[^\p{L}-]/gu, "")))
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 /** "archival" only for a historical subject; a modern one asks for footage of the thing itself. */
 export function applyArchivalRule(query: string, historical: boolean): string {
   if (historical) return query.trim();
@@ -296,7 +309,7 @@ function describe(analysis: VideoAnalysis, input: PlannerInput): string {
 const RULES =
   "Rules: 3 to 8 meaningful words. Use ONLY words that appear in the narration or the user prompt. " +
   "Only concrete, filmable things: people, places, events, objects, years. No metaphors, no abstract nouns. " +
-  "Put a person before a place. End with 'archival footage' ONLY if the subject is historical; otherwise end with 'footage'.";
+  "Put a person before a place. Do NOT add words like 'footage', 'archival', 'documentary' or 'video'.";
 
 async function ask(
   deps: PlannerDeps,
@@ -330,7 +343,7 @@ async function ask(
       continue;
     }
     mainSubject = plan.mainSubject?.trim() ?? "";
-    const query = applyArchivalRule(plan.query, historical);
+    const query = withoutProductionWords(plan.query);
     const why = check(query, mainSubject);
     if (!why) return { query, mainSubject, attempts: attempt, refused };
     refused.push(`"${query}" — ${why}`);
@@ -369,10 +382,9 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
     return { query: sent, mainSubject: res.mainSubject, source: "llm", attempts: res.attempts, refused: res.refused };
   }
   /** Deterministic fallback: the recurring terms that pass every rule, with the right production word. */
-  const tail = analysis.historical ? "archival footage" : "footage";
   const multi = analysis.recurring.filter((r) => r.scenes >= 2 || r.beats >= 2).map((r) => r.term);
   for (const n of [3, 2, 1]) {
-    const q = `${multi.slice(0, n).join(" ")} ${tail}`.trim();
+    const q = multi.slice(0, n).join(" ").trim();
     const why = refuseQuery(q, { analysis, mainSubject: multi[0], gate });
     if (!why) {
       const sent = gateText(gate, q);
@@ -422,9 +434,8 @@ export async function planGapQuery(
     }
   }
   const terms = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
-  const tail = analysis.historical ? "archival footage" : "footage";
   for (const n of [2, 1]) {
-    const q = `${terms.slice(0, n).join(" ")} ${tail}`.trim();
+    const q = terms.slice(0, n).join(" ").trim();
     if (!refuseQuery(q, { analysis, mustDifferFrom: gap.query1, gate, allowSingleScene: true })) {
       const sent = gateText(gate, q);
       log(`[YouTubeSearchPlanner] #2 query="${sent}" source=fallback refused=${JSON.stringify(res.refused)}`);

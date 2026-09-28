@@ -113,7 +113,7 @@ describe("the planner asks for the whole video, not one scene", () => {
     ];
     const llm = vi.fn(async () => ({ choices: [{ message: { content: JSON.stringify(answers.shift()) } }] }));
     const plan = await planVideoQuery({ llm, gate: allow }, tesla);
-    expect(plan!.query).toBe("Tesla Elon Musk factory footage");
+    expect(plan!.query).toBe("Tesla Elon Musk factory"); // video 612/613: the model's "footage" is not sent
     /** Search #2 may aim at one gap — that is its job. */
     expect(refuseQuery("NYSE trading floor footage", { analysis: a, gate: allow, allowSingleScene: true, mustDifferFrom: "Tesla footage" })).toBeNull();
   });
@@ -129,7 +129,7 @@ describe("the planner asks for the whole video, not one scene", () => {
       choices: [{ message: { content: JSON.stringify({ mainSubject: "Tesla", recurringSubjects: [], query: "Tesla Elon Musk factory footage" }) } }],
     }));
     const plan = await planVideoQuery({ llm, gate: narrows }, tesla);
-    expect(plan!.query).toBe("Tesla Elon Musk footage");
+    expect(plan!.query).toBe("Tesla Elon Musk");
   });
 
   it("the search gate has the last word, and its reason goes back to the model in plain words", () => {
@@ -152,7 +152,7 @@ describe("the planner asks for the whole video, not one scene", () => {
       return { choices: [{ message: { content: JSON.stringify(answers.shift()) } }] };
     });
     const plan = await planVideoQuery({ llm, gate: allow }, tesla);
-    expect(plan!.query).toBe("Tesla Elon Musk factory footage");
+    expect(plan!.query).toBe("Tesla Elon Musk factory");
     expect(plan!.attempts).toBe(2);
     expect(prompts[1]).toContain("was refused");
   });
@@ -207,7 +207,7 @@ describe("one search fills the pool; a second only for a real gap; never a third
   it("enough after search #1: one search, and every beat can draw on it", async () => {
     const d = deps();
     const pool = await buildVideoYoutubePool(d, input);
-    expect(d.searches).toEqual(["Tesla Elon Musk factory footage"]);
+    expect(d.searches).toEqual(["Tesla Elon Musk factory"]);
     expect(pool.searches).toBe(1);
     expect(pool.search2Needed).toBe(false);
     expect(pool.candidates.filter((c) => c.usable)).toHaveLength(50);

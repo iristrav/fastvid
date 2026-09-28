@@ -11,7 +11,7 @@ import fs from "fs";
 import path from "path";
 
 import { memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
-import { analyzeVideo, refuseQuery, type GateVerdict } from "./youtubeVideoSearchPlanner";
+import { analyzeVideo, refuseQuery, planVideoQuery, withoutProductionWords, type GateVerdict } from "./youtubeVideoSearchPlanner";
 import {
   buildVideoYoutubePool,
   poolGaveNoYoutube,
@@ -20,7 +20,8 @@ import {
   videoYoutubePoolGaveNoYoutube,
   type PoolDeps,
 } from "./youtubeVideoPool";
-import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, isRejectedStockClip } from "./videoPipeline";
+import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, isRejectedStockClip, buildBeatYoutubeQueries, youtubeQueriesForSentence } from "./videoPipeline";
+import { sentenceOnlyYoutubeQueries } from "./youtubeNonFootage";
 import { extractVisualSearchTags, extractBeatGeoPlaceTags, inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
 import { searchGateStrict, withSearchProvenance } from "./searchQueryContract";
 import { youtubeVideoIdsForArchiveAssets } from "./youtubeFootageInFilm";
@@ -513,5 +514,90 @@ describe("E. the stock filter does not refuse a clip for the words FastVid added
 
   it("the adoption loop still asks the same filter with the clip's own query", () => {
     expect(PIPE).toContain('if (isRejectedStockClip(p, sourceQuery) && refuse("rejected_stock")) continue;');
+  });
+});
+
+/* ═══════════ F — a YouTube query holds only words from its own sentence ═══════════ */
+
+describe("F. a sentence's YouTube query never carries a word the sentence does not say", () => {
+  const SENTENCES: Array<[string, string]> = [
+    ["Rome offered its enemies citizenship instead of chains.", ""],
+    ["Rome was small, resource-strained.", ""],
+    ["Yet it thrived by granting conquered peoples citizenship.", ""],
+    ["Scipio Africanus led Rome against Hannibal Barca at Zama in Tunisia in 202 BC.", "Scipio Africanus"],
+    ["Rome sealed the fate of Carthage.", ""],
+    ["Centuries later, Washington borrowed Rome's ideas of a republic.", ""],
+    ["Kim Kardashian built a billion-dollar fortune from skincare.", "Kim Kardashian"],
+    ["Kylie Jenner turned lip kits into a cosmetics empire.", "Kylie Jenner"],
+    ["Kris Jenner ran the business from behind the scenes.", "Kris Jenner"],
+    ["She turned reality TV fame into business.", "Kim Kardashian"],
+  ];
+  const queriesFor = (text: string, person: string, title = PROMPT) =>
+    youtubeQueriesForSentence(
+      buildBeatYoutubeQueries({ text, index: 1, searchQuery: "" } as never, { text, visualCue: "", pexelsQuery: "" } as never, title, person),
+      text
+    );
+  const words = (t: string) =>
+    t.toLowerCase().split(/[^\p{L}\p{N}'’-]+/u).map((w) => w.replace(/['’]s$/, "")).filter(Boolean);
+
+  it("every word of every query is a word of the sentence — nothing appended", () => {
+    for (const [text, person] of SENTENCES) {
+      const said = new Set(words(text));
+      for (const q of queriesFor(text, person)) {
+        for (const w of words(q)) expect(said.has(w), `"${w}" in "${q}" is not in "${text}"`).toBe(true);
+        expect(q).not.toMatch(/\b(archival|footage|documentary|news report)\b/i);
+      }
+    }
+  });
+
+  it("no verb, no filler word, no pronoun", () => {
+    expect(queriesFor(SENTENCES[0]![0], "")).toEqual(["Rome citizenship", "Rome"]);
+    expect(queriesFor(SENTENCES[4]![0], "")).toEqual(["Carthage"]);
+    expect(queriesFor(SENTENCES[5]![0], "")).toEqual(["Washington"]);
+    expect(sentenceOnlyYoutubeQueries(["Kim Kardashian built", "Its", "Rome citizenship instead"], "Kim Kardashian built its Rome citizenship instead.", "built"))
+      .toEqual(["Kim Kardashian", "Rome citizenship"]);
+  });
+
+  it("a sentence that names nobody gets no name added — no YouTube question at all", () => {
+    expect(queriesFor(SENTENCES[2]![0], "")).toEqual([]);
+    expect(queriesFor(SENTENCES[9]![0], "Kim Kardashian", "How the Kardashians Built an Empire")).toEqual([]);
+  });
+
+  it("a one-word question is only a name the sentence capitalises", () => {
+    const kylie = queriesFor(SENTENCES[7]![0], "Kylie Jenner", "How the Kardashians Built an Empire");
+    expect(kylie).toEqual(["Kylie Jenner", "Kylie Jenner lip kits"]);
+    expect(sentenceOnlyYoutubeQueries(["Empire", "empire documentary footage"], "They built an empire.")).toEqual([]);
+    expect(sentenceOnlyYoutubeQueries(["Carthage archival footage"], "Rome sealed the fate of Carthage.")).toEqual(["Carthage"]);
+  });
+
+  it("short questions go first: the two YouTube is sent are the short ones", () => {
+    const scipio = queriesFor(SENTENCES[3]![0], "Scipio Africanus");
+    expect(scipio.slice(0, 2)).toEqual(["Scipio Africanus Tunisia", "Scipio Africanus"]);
+    expect(scipio).toContain("Scipio Africanus Hannibal Barca Tunisia");
+    expect(scipio.indexOf("Scipio Africanus Hannibal Barca Tunisia")).toBeGreaterThan(1);
+  });
+
+  it("the single YouTube door and the lookahead both cut the queries to the sentence", () => {
+    expect(PIPE).toContain("queries: youtubeQueriesForSentence(input.queries, input.beat.text)");
+    expect(PIPE).toContain("youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text)");
+  });
+
+  it("the whole-video planner sends no production word, whatever the model answers", async () => {
+    expect(withoutProductionWords("Rome Carthage archival footage")).toBe("Rome Carthage");
+    expect(withoutProductionWords("Kim Kardashian documentary video")).toBe("Kim Kardashian");
+    const lines: string[] = [];
+    const planned = await planVideoQuery(
+      {
+        llm: async () => ({
+          choices: [{ message: { content: JSON.stringify({ mainSubject: "Rome", recurringSubjects: [], query: "Rome Carthage archival footage" }) } }],
+        }),
+        gate: () => ({ ok: true }),
+        log: (l) => lines.push(l),
+      },
+      roman
+    );
+    expect(planned?.query).toBeTruthy();
+    expect(planned!.query).not.toMatch(/\b(archival|footage|documentary)\b/i);
+    for (const l of lines) expect(l).not.toMatch(/query="[^"]*\b(archival|footage|documentary)\b/i);
   });
 });

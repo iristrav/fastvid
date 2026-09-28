@@ -500,9 +500,28 @@ describe("RONDE 134 — the corrected query causes a real provider request", () 
       { leadQueries: ["Hermann Göring Berlin 1945"], researchPass: true }
     ).catch(() => null);
 
+    /**
+     * Video 612/613 — a YouTube query holds only words its own sentence says. "The decision was his
+     * alone." names nobody, so the scene's "Hermann Göring Berlin 1945" is not sent to YouTube;
+     * test 28 still proves the correction leaves the process through the other providers.
+     */
     const yt = requestedUrls().filter((u) => u.includes("googleapis.com/youtube/v3/search"));
-    expect(yt.length, "the research query never reached YouTube").toBeGreaterThan(0);
-    expect(yt.some((u) => u.includes("G%C3%B6ring") || u.includes("Göring"))).toBe(true);
+    expect(yt.some((u) => u.includes("G%C3%B6ring") || u.includes("Göring"))).toBe(false);
+
+    /** A sentence that says the name does reach YouTube with it, through the same cascade. */
+    mockedFetch.mockClear();
+    resetYoutubeSearchQuotaState();
+    const named = { ...RESEARCH_BEAT, text: "Hermann Göring stood in Berlin in 1945." };
+    await fetchHistoricalBeatVideo(
+      named as never, RESEARCH_SCENE as never, "/tmp", 0, 4, researchDedup(997),
+      researchIntent(),
+      { videoTitle: VIDEO_TITLE, keywords: [] } as never,
+      "r134_yt_named",
+      { leadQueries: ["Hermann Göring Berlin 1945"], researchPass: true }
+    ).catch(() => null);
+    const ytNamed = requestedUrls().filter((u) => u.includes("googleapis.com/youtube/v3/search"));
+    expect(ytNamed.length, "the research query never reached YouTube").toBeGreaterThan(0);
+    expect(ytNamed.some((u) => u.includes("G%C3%B6ring") || u.includes("Göring"))).toBe(true);
   }, 120_000);
 
   it("30. without leadQueries the same call asks the cascade's own questions", async () => {
