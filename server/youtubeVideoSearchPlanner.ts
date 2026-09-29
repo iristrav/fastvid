@@ -443,6 +443,31 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
       return { query: sent, mainSubject: multi[0] ?? "", source: "fallback", attempts: res.attempts, refused: res.refused };
     }
   }
+  /**
+   * VIDEO 618 — WHAT THE GATE WILL SEND, WHEN THE VIDEO KEEPS NAMING IT.
+   *
+   * The search gate narrows a query that names no person to the render's person: every query for
+   * "Why the Kardashians are really that rich" left the gate as "Kris Jenner", and the planner then
+   * refused it because "Kardashians" was gone — nine refusals, no query, an empty pool, and seven
+   * per-beat searches instead of two for the video.
+   *
+   * When that narrowed text is itself one of the terms that recur through the video, it is the
+   * video's subject by this planner's own measure, so it is tried as the query AND the main subject.
+   * Every rule still applies to it; the gate is asked exactly as before and is not changed.
+   */
+  for (const n of [3, 2, 1]) {
+    const q = multi.slice(0, n).join(" ").trim();
+    const narrowed = q ? gate(q).sentAs?.trim() : undefined;
+    if (!narrowed || narrowed === q) continue;
+    const recurs = multi.some((t) => t.toLowerCase() === narrowed.toLowerCase());
+    if (!recurs) continue;
+    const why = refuseQuery(narrowed, { analysis, mainSubject: narrowed, gate });
+    if (!why) {
+      const sent = gateText(gate, narrowed);
+      log(`[YouTubeSearchPlanner] #1 query="${sent}" source=fallback_gate_subject refused=${JSON.stringify(res.refused)}`);
+      return { query: sent, mainSubject: narrowed, source: "fallback", attempts: res.attempts, refused: res.refused };
+    }
+  }
   log(`[YouTubeSearchPlanner] #1 NO_QUERY — nothing passed the rules; YouTube is skipped for this video refused=${JSON.stringify(res.refused)}`);
   return null;
 }
