@@ -75,3 +75,41 @@ export function archiveTagsAtMostTwo(
   const second = rest.find((t) => t !== what && (YEAR.test(t) || KINDS.has(t))) ?? rest.find((t) => t !== what);
   return [what, second].filter((t): t is string => Boolean(t)).slice(0, MAX_ARCHIVE_TAGS);
 }
+
+/**
+ * Tags an operator typed are kept exactly; automatic tags only fill up to two when they typed
+ * fewer. `mergedTags` is the operator's tags followed by the automatic ones.
+ */
+export function handTagsWithAutomaticFill(handTags: readonly string[], mergedTags: readonly string[]): string[] {
+  const hand = [...new Set(handTags)];
+  if (hand.length >= MAX_ARCHIVE_TAGS) return hand;
+  const automatic = archiveTagsAtMostTwo(mergedTags.filter((t) => !hand.includes(t)));
+  return [...hand, ...automatic.filter((t) => !hand.includes(t))].slice(0, MAX_ARCHIVE_TAGS);
+}
+
+export type TagBackfillRow = { id: number; tags: string[] | null; title: string | null; entities: string[] | null };
+
+/**
+ * VIDEO 619 — bring rows written before the rule back to two tags. Rows an operator tagged by
+ * hand are never listed (see `listArchiveAssetsWithTooManyTags`), so their tags stay as typed.
+ */
+export async function trimExistingArchiveTags(
+  deps: {
+    list: (limit: number, afterId: number) => Promise<TagBackfillRow[]>;
+    update: (id: number, tags: string[]) => Promise<void>;
+  },
+  batch = 200
+): Promise<number> {
+  let trimmed = 0;
+  let afterId = 0;
+  for (;;) {
+    const rows = await deps.list(batch, afterId);
+    if (rows.length === 0) return trimmed;
+    for (const row of rows) {
+      afterId = Math.max(afterId, row.id);
+      const tags = archiveTagsAtMostTwo(row.tags ?? [], row.title ?? "", row.entities ?? []);
+      await deps.update(row.id, tags);
+      trimmed++;
+    }
+  }
+}

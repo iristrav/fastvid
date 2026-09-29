@@ -2152,7 +2152,10 @@ export const appRouter = router({
       if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
       const patch: Parameters<typeof updateMediaArchiveAsset>[1] = {};
       if (input.title !== undefined) patch.title = input.title.trim() || null;
-      if (input.tags !== undefined) patch.tags = normalizeMediaTags(input.tags);
+      if (input.tags !== undefined) {
+        patch.tags = normalizeMediaTags(input.tags);
+        patch.tagsSetByHand = 1;
+      }
       if (input.mixKind !== undefined) patch.mixKind = input.mixKind;
       if (input.sourceNote !== undefined) patch.sourceNote = input.sourceNote.trim() || null;
       await updateMediaArchiveAsset(input.id, patch);

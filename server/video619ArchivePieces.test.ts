@@ -229,7 +229,8 @@ describe("Video 619 — at most two tags: the full name, then what or when", () 
   it("the rule is applied on every write of an archive row", () => {
     const db = read("db.ts");
     expect(db).toContain("await db.insert(mediaArchiveAssets).values(withArchiveTagRule(data));");
-    expect(db).toContain("await db.update(mediaArchiveAssets).set(withArchiveTagRule(data))");
+    expect(db).toContain("const patch = archiveUpdateRespectingHandTags(data, rowTagsSetByHand);");
+    expect(db).toContain("await db.update(mediaArchiveAssets).set(patch)");
   });
 });
 

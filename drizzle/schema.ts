@@ -296,6 +296,11 @@ export const mediaArchiveAssets = mysqlTable(
    */
   parentAssetId: int("parentAssetId"),
   splitIntoShotsAt: timestamp("splitIntoShotsAt"),
+  /**
+   * VIDEO 619 — 1 when an operator typed the tags (upload or archive edit). Those tags are kept
+   * exactly as typed; every other row is held to two tags (`archiveTagRule`).
+   */
+  tagsSetByHand: int("tagsSetByHand").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

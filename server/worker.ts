@@ -438,6 +438,20 @@ async function main() {
     console.log("[ArchivePieces] sweep started — archive videos are cut into shots of at most 11s while idle");
   }
 
+  /**
+   * VIDEO 619 — archive rows written before the two-tag rule are brought back to two tags, once
+   * per start. Tags an operator typed are left exactly as they are.
+   */
+  void (async () => {
+    const { trimExistingArchiveTags } = await import("./archiveTagRule");
+    const { listArchiveAssetsWithTooManyTags, updateMediaArchiveAsset } = await import("./db");
+    const trimmed = await trimExistingArchiveTags({
+      list: listArchiveAssetsWithTooManyTags,
+      update: (id, tags) => updateMediaArchiveAsset(id, { tags }),
+    });
+    console.log(`[ArchiveTags] ${trimmed} archive asset(s) brought back to two tags (hand-typed tags kept)`);
+  })().catch((err) => console.warn("[ArchiveTags] trim failed:", (err as Error)?.message?.slice(0, 160)));
+
   // ── 5s heartbeat: logs every function the pipeline is currently blocking in ──
   // getWorkerHeartbeat() now tracks one entry per concurrent call (keyed by its own label) and
   // reports each one's own elapsed time directly, so a hang is visible as one specific entry

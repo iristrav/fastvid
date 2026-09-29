@@ -85,6 +85,7 @@ export type PieceParent = {
   mixKind?: string | null;
   title?: string | null;
   tags?: string[] | null;
+  tagsSetByHand?: number | null;
   sourceNote?: string | null;
   sourceUrl?: string | null;
   sourcePlatform?: string | null;
@@ -235,7 +236,9 @@ export async function productionShotPieceDeps(): Promise<ShotPieceDeps> {
           mimeType: "video/mp4",
           storageUrl: url,
           storageKey: key,
-          tags: tagRule.archiveTagsAtMostTwo(parent.tags ?? [], parent.title ?? ""),
+          ...(parent.tagsSetByHand === 1
+            ? { tags: parent.tags ?? [], tagsSetByHand: 1 }
+            : { tags: tagRule.archiveTagsAtMostTwo(parent.tags ?? [], parent.title ?? "") }),
           sourceNote: `${(parent.sourceNote ?? `archive:${parent.id}`).slice(0, 470)}#shot${piece.index + 1}`,
           licenseNote: parent.licenseNote ?? undefined,
           durationSec: Number((piece.endSec - piece.startSec).toFixed(2)),

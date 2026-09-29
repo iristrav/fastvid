@@ -1949,11 +1949,11 @@ export async function getMediaArchiveAssetsByIds(ids: number[]) {
 
 /**
  * VIDEO 619 — every archive row is written with at most two tags: the person's full name, then
- * what or when (see `archiveTagRule`). Applied HERE, on the write, so no ingestion route, upload
- * or admin edit can store more.
+ * what or when (see `archiveTagRule`). Applied HERE, on the write, so no ingestion route can store
+ * more. Tags an operator typed (`tagsSetByHand: 1`) are theirs and are written as typed.
  */
-function withArchiveTagRule<T extends { tags?: unknown; title?: unknown; entities?: unknown }>(data: T): T {
-  if (!Array.isArray(data.tags)) return data;
+function withArchiveTagRule<T extends { tags?: unknown; title?: unknown; entities?: unknown; tagsSetByHand?: unknown }>(data: T): T {
+  if (!Array.isArray(data.tags) || data.tagsSetByHand === 1) return data;
   const persons = Array.isArray(data.entities) ? (data.entities as unknown[]).filter((e): e is string => typeof e === "string") : [];
   return {
     ...data,
@@ -1963,6 +1963,19 @@ function withArchiveTagRule<T extends { tags?: unknown; title?: unknown; entitie
       persons
     ),
   };
+}
+
+/**
+ * An automatic write (tagging pass, Rekognition, geo retag) to a row whose tags an operator typed
+ * leaves those tags alone; everything else in the write goes through.
+ */
+export function archiveUpdateRespectingHandTags<T extends { tags?: unknown; tagsSetByHand?: unknown }>(
+  data: T,
+  rowTagsSetByHand: boolean
+): T {
+  if (!Array.isArray(data.tags) || data.tagsSetByHand === 1 || !rowTagsSetByHand) return withArchiveTagRule(data);
+  const { tags: _kept, ...rest } = data;
+  return rest as T;
 }
 
 export async function createMediaArchiveAsset(data: InsertMediaArchiveAsset) {
@@ -2036,7 +2049,47 @@ export async function getCuratedArchiveProvenance(
 export async function updateMediaArchiveAsset(id: number, data: Partial<InsertMediaArchiveAsset>) {
   const db = await getDb();
   if (!db) return;
-  await db.update(mediaArchiveAssets).set(withArchiveTagRule(data)).where(eq(mediaArchiveAssets.id, id));
+  let rowTagsSetByHand = false;
+  if (Array.isArray(data.tags) && data.tagsSetByHand !== 1) {
+    const [row] = await db
+      .select({ tagsSetByHand: mediaArchiveAssets.tagsSetByHand })
+      .from(mediaArchiveAssets)
+      .where(eq(mediaArchiveAssets.id, id))
+      .limit(1);
+    rowTagsSetByHand = row?.tagsSetByHand === 1;
+  }
+  const patch = archiveUpdateRespectingHandTags(data, rowTagsSetByHand);
+  if (Object.keys(patch).length === 0) return;
+  await db.update(mediaArchiveAssets).set(patch).where(eq(mediaArchiveAssets.id, id));
+}
+
+/**
+ * VIDEO 619 — rows written before the two-tag rule that still carry more than two automatic tags.
+ * Operator-typed rows are never listed.
+ */
+export async function listArchiveAssetsWithTooManyTags(
+  limit: number,
+  afterId = 0
+): Promise<Array<{ id: number; tags: string[] | null; title: string | null; entities: string[] | null }>> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: mediaArchiveAssets.id,
+      tags: mediaArchiveAssets.tags,
+      title: mediaArchiveAssets.title,
+      entities: mediaArchiveAssets.entities,
+    })
+    .from(mediaArchiveAssets)
+    .where(
+      and(
+        eq(mediaArchiveAssets.tagsSetByHand, 0),
+        gt(mediaArchiveAssets.id, afterId),
+        sql`JSON_LENGTH(${mediaArchiveAssets.tags}) > 2`
+      )
+    )
+    .orderBy(asc(mediaArchiveAssets.id))
+    .limit(limit);
 }
 
 /**

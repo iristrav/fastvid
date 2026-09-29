@@ -51,6 +51,17 @@ import { storagePut } from "./storage";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { handTagsWithAutomaticFill } from "./archiveTagRule";
+
+/**
+ * VIDEO 619 — tags the uploader typed are theirs: kept as typed, marked so the two-tag rule and
+ * later automatic passes leave them alone. Without typed tags the automatic ones follow the rule.
+ */
+export function typedTagsRow(typed: string[], merged: string[]): { tags: string[]; tagsSetByHand: number } {
+  return typed.length > 0
+    ? { tags: handTagsWithAutomaticFill(typed, merged), tagsSetByHand: 1 }
+    : { tags: merged, tagsSetByHand: 0 };
+}
 
 function scheduleClipEmbeddingFromBuffer(assetId: number, buffer: Buffer): void {
   const tmp = path.join(os.tmpdir(), `fv_clip_emb_${assetId}_${Date.now()}.mp4`);
@@ -341,7 +352,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
           mimeType: "video/mp4",
           storageUrl: url,
           storageKey: storedKey,
-          tags: enriched.tags,
+          ...typedTagsRow(userTags, enriched.tags),
           sourceNote: enriched.sourceNote,
           durationSec: storedDur,
           isActive: 1,
@@ -594,7 +605,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       mimeType,
       storageUrl: url,
       storageKey: storedKey,
-      tags: enriched.tags,
+      ...typedTagsRow(userTags, enriched.tags),
       sourceNote: enriched.sourceNote,
       durationSec: minSavedArchiveClipSec(),
       isActive: 1,
