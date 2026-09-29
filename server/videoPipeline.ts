@@ -3202,6 +3202,44 @@ async function fetchBeatYoutubeThenPexels(
  * download guard's own minimum so the source cannot be switched off by arithmetic. A render that
  * wants the old behaviour sets YOUTUBE_FIRST=false, the flag that says what it does.
  */
+/**
+ * VIDEO 617/618 — A SCENE'S BEATS TAKE TURNS; THE FIRST ONE MAY NOT TAKE THEM ALL.
+ *
+ * A beat may wait up to two minutes for YouTube (the operator's choice, `YOUTUBE_FIRST_TURN_MS`),
+ * and a scene's beats run one after another. The scene itself, though, only has what the render's
+ * visual deadline gives it — about 165 s in a one-minute video — so the first beat's two minutes
+ * left room for one more. Render 617 never started 8 of its 14 beats; render 618's scene 1 never
+ * started 3 of its 6, while their YouTube results, fetched for every beat at once when the scene
+ * began, lay ready.
+ *
+ * So a beat's YouTube turn is the two minutes, but never more than what is left once every later
+ * beat of the scene keeps `YOUTUBE_LATER_BEAT_RESERVE_MS`. A scene with few beats is unchanged.
+ * Never below `YOUTUBE_TURN_FLOOR_MS`: a beat always gets a look, and a result the scene's
+ * lookahead already holds is taken at once.
+ */
+export const YOUTUBE_LATER_BEAT_RESERVE_MS = 15_000;
+export const YOUTUBE_TURN_FLOOR_MS = 15_000;
+
+export function youtubeTurnLeavingRoomForLaterBeats(
+  askedMs: number,
+  remainingMs: number,
+  beatsAfter: number
+): number {
+  if (!Number.isFinite(remainingMs) || beatsAfter <= 0) return askedMs;
+  const room = remainingMs - beatsAfter * YOUTUBE_LATER_BEAT_RESERVE_MS;
+  return Math.min(askedMs, Math.max(room, Math.min(askedMs, YOUTUBE_TURN_FLOOR_MS)));
+}
+
+/** How many beats of this scene come after this one; 0 when the scene never said. */
+export function youtubeBeatsAfter(
+  dedup: Pick<VisualDedupState, "sceneBeatCount">,
+  sceneIndex: number,
+  beatIndex: number
+): number {
+  const total = dedup.sceneBeatCount?.get(sceneIndex);
+  return total == null ? 0 : Math.max(0, total - beatIndex - 1);
+}
+
 async function youtubeFirstBeatSlice(
   beat: SceneBeat,
   scene: Scene,
@@ -3230,7 +3268,18 @@ async function youtubeFirstBeatSlice(
    * this number from 30s to 45s, read the same log back, and see nothing change: the render was
    * reporting the request and spending the grant. Printed here as the grant.
    */
-  const sliceMs = Math.min(ytBudget, remainingScopeMs());
+  /**
+   * VIDEO 617/618 — AND NEVER SO LONG THAT THE SCENE'S LATER BEATS GET NO TURN.
+   *
+   * See `youtubeTurnLeavingRoomForLaterBeats`. The two minutes stay the ceiling; in a scene with
+   * more beats than its window can give two minutes each, a beat leaves room for the ones after it.
+   */
+  const turnMs = youtubeTurnLeavingRoomForLaterBeats(
+    ytBudget,
+    remainingScopeMs(),
+    youtubeBeatsAfter(dedup, sceneIndex, beat.index)
+  );
+  const sliceMs = Math.min(turnMs, remainingScopeMs());
   /** VIDEO 618 — see `YoutubeAdoptionHandle`. */
   const adoption = openYoutubeAdoptionHandle();
   try {
@@ -3248,7 +3297,7 @@ async function youtubeFirstBeatSlice(
         `${tag}yt-first`,
         adoption
       ),
-      ytBudget,
+      turnMs,
       `youtube-first s${sceneIndex} b${beat.index}`
     );
     if (ytFirst) {
@@ -20192,6 +20241,8 @@ export interface VisualDedupState {
   youtubeTurnByBeat: Map<string, YoutubeTurnRecord>;
   /** RONDE 648 — each beat's YouTube work, started when its scene starts. See `youtubeLookahead`. */
   youtubeLookahead?: LookaheadRegistry;
+  /** VIDEO 617/618 — beats per scene, so a YouTube turn can leave room for the later ones. */
+  sceneBeatCount?: Map<number, number>;
   /** VIDEO 618 — content key → "scene:beat" `adoptClip` approved it for. See `claimAdoptedForBeat`. */
   adoptedAwaitingPush?: Map<string, string>;
   /** F3-49: "s{sceneIndex}b{beatIndex}" keys for which fetchHistoricalBeatVideo's full
@@ -30639,6 +30690,8 @@ async function fetchSceneVisualsInner(
    */
   {
     startSceneYoutubeLookahead(scene, beats, workDir, clipFetchDur, videoTitle, personName, dedup);
+    /** VIDEO 617/618 — how many beats share this scene's window; see `youtubeTurnLeavingRoomForLaterBeats`. */
+    (dedup.sceneBeatCount ??= new Map()).set(scene.index, beats.length);
   }
   const renderIdForLadder = String(getActiveVideoId() ?? "-");
   let closeBeatLadder: (() => void) | null = null;

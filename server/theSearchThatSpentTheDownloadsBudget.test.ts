@@ -443,7 +443,8 @@ describe("R259 §6 — a metric that reported the request and spent the grant", 
   );
 
   it("THE 45s THAT WAS NEVER 45s: the effective slice is computed from the scope", () => {
-    expect(slice).toContain("const sliceMs = Math.min(ytBudget, remainingScopeMs());");
+    /** VIDEO 617/618 — from the turn the beat is given, which leaves room for later beats. */
+    expect(slice).toContain("const sliceMs = Math.min(turnMs, remainingScopeMs());");
   });
 
   it("and both log lines print it", () => {
@@ -456,7 +457,13 @@ describe("R259 §6 — a metric that reported the request and spent the grant", 
     expect(slice).toContain("of the ${Math.round(ytBudget / 1000)}s it asked for");
   });
 
-  it("and the scope is still given the budget it asks for — only the REPORT changed", () => {
-    expect(slice, "the fix quietly became a budget cut").toContain("      ytBudget,\n");
+  it("and the scope is given exactly the turn the log reports — nothing is cut silently", () => {
+    /**
+     * VIDEO 617/618 changed the scope on purpose: `turnMs` is the two minutes, or less when later
+     * beats of the scene need their turn (`youtubeTurnLeavingRoomForLaterBeats`). What this pinned
+     * still holds: the scope gets the number the log line is computed from, never a quieter one.
+     */
+    expect(slice).toContain("      turnMs,\n");
+    expect(slice).toContain("const turnMs = youtubeTurnLeavingRoomForLaterBeats(\n    ytBudget,");
   });
 });
