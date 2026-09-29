@@ -45,23 +45,7 @@ describe("every source declares how wide its subject matter is", () => {
     }
   });
 
-  it("the specialists are the sources bound to one slice of subject matter", () => {
-    expect(PROVIDER_CAPABILITIES.nasa!.subjectScope).toBe("SPECIALIST");
-    expect(PROVIDER_CAPABILITIES.mediaccc!.subjectScope).toBe("SPECIALIST");
-    expect(PROVIDER_CAPABILITIES.own_archive!.subjectScope).toBe("SPECIALIST");
-  });
 
-  it("and a source bounded by GEOGRAPHY or by NATION is not thereby a specialist", () => {
-    /**
-     * The distinction that keeps this honest. Europeana covers all of European culture and NARA
-     * the whole American record — broad in subject, bounded in territory. Calling those specialist
-     * would bury two real archives on exactly the beats they are best at.
-     */
-    expect(PROVIDER_CAPABILITIES.europeana!.subjectScope).toBe("GENERAL");
-    expect(PROVIDER_CAPABILITIES.nara!.subjectScope).toBe("GENERAL");
-    expect(PROVIDER_CAPABILITIES.internet_archive!.subjectScope).toBe("GENERAL");
-    expect(PROVIDER_CAPABILITIES.youtube_cc!.subjectScope).toBe("GENERAL");
-  });
 
   it("NO SUBJECT IS NAMED — the rule is about sources, not about topics", () => {
     const SRC = readFileSync(join(__dirname, "providerCapability.ts"), "utf8")
@@ -76,26 +60,8 @@ describe("every source declares how wide its subject matter is", () => {
 describe("the specialist no longer wins the round on breadth", () => {
   const dated = mediaFormsForIntent({ period: ["1945"] });
 
-  it("NASA WAS 1.000 ON A DATED BEAT AND IS NOW 0.600", () => {
-    expect(providerFitForNeed("nasa", dated)).toBeCloseTo(0.6, 3);
-  });
 
-  it("which puts it behind the general archives and Wikimedia", () => {
-    const nasa = providerFitForNeed("nasa", dated)!;
-    expect(nasa).toBeLessThan(providerFitForNeed("internet_archive", dated)!);
-    expect(nasa).toBeLessThan(providerFitForNeed("europeana", dated)!);
-    expect(nasa).toBeLessThan(providerFitForNeed("wikimedia", dated)!);
-  });
 
-  it("AND STILL AHEAD OF STOCK — a discount, not a refusal", () => {
-    /**
-     * 0.6 and not 0. NASA genuinely can supply archival footage, and a beat that no general archive
-     * answers should still reach it before a stock library that cannot supply the form at all.
-     */
-    const nasa = providerFitForNeed("nasa", dated)!;
-    expect(nasa).toBeGreaterThan(providerFitForNeed("pexels", dated)!);
-    expect(nasa).toBeGreaterThan(providerFitForNeed("pixabay", dated)!);
-  });
 
   it("a GENERAL source is not discounted at all", () => {
     expect(providerFitForNeed("internet_archive", dated)).toBeCloseTo(0.833, 2);

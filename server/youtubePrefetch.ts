@@ -38,7 +38,6 @@
  */
 import { youtubeResultIsShort } from "./youtubeNonFootage";
 import { youtubeVideoPoolEnabled } from "./youtubeVideoPool";
-import { rapidApiKey } from "./sourcingPolicy";
 import fs from "fs";
 import path from "path";
 import { createHash } from "crypto";
@@ -518,8 +517,6 @@ export type PrefetchDeps = {
   writtenOff?: (videoId: string) => string | null;
   probeDurationSec:(filePath: string) => Promise<number>;
   ingest: (filePath: string, metadata: IngestMetadata) => Promise<IngestOutcome>;
-  /** Drop anything the download layer is holding for this video — its files are about to go. */
-  release: (videoId: string) => void;
   /** Mark the claimed row alive, so a slow fetch is never taken for a dead one. */
   touch?: () => Promise<void>;
   makeWorkDir: (videoId: string) => string;
@@ -616,7 +613,6 @@ export async function prefetchOneVideo(
   } catch (err) {
     segments.push({ startSec: -1, downloaded: false, downloadReason: `threw:${(err as Error).message?.slice(0, 80)}` });
   } finally {
-    deps.release(row.videoId);
     if (workDir) {
       try {
         deps.removeWorkDir(workDir);
@@ -813,30 +809,9 @@ async function productionAlternativeDeps(sourceVideoId: number | null): Promise<
 
 /* ═══════════════════════ which route first, in the background ═══════════════════════ */
 
-/**
- * RONDE 643 — WHICH ROUTE THE BACKGROUND ASKS FIRST, DECIDED BY MEASUREMENT.
- *
- * The production route test on an HD video (Big Buck Bunny, 18:22 on 2026-09-23):
- *
- *     route=cloud     ok=true   bytes=7734664  ms=12038   (9 s inside a 58 s window)
- *     route=rapidapi  ok=false  http_403:ip_locked       ms=1118
- *
- * RapidAPI's file link is a googlevideo URL signed for RapidAPI's own address; fetched from this
- * worker, YouTube refuses it. An earlier run had it succeed 3/3 — on a 2005 video whose old
- * progressive format carries no such lock, which is why that test was replaced. For the videos a
- * render actually finds, RapidAPI's transfer is refused, so it goes SECOND, as it does in a render.
- *
- * The cloud route delivered once it was given time — which a render never gave it, and this does.
- * `YOUTUBE_PREFETCH_ROUTE_ORDER=rapidapi_first` swaps them, for a RapidAPI plan whose links are not
- * address-locked.
- */
-export function prefetchRouteOrder(env: NodeJS.ProcessEnv = process.env): Array<"cloud" | "rapidapi"> {
-  const cloud = Boolean(env.YOUTUBE_CC_DL_SERVICE?.trim());
-  /** VIDEO 619 — RapidAPI is switched off; see `RAPIDAPI_SWITCHED_OFF`. */
-  const rapid = Boolean(rapidApiKey(env));
-  const order: Array<"cloud" | "rapidapi"> =
-    env.YOUTUBE_PREFETCH_ROUTE_ORDER?.trim() === "rapidapi_first" ? ["rapidapi", "cloud"] : ["cloud", "rapidapi"];
-  return order.filter((r) => (r === "cloud" ? cloud : rapid));
+/** The background fetch has one route: the cloud yt-dlp service, when it is configured. */
+export function prefetchRouteOrder(env: NodeJS.ProcessEnv = process.env): Array<"cloud"> {
+  return env.YOUTUBE_CC_DL_SERVICE?.trim() ? ["cloud"] : [];
 }
 
 /* ═══════════════════════ production wiring ═══════════════════════ */
@@ -905,7 +880,6 @@ async function productionPrefetchDeps(): Promise<PrefetchDeps> {
     writtenOff: writtenOffReason,
     probeDurationSec: (filePath) => pipeline.probeVideoDurationSec(filePath),
     ingest: (filePath, metadata) => ingestExternalClipToArchiveWithReason(filePath, metadata),
-    release: (videoId) => failure.forgetYoutubeSourceFile(videoId),
     makeWorkDir: (videoId) =>
       fs.mkdtempSync(path.join(pipeline.TMP_DIR, `${WORK_DIR_PREFIX}${videoId}_`)),
     removeWorkDir: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
@@ -918,8 +892,8 @@ export async function prefetchDisabledReason(): Promise<string | null> {
   const { youtubeSourcingEnabled, externalAssetIngestionEnabled } = await import("./sourcingPolicy");
   if (!youtubeSourcingEnabled()) return "ENABLE_YOUTUBE_SOURCING is not true";
   if (!externalAssetIngestionEnabled()) return "ENABLE_EXTERNAL_ASSET_INGESTION=false";
-  if (!rapidApiKey() && !process.env.YOUTUBE_CC_DL_SERVICE) {
-    return "no YouTube download route (YOUTUBE_CC_DL_SERVICE MISSING; RapidAPI is switched off)";
+  if (!process.env.YOUTUBE_CC_DL_SERVICE) {
+    return "no YouTube download route (YOUTUBE_CC_DL_SERVICE MISSING)";
   }
   return null;
 }

@@ -58,25 +58,9 @@ describe("RONDE 27a — the format picker optimises for download time", () => {
     expect(picker).not.toContain("Math.abs(heightA - 720)");
   });
 
-  it("takes the smallest file that clears the floor", () => {
-    expect(picker).toContain("youtubeMinFormatHeight()");
-    expect(picker).toContain("sizeOf(a) - sizeOf(b)");
-  });
 
-  it("still returns something when nothing clears the floor", () => {
-    // Falling through to "no clip" would trade one problem for a worse one.
-    expect(picker).toContain("(b.height ?? 0) - (a.height ?? 0)");
-  });
 
-  it("treats a missing contentLength as worst, not best", () => {
-    // Sorting ascending with a missing size parsed as 0 or NaN would pick the unknown every time.
-    expect(picker).toContain("Number.MAX_SAFE_INTEGER");
-  });
 
-  it("is applied to both download routes", () => {
-    const uses = pipelineSrc.split("youtubeDownloadTimeoutMs()").length - 1;
-    expect(uses).toBe(2); // cloud/yt-dlp service and RapidAPI
-  });
 });
 
 // RONDE 27b (the Library of Congress pool budget) left with Library of Congress itself: VIDEO 619

@@ -61,14 +61,6 @@ describe("RONDE 64 — the duration comes off the file, not off a guess", () => 
     expect(block).toContain("return Math.max(0, Math.min(start, latest));");
   });
 
-  it("the RapidAPI trim uses the resolved start, and says when it moved", () => {
-    const src = PIPELINE();
-    const idx = src.indexOf("resolveTrimStartSec(\n                tmpPath, clipStart, duration, videoId, startIsExact\n              )");
-    expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 900);
-    expect(block).toContain("trim start ${clipStart.toFixed(1)}s");
-    expect(block).toContain("resolvedStart,");
-  });
 });
 
 describe("RONDE 64 — a clip whose adoption was never recorded is still identifiable", () => {

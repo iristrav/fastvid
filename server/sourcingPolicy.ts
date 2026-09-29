@@ -1046,89 +1046,6 @@ export function youtubeBeatBudgetMs(
 }
 
 /**
- * How long the RapidAPI metadata probe may take, in milliseconds.
- *
- * A constant rather than a literal at the fetch site because a second reader now needs it: the
- * budget decision below has to know what the probe COSTS before deciding whether to spend it.
- * Two copies of that number would be a decision made against the wrong price.
- */
-export const YOUTUBE_META_PROBE_TIMEOUT_MS = 20_000;
-
-/**
- * FASTVID — YOUTUBE PRODUCTION REPAIR: THE PROBE THAT SPENT THE DOWNLOAD'S BUDGET.
- *
- * ── The measured sequence ────────────────────────────────────────────────────────────────────
- *
- * Before each YouTube download, `fetchYouTubeCCClips` asks RapidAPI how long the source video is,
- * so `pickLongVideoStartSec` can choose a start offset inside the film rather than in its intro.
- * That probe deliberately runs OUTSIDE the scene-fetch scope (RONDE 62/56): `sceneFetchScopeStorage
- * .exit()` detaches it so it gets its own honest 20 seconds instead of inheriting a scope that is
- * already spent.
- *
- * Detaching removes the abort SIGNAL. It does not stop the clock. `remainingScopeMs()` is
- * `deadline - Date.now()` against an absolute wall-clock deadline, so every second the probe takes
- * is a second the download will not have. And the download has a floor: RONDE 68 refuses to start
- * a whole-video transfer with less than twelve seconds left, because a transfer that cannot finish
- * spends the scene's remaining time and delivers nothing.
- *
- * Render 576 is the two rules meeting. Thirteen real probe calls — `metadata=13` — each allowed up
- * to twenty un-abortable seconds, every one of them in front of a download that then found nothing
- * left. Across every production log kept for this project, seventy-nine YouTube downloads were
- * refused for a spent scene budget and SEVENTY-FIVE of them were refused at literally `0s left`.
- *
- * ── Why this is not a budget increase ────────────────────────────────────────────────────────
- *
- * Nothing here raises a limit, lengthens a timeout or lowers the download floor. It changes only
- * the ORDER in which one scene's budget is spent. The probe is an optimisation: when its answer is
- * unknown, `pickLongVideoStartSec`'s caller already falls back to a fixed start, and the render
- * proceeds. A download is not an optimisation — without it there is no clip at all. So when the
- * budget cannot pay for both, the download is what the budget is for.
- *
- * A cached answer is free and is always used; this decides only whether a MISS is worth a request.
- */
-export type YoutubeProbeDecision =
-  | { probe: true; remainingMs: number }
-  | {
-      probe: false;
-      reason: "BUDGET_RESERVED_FOR_DOWNLOAD";
-      remainingMs: number;
-      /** What the probe plus the download's own floor would have needed. */
-      needMs: number;
-    };
-
-export function shouldProbeYoutubeDuration(params: {
-  /** What `remainingScopeMs()` reports. `Infinity` when there is no scope at all. */
-  remainingMs: number;
-  /** The download's own refusal floor — RONDE 68's twelve seconds. */
-  downloadFloorMs: number;
-  probeMs?: number;
-}): YoutubeProbeDecision {
-  const probeMs = params.probeMs ?? YOUTUBE_META_PROBE_TIMEOUT_MS;
-  const remainingMs = params.remainingMs;
-  /**
-   * No enclosing scope means no deadline to protect, which is the prefetch case and the test case.
-   * Probing is then free of consequence and stays exactly as it was.
-   */
-  if (!Number.isFinite(remainingMs)) return { probe: true, remainingMs };
-  const needMs = probeMs + params.downloadFloorMs;
-  if (remainingMs >= needMs) return { probe: true, remainingMs };
-  return { probe: false, reason: "BUDGET_RESERVED_FOR_DOWNLOAD", remainingMs, needMs };
-}
-
-/** The line the pipeline logs when it declines to probe. A skipped step is never silent. */
-export function formatYoutubeProbeSkip(
-  sceneIndex: number,
-  videoId: string,
-  decision: Extract<YoutubeProbeDecision, { probe: false }>
-): string {
-  return (
-    `[Pipeline] Scene ${sceneIndex}: not probing ${videoId}'s duration — ` +
-    `${Math.round(decision.remainingMs / 1000)}s left and the probe plus the download floor need ` +
-    `${Math.round(decision.needMs / 1000)}s. The start offset falls back; the download keeps the budget`
-  );
-}
-
-/**
  * HOW LONG ONE YOUTUBE TRANSFER MAY TAKE — and why it may never exceed what the caller waits.
  *
  * ── What render 579 measured ────────────────────────────────────────────────────────────────
@@ -1487,22 +1404,6 @@ export type YoutubeSourcingReadiness = {
   warnings: string[];
 };
 
-/**
- * VIDEO 619 — RAPIDAPI IS SWITCHED OFF.
- *
- * Its download links are signed for RapidAPI's own address (`http_403:ip_locked`, render 615), and
- * in renders 617, 618 and 619 it was locked for the whole render: one delivery in a day of tries.
- * Every reader of the key goes through this function, so the download fallback, the search, the
- * background fetch and the readiness checks all see "no RapidAPI" at once. The environment
- * variable is left as it is; this is the one place to change should a plan without address-locked
- * links ever be bought.
- */
-export const RAPIDAPI_SWITCHED_OFF = true;
-
-export function rapidApiKey(env: NodeJS.ProcessEnv = process.env): string {
-  return RAPIDAPI_SWITCHED_OFF ? "" : (env.RAPIDAPI_KEY?.trim() ?? "");
-}
-
 export function youtubeSourcingReadiness(): YoutubeSourcingReadiness {
   const missing: string[] = [];
   const warnings: string[] = [];
@@ -1510,9 +1411,7 @@ export function youtubeSourcingReadiness(): YoutubeSourcingReadiness {
   if (!process.env.YOUTUBE_API_KEY?.trim()) missing.push("YOUTUBE_API_KEY");
 
   const cloud = Boolean(process.env.YOUTUBE_CC_DL_SERVICE?.trim());
-  const rapid = Boolean(rapidApiKey());
-  /** Either download route satisfies this — only their absence together blocks a download. */
-  if (!cloud && !rapid) missing.push(RAPIDAPI_SWITCHED_OFF ? "YOUTUBE_CC_DL_SERVICE" : "RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE");
+  if (!cloud) missing.push("YOUTUBE_CC_DL_SERVICE");
 
   /**
    * The cloud yt-dlp service authenticates with `Authorization: Bearer <YOUTUBE_CC_DL_TOKEN>` and

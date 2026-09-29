@@ -167,12 +167,6 @@ describe("§2 — the probe runs ahead of the call it protects", () => {
 /* ═══════════ §3 — the route is not removed and not reordered ═══════════ */
 
 describe("§3 — the trade this file has refused twice is still refused", () => {
-  it("THE CLOUD ROUTE IS STILL TRIED, AND STILL FIRST", () => {
-    const cloud = PIPE.indexOf("const cloudTmpPath = outPath.replace");
-    const rapid = PIPE.indexOf('const tmpPath = outPath.replace(/\\.mp4$/, "_rapid_tmp.mp4");');
-    expect(cloud).toBeGreaterThan(-1);
-    expect(rapid).toBeGreaterThan(cloud);
-  });
 
   it("and the reason it is kept is recorded where the ordering lives", () => {
     expect(PIPE).toContain("fetches the WHOLE source before trimming");

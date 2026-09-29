@@ -35,7 +35,6 @@
  * BUILT_IN_FORGE_API_URL that is not set. OpenAI was configured the whole time — as the LLM.
  */
 import { describe, expect, it } from "vitest";
-import {  } from "./composeEligibility";
 
 const read = (rel: string) => {
   const { readFileSync } = require("fs") as typeof import("fs");

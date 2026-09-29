@@ -272,8 +272,8 @@ async function startServer() {
         : `✓ local disk (${process.env.UPLOADS_DIR || "uploads/"} — no S3 cost; attach volume or set S3_* later)`
   );
   const ytSearch = !!process.env.YOUTUBE_API_KEY?.trim();
-  const ytDownload = !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
-  console.log("[Fastvid] RAPIDAPI_KEY:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
+  const ytDownload = !!process.env.YOUTUBE_CC_DL_SERVICE?.trim();
+  console.log("[Fastvid] YOUTUBE_CC_DL_SERVICE:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube download disabled");
   console.log("[Fastvid] YOUTUBE_API_KEY:", ytSearch ? "✓ set" : "✗ NOT SET — YouTube CC search disabled");
   /**
    * A BANNER THAT REPORTS THE FLAG, RATHER THAN A WORD SOMEONE TYPED.
@@ -610,7 +610,6 @@ async function startServer() {
         PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,
         PIXABAY_API_KEY: !!process.env.PIXABAY_API_KEY,
         YOUTUBE_API_KEY: !!process.env.YOUTUBE_API_KEY,
-        RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
         SERPAPI_KEY: !!process.env.SERPAPI_KEY,
         UNSPLASH_ACCESS_KEY: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
         youtubeSourcingEnabled: youtubeSourcingEnabled(),

@@ -101,13 +101,6 @@ describe("RONDE 97 §4 — no code path turns a YouTube thumbnail into a clip", 
 /* ═══════════ §6 — the real video route is intact ═══════════ */
 
 describe("RONDE 97 §6 — YouTube video is downloaded, trimmed, and traceable", () => {
-  it("TEST 5 — the CC route downloads a real stream, not a picture", () => {
-    const body = bodyOf("downloadYouTubeCCClip");
-    // A stream from the yt-dlp service or a RapidAPI format URL — an mp4, not a jpg.
-    expect(body).toMatch(/yt-dlp|ytdlp|YOUTUBE_CC_DL_SERVICE/);
-    expect(body).toContain("mimeType");
-    expect(body).not.toContain("-loop");
-  });
 
   it("TEST 6 — it cuts a fragment: a start offset and a duration", () => {
     const src = PIPELINE_SRC.slice(PIPELINE_SRC.indexOf("export async function downloadYouTubeCCClip("));

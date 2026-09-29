@@ -240,13 +240,9 @@ function readEnableSubtitles(video: { enableSubtitles?: number | null }): boolea
  */
 
 
-async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
-  await _generateVideoWithAI(videoId, prompt, videoLength, voiceId, customVoiceoverUrl);
-}
-
 // ─── Full pipeline: script generation + video production (no approval pause) ────
-export async function generateFullVideoInternal(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string, enableSubtitles = false) {
-  return generateFullVideo(videoId, prompt, videoLength, videoType, voiceId, customVoiceoverUrl, enableSubtitles);
+export async function generateFullVideoInternal(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, enableSubtitles = false) {
+  return generateFullVideo(videoId, prompt, videoLength, videoType, voiceId, enableSubtitles);
 }
 
 // Each full attempt (original + every retry) burns a full run of per-beat LLM calls, TTS, and
@@ -307,7 +303,6 @@ export async function retryFailedVideo(
         video.prompt,
         video.videoLength ?? "15-20",
         video.voiceId ?? undefined,
-        video.customVoiceoverUrl ?? undefined,
         video.script!,
         video.title ?? undefined,
         video.metadata ?? undefined,
@@ -321,7 +316,7 @@ export async function retryFailedVideo(
   return { mode: "queue", status: `queued (#${queuePosition})` };
 }
 
-async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, customVoiceoverUrl?: string, enableSubtitles = false) {
+async function generateFullVideo(videoId: number, prompt: string, videoLength: string, videoType: string, voiceId?: string, enableSubtitles = false) {
   try {
     const existing = await getVideoById(videoId);
     if (existing?.script?.trim()) {
@@ -339,7 +334,6 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
         prompt,
         videoLength,
         voiceId,
-        customVoiceoverUrl,
         existing.script,
         existing.title ?? undefined,
         existing.metadata ?? undefined,
@@ -379,7 +373,7 @@ async function generateFullVideo(videoId: number, prompt: string, videoLength: s
       progressPercent: 29,
     });
     await _generateVideoWithAI(
-      videoId, prompt, videoLength, voiceId, customVoiceoverUrl,
+      videoId, prompt, videoLength, voiceId,
       videoAfterScript.script,
       videoAfterScript.title ?? undefined,
       videoAfterScript.metadata ?? undefined,
@@ -606,7 +600,6 @@ async function _generateVideoWithAI(
   prompt: string,
   videoLength: string,
   voiceId?: string,
-  customVoiceoverUrl?: string,
   // Optional: pass script/title/metadata directly to avoid DB re-read race condition
   preloadedScript?: string,
   preloadedTitle?: string,
@@ -631,10 +624,10 @@ async function _generateVideoWithAI(
     if (userSem.waiting > 0) {
       console.log(`[RenderLock] user ${renderUserId}: video ${videoId} waiting for previous render to finish`);
     }
-    return userSem.run(() => _runVideoGeneration(videoId, prompt, videoLength, voiceId, customVoiceoverUrl, preloadedScript, preloadedTitle, preloadedMetadata, enableSubtitles));
+    return userSem.run(() => _runVideoGeneration(videoId, prompt, videoLength, voiceId, preloadedScript, preloadedTitle, preloadedMetadata, enableSubtitles));
   }
 
-  return _runVideoGeneration(videoId, prompt, videoLength, voiceId, customVoiceoverUrl, preloadedScript, preloadedTitle, preloadedMetadata, enableSubtitles);
+  return _runVideoGeneration(videoId, prompt, videoLength, voiceId, preloadedScript, preloadedTitle, preloadedMetadata, enableSubtitles);
 }
 
 async function _runVideoGeneration(
@@ -642,7 +635,6 @@ async function _runVideoGeneration(
   prompt: string,
   videoLength: string,
   voiceId?: string,
-  customVoiceoverUrl?: string,
   preloadedScript?: string,
   preloadedTitle?: string,
   preloadedMetadata?: unknown,
@@ -789,7 +781,6 @@ async function _runVideoGeneration(
           await pushStep(progress.stage, pipelinePercent);
         },
         voiceId,
-        customVoiceoverUrl,
         videoLength,
         enableSubtitles,
         prompt
@@ -1248,12 +1239,11 @@ export const appRouter = router({
       });
       // Phase B: pass script directly to avoid DB re-read race condition
       const voiceIdForApprove = (video as { voiceId?: string | null }).voiceId ?? undefined;
-      const customVoiceoverForApprove = video.customVoiceoverUrl ?? undefined;
       const titleForApprove = video.title ?? undefined;
       setImmediate(() => {
         _generateVideoWithAI(
           video.id, video.prompt, video.videoLength ?? "15-20",
-          voiceIdForApprove, customVoiceoverForApprove,
+          voiceIdForApprove,
           finalScript, titleForApprove, metadataForApprove,
           readEnableSubtitles(video)
         ).catch(console.error);

@@ -91,19 +91,6 @@ describe("the call site", () => {
     expect(args, "the expression that asked for five").not.toContain("count - fetched");
   });
 
-  it("NO GATE, CEILING OR THRESHOLD MOVED WITH IT", () => {
-    /**
-     * This is a supply change and must be only that. The same searches, the same quota, the same
-     * number of network calls — one larger response each. Everything that bounds the EXPENSIVE
-     * half stays exactly where it was, so a render may now choose from more candidates and still
-     * download no more of them.
-     */
-    const PIPE = src();
-    expect(PIPE).toContain("const maxDownloadAttempts = youtubeMaxDownloadsPerRender();");
-    expect(PIPE).toContain("if (downloadsSoFar() >= maxDownloadAttempts) break;");
-    expect(PIPE).toContain("if (Date.now() > ytDeadline) break;");
-    expect(PIPE).toContain("if (remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {");
-  });
 
   it("the page size is part of the query cache key", () => {
     /**
@@ -113,13 +100,6 @@ describe("the call site", () => {
     expect(src()).toContain("#n${maxResults}");
   });
 
-  it("the RapidAPI fallback is sized by the same number", () => {
-    // It returns a whole page and slices client-side, so the same argument governs both routes.
-    const PIPE = src();
-    const at = PIPE.indexOf("async function searchYoutubeViaRapidApi(");
-    const body = PIPE.slice(at, at + 2200);
-    expect(body).toContain(".slice(0, maxResults)");
-  });
 });
 
 /**

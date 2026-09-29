@@ -256,8 +256,4 @@ describe("Video 619 — a YouTube video's length, without RapidAPI", () => {
     expect(await youtubeVideoDurationSec("v3", { fetch: down, apiKey: "k" })).toBe(0);
   });
 
-  it("the background fetch asks YouTube, and the RapidAPI lookup sends nothing without a key", () => {
-    expect(read("youtubePrefetch.ts")).toContain("return youtubeVideoDurationSec(videoId);");
-    expect(read("videoPipeline.ts")).toContain("if (!RAPIDAPI_KEY) return null;");
-  });
 });

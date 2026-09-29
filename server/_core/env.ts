@@ -195,8 +195,6 @@ export const ENV = {
   get klingApiKey() { return process.env.KLING_API_KEY ?? ""; },
   get klingApiSecret() { return process.env.KLING_API_SECRET ?? ""; },
   get elevenLabsApiKey() { return process.env.ELEVENLABS_API_KEY ?? ""; },
-  get lumaApiKey() { return process.env.LUMA_API_KEY ?? ""; },
   get leonardoApiKey() { return process.env.LEONARDO_API_KEY ?? ""; },
-  get pikaApiKey() { return process.env.PIKA_API_KEY ?? ""; },
   get pixabayApiKey() { return process.env.PIXABAY_API_KEY ?? ""; },
 };

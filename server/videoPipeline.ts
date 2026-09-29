@@ -47,7 +47,7 @@ import {
 } from "./curatedProvenanceRepair";
 import { formatPreparationCache, preparationKey, resetPreparationScope, runPreparation } from "./preparationCache";
 import { BUDGETS, chargeAmbientBudget, createRetrievalBudgetState, formatRetrievalBudgets, setBudgetResolver, type RetrievalBudgetState } from "./retrievalBudget";
-import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteYoutubeSourceFile, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, noteRapidApiLinkLocked, noteRapidApiTransferOk, rapidApiLinkLocked, youtubeDownloadRefusal, youtubeSourceFile, formatYoutubeSourceReuse, resetYoutubeSourceFiles, youtubeServiceRefusalReason } from "./providerFailureClass";
+import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, youtubeDownloadRefusal, youtubeServiceRefusalReason } from "./providerFailureClass";
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry } from "./youtubeLookahead";
@@ -141,7 +141,7 @@ import {
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
 import { cachedClipBakedEditTextVerdict, resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, sceneBeatCapForCadence, maxBeatCapForVisualCadence, visualStageWallClockMin, isFastShortVideoLength, composeLocalClipsOnly, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, type YoutubeLicenseMode, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, youtubeSearchPassesPerQuery, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, youtubeFirstPerBeatEnabled, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_PARALLEL_BEATS, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS, beatClipTextFilterMaxChecks, rapidApiKey } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, sceneBeatCapForCadence, maxBeatCapForVisualCadence, visualStageWallClockMin, isFastShortVideoLength, composeLocalClipsOnly, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, type YoutubeLicenseMode, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, youtubeSearchPassesPerQuery, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, youtubeFirstPerBeatEnabled, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_PARALLEL_BEATS, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -729,15 +729,9 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 /** Optional: Google Cloud TTS — free 1M chars/month (Neural2), commercial use allowed. Final
  *  voiceover fallback tier, after ElevenLabs and Fish Audio. */
 const GOOGLE_TTS_API_KEY = process.env.GOOGLE_TTS_API_KEY || process.env.GOOGLE_CLOUD_TTS_API_KEY || "";
-const LUMA_API_KEY = process.env.LUMA_API_KEY || "";
-const PIKA_API_KEY = process.env.PIKA_API_KEY || "";
 const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "";
 /** Optional: high-quality CC photos (https://unsplash.com/developers) */
 const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || "";
-/** VIDEO 619 — switched off; see `RAPIDAPI_SWITCHED_OFF`. Every RapidAPI branch below reads this. */
-const RAPIDAPI_KEY = rapidApiKey();
-const RAPIDAPI_YT_HOST =
-  process.env.RAPIDAPI_YT_HOST || "ytstream-download-youtube-videos.p.rapidapi.com";
 
 // @ts-ignore
 import {
@@ -2481,7 +2475,7 @@ type PipelinePerfProfilePreMinimize = Omit<
 /** YouTube search + download (CC and fair-use standard videos). */
 function youtubeCcReady(): boolean {
   const canSearch = Boolean(process.env.YOUTUBE_API_KEY?.trim());
-  const canDownload = Boolean(RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
+  const canDownload = Boolean(process.env.YOUTUBE_CC_DL_SERVICE?.trim());
   return canSearch && canDownload;
 }
 
@@ -2563,21 +2557,6 @@ export function youtubeLicenseMetadata(mode: YoutubeLicenseMode): {
   return { retrievedUnder: mode, ...(param ? { reported: param } : {}) };
 }
 
-/**
- * RONDE 10: quota-free RapidAPI search fallback. The official YouTube Data API search costs 100
- * quota units per call (~100/day), so it 429s after a few renders — that is the sole reason
- * YouTube contributed nothing in renders 512-518. This opt-in fallback uses the existing
- * RAPIDAPI_KEY (a scraped, quota-free search) ONLY when the official search is unavailable, and
- * ONLY for the fair-use path — RapidAPI search cannot confirm a Creative Commons license, so the
- * strict-CC path is never routed through it. Off by default; requires RAPIDAPI_KEY.
- */
-function youtubeRapidSearchFallbackEnabled(): boolean {
-  return envFlagIsOn("ENABLE_YOUTUBE_RAPID_SEARCH") && Boolean(RAPIDAPI_KEY);
-}
-
-const RAPIDAPI_YT_SEARCH_HOST =
-  process.env.RAPIDAPI_YT_SEARCH_HOST || "yt-api.p.rapidapi.com";
-
 /** Max seconds per standard-YouTube (fair-use) clip — short transformative excerpt only. */
 function youtubeFairUseMaxClipSec(): number {
   const raw = process.env.FAIR_USE_YT_MAX_SEC?.trim();
@@ -2628,17 +2607,6 @@ function clipRequiresFairUseTransform(filePath: string): boolean {
  */
 export function poolClipRequiresFairUseTransformForTest(filePath: string): boolean {
   return clipRequiresFairUseTransform(filePath);
-}
-
-function ffmpegSupportsDrawtext(): boolean {
-  if (process.env.FFMPEG_DISABLE_DRAWTEXT === "true") return false;
-  try {
-    const out = execSync(`"${FFMPEG_BIN}" -filters 2>&1`, { encoding: "utf8", maxBuffer: 512 * 1024 });
-    return /\sdrawtext\s/.test(out);
-  } catch {
-    const bin = FFMPEG_BIN.toLowerCase();
-    return !bin.includes("ffmpeg-static") && !bin.includes("node_modules");
-  }
 }
 
 /**
@@ -6524,106 +6492,6 @@ export interface PipelineProgress {
   percent: number;
 }
 
-// ─── SSRF guard for user-supplied external URLs ────────────────────────────────
-// Phase 12: customVoiceoverUrl (user-supplied, fetched server-side) was validated only as an
-// optional string with no host/scheme check, letting any authenticated user point it at internal
-// infrastructure (e.g. a cloud metadata endpoint). This rejects private/loopback/link-local/
-// reserved addresses before fetching, and re-checks after every redirect hop (fetch's default
-// "follow" behavior would otherwise let a malicious server bypass the initial-URL check via a
-// 3xx to an internal address).
-function isPrivateOrReservedIp(addr: string): boolean {
-  const v4 = addr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const a = Number(v4[1]);
-    const b = Number(v4[2]);
-    if (a === 127) return true; // loopback
-    if (a === 10) return true; // RFC1918 private
-    if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918 private
-    if (a === 192 && b === 168) return true; // RFC1918 private
-    if (a === 169 && b === 254) return true; // link-local, incl. cloud metadata (169.254.169.254)
-    if (a === 0) return true; // "this" network
-    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
-    return false;
-  }
-  const lower = addr.toLowerCase();
-  if (lower === "::1") return true; // IPv6 loopback
-  if (lower.startsWith("fe80:")) return true; // IPv6 link-local
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // IPv6 unique local (fc00::/7)
-  if (lower.startsWith("::ffff:")) return isPrivateOrReservedIp(lower.slice("::ffff:".length));
-  return false;
-}
-
-async function assertSafeExternalUrl(rawUrl: string): Promise<void> {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL is not a valid URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL must be http or https");
-  }
-  const { isIP } = await import("net");
-  const hostname = parsed.hostname;
-  if (hostname.toLowerCase() === "localhost") {
-    throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL host is not allowed");
-  }
-  let addresses: string[];
-  if (isIP(hostname)) {
-    addresses = [hostname];
-  } else {
-    try {
-      const dns = await import("dns");
-      const results = await dns.promises.lookup(hostname, { all: true });
-      addresses = results.map((r) => r.address);
-    } catch {
-      throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL host could not be resolved");
-    }
-  }
-  if (addresses.length === 0 || addresses.some((a) => isPrivateOrReservedIp(a))) {
-    throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL points to a disallowed address");
-  }
-}
-
-/** Fetch a user-supplied external URL, validating the host (and every redirect hop) against
- *  private/internal address ranges before each request — see assertSafeExternalUrl above.
- *  F3-07: each hop now goes through a real AbortController instead of a bare fetch() —
- *  previously a stalled response could hang this call, and therefore the whole render,
- *  indefinitely.
- *  F3-14: each hop now uses AbortSignal.timeout(timeoutMs) passed straight into fetch() instead
- *  of fetchWithTimeout — fetchWithTimeout's internal clearTimeout fires the instant fetch()
- *  itself resolves (i.e. once headers arrive), so the body-read the caller does afterward
- *  (resp.arrayBuffer()/resp.body) was never actually covered by the timeout. AbortSignal.timeout
- *  stays armed for the life of the request, covering the body-read too — same pattern already
- *  proven for Grok/Veo/Higgsfield's downloads and F3-13's Leonardo/Runway downloads. A fresh
- *  signal is created per hop (not reused across the loop), matching fetchWithTimeout's previous
- *  per-hop-timer behavior exactly. The AbortError -> pipelineError(PIPELINE_ERROR.TIMEOUT, ...)
- *  translation fetchWithTimeout used to provide is replicated here so callers see the identical
- *  error shape as before. */
-export async function fetchExternalUrlSafely(rawUrl: string, maxRedirects = 5, timeoutMs = 60_000): ReturnType<typeof fetch> {
-  let currentUrl = rawUrl;
-  for (let hop = 0; hop <= maxRedirects; hop++) {
-    await assertSafeExternalUrl(currentUrl);
-    let resp: Awaited<ReturnType<typeof fetch>>;
-    try {
-      resp = await fetch(currentUrl, { redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
-    } catch (err: unknown) {
-      if ((err as Error).name === "AbortError") {
-        throw pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: Custom voiceover download exceeded ${Math.round(timeoutMs / 1000)}s`);
-      }
-      throw err;
-    }
-    if (resp.status >= 300 && resp.status < 400) {
-      const location = resp.headers.get("location");
-      if (!location) return resp;
-      currentUrl = new URL(location, currentUrl).toString();
-      continue;
-    }
-    return resp;
-  }
-  throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover URL redirected too many times");
-}
-
 // ─── Timeout helper ───────────────────────────────────────────────────────────
 // fetchWithTimeout: truly cancels the download using AbortController (unlike withTimeout which only races)
 export async function fetchWithTimeout(url: string, timeoutMs: number, label: string, options: Record<string, unknown> = {}): Promise<ReturnType<typeof fetch>> {
@@ -10396,240 +10264,6 @@ export function resetComposeClipValidationMemo(): void {
   composeClipValidationMemo.clear();
 }
 
-// ─── 3c9. Luma Dream Machine Image-to-Video ────────────────────────────────────
-export async function generateLumaClip(
-  prompt: string,
-  imageUrl: string | null,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  if (!LUMA_API_KEY) return null;
-  try {
-    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Luma Dream Machine video...`);
-    const t = Date.now();
-    const body: Record<string, unknown> = {
-      prompt: prompt,
-      model: "ray-2",
-      resolution: "720p",
-      duration: "5s",
-      loop: false,
-    };
-    if (imageUrl) body.keyframes = { frame0: { type: "image", url: imageUrl } };
-
-    const createResp = await withTimeout(
-      fetch("https://api.lumalabs.ai/dream-machine/v1/generations", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${LUMA_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      30_000, `Luma create scene ${sceneIndex}`
-    );
-    if (!createResp.ok) {
-      const errText = await createResp.text();
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Luma error ${createResp.status}: ${errText.slice(0, 200)}`);
-      return null;
-    }
-    const createData = await createResp.json() as { id: string };
-    const genId = createData.id;
-    if (!genId) return null;
-
-    // Poll for completion (max 3 minutes)
-    let videoUrl: string | null = null;
-    for (let poll = 0; poll < 36; poll++) {
-      await new Promise(r => setTimeout(r, 5000));
-      const pollResp = await withTimeout(
-        fetch(`https://api.lumalabs.ai/dream-machine/v1/generations/${genId}`, {
-          headers: { Authorization: `Bearer ${LUMA_API_KEY}` },
-        }),
-        10_000, `Luma poll scene ${sceneIndex}`
-      );
-      if (!pollResp.ok) continue;
-      const pollData = await pollResp.json() as { state: string; assets?: { video?: string } };
-      if (pollData.state === "completed" && pollData.assets?.video) {
-        videoUrl = pollData.assets.video;
-        break;
-      }
-      if (pollData.state === "failed") break;
-    }
-    if (!videoUrl) return null;
-
-    const dlResp = await fetchWithTimeout(videoUrl, 60_000, `Luma download scene ${sceneIndex}`);
-    if (!dlResp.ok) return null;
-    const buffer = Buffer.from(await dlResp.arrayBuffer());
-    const lumaOutputPath = outputPath.replace(".mp4", "_luma.mp4");
-    fs.writeFileSync(lumaOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Luma video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
-    if (fs.existsSync(lumaOutputPath) && fs.statSync(lumaOutputPath).size > 1000) {
-      return lumaOutputPath;
-    }
-    return null;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Luma clip failed:`, err);
-    return null;
-  }
-}
-
-// ─── 3c10. Pika Labs Image-to-Video ────────────────────────────────────────────
-export async function generatePikaClip(
-  prompt: string,
-  imageUrl: string | null,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  if (!PIKA_API_KEY) return null;
-  try {
-    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Pika Labs video...`);
-    const t = Date.now();
-    const body: Record<string, unknown> = {
-      promptText: prompt,
-      model: "pike-2.2",
-      options: { frameRate: 24, resolution: "1080p", duration: Math.min(duration, 5) },
-    };
-    if (imageUrl) body.image = imageUrl;
-
-    const createResp = await withTimeout(
-      fetch("https://api.pika.art/v2/generate", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${PIKA_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      30_000, `Pika create scene ${sceneIndex}`
-    );
-    if (!createResp.ok) {
-      const errText = await createResp.text();
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Pika error ${createResp.status}: ${errText.slice(0, 200)}`);
-      return null;
-    }
-    const createData = await createResp.json() as { id?: string; requestId?: string };
-    const taskId = createData.id || createData.requestId;
-    if (!taskId) return null;
-
-    // Poll for completion (max 3 minutes)
-    let videoUrl: string | null = null;
-    for (let poll = 0; poll < 36; poll++) {
-      await new Promise(r => setTimeout(r, 5000));
-      const pollResp = await withTimeout(
-        fetch(`https://api.pika.art/v2/tasks/${taskId}`, {
-          headers: { Authorization: `Bearer ${PIKA_API_KEY}` },
-        }),
-        10_000, `Pika poll scene ${sceneIndex}`
-      );
-      if (!pollResp.ok) continue;
-      const pollData = await pollResp.json() as { status?: string; videos?: Array<{ url: string }>; resultUrl?: string };
-      if ((pollData.status === "finished" || pollData.status === "succeeded") && (pollData.videos?.[0]?.url || pollData.resultUrl)) {
-        videoUrl = pollData.videos?.[0]?.url || pollData.resultUrl || null;
-        break;
-      }
-      if (pollData.status === "failed") break;
-    }
-    if (!videoUrl) return null;
-
-    const dlResp = await fetchWithTimeout(videoUrl, 60_000, `Pika download scene ${sceneIndex}`);
-    if (!dlResp.ok) return null;
-    const buffer = Buffer.from(await dlResp.arrayBuffer());
-    const pikaOutputPath = outputPath.replace(".mp4", "_pika.mp4");
-    fs.writeFileSync(pikaOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Pika video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
-    if (fs.existsSync(pikaOutputPath) && fs.statSync(pikaOutputPath).size > 1000) {
-      return pikaOutputPath;
-    }
-    return null;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Pika clip failed:`, err);
-    return null;
-  }
-}
-
-// ─── 3c11. Manus Forge Built-in Video Generation ──────────────────────────────
-export async function generateManusForgeClip(
-  prompt: string,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  const FORGE_API_URL = process.env.BUILT_IN_FORGE_API_URL || "";
-  const FORGE_API_KEY = process.env.BUILT_IN_FORGE_API_KEY || "";
-  if (!FORGE_API_URL || !FORGE_API_KEY) return null;
-  try {
-    console.log(`[Pipeline] Scene ${sceneIndex}: Generating Manus Forge video...`);
-    const t = Date.now();
-    const forgeBase = FORGE_API_URL.replace(/\/+$/, "");
-
-    // Try Manus Forge video generation endpoint
-    const createResp = await withTimeout(
-      fetch(`${forgeBase}/v1/video/generate`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${FORGE_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: prompt,
-          duration: Math.min(duration, 8),
-          resolution: "1280x720",
-          fps: 24,
-        }),
-      }),
-      30_000, `Manus Forge create scene ${sceneIndex}`
-    );
-    if (!createResp.ok) {
-      const errText = await createResp.text();
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Manus Forge error ${createResp.status}: ${errText.slice(0, 200)}`);
-      return null;
-    }
-    const createData = await createResp.json() as { task_id?: string; id?: string; url?: string };
-
-    // If direct URL returned, download immediately
-    if (createData.url) {
-      const dlResp = await fetchWithTimeout(createData.url, 60_000, `Manus Forge download scene ${sceneIndex}`);
-      if (!dlResp.ok) return null;
-      const buffer = Buffer.from(await dlResp.arrayBuffer());
-      const forgeOutputPath = outputPath.replace(".mp4", "_forge.mp4");
-      fs.writeFileSync(forgeOutputPath, buffer);
-      console.log(`[Pipeline] Scene ${sceneIndex}: Manus Forge video in ${((Date.now()-t)/1000).toFixed(1)}s`);
-      if (fs.existsSync(forgeOutputPath) && fs.statSync(forgeOutputPath).size > 1000) {
-        return forgeOutputPath;
-      }
-      return null;
-    }
-
-    // Otherwise poll for task completion
-    const taskId = createData.task_id || createData.id;
-    if (!taskId) return null;
-    let videoUrl: string | null = null;
-    for (let poll = 0; poll < 36; poll++) {
-      await new Promise(r => setTimeout(r, 5000));
-      const pollResp = await withTimeout(
-        fetch(`${forgeBase}/v1/video/tasks/${taskId}`, {
-          headers: { Authorization: `Bearer ${FORGE_API_KEY}` },
-        }),
-        10_000, `Manus Forge poll scene ${sceneIndex}`
-      );
-      if (!pollResp.ok) continue;
-      const pollData = await pollResp.json() as { status?: string; url?: string; output_url?: string };
-      if ((pollData.status === "completed" || pollData.status === "succeeded") && (pollData.url || pollData.output_url)) {
-        videoUrl = pollData.url || pollData.output_url || null;
-        break;
-      }
-      if (pollData.status === "failed") break;
-    }
-    if (!videoUrl) return null;
-
-    const dlResp = await fetchWithTimeout(videoUrl, 60_000, `Manus Forge download scene ${sceneIndex}`);
-    if (!dlResp.ok) return null;
-    const buffer = Buffer.from(await dlResp.arrayBuffer());
-    const forgeOutputPath = outputPath.replace(".mp4", "_forge.mp4");
-    fs.writeFileSync(forgeOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Manus Forge video in ${((Date.now()-t)/1000).toFixed(1)}s (${(buffer.length/1024/1024).toFixed(1)}MB)`);
-    if (fs.existsSync(forgeOutputPath) && fs.statSync(forgeOutputPath).size > 1000) {
-      return forgeOutputPath;
-    }
-    return null;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Manus Forge clip failed:`, err);
-    return null;
-  }
-}
-
 /** Trim a downloaded file to a short scene clip (shared by Archive, NASA, Wikimedia video). */
 // F3-45: temporarily exported (visibility only, no logic changed) so
 // server/f345YoutubeCcRuntimeTest.ts can reuse it. Revert to module-private
@@ -11651,131 +11285,7 @@ async function fetchArchiveSegmentViaFfmpeg(
   }
 }
 
-// ─── 3c3a. Download a YouTube CC clip (RapidAPI first, cloud service fallback) ─
-/** RapidAPI's `/dl` payload — only the two format lists this pipeline reads. */
-type RapidApiYoutubeMeta = {
-  formats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
-  adaptiveFormats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
-  /**
-   * RONDE 62: the source length, which this response has been carrying all along.
-   *
-   * The watch page added in RONDE 60 was meant to supply this, and on Railway it never came
-   * through: render 532 logged src=unknown on all 52 plans, so every clip was still cut at a
-   * flat second 12. THIS call demonstrably works there — 63 metadata lookups, 34 of them served
-   * from cache — and states the duration in the same response the download URL comes from.
-   * Different providers spell it differently; all three spellings are read.
-   */
-  lengthSeconds?: string | number;
-  videoDetails?: { lengthSeconds?: string | number };
-  duration?: string | number;
-};
-
-/** Seconds from a RapidAPI metadata response, 0 when it did not say. */
-export function rapidApiYoutubeMetaDurationSec(meta: RapidApiYoutubeMeta | null | undefined): number {
-  if (!meta) return 0;
-  for (const raw of [meta.lengthSeconds, meta.videoDetails?.lengthSeconds, meta.duration]) {
-    if (raw == null) continue;
-    const n = typeof raw === "number" ? raw : Number.parseInt(String(raw).trim(), 10);
-    if (Number.isFinite(n) && n > 0 && n < 86_400) return n;
-  }
-  return 0;
-}
-
-/**
- * RONDE 56: the YouTube metadata lookup, cached per render and run outside the beat's deadline.
- *
- * Render 531 measured the whole YouTube branch failing in exactly one place:
- *
- *     185 results -> 103 download attempts -> 2 adopted
- *      85 RapidAPI failures, ALL of them:
- *         - aborted by the enclosing scope, never a real timeout
- *         - at the META step, never reaching the download
- *         - granted "own 3s" — the floor of scopedTimeoutMs, i.e. the scene had nothing left
- *      86 attempts for 14 unique video ids
- *      metadataCacheHits=0
- *
- * Two things follow from that, and this function is both of them.
- *
- * CACHED. The same video was looked up roughly six times over, each attempt paying full price
- * and each one cut off. The render-scoped asset cache already exists and already has a
- * `metadata` field and a `metadataCacheHits` counter; nothing was writing to it. A negative
- * result is cached too, so a video that genuinely has no usable format is not re-asked all
- * render — the same reasoning putCachedProviderAsset already applies to licence rejections.
- *
- * OUTSIDE THE BEAT SCOPE. The scene pool's Internet Archive calls complete in 17-23 seconds
- * because they run as a prefetch; this call was running inside `script image` (12s) and
- * `beat fill` (20s) scopes that were already spent by the time it started. AsyncLocalStorage's
- * exit() detaches it, so it gets its own full budget and its own honest timeout.
- *
- * That detachment is safe HERE and would not be for the download. This is a JSON GET: it writes
- * nothing, so an answer arriving after the beat gave up costs a cache entry and nothing else.
- * The download writes to workDir, and a detached write into a directory the render has already
- * cleaned up is the ENOENT class of bug fetchWithTimeout's scope signal exists to prevent — so
- * the download stays inside the scope, unchanged.
- */
-export async function fetchRapidApiYoutubeMeta(
-  videoId: string,
-  sceneIndex: number,
-  sourcingCache?: SourcingCache,
-  /**
-   * YOUTUBE PRODUCTION REPAIR — answer from the render's memory, or not at all.
-   *
-   * The duration probe is an optimisation on the start offset; the download is the point. When the
-   * scene budget cannot pay for both, the caller says so here and a cache MISS costs nothing: no
-   * request, no twenty un-abortable seconds, and no `metadataCount` — because no metadata call was
-   * made, and a counter that says otherwise is a counter that lies. See
-   * `shouldProbeYoutubeDuration` for the measurement this exists for.
-   */
-  opts?: { onlyIfCached?: boolean }
-): Promise<RapidApiYoutubeMeta | null> {
-  const cached = getCachedProviderAsset(sourcingCache, "youtube_cc", videoId);
-  if (cached?.metadata !== undefined) {
-    providerMetrics(sourcingCache, "youtube_cc").metadataCacheHits++;
-    return (cached.metadata as RapidApiYoutubeMeta | null) ?? null;
-  }
-  /**
-   * A miss under `onlyIfCached` is NOT written to the cache. Caching a null here would teach the
-   * render that this video has no metadata, and the next beat — which may have all the budget in
-   * the world — would inherit a refusal that was only ever about the clock.
-   */
-  if (opts?.onlyIfCached) return null;
-  /** VIDEO 619 — RapidAPI is switched off: no key, no request (it could only answer 401). */
-  if (!RAPIDAPI_KEY) return null;
-
-  const metaUrl = `https://${RAPIDAPI_YT_HOST}/dl?id=${videoId}`;
-  providerMetrics(sourcingCache, "youtube_cc").metadataCount++;
-  // exit() runs the callback with no scene-fetch scope in context, so fetchWithTimeout sees no
-  // scope signal and no scope deadline: its own 20s is the only limit, exactly as intended.
-  const meta = await sceneFetchScopeStorage.exit(async () => {
-    try {
-      const resp = await providerLimiter("youtube").run(() =>
-        fetchWithTimeout(metaUrl, YOUTUBE_META_PROBE_TIMEOUT_MS, `RapidAPI YouTube meta scene ${sceneIndex}`, {
-          headers: { "x-rapidapi-host": RAPIDAPI_YT_HOST, "x-rapidapi-key": RAPIDAPI_KEY },
-        })
-      );
-      if (!resp.ok) {
-        // Deliberately NOT a breaker failure. A non-ok answer for ONE video says that video has
-        // no metadata — it may be private, removed or region-locked — not that RapidAPI is down.
-        // Counting it would trip the cooldown on a healthy provider, which is what the original
-        // inline code avoided by leaving this branch unmarked. Transport errors (the catch
-        // below) are the real provider signal.
-        return null;
-      }
-      markYoutubeSearchResult(true);
-      return (await resp.json()) as RapidApiYoutubeMeta;
-    } catch (err) {
-      if (!isScopeAbortError(err)) markYoutubeSearchResult(false);
-      console.warn(
-        `[Pipeline] Scene ${sceneIndex}: RapidAPI meta failed for ${videoId}:`,
-        (err as Error).message?.slice(0, 120)
-      );
-      return null;
-    }
-  });
-
-  putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, { metadata: meta });
-  return meta;
-}
+// ─── 3c3a. Download a YouTube CC clip through the cloud service ─
 
 /**
  * RONDE 60 — look at the YouTube clip before returning it.
@@ -12042,7 +11552,7 @@ export type YoutubeDownloadStatus =
 
 /** One route's attempt at one video, kept so the final line can report all of them. */
 export type YoutubeDownloadAttempt = {
-  route: "cloud" | "rapidapi";
+  route: "cloud";
   status: YoutubeDownloadStatus;
   detail: string;
 };
@@ -12104,10 +11614,8 @@ export function formatYoutubeDownloadLine(params: {
   status: YoutubeDownloadStatus;
   attempts: readonly YoutubeDownloadAttempt[];
   hasCloudRoute: boolean;
-  hasRapidRoute: boolean;
   reason: string;
-  /** RONDE 646: a route the caller left out is SKIPPED, not MISSING — the deployment still has it. */
-  onlyRoute?: "cloud" | "rapidapi";
+  onlyRoute?: "cloud";
 }): string {
   /**
    * THE DETAIL WAS WRITTEN AND NEVER READ — the one line about a download said only that it failed.
@@ -12128,8 +11636,7 @@ export function formatYoutubeDownloadLine(params: {
   return (
     `[YouTubeDownload] video=${params.videoId} scene=${params.sceneIndex} ` +
     `status=${params.status} attempts=${trail} ` +
-    `cloudService=${params.onlyRoute === "rapidapi" ? "SKIPPED" : params.hasCloudRoute ? "SET" : "MISSING"} ` +
-    `rapidApi=${params.onlyRoute === "cloud" ? "SKIPPED" : params.hasRapidRoute ? "SET" : "MISSING"} reason=${params.reason}`
+    `cloudService=${params.hasCloudRoute ? "SET" : "MISSING"} reason=${params.reason}`
   );
 }
 
@@ -12285,13 +11792,10 @@ export async function downloadYouTubeCCClip(
    *
    * Absent for every render caller, which keeps both routes, in their order, exactly as before.
    */
-  onlyRoute?: "cloud" | "rapidapi"
+  onlyRoute?: "cloud"
 ): Promise<boolean> {
-  /** RONDE 641: a caller that asked for RapidAPI alone gets a function with no cloud route at all. */
-  const cloudDlService =
-    onlyRoute === "rapidapi" ? "" : process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
+  const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
   const hasCloudRoute = Boolean(cloudDlService);
-  const hasRapidRoute = Boolean(RAPIDAPI_KEY);
   /**
    * §4 — every outcome of every route, so the exit line can name the specific one rather than
    * collapsing five different problems into DOWNLOAD_FAILED.
@@ -12333,7 +11837,7 @@ export async function downloadYouTubeCCClip(
       outcome.transferStarted = transferStarted;
     }
     const line = formatYoutubeDownloadLine({
-      videoId, sceneIndex, status, attempts, hasCloudRoute, hasRapidRoute, reason, onlyRoute,
+      videoId, sceneIndex, status, attempts, hasCloudRoute, reason, onlyRoute,
     });
     if (status === "DOWNLOAD_SUCCESS") console.log(line);
     else console.warn(line);
@@ -12425,43 +11929,6 @@ export async function downloadYouTubeCCClip(
    * nothing timed out. See `scene_budget_too_short_to_start` on the fallback below, whose name
    * this deliberately shares so the two read as one decision in the log.
    */
-  /**
-   * RONDE 261 — THE FILE IS ALREADY HERE.
-   *
-   * Read before every route, including the latch below, because a transfer that does not need to
-   * happen is cheaper than the cheapest way of deciding which route should perform it. The render
-   * after RONDE 260 fetched one 3.4 MB video six times, and paid the cloud route its full
-   * twenty-second share before each one.
-   *
-   * THE CUT IS NOT REUSED, ONLY THE SOURCE. This request has its own `clipStart` and `duration`,
-   * and gets its own seconds of the same file — handing it the previous beat's clip would be a
-   * silent substitution. `resolveTrimStartSec` runs against the same file it always did, so the
-   * start is re-derived here exactly as it would have been after a fresh download.
-   *
-   * A miss, a vanished file or a trim that will not cut falls through to the routes below, which
-   * are untouched: this can save a download and can never be the reason one does not happen.
-   */
-  const heldSource = youtubeSourceFile(videoId);
-  if (heldSource && fs.existsSync(heldSource.path)) {
-    const reuseStart = await resolveTrimStartSec(
-      heldSource.path, clipStart, duration, videoId, startIsExact
-    );
-    if (
-      await trimRemoteVideoToClip(
-        heldSource.path, outPath, duration, reuseStart,
-        `YouTube source reuse scene ${sceneIndex}`
-      )
-    ) {
-      console.log(
-        `[Pipeline] Scene ${sceneIndex}: ✅ YouTube ${videoId} re-cut from the source this render ` +
-          `already fetched (${heldSource.bytes} bytes, start ${reuseStart.toFixed(1)}s) — no transfer`
-      );
-      note("rapidapi", "DOWNLOAD_SUCCESS", `${heldSource.bytes}_bytes_source_reused`);
-      reportDownload("DOWNLOAD_SUCCESS", "source_reuse");
-      return true;
-    }
-  }
-
   /**
    * RONDE 638 — ASK THE SERVICE BEFORE SPENDING A WINDOW ON IT, NOT AFTER.
    *
@@ -12598,17 +12065,10 @@ export async function downloadYouTubeCCClip(
      * there the scope is the limit. Every render call passes no route and keeps the share, the
      * floor and the base exactly as they were.
      */
-    /**
-     * VIDEO 615 — and the same holds once RapidAPI is latched dead for this render
-     * (`rapidApiLinkLocked`): there is no second route left to keep half the window for, so the
-     * cut that is already running is waited for instead of hung up on.
-     */
-    const cloudIsOnlyRoute = Boolean(onlyRoute) || rapidApiLinkLocked();
-    const cloudTimeoutMs = rapidApiLinkLocked() && Number.isFinite(remainingForCloud)
+    const cloudIsOnlyRoute = Boolean(onlyRoute);
+    const cloudTimeoutMs = onlyRoute && Number.isFinite(remainingForCloud)
       ? remainingForCloud
-      : onlyRoute && Number.isFinite(remainingForCloud)
-        ? remainingForCloud
-        : Math.min(youtubeDownloadTimeoutMs(budgetMs), cloudWindowMs);
+      : Math.min(youtubeDownloadTimeoutMs(budgetMs), cloudWindowMs);
     const cloudStartedAtMs = Date.now();
     const reportCloudTiming = (outcome: string): void => {
       console.log(
@@ -12863,235 +12323,6 @@ export async function downloadYouTubeCCClip(
     }
   }
 
-  // F3-41: RapidAPI fallback — tried when the cloud/yt-dlp service is not configured, errored,
-  // or didn't return a usable file. Unchanged from before this fix other than moving second.
-  if (RAPIDAPI_KEY && onlyRoute !== "cloud" && rapidApiLinkLocked()) {
-    note("rapidapi", "DOWNLOAD_FAILED", "rapidapi_links_ip_locked_this_render");
-  } else if (RAPIDAPI_KEY && onlyRoute !== "cloud") {
-    const tmpPath = outPath.replace(/\.mp4$/, "_rapid_tmp.mp4");
-    /**
-     * RONDE 637 — whether this render is HOLDING `tmpPath` as the source for `videoId`.
-     *
-     * Declared beside the path it guards, because the `finally` that used to delete it
-     * unconditionally is the reason RONDE 261's source memo never once produced a `source_reuse`.
-     */
-    let tmpPathIsRenderSource = false;
-    try {
-      // RONDE 56: cached per render and fetched outside the beat's deadline — see
-      // fetchRapidApiYoutubeMeta. Render 531 lost all 85 of its RapidAPI attempts here, every
-      // one of them aborted by an already-spent scene budget before the download ever started.
-      const data = await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache);
-      if (data) {
-        // RONDE 27: pick the SMALLEST adequate format, not the one closest to 720p.
-        //
-        // This route downloads the entire source video and only then trims out the few seconds
-        // the beat needs, so the file size is the download time. Render 528 found relevant WWII
-        // footage on three separate queries and lost all three to "RapidAPI YouTube download
-        // scene N exceeded 90s" — nothing from YouTube reached the cut, and the montage fell back
-        // on Ken Burns stills and generic stock. Sorting by "closest to 720" happily chose a
-        // half-gigabyte 720p file over a 40MB 480p one of the same video.
-        //
-        // The clip ends up scaled into a 1920x1080 frame as B-roll behind narration, where the
-        // difference between 480p and 720p source is far less visible than the difference between
-        // having the shot and not having it. Anything at or above the floor is good enough; below
-        // it we still prefer the tallest available rather than dropping to something unusable.
-        const pickFormat = (
-          formats: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }> | undefined
-        ) => {
-          const mp4 = (formats ?? []).filter((f) => f.url && f.mimeType?.includes("mp4"));
-          if (!mp4.length) return undefined;
-          const sizeOf = (f: { contentLength?: string }): number => {
-            const n = parseInt(f.contentLength || "", 10);
-            return Number.isFinite(n) && n > 0 ? n : Number.MAX_SAFE_INTEGER;
-          };
-          const adequate = mp4.filter((f) => (f.height ?? 720) >= youtubeMinFormatHeight());
-          if (adequate.length) return adequate.sort((a, b) => sizeOf(a) - sizeOf(b))[0];
-          return mp4.sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0];
-        };
-
-        const format = pickFormat(data.formats) ?? pickFormat(data.adaptiveFormats);
-        if (!format?.url) {
-          note("rapidapi", "DOWNLOAD_UNSUPPORTED", "no_mp4_format_offered");
-        }
-        if (format?.url) {
-          // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
-          // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
-          // RONDE 68: do not start a transfer the budget cannot finish.
-          //
-          // Render 533 cancelled 150 of these mid-flight — "cancelled by the enclosing scene
-          // budget before its own 5s timeout" — and every one of them had already spent the
-          // scene's remaining time before dying. That is the time Wikimedia needed for a search
-          // it never got to run (0 searches that render), and Internet Archive for the 12
-          // results it downloaded none of. A whole video is the most expensive thing this
-          // pipeline fetches; it should be the first thing to stand aside, not the last.
-          const remainingMs = remainingScopeMs();
-          remainingAtCheckMs = remainingMs;
-          if (remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {
-            console.log(
-              `[Pipeline] Scene ${sceneIndex}: skipping YouTube download of ${videoId} — ` +
-                `${Math.round(remainingMs / 1000)}s left, not enough to finish — ` +
-                describeEnclosingScope()
-            );
-            /**
-             * §4 — this was a bare `return false`. Standing aside for the scene budget is a
-             * legitimate decision and the most misread one in the log: it looks exactly like a
-             * broken service unless it says so.
-             */
-            note("rapidapi", "DOWNLOAD_TIMEOUT", `scene_budget_${Math.round(remainingMs / 1000)}s_left`);
-            reportDownload("DOWNLOAD_TIMEOUT", "scene_budget_too_short_to_start");
-            return false;
-          }
-          /** Past every guard: this is the line where bytes begin to move. */
-          transferStarted = true;
-          const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
-            format.url,
-            tmpPath,
-            // RONDE 52: 180s was eight times the scope containing it, so this step could never
-            // finish. It now takes what is left, and reports honestly when that is not enough.
-            /** RONDE 645 — one route on its own: the whole scope, as for the cloud leg above. */
-            onlyRoute && Number.isFinite(remainingScopeMs())
-              ? Math.max(5_000, remainingScopeMs())
-              : scopedTimeoutMs(youtubeDownloadTimeoutMs(), 5_000),
-            `RapidAPI YouTube download scene ${sceneIndex}`,
-            {
-              headers: {
-                "User-Agent":
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                Referer: "https://www.youtube.com/",
-              },
-            },
-            80 * 1024 * 1024
-          );
-          bytesTransferred = bytesWritten;
-          if (!dlResp.ok) {
-            /**
-             * RONDE 641 — WHOSE ADDRESS THE FILE LINK WAS MADE FOR.
-             *
-             * Render 603: every RapidAPI file transfer answered 403 while the metadata call that
-             * produced its link answered 200. A googlevideo link that lists `ip` among its signed
-             * parameters is valid only from the address that asked for it — RapidAPI's, not this
-             * worker's. Recorded as a fact about the link, so the log says which of the two it was.
-             */
-            note("rapidapi", "DOWNLOAD_FAILED", `http_${dlResp.status}:${googlevideoLinkLock(format.url)}`);
-            if (dlResp.status === 403 && googlevideoLinkLock(format.url) === "ip_locked" && noteRapidApiLinkLocked()) {
-              console.warn(
-                `[Pipeline] RapidAPI file links are signed for another address (2x http_403:ip_locked) — ` +
-                  `RapidAPI is skipped for the rest of this render and the cloud route gets the whole window`
-              );
-            }
-          } else if (bytesWritten === null) {
-            note("rapidapi", "DOWNLOAD_EMPTY", "no_response_body");
-          }
-          if (dlResp.ok && bytesWritten !== null) {
-            let rapidFileSize = -1;
-            try { rapidFileSize = fs.statSync(tmpPath).size; } catch { /* leave as -1 */ }
-            if (rapidFileSize > 80 * 1024 * 1024) {
-              note("rapidapi", "DOWNLOAD_UNSUPPORTED", `over_size_ceiling_${Math.round(rapidFileSize / 1024 / 1024)}mb`);
-            } else if (rapidFileSize < 50_000) {
-              note("rapidapi", "DOWNLOAD_EMPTY", `below_size_floor_${rapidFileSize}_bytes`);
-            }
-            if (rapidFileSize >= 50_000 && rapidFileSize <= 80 * 1024 * 1024) {
-              /**
-               * RONDE 261: the whole source is on disk and validated. Remembered HERE, before the
-               * trim, because what the next beat needs is this file — not the clip about to be cut
-               * out of it for this one.
-               */
-              /**
-               * RONDE 637 — AND THE ANSWER IS CARRIED TO THE CODE THAT WOULD HAVE DELETED IT.
-               *
-               * `finally` below unlinked `tmpPath` on every path, success included, so this memo
-               * remembered a file that stopped existing microseconds later. Render 602 fetched
-               * `C6T9Mvn3TY0` four times and `fof6zEzfSlQ` three, all `reason=rapidapi` and never
-               * once `source_reuse`, while twenty-odd other candidates died holding
-               * `scene_budget_0s_left`. The transfers the memo exists to prevent were paying for
-               * the budget the rest of the beat needed.
-               *
-               * First-writer-wins means this path may not be the stored one, and the ceiling may
-               * refuse it outright — so the memo says which, and only a `true` keeps the file.
-               */
-              tmpPathIsRenderSource = noteYoutubeSourceFile(videoId, tmpPath, rapidFileSize);
-              if (tmpPathIsRenderSource) {
-                console.log(
-                  `[Pipeline] Scene ${sceneIndex}: holding ${videoId}'s source for this render ` +
-                    `(${rapidFileSize} bytes) — later beats re-cut instead of re-fetching`
-                );
-              }
-              // RONDE 64: the whole source is on disk here, so stop guessing its length.
-              //
-              // This route downloads the entire video and only then trims. Every attempt so far
-              // to learn the duration before the download — the watch page, the metadata field —
-              // was indirect, and the watch page demonstrably does not work on Railway. The file
-              // itself always does.
-              const resolvedStart = await resolveTrimStartSec(
-                tmpPath, clipStart, duration, videoId, startIsExact
-              );
-              if (Math.abs(resolvedStart - clipStart) > 0.05) {
-                console.log(
-                  `[Pipeline] Scene ${sceneIndex}: ${videoId} trim start ${clipStart.toFixed(1)}s ` +
-                    `→ ${resolvedStart.toFixed(1)}s (source probed)`
-                );
-              }
-              if (
-                await trimRemoteVideoToClip(
-                  tmpPath,
-                  outPath,
-                  duration,
-                  resolvedStart,
-                  `YouTube CC RapidAPI scene ${sceneIndex}`
-                )
-              ) {
-                noteRapidApiTransferOk();
-                note("rapidapi", "DOWNLOAD_SUCCESS", `${rapidFileSize}_bytes`);
-                console.log(
-                  `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via RapidAPI: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
-                );
-                reportDownload("DOWNLOAD_SUCCESS", "rapidapi");
-                return true;
-              }
-              /**
-               * §4 — bytes arrived and ffmpeg would not cut a clip out of them. That is a
-               * different problem from a download that never happened, and the only one of these
-               * statuses that points at the FILE rather than at the route.
-               */
-              note("rapidapi", "DOWNLOAD_INVALID_CONTENT", "trim_produced_no_clip");
-            }
-          }
-        }
-      } else {
-        // RONDE 56: the helper already logged and classified the failure (and cached the null so
-        // this video is not asked again this render).
-        note("rapidapi", "DOWNLOAD_UNSUPPORTED", "no_usable_metadata");
-        console.warn(
-          `[Pipeline] Scene ${sceneIndex}: RapidAPI returned no usable metadata for ${videoId}`
-        );
-      }
-    } catch (err) {
-      // RONDE 52: same as the search path — a thrown timeout never reached the breaker, so 22
-      // consecutive RapidAPI failures in render 530 did nothing to stop the 23rd. Scope aborts
-      // stay uncounted: those said nothing about RapidAPI's health, and the misleading message
-      // they carried is exactly what made this look like a provider outage in the first place.
-      if (!isScopeAbortError(err)) markYoutubeSearchResult(false);
-      note("rapidapi", classifyYoutubeDownloadError(err), (err as Error).message?.slice(0, 60) ?? "threw");
-      console.warn(
-        `[Pipeline] Scene ${sceneIndex}: RapidAPI download failed for ${videoId}:`,
-        (err as Error).message
-      );
-    } finally {
-      /**
-       * Deleted unless this render is HOLDING it — see `noteYoutubeSourceFile`. A source kept
-       * here lives in the render's work directory, which is removed when the render ends, and
-       * the memo's byte ceiling bounds how much of it may be kept at once.
-       */
-      if (!tmpPathIsRenderSource) {
-        try {
-          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }
-
   /**
    * MASTER YOUTUBE BUILD — a YouTube clip that cannot be fetched says WHY, and says it once.
    *
@@ -13114,11 +12345,11 @@ export async function downloadYouTubeCCClip(
    * An operator cannot act on the first and must act on the second, so the log now names which one
    * it was. Presence only: the service URL and the key are never printed, only whether they exist.
    */
-  const status = summariseYoutubeDownloadAttempts(attempts, hasCloudRoute || hasRapidRoute);
+  const status = summariseYoutubeDownloadAttempts(attempts, hasCloudRoute);
   reportDownload(
     status,
     status === "DOWNLOAD_UNAVAILABLE"
-      ? "no_download_route_configured — set YOUTUBE_CC_DL_SERVICE or RAPIDAPI_KEY"
+      ? "no_download_route_configured — set YOUTUBE_CC_DL_SERVICE"
       : attempts.map((a) => `${a.route}=${a.detail}`).join(" ") || "every_configured_route_failed"
   );
   return false;
@@ -13149,10 +12380,8 @@ export async function probeYouTubeCcPipeline(): Promise<{
   sourcingEnabled: boolean;
   searchStatus: number | null;
   ccResultCount: number;
-  rapidApiStatus: number | null;
-  rapidApiHasFormat: boolean;
-  /** Which download route answered, if any — the pipeline tries cloud first, then RapidAPI. */
-  downloadRoute: "cloud" | "rapidapi" | null;
+  /** Whether the download route (the cloud service) answered. */
+  downloadRoute: "cloud" | null;
   cloudStatus: number | null;
   sampleVideoId: string | null;
   message: string;
@@ -13165,12 +12394,10 @@ export async function probeYouTubeCcPipeline(): Promise<{
       sourcingEnabled,
       searchStatus: null,
       ccResultCount: 0,
-      rapidApiStatus: null,
-      rapidApiHasFormat: false,
       downloadRoute: null,
       cloudStatus: null,
       sampleVideoId: null,
-      message: "Set YOUTUBE_API_KEY and RAPIDAPI_KEY (or YOUTUBE_CC_DL_SERVICE)",
+      message: "Set YOUTUBE_API_KEY and YOUTUBE_CC_DL_SERVICE",
     };
   }
   const probeQuery = "SpaceX Falcon 9 rocket launch";
@@ -13202,8 +12429,6 @@ export async function probeYouTubeCcPipeline(): Promise<{
       sourcingEnabled,
       searchStatus,
       ccResultCount: 0,
-      rapidApiStatus: null,
-      rapidApiHasFormat: false,
       downloadRoute: null,
       cloudStatus: null,
       sampleVideoId: null,
@@ -13235,38 +12460,9 @@ export async function probeYouTubeCcPipeline(): Promise<{
     }
   }
 
-  let rapidApiStatus: number | null = null;
-  let rapidApiHasFormat = false;
-  if (sampleVideoId && RAPIDAPI_KEY) {
-    const host = process.env.RAPIDAPI_YT_HOST || "ytstream-download-youtube-videos.p.rapidapi.com";
-    try {
-      const metaResp = await fetchWithTimeout(`https://${host}/dl?id=${sampleVideoId}`, 10_000, "YouTube CC probe RapidAPI", {
-        headers: {
-          "x-rapidapi-host": host,
-          "x-rapidapi-key": RAPIDAPI_KEY,
-        },
-      });
-      rapidApiStatus = metaResp.status;
-      if (metaResp.ok) {
-        const data = (await metaResp.json()) as {
-          formats?: Array<{ url?: string; mimeType?: string }>;
-          adaptiveFormats?: Array<{ url?: string; mimeType?: string }>;
-        };
-        const mp4 = [...(data.formats ?? []), ...(data.adaptiveFormats ?? [])].some(
-          (f) => f.url && f.mimeType?.includes("mp4")
-        );
-        rapidApiHasFormat = mp4;
-      }
-    } catch {
-      rapidApiStatus = null;
-    }
-  }
-
   const searchOk = searchStatus === 200 && ccResultCount > 0;
-  const rapidOk = rapidApiStatus === 200 && rapidApiHasFormat;
   const cloudOk = cloudStatus === 200;
-  /** EITHER route is enough — the pipeline falls through cloud to RapidAPI on every download. */
-  const downloadRoute: "cloud" | "rapidapi" | null = cloudOk ? "cloud" : rapidOk ? "rapidapi" : null;
+  const downloadRoute: "cloud" | null = cloudOk ? "cloud" : null;
 
   let message = "YouTube CC pipeline OK";
   if (!sourcingEnabled) {
@@ -13284,11 +12480,8 @@ export async function probeYouTubeCcPipeline(): Promise<{
         : `YouTube CC search returned ${ccResultCount} results (HTTP ${searchStatus})`;
   } else if (!downloadRoute) {
     message = cloudService
-      ? `No download route answered — cloud service HTTP ${cloudStatus ?? "unreachable"}, ` +
-        `RapidAPI HTTP ${rapidApiStatus ?? "error"}`
-      : rapidApiStatus === 403 || rapidApiStatus === 401
-        ? "RapidAPI key invalid or not subscribed to ytstream-download-youtube-videos"
-        : `RapidAPI metadata HTTP ${rapidApiStatus ?? "error"} — no MP4 format`;
+      ? `The download service did not answer — HTTP ${cloudStatus ?? "unreachable"}`
+      : "YOUTUBE_CC_DL_SERVICE is not set — no download route";
   }
 
   return {
@@ -13296,8 +12489,6 @@ export async function probeYouTubeCcPipeline(): Promise<{
     sourcingEnabled,
     searchStatus,
     ccResultCount,
-    rapidApiStatus,
-    rapidApiHasFormat,
     downloadRoute,
     cloudStatus,
     sampleVideoId,
@@ -13425,86 +12616,6 @@ export type YoutubeSearchRow = {
   /** VIDEO 616 — the length the video's pool already measured (`videos.list`), when it came from there. */
   durationSec?: number;
 };
-
-/**
- * RONDE 10: quota-free YouTube search via RapidAPI (yt-api). Returns rows in the SAME shape the
- * official-API producer returns, so all downstream relevance/person filtering and download code
- * is unchanged. Defensive parsing — the scraped payload shape is not contractually stable — and
- * fails open to [] on anything unexpected. Never used for the strict-CC path (caller-enforced).
- */
-/**
- * Video 613 — a Short is never downloaded. The scraped RapidAPI search has no duration filter, so
- * a result is kept only when its own length says it is longer than a Short can be; a result with
- * no length is not kept, because nothing proves it is not one.
- */
-function rapidSearchRowsLongerThanAShort<T extends { lengthText?: string }>(all: T[], query: string): T[] {
-  const lengthSec = (t?: string) =>
-    /^\d+(?::\d{1,2}){1,2}$/.test((t ?? "").trim())
-      ? (t as string).trim().split(":").reduce((acc, part) => acc * 60 + Number(part), 0)
-      : 0;
-  const kept = all.filter((r) => lengthSec(r.lengthText) > YOUTUBE_SHORT_MAX_SEC);
-  if (kept.length < all.length) {
-    console.log(
-      `[YouTubeNotFootage] RapidAPI search "${query.slice(0, 60)}": ${all.length - kept.length} of ${all.length} ` +
-        `result(s) not kept — a Short, or no length to prove it is not one`
-    );
-  }
-  return kept;
-}
-
-async function searchYoutubeViaRapidApi(
-  query: string,
-  sceneIndex: number,
-  maxResults: number
-): Promise<{ items?: YoutubeSearchRow["item"][] } | null> {
-  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
-  // never repaired or substituted — the caller simply gets nothing.
-  if (admitProviderQuery("youtube", query, "searchYoutubeViaRapidApi") === null) return null;
-  try {
-    const url = `https://${RAPIDAPI_YT_SEARCH_HOST}/search?query=${encodeURIComponent(query)}&type=video`;
-    const resp = await providerLimiter("youtube").run(() => fetchWithTimeout(
-      url,
-      YOUTUBE_SEARCH_TIMEOUT_MS,
-      `YouTube RapidAPI search scene ${sceneIndex}`,
-      { headers: { "x-rapidapi-host": RAPIDAPI_YT_SEARCH_HOST, "x-rapidapi-key": RAPIDAPI_KEY } }
-    ));
-    if (!resp.ok) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube RapidAPI search HTTP ${resp.status} for "${query}"`);
-      return null;
-    }
-    const data = (await resp.json()) as {
-      data?: Array<{
-        type?: string;
-        videoId?: string;
-        title?: string;
-        description?: string;
-        thumbnail?: Array<{ url?: string }>;
-        lengthText?: string;
-      }>;
-    };
-    const all = (data.data ?? []).filter((r) => r?.type === "video" && typeof r.videoId === "string" && r.videoId.length > 0);
-    const longEnough = rapidSearchRowsLongerThanAShort(all, query);
-    const rows = longEnough
-      .filter((r) => !youtubeResultIsShort(r.title, r.description))
-      .slice(0, maxResults)
-      .map((r) => ({
-        id: { videoId: r.videoId },
-        snippet: {
-          title: r.title ?? "",
-          description: r.description ?? "",
-          thumbnails: {
-            high: { url: r.thumbnail?.[r.thumbnail.length - 1]?.url },
-            medium: { url: r.thumbnail?.[0]?.url },
-          },
-        },
-      }));
-    console.log(`[Pipeline] Scene ${sceneIndex}: YouTube RapidAPI search returned ${rows.length} video(s) for "${query}" (quota-free fallback)`);
-    return { items: rows };
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube RapidAPI search failed:`, (err as Error).message?.slice(0, 120));
-    return null;
-  }
-}
 
 // F3-45: temporarily exported (visibility only, no logic changed) so
 // server/f345YoutubeCcRuntimeTest.ts can reuse it. Revert to module-private
@@ -13683,22 +12794,7 @@ export async function searchYoutubeVideoCandidates(
     },
     "searchYoutubeVideoCandidates"
   );
-  // RONDE 10: the official search 429s on quota after a few renders. When it yields nothing AND
-  // this is the fair-use path (never strict-CC — RapidAPI can't confirm a CC license), fall back
-  // to the quota-free RapidAPI search. Opt-in (ENABLE_YOUTUBE_RAPID_SEARCH=true + RAPIDAPI_KEY).
-  let effectiveSearchData = searchData;
-  if (
-    (!effectiveSearchData || (effectiveSearchData.items?.length ?? 0) === 0) &&
-    /**
-     * Only the unfiltered pass. RapidAPI's scraped search reports no licence at all, so routing a
-     * licence-SPECIFIC mode through it would return results this code would then have to label
-     * with a licence nobody verified — which is the silent substitution §8 forbids.
-     */
-    license === "any" &&
-    youtubeRapidSearchFallbackEnabled()
-  ) {
-    effectiveSearchData = await searchYoutubeViaRapidApi(query, sceneIndex, maxResults);
-  }
+  const effectiveSearchData = searchData;
   if (!effectiveSearchData) return [];
   const searchDataResolved = effectiveSearchData;
   providerMetrics(sourcingCache, "youtube_cc").resultCount += searchDataResolved.items?.length ?? 0;
@@ -13989,23 +13085,15 @@ export async function fetchYouTubeCCClips(
     endYoutubeTurn("YOUTUBE_CAPABILITY_UNAVAILABLE:sourcing_disabled");
     return [];
   }
-  // RONDE 16: bail on the official-API quota cooldown ONLY when there is no quota-free fallback to
-  // try. The RapidAPI fair-use search hits a different host (not Google), so the official cooldown
-  // must not suppress it — otherwise the fallback built for the quota-exhausted case never runs.
-  // When the fallback IS available, proceed: searchYoutubeVideoCandidates skips the official call
-  // during cooldown and routes the fair-use pass through RapidAPI instead.
-  if (isYoutubeInCooldown() && !(youtubeRapidSearchFallbackEnabled() && youtubeFairUseEnabled())) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex}: YouTube skipped — the official API is in quota cooldown ` +
-        "and the RapidAPI search fallback is not enabled (ENABLE_YOUTUBE_RAPID_SEARCH)"
-    );
+  if (isYoutubeInCooldown()) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube skipped — the official API is in quota cooldown`);
     endYoutubeTurn("YOUTUBE_CAPABILITY_UNAVAILABLE:quota_cooldown");
     return [];
   }
   const results: string[] = [];
 
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
-  const hasDownloader = !!RAPIDAPI_KEY || !!process.env.YOUTUBE_CC_DL_SERVICE;
+  const hasDownloader = !!process.env.YOUTUBE_CC_DL_SERVICE;
 
   if (!youtubeApiKey) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — missing YOUTUBE_API_KEY`);
@@ -14015,7 +13103,7 @@ export async function fetchYouTubeCCClips(
   }
   if (!hasDownloader) {
     console.warn(
-      `[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — set RAPIDAPI_KEY or YOUTUBE_CC_DL_SERVICE in Railway`
+      `[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — set YOUTUBE_CC_DL_SERVICE in Railway`
     );
     endYoutubeTurn("YOUTUBE_CAPABILITY_UNAVAILABLE:no_downloader");
     return [];
@@ -14369,44 +13457,13 @@ export async function fetchYouTubeCCClips(
 
           try {
             const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
-            // RONDE 62: ask the metadata call that actually works on Railway how long the video
-            // is. The watch page added in RONDE 60 was supposed to answer this and did not —
-            // render 532 logged src=unknown on all 52 plans — while this same response, which
-            // the download needs anyway, has been carrying lengthSeconds the whole time. It is
-            // render-cached, so fetching it here rather than inside the download costs nothing.
-            /**
-             * YOUTUBE PRODUCTION REPAIR — the probe does not get to spend the download's budget.
-             *
-             * This probe runs detached from the scene scope so it cannot be aborted, which was the
-             * right call for a JSON GET (RONDE 62) and became the wrong outcome overall: the clock
-             * keeps running, and RONDE 68 then refuses a whole-video download with under twelve
-             * seconds left. Render 576 made thirteen of these calls and finished zero downloads;
-             * across every production log, 75 of 79 refusals came at literally 0s left.
-             *
-             * So the order of spending is decided before the probe rather than discovered after it.
-             * A cached answer is still free and still used. Only a MISS the budget cannot afford is
-             * skipped, and then `pickLongVideoStartSec`'s existing fallback picks the start — which
-             * is exactly what already happens whenever RapidAPI has nothing to say about a video.
-             */
             /**
              * VIDEO 616 — the pool measured every candidate's length with `videos.list` before any
-             * beat ran. That number is used first; RapidAPI's metadata and the video context are
-             * asked only for a candidate whose length the pool does not know.
+             * beat ran; the video context answers for a candidate the pool does not know. With
+             * neither, `pickLongVideoStartSec`'s fallback picks the start.
              */
             const poolDurationSec = row.durationSec && row.durationSec > 0 ? row.durationSec : 0;
-            const probe = shouldProbeYoutubeDuration({
-              remainingMs: remainingScopeMs(),
-              downloadFloorMs: YOUTUBE_MIN_DOWNLOAD_WINDOW_MS,
-            });
-            if (!probe.probe && !poolDurationSec) console.log(formatYoutubeProbeSkip(sceneIndex, videoId, probe));
-            /** `||` short-circuits: with the pool's length, RapidAPI is not asked at all. */
-            const sourceDurationSec =
-              poolDurationSec ||
-              rapidApiYoutubeMetaDurationSec(
-                await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache, {
-                  onlyIfCached: !probe.probe,
-                })
-              ) || peekYoutubeVideoContext(videoId)?.durationSec || 0;
+            const sourceDurationSec = poolDurationSec || peekYoutubeVideoContext(videoId)?.durationSec || 0;
             // The old flat 15 was applied to every candidate past the guided-attempt limit —
             // second 15 of a forty-minute documentary is its intro.
             let clipStart =
@@ -24166,7 +23223,7 @@ async function researchBeatClipUnifiedInner(
 
   const ytAvailable =
     youtubeSourcingEnabled() &&
-    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE);
+    (process.env.YOUTUBE_API_KEY || process.env.YOUTUBE_CC_DL_SERVICE);
   if (ytAvailable) {
     /**
      * RONDE 260 — the research race asked YouTube up to THREE times for one beat: once with the
@@ -25191,7 +24248,7 @@ async function fetchBeatClipInner(
   if (
     entityYt.length > 0 &&
     dedup.entityYoutubeFetchesUsed < dedup.perf.maxEntityYoutubePerVideo &&
-    (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
+    (process.env.YOUTUBE_API_KEY || process.env.YOUTUBE_CC_DL_SERVICE)
   ) {
     dedup.entityYoutubeFetchesUsed++;
     clip = await tryStockSources(
@@ -30560,7 +29617,6 @@ export async function runVideoPipeline(
   script: string,
   onProgress?: (p: PipelineProgress) => void,
   voiceId?: string,
-  customVoiceoverUrl?: string,
   videoLength: string = "8-10",
   enableSubtitles = false,  // Subtitles disabled by default — user can enable via UI
   userPrompt?: string
@@ -30712,7 +29768,7 @@ export async function runVideoPipeline(
           withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
             runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
               runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
-                videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt,
+                videoId, script, onProgress, voiceId, videoLength, enableSubtitles, userPrompt,
                 sourceFloorMemo, subjectGateScope, composeJudgeScope
               ))
             ), ownerUserId, renderRun)
@@ -30773,7 +29829,6 @@ async function _runVideoPipelineInner(
   script: string,
   onProgress?: (p: PipelineProgress) => void,
   voiceId?: string,
-  customVoiceoverUrl?: string,
   videoLength = "8-10",
   enableSubtitles = false,
   userPrompt?: string,
@@ -30815,7 +29870,6 @@ async function _runVideoPipelineInner(
   /** The cloud route's egress latch is render-scoped too — see noteCloudEgressBlocked. */
   resetCloudEgressBlocked();
   /** RONDE 261: the sources it points at live in a work directory this render is about to make. */
-  resetYoutubeSourceFiles();
   /** VIDEO 618 — and what earlier renders learned for good: the videos YouTube will not give. */
   const writtenOffVideos = await loadUnusableYoutubeVideos();
   if (writtenOffVideos > 0) {
@@ -30881,7 +29935,7 @@ async function _runVideoPipelineInner(
   const effectiveVoiceId = voiceId?.trim() || videoRow?.voiceId?.trim() || undefined;
   if (effectiveVoiceId) {
     console.log(`[Pipeline] Video ${videoId}: using selected ElevenLabs voice ${effectiveVoiceId.slice(0, 12)}…`);
-  } else if (!customVoiceoverUrl) {
+  } else {
     console.warn(`[Pipeline] Video ${videoId}: no voiceId on record — using default narrator`);
   }
 
@@ -31102,68 +30156,25 @@ async function _runVideoPipelineInner(
     const audioPaths = scenes.map((_, i) => path.join(workDir, `scene_${i}_audio.mp3`));
     let durations: number[];
 
-    if (customVoiceoverUrl) {
-      const customAudioPath = path.join(workDir, "custom_voiceover.mp3");
-      const resp = await fetchExternalUrlSafely(customVoiceoverUrl);
-      if (!resp.ok) {
-        throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, `Failed to download custom voiceover: ${resp.status}`);
-      }
-      if (!resp.body) {
-        throw pipelineError(PIPELINE_ERROR.CUSTOM_VOICEOVER, "Custom voiceover download returned no response body");
-      }
-      // F3-14: streams straight to customAudioPath via pipeline() instead of
-      // Buffer.from(await resp.arrayBuffer()), so the download is never fully buffered in
-      // memory. AbortSignal.timeout inside fetchExternalUrlSafely now covers this body-read too
-      // (see that function's F3-14 comment) — on a timeout/stream error the partial file is
-      // removed before the error propagates, matching the existing F3-10/F3-13 cleanup pattern.
-      try {
-        await pipeline(resp.body, fs.createWriteStream(customAudioPath));
-      } catch (err) {
-        if (fs.existsSync(customAudioPath)) {
-          try { fs.unlinkSync(customAudioPath); } catch { /* ignore */ }
-        }
-        throw err;
-      }
-      // F3-07: probeVideoDurationSec is the existing, already-hardened helper for exactly this
-      // (semaphore-gated, withSceneFetchTimeout hard-kill, multi-binary retry) — the previous
-      // inline execFile() here had no timeout, no semaphore, and its Promise executor never
-      // rejected, so a hung ffprobe could block the render forever.
-      const totalDuration = await probeVideoDurationSec(customAudioPath) || 60;
-      const perScene = Math.max(totalDuration / scenes.length, 5);
-      for (let i = 0; i < scenes.length; i++) {
-        const start = i * perScene;
-        // F3-07: wrapped in withSceneFetchTimeout (45s, same budget splitFullVoiceoverByScenes
-        // already uses for the equivalent per-scene ffmpeg audio split) — previously unwrapped,
-        // so a hung ffmpeg split here could block the render forever and leak its ffmpegSemaphore
-        // slot (exec()'s own semaphore.run() only releases once its promise settles).
-        await withSceneFetchTimeout(
-          () => exec(`${FFMPEG_BIN} -y -i "${customAudioPath}" -ss ${start} -t ${perScene} -c copy "${audioPaths[i]}"`),
-          45_000,
-          `Custom voiceover split scene ${i}`
-        );
-      }
-      durations = scenes.map(() => perScene);
-    } else {
-      durations = await timePipelineStep(
-        pipelineStepTiming,
-        "voiceover",
-        "Bulk voiceover generation",
-        () =>
-          withSceneFetchTimeout(
-            () => generateBulkSceneVoiceovers(scenes, audioPaths, workDir, effectiveVoiceId, (done, total) => {
-              onProgress?.({
-                stage:
-                  done === 0
-                    ? STAGE_LABELS.voiceovers
-                    : `${STAGE_LABELS.voiceovers} (${done}/${total})`,
-                percent: 8 + Math.round((done / total) * 10),
-              });
-            }, script),
-            bulkVoiceoverTimeoutMs(scenes.length, videoLength),
-            "Bulk voiceover generation"
-          )
-      );
-    }
+    durations = await timePipelineStep(
+      pipelineStepTiming,
+      "voiceover",
+      "Bulk voiceover generation",
+      () =>
+        withSceneFetchTimeout(
+          () => generateBulkSceneVoiceovers(scenes, audioPaths, workDir, effectiveVoiceId, (done, total) => {
+            onProgress?.({
+              stage:
+                done === 0
+                  ? STAGE_LABELS.voiceovers
+                  : `${STAGE_LABELS.voiceovers} (${done}/${total})`,
+              percent: 8 + Math.round((done / total) * 10),
+            });
+          }, script),
+          bulkVoiceoverTimeoutMs(scenes.length, videoLength),
+          "Bulk voiceover generation"
+        )
+    );
     // Tight VO sync: scene length tracks narration; target length padded only on final export
     const shortTargetSec: Record<string, number> = { "1": 58 };
     const targetTotal = shortTargetSec[videoLength];
@@ -33345,13 +32356,6 @@ async function _runVideoPipelineInner(
     {
       const refusalLine = formatPermanentDownloadRefusals();
       if (refusalLine) console.log(pipelineReport.add("summary", refusalLine));
-      /**
-       * RONDE 261: beside it, and for the same reason. The refusal memo has reported what it saved
-       * since RONDE 223; its counterpart for successful downloads had no memo at all, so a render
-       * could fetch one video six times and say nothing about it.
-       */
-      const reuseLine = formatYoutubeSourceReuse();
-      if (reuseLine) console.log(pipelineReport.add("summary", reuseLine));
     }
 
     /**

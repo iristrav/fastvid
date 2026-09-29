@@ -147,21 +147,6 @@ describe("FASE 4 — the standard-licence pass is opt-in", () => {
  * silently standing in for another. These are structural checks on the import graph and the
  * guard condition, which is where that mistake would actually live.
  */
-describe("FASE 8 — the quota-free fallback cannot serve a licence-specific mode", () => {
-  it("the fallback is guarded by the unfiltered mode and by nothing else", async () => {
-    const fs = await import("fs");
-    const src = fs.readFileSync("server/videoPipeline.ts", "utf8");
-    const fn = src.slice(src.indexOf("export async function searchYoutubeVideoCandidates("));
-    const body = fn.slice(0, fn.indexOf("\nexport async function fetchYouTubeCCClips"));
-
-    expect(body, "the fallback is not reachable at all any more").toContain("searchYoutubeViaRapidApi");
-    /** The only mode named next to the fallback's own switch is the unfiltered one. */
-    const guard = body.slice(body.indexOf("let effectiveSearchData"), body.indexOf("if (!effectiveSearchData)"));
-    expect(guard).toContain('license === "any"');
-    expect(guard).not.toContain('license === "youtube"');
-    expect(guard).not.toContain('license === "creative_common"');
-  });
-});
 
 /* ═══════════════════════ observability ═══════════════════════ */
 

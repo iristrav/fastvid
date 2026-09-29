@@ -158,7 +158,7 @@ describe("§4 — the line carries the whole trail", () => {
       status: "DOWNLOAD_FAILED",
       attempts: [attempt("cloud", "DOWNLOAD_FAILED", "http_502:bot_check")],
       hasCloudRoute: true,
-      hasRapidRoute: false,
+     
       reason: "every_configured_route_failed",
     });
     expect(withReason).toContain("cloud:DOWNLOAD_FAILED(http_502:bot_check)");
@@ -168,28 +168,15 @@ describe("§4 — the line carries the whole trail", () => {
     expect(line).toContain("cloudService=SET");
     expect(formatYoutubeDownloadLine({
       videoId: "x", sceneIndex: 0, status: "DOWNLOAD_UNAVAILABLE", attempts: [],
-      hasCloudRoute: false, hasRapidRoute: false, reason: "no_download_route_configured",
-    })).toContain("cloudService=MISSING rapidApi=MISSING");
+      hasCloudRoute: false, reason: "no_download_route_configured",
+    })).toContain("cloudService=MISSING");
   });
 
-  it("RONDE 646 — a route the caller left out is SKIPPED, not MISSING", () => {
-    /**
-     * Production 2026-09-24 02:25: the prefetch's RapidAPI-only pass printed `cloudService=MISSING`
-     * on a worker whose cloud service is configured and had been asked a second earlier.
-     */
-    const base = { videoId: "x", sceneIndex: -1, status: "DOWNLOAD_FAILED" as const, attempts: [], reason: "r" };
-    expect(formatYoutubeDownloadLine({ ...base, hasCloudRoute: false, hasRapidRoute: true, onlyRoute: "rapidapi" }))
-      .toContain("cloudService=SKIPPED rapidApi=SET");
-    expect(formatYoutubeDownloadLine({ ...base, hasCloudRoute: true, hasRapidRoute: true, onlyRoute: "cloud" }))
-      .toContain("cloudService=SET rapidApi=SKIPPED");
-    expect(formatYoutubeDownloadLine({ ...base, hasCloudRoute: true, hasRapidRoute: true }))
-      .toContain("cloudService=SET rapidApi=SET");
-  });
 
   it("says attempts=none rather than leaving the field empty", () => {
     expect(formatYoutubeDownloadLine({
       videoId: "x", sceneIndex: 0, status: "DOWNLOAD_UNAVAILABLE", attempts: [],
-      hasCloudRoute: false, hasRapidRoute: false, reason: "r",
+      hasCloudRoute: false, reason: "r",
     })).toContain("attempts=none");
   });
 });

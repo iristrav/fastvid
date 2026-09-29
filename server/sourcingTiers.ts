@@ -55,10 +55,8 @@ export const PROVIDER_TIER: Readonly<Record<string, SourcingTier>> = {
   /* ── Tier 1 ─────────────────────────────────────────────────────────────────────────────── */
   youtube_cc: "YOUTUBE",
   /**
-   * The search half of the same tier. `searchYoutubeViaRapidApi` gates under the bare name
-   * `youtube` while the download side gates under `youtube_cc` — one provider, two labels,
-   * because the search and the fetch were built in different rounds. Both are tier 1; giving the
-   * search a different tier than the download it feeds would be meaningless.
+   * The search half of the same tier: the search gates under the bare name `youtube` while the
+   * download side gates under `youtube_cc` — one provider, two labels. Both are tier 1.
    */
   youtube: "YOUTUBE",
 
@@ -69,22 +67,6 @@ export const PROVIDER_TIER: Readonly<Record<string, SourcingTier>> = {
   /* ── Tier 3 — public and openly-licensed collections ────────────────────────────────────── */
   internet_archive: "OPEN_SOURCES",
   wikimedia: "OPEN_SOURCES",
-  europeana: "OPEN_SOURCES",
-  nara: "OPEN_SOURCES",
-  loc: "OPEN_SOURCES",
-  nasa: "OPEN_SOURCES",
-  flickr: "OPEN_SOURCES",
-  sepiasearch: "OPEN_SOURCES",
-  vimeo: "OPEN_SOURCES",
-  media_ccc: "OPEN_SOURCES",
-  openverse: "OPEN_SOURCES",
-  gdelt_tv: "OPEN_SOURCES",
-  /**
-   * `web_wide` reads like a general web crawl and is not one: `searchWebWideVideoClips` queries
-   * `api.openverse.org` with a commercial-use licence filter. Same collection as `openverse`
-   * above, under the label a different round gave it — so, the same tier.
-   */
-  web_wide: "OPEN_SOURCES",
 
   /* ── Tier 4 — licensed stock, and the image search that behaves like it ─────────────────── */
   pexels: "STOCK",

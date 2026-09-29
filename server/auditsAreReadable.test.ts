@@ -39,7 +39,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import {  } from "./composeEligibility";
 import { PIPELINE_SECTION_TITLES } from "./renderPipelineReport";
 
 const read = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");

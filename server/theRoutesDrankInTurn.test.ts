@@ -108,11 +108,6 @@ describe("R260 §1 — YouTube hands out shares", () => {
     expect(CODE.slice(at, at + 200)).toContain("YOUTUBE_MIN_DOWNLOAD_WINDOW_MS");
   });
 
-  it("the fallback still takes what is genuinely left, so an early finish is given back", () => {
-    expect(CODE, "the RapidAPI leg stopped sizing itself against the scope").toContain(
-      "scopedTimeoutMs(youtubeDownloadTimeoutMs(), 5_000)"
-    );
-  });
 });
 
 /* ═══════════ 2. the door, not the till ═══════════ */
@@ -126,11 +121,6 @@ describe("R260 §2 — a turn is declined before it is performed", () => {
     );
   });
 
-  it("and the search timeout is the one the search actually uses, not a second copy", () => {
-    expect(CODE, "the fetch kept its own literal, free to drift from the door's price").toContain(
-      "YOUTUBE_SEARCH_TIMEOUT_MS,\n      `YouTube RapidAPI search scene ${sceneIndex}`"
-    );
-  });
 
   it("THE CHECK STANDS BEFORE THE FIRST QUERY, WHICH IS THE WHOLE POINT", () => {
     const fn = CODE.slice(
@@ -172,12 +162,6 @@ describe("R260 §2 — a turn is declined before it is performed", () => {
     expect(fn).toContain("if (!Number.isFinite(windowMs)) return true;");
   });
 
-  it("THE TILL IS STILL THERE — the door does not replace the floor, it precedes it", () => {
-    expect(CODE, "RONDE 68's guard was removed in favour of the new one").toContain(
-      "if (remainingForCloud < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {"
-    );
-    expect(CODE).toContain("if (remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {");
-  });
 });
 
 /* ═══════════ 3. which clock ═══════════ */
@@ -224,26 +208,6 @@ describe("R260 §3 — a refusal names the clock that refused", () => {
     expect(describeEnclosingScope()).toBe("no enclosing scope");
   });
 
-  it("EVERY LINE THAT REPORTS RUNNING OUT NOW NAMES ITS CLOCK", () => {
-    /**
-     * The four that mattered in render 586: two download refusals and two search refusals. The
-     * phrase they all used — "in the scene budget" — named a clock that was usually not the one
-     * that had run out.
-     */
-    for (const anchor of [
-      "not calling the yt-dlp cloud service for",
-      "skipping YouTube download of",
-      "scene budget already spent",
-      "what is left of this scope is the transfer reserve",
-    ]) {
-      const at = CODE.indexOf(anchor);
-      expect(at, `${anchor} is gone`).toBeGreaterThan(-1);
-      expect(
-        CODE.slice(at, at + 900),
-        `${anchor} still reports a clock it cannot name`
-      ).toContain("describeEnclosingScope()");
-    }
-  });
 
   it("the label reaches the scope from the caller, not from a second source of truth", () => {
     const fn = CODE.slice(
@@ -285,21 +249,6 @@ describe("R260 §4 — the numbers, all of them, unchanged", () => {
     expect(CODE).toContain("return Math.min(TRANSFER_RESERVE_MS, Math.floor(windowMs / 2));");
   });
 
-  it("THE ORDER OF THE TWO ROUTES IS UNCHANGED — this round did not bet on today's measurement", () => {
-    /**
-     * Two successes out of two is not a reason to promote a route; the share holds whichever of
-     * the two turns out to be broken next. The cloud branch still stands first.
-     */
-    const fn = CODE.slice(
-      CODE.indexOf("async function downloadYouTubeCCClip("),
-      CODE.indexOf("export async function fetchYouTubeCCClips(")
-    );
-    const cloud = fn.indexOf("if (cloudDlService && !egressBlocked) {");
-    const rapid = fn.indexOf("scopedTimeoutMs(youtubeDownloadTimeoutMs(), 5_000)");
-    expect(cloud).toBeGreaterThan(-1);
-    expect(rapid).toBeGreaterThan(-1);
-    expect(cloud, "the routes were reordered").toBeLessThan(rapid);
-  });
 
   it("and the download still funnels through the one function it always did", () => {
     /** RONDE 647: plus exactly one re-entry from inside, which queues calls writing the same file. */

@@ -60,34 +60,8 @@ function metaHelper(src: string): string {
 }
 
 describe("RONDE 56 #1 — the metadata lookup is cached per render", () => {
-  it("a hit short-circuits before any request is made", () => {
-    const h = metaHelper(SRC());
-    const cacheRead = h.indexOf('getCachedProviderAsset(sourcingCache, "youtube_cc", videoId)');
-    const fetchIdx = h.indexOf("fetchWithTimeout(");
-    expect(cacheRead).toBeGreaterThan(-1);
-    expect(fetchIdx).toBeGreaterThan(cacheRead);
-    expect(h).toContain("metadataCacheHits++");
-  });
 
-  it("a negative result is cached too, so a dead video is asked once", () => {
-    const h = metaHelper(SRC());
-    // `metadata !== undefined` rather than a truthiness check: null IS the cached answer for
-    // "this video has no usable metadata", and truthiness would re-ask it every beat.
-    expect(h).toContain("cached?.metadata !== undefined");
-    expect(h).toContain('putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, { metadata: meta })');
-  });
 
-  it("the cache reaches the helper from the call site", () => {
-    const src = SRC();
-    // downloadYouTubeCCClip takes it...
-    expect(src).toMatch(/export async function downloadYouTubeCCClip\([\s\S]{0,400}?sourcingCache\?: SourcingCache/);
-    // ...its caller passes it...
-    const callIdx = src.indexOf("const ok = await downloadYouTubeCCClip(");
-    expect(callIdx).toBeGreaterThan(-1);
-    expect(src.slice(callIdx, callIdx + 500)).toContain("sourcingCache");
-    // ...and the helper is what the download path now uses.
-    expect(src).toContain("await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache)");
-  });
 
   it("the old inline lookup is gone", () => {
     const src = SRC();
@@ -96,58 +70,8 @@ describe("RONDE 56 #1 — the metadata lookup is cached per render", () => {
   });
 });
 
-describe("RONDE 56 #2 — the lookup runs outside the beat's deadline", () => {
-  it("it is detached from the scene-fetch scope", () => {
-    const h = metaHelper(SRC());
-    expect(h).toContain("sceneFetchScopeStorage.exit(");
-    // Detached means it gets its own full budget, not the scene's leftovers. Render 531 granted
-    // it 3s — the clamp's floor — because the scene had nothing left to give.
-    //
-    // YOUTUBE PRODUCTION REPAIR: the literal 20_000 became the named constant. The rule asserted
-    // here is unchanged and is now checked in two places rather than one — that the probe gets its
-    // own fixed budget and never a scoped one. The number moved because a second reader needs it:
-    // `shouldProbeYoutubeDuration` decides whether the scene can AFFORD this probe before it runs,
-    // and a decision made against a second copy of the price is a decision made against the wrong
-    // price. The value itself is asserted below, so this cannot be loosened by renaming.
-    expect(h).toContain("fetchWithTimeout(metaUrl, YOUTUBE_META_PROBE_TIMEOUT_MS,");
-    expect(YOUTUBE_META_PROBE_TIMEOUT_MS).toBe(20_000);
-    expect(h).not.toContain("scopedTimeoutMs(");
-  });
-
-  it("the exit wraps the request, not merely the surrounding bookkeeping", () => {
-    const h = metaHelper(SRC());
-    const exitIdx = h.indexOf("sceneFetchScopeStorage.exit(");
-    const fetchIdx = h.indexOf("fetchWithTimeout(", exitIdx);
-    const closeIdx = h.indexOf("});", exitIdx);
-    expect(fetchIdx).toBeGreaterThan(exitIdx);
-    expect(fetchIdx).toBeLessThan(closeIdx);
-  });
-
-  it("the DOWNLOAD stays inside the scope — it writes to disk", () => {
-    const src = SRC();
-    const dlIdx = src.indexOf("`RapidAPI YouTube download scene ${sceneIndex}`");
-    expect(dlIdx).toBeGreaterThan(-1);
-    // Still clamped to the scene budget, and still cancellable by it.
-    expect(src.slice(dlIdx - 400, dlIdx)).toContain("scopedTimeoutMs(youtubeDownloadTimeoutMs()");
-    // The download must not be detached: a write landing after workDir is cleaned up is ENOENT.
-    const helper = metaHelper(src);
-    expect(helper).not.toContain("downloadToFileStreaming");
-  });
-
-  it("a scope abort still does not blame the provider", () => {
-    const h = metaHelper(SRC());
-    // The RONDE 52 rule survives the move: the breaker counts real failures, not budget aborts.
-    expect(h).toContain("if (!isScopeAbortError(err)) markYoutubeSearchResult(false);");
-  });
-});
 
 describe("RONDE 56 — the counters that measured this now move", () => {
-  it("both metadata counters are written", () => {
-    const h = metaHelper(SRC());
-    // metadata=0 and metadataCacheHits=0 in render 531 meant nothing was recording either side.
-    expect(h).toContain("metadataCount++");
-    expect(h).toContain("metadataCacheHits++");
-  });
 
   it("the metrics shape already carried these fields — nothing new was invented", () => {
     const src = SRC();

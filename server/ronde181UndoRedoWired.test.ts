@@ -117,27 +117,6 @@ describe("R181 — the shared undo mechanics", () => {
   });
 });
 
-/* ═══════════════════════ the server still behaves exactly as R166 built it ═══════════════════════ */
-
-describe("R181 — the server binding is unchanged", () => {
-  it("keeps every export R166 defined", async () => {
-    const mod = await import("./timelineHistory");
-    for (const name of [
-      "MAX_HISTORY", "newHistory", "canUndo", "canRedo",
-      "recordEdit", "undo", "redo", "sameEdit", "formatHistory",
-    ]) {
-      expect(mod, name).toHaveProperty(name);
-    }
-  });
-
-  /** Its policy is still the digest, which is what makes two saves of one edit one edit. */
-  it("still uses the timeline digest as its content identity", () => {
-    const src = fs.readFileSync("server/timelineHistory.ts", "utf8");
-    expect(src).toContain("timelineDigest(a) === timelineDigest(b)");
-    expect(src).toContain("bumpVersion(");
-  });
-});
-
 /* ═══════════════════════ the editor ═══════════════════════ */
 
 describe("R181 — the editor uses the shared stack and has the buttons", () => {

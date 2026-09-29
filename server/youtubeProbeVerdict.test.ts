@@ -106,14 +106,6 @@ describe("the probe tries both download routes, in the pipeline's own order", ()
     );
   });
 
-  /** Either is enough. The pipeline falls through cloud to RapidAPI on every single download. */
-  it("passes when either route answers", () => {
-    const body = probeBody();
-    expect(body).toContain('const downloadRoute: "cloud" | "rapidapi" | null =');
-    expect(body, "the verdict still demands RapidAPI specifically").toMatch(
-      /cloudOk \? "cloud" : rapidOk \? "rapidapi" : null/
-    );
-  });
 
   /** Which one answered is reported, so a fallback is not mistaken for the primary route. */
   it("names the route that answered", () => {
@@ -143,17 +135,12 @@ describe("nothing was replaced by a guess", () => {
     expect(body).toContain('searchUrl.searchParams.set("videoLicense", "creativeCommon")');
   });
 
-  /** And a live RapidAPI metadata call that checks for a usable MP4, not merely a 200. */
-  it("still checks RapidAPI returns a real MP4 format", () => {
-    const body = probeBody();
-    expect(body).toContain("rapidApiHasFormat");
-    expect(body).toMatch(/mimeType\?\.includes\("mp4"\)/);
-  });
 
   /** Every network call is bounded — a probe that hangs is worse than one that fails. */
   it("bounds every call it makes", () => {
     const body = probeBody();
     const calls = [...body.matchAll(/fetchWithTimeout\(/g)];
-    expect(calls.length, "a network call in the probe is unbounded").toBeGreaterThanOrEqual(3);
+    /** The search and the cloud service's health — RapidAPI's check left with RapidAPI. */
+    expect(calls.length, "a network call in the probe is unbounded").toBeGreaterThanOrEqual(2);
   });
 });

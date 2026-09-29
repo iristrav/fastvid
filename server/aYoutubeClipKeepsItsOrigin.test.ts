@@ -115,18 +115,7 @@ describe("§3 — the background gets its time", () => {
     expect(src).toContain("touch: () => touchPrefetchRow(row.id)");
   });
 
-  it("each route on its own gets the whole window — no render share, no 180 s base", () => {
-    const src = read("videoPipeline.ts");
-    expect(src).toContain("onlyRoute && Number.isFinite(remainingForCloud)\n        ? remainingForCloud");
-    expect(src).toContain("onlyRoute && Number.isFinite(remainingScopeMs())\n              ? Math.max(5_000, remainingScopeMs())");
-    expect(read("youtubePrefetch.ts")).toContain("prefetchWindowMs(),\n            `youtube prefetch ${route}");
-  });
 
-  it("A RENDER STILL GETS EXACTLY WHAT IT HAD — its calls pass no route", () => {
-    const src = read("videoPipeline.ts");
-    expect(src).toContain("Math.min(youtubeDownloadTimeoutMs(budgetMs), cloudWindowMs)");
-    expect(src).toContain("scopedTimeoutMs(youtubeDownloadTimeoutMs(), 5_000)");
-  });
 
   it("every segment's real download time is logged, so the window can be set from measurement", () => {
     const line = formatPrefetchLine(

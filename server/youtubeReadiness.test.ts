@@ -244,12 +244,11 @@ describe("a search that does not happen says so", () => {
   });
 
   /** The quota cooldown was the other silent exit — it now names itself and the way out. */
-  it("the quota cooldown names itself and the fallback that would avoid it", () => {
-    const at = PIPE.indexOf("if (isYoutubeInCooldown() && !(youtubeRapidSearchFallbackEnabled()");
+  it("the quota cooldown names itself", () => {
+    const at = PIPE.indexOf("  if (isYoutubeInCooldown()) {\n    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube skipped");
     expect(at, "the cooldown guard has moved").toBeGreaterThan(-1);
     const block = PIPE.slice(at, at + 600);
     expect(block, "the cooldown exit is still silent").toContain("quota cooldown");
-    expect(block).toContain("ENABLE_YOUTUBE_RAPID_SEARCH");
   });
 
   /**

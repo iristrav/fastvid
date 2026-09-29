@@ -29,11 +29,6 @@ describe("RONDE 10 — the fallback is strictly opt-in and key-gated", () => {
     )
   );
 
-  it("requires both the explicit flag AND a RapidAPI key", () => {
-    // RONDE 18 follow-up: the literal `=== "true"` moved into the case-tolerant envFlagIsOn helper.
-    expect(fn).toContain('envFlagIsOn("ENABLE_YOUTUBE_RAPID_SEARCH")');
-    expect(fn).toContain("Boolean(RAPIDAPI_KEY)");
-  });
 
   it("is off unless the flag is exactly 'true' (not merely set)", () => {
     // Guards against the loose `!== "false"` default that would enable it silently.
@@ -42,33 +37,7 @@ describe("RONDE 10 — the fallback is strictly opt-in and key-gated", () => {
 });
 
 describe("RONDE 10 — the CC guarantee is never routed through the scraped search", () => {
-  it("the fallback fires only for the fair-use path (license === 'any')", () => {
-    const idx = pipelineSrc.indexOf("let effectiveSearchData = searchData;");
-    expect(idx).toBeGreaterThan(-1);
-    /**
-     * RONDE 160 — bounded by the statement that ENDS the fallback, not by a character count.
-     *
-     * This used to slice a fixed 500 characters, so adding a comment inside the guard pushed the
-     * assignment out of the window and failed a test whose subject had not changed. A guard that
-     * breaks on reformatting teaches people to edit the guard. The delimiter below is the next
-     * real statement, so the whole fallback is always in view however it is commented.
-     */
-    const block = codeOnly(
-      pipelineSrc.slice(idx, pipelineSrc.indexOf("if (!effectiveSearchData)", idx))
-    );
-    expect(block).toContain('license === "any"');
-    expect(block).toContain("youtubeRapidSearchFallbackEnabled()");
-    expect(block).toContain("searchYoutubeViaRapidApi(query, sceneIndex, maxResults)");
-    /** RONDE 160 — and no licence-SPECIFIC mode may reach the scraped search. */
-    expect(block).not.toContain('license === "youtube"');
-    expect(block).not.toContain('license === "creative_common"');
-  });
 
-  it("the fallback only fires when the official search yielded nothing (429/empty)", () => {
-    const idx = pipelineSrc.indexOf("let effectiveSearchData = searchData;");
-    const block = codeOnly(pipelineSrc.slice(idx, idx + 500));
-    expect(block).toContain("(!effectiveSearchData || (effectiveSearchData.items?.length ?? 0) === 0)");
-  });
 
   it("the official strict-CC search still sets videoLicense=creativeCommon", () => {
     // Untouched by RONDE 10 — the CC path's license filter is intact.
@@ -76,39 +45,6 @@ describe("RONDE 10 — the CC guarantee is never routed through the scraped sear
   });
 });
 
-describe("RONDE 10 — the RapidAPI search helper is safe and shape-compatible", () => {
-  const fnStart = pipelineSrc.indexOf("async function searchYoutubeViaRapidApi(");
-  const fnEnd = pipelineSrc.indexOf("export async function searchYoutubeVideoCandidates(");
-  const fn = pipelineSrc.slice(fnStart, fnEnd);
-
-  it("exists and returns the same shape the official-API producer returns", () => {
-    expect(fnStart).toBeGreaterThan(-1);
-    // Same { items: [{ id: { videoId }, snippet: {...} }] } shape → downstream code unchanged.
-    expect(fn).toContain("id: { videoId: r.videoId }");
-    expect(fn).toContain("snippet: {");
-    expect(fn).toContain("return { items: rows };");
-  });
-
-  it("only keeps real video rows with a videoId", () => {
-    expect(fn).toContain('r?.type === "video" && typeof r.videoId === "string" && r.videoId.length > 0');
-  });
-
-  it("respects maxResults (never floods the pipeline)", () => {
-    expect(fn).toContain(".slice(0, maxResults)");
-  });
-
-  it("sends the RapidAPI auth headers on its own search host", () => {
-    expect(fn).toContain('"x-rapidapi-host": RAPIDAPI_YT_SEARCH_HOST');
-    expect(fn).toContain('"x-rapidapi-key": RAPIDAPI_KEY');
-  });
-
-  it("is bounded by a timeout and fails open to null on any error", () => {
-    expect(fn).toContain("fetchWithTimeout(");
-    expect(fn).toMatch(/catch \(err\) \{[\s\S]{0,200}return null;/);
-    // A non-ok HTTP response also returns null, never throws.
-    expect(fn).toContain("if (!resp.ok) {");
-  });
-});
 
 describe("RONDE 10b — the cloud ytdlp-service download sends the bearer token", () => {
   it("passes Authorization: Bearer from YOUTUBE_CC_DL_TOKEN when set, omits it otherwise", () => {

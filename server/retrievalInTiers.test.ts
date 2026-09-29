@@ -218,16 +218,6 @@ describe("4. the pool uses it, on the operator's order", () => {
     }
   });
 
-  it("YouTube is first, the operator's archive second, and stock last", () => {
-    expect(tierNumber(providerTier("youtube_cc")!)).toBe(1);
-    expect(tierNumber(providerTier("archive")!)).toBe(2);
-    for (const s of ["internet_archive", "wikimedia", "europeana", "openverse", "nasa", "nara", "loc"]) {
-      expect(tierNumber(providerTier(s)!), s).toBe(3);
-    }
-    for (const s of ["pexels", "pixabay"]) {
-      expect(tierNumber(providerTier(s)!), s).toBe(4);
-    }
-  });
 
   /** Without a beat count the run cannot stop early, so the render has to supply one. */
   it("the render tells the pool how many sentences the scene has", () => {

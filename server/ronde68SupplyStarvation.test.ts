@@ -111,38 +111,7 @@ describe("RONDE 68 — the ceiling counts what it claimed to count", () => {
 });
 
 describe("RONDE 68 — a transfer that cannot finish is not started", () => {
-  it("the remaining scene budget is checked before the download begins", () => {
-    const src = PIPELINE();
-    const idx = src.indexOf("const remainingMs = remainingScopeMs();");
-    expect(idx).toBeGreaterThan(-1);
-    /**
-     * FINAL VALIDATION §4 widened the window from 700: the guard now also records the reason it
-     * stood aside (`reportDownload("DOWNLOAD_TIMEOUT", …)`) before returning, because a scene-budget
-     * refusal used to be a bare `return false` that looked exactly like a broken service. Every
-     * assertion below is unchanged, plus one for the line that closes that silence.
-     */
-    const block = src.slice(idx, idx + 1400);
-    expect(block).toContain("remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS");
-    expect(block).toContain("not enough to finish");
-    expect(block).toContain("return false;");
-    expect(block, "standing aside for the budget is still a silent return").toContain(
-      'reportDownload("DOWNLOAD_TIMEOUT"'
-    );
-  });
 
-  it("it sits before downloadToFileStreaming, not after it", () => {
-    const src = PIPELINE();
-    const check = src.indexOf("const remainingMs = remainingScopeMs();");
-    expect(check).toBeGreaterThan(-1);
-    // Searched FROM the guard — downloadToFileStreaming has other call sites earlier in the file.
-    const download = src.indexOf(
-      "const { response: dlResp, bytesWritten } = await downloadToFileStreaming(",
-      check
-    );
-    expect(download).toBeGreaterThan(check);
-    // And nothing else intervenes: it is the guard immediately in front of the transfer.
-    expect(download - check).toBeLessThan(1400);
-  });
 
   it("the window is large enough to be a real judgement, not a formality", () => {
     const src = PIPELINE();
@@ -155,22 +124,9 @@ describe("RONDE 68 — a transfer that cannot finish is not started", () => {
     expect(ms).toBeLessThanOrEqual(30_000);
   });
 
-  it("skipping is announced with the reason, so a quiet YouTube is explicable", () => {
-    const src = PIPELINE();
-    expect(src).toContain("skipping YouTube download of ${videoId}");
-    expect(src).toContain("left in the scene budget");
-  });
 });
 
 describe("RONDE 68 — what this is meant to give back", () => {
-  it("the cheap sources are the ones that were starved, and they only need a search", () => {
-    // Recorded here because the fix is judged on this, not on YouTube's numbers:
-    // Wikimedia went 0 searches / 0 results in render 533 while YouTube ran 134 downloads.
-    const src = PIPELINE();
-    // The guard's comment names what the freed time is for, so a later edit knows the intent.
-    expect(src).toContain("Wikimedia needed for a search");
-    expect(src).toContain("Internet Archive");
-  });
 
   it("YouTube is bounded, not disabled — it must stay a participant", () => {
     const src = PIPELINE();

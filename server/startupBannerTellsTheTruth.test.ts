@@ -158,7 +158,7 @@ describe("the pipeline banner reports the cinematic flags", () => {
 describe("the sibling key lines were already computed and stay that way", () => {
   it("each reports presence from the environment", () => {
     const src = banner();
-    for (const key of ["RAPIDAPI_KEY", "YOUTUBE_API_KEY"]) {
+    for (const key of ["YOUTUBE_CC_DL_SERVICE", "YOUTUBE_API_KEY"]) {
       const at = src.indexOf(`"[Fastvid] ${key}:"`);
       expect(at, `${key} is no longer reported`).toBeGreaterThan(-1);
       const line = src.slice(at, at + 200);

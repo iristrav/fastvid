@@ -123,49 +123,8 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
 });
 
 describe("RONDE 62 #2 — the YouTube duration comes from the call that works", () => {
-  it("reads lengthSeconds however the provider spells it", () => {
-    expect(rapidApiYoutubeMetaDurationSec({ lengthSeconds: "2400" })).toBe(2400);
-    expect(rapidApiYoutubeMetaDurationSec({ lengthSeconds: 187 })).toBe(187);
-    expect(rapidApiYoutubeMetaDurationSec({ videoDetails: { lengthSeconds: "935" } })).toBe(935);
-    expect(rapidApiYoutubeMetaDurationSec({ duration: "42" })).toBe(42);
-  });
 
-  it("returns 0 rather than a wrong number when it cannot tell", () => {
-    expect(rapidApiYoutubeMetaDurationSec(null)).toBe(0);
-    expect(rapidApiYoutubeMetaDurationSec(undefined)).toBe(0);
-    expect(rapidApiYoutubeMetaDurationSec({})).toBe(0);
-    expect(rapidApiYoutubeMetaDurationSec({ lengthSeconds: "" })).toBe(0);
-    expect(rapidApiYoutubeMetaDurationSec({ lengthSeconds: "not a number" })).toBe(0);
-    expect(rapidApiYoutubeMetaDurationSec({ lengthSeconds: "0" })).toBe(0);
-    expect(rapidApiYoutubeMetaDurationSec({ lengthSeconds: "-5" })).toBe(0);
-    // A day-long "duration" is a parse error, not a video.
-    expect(rapidApiYoutubeMetaDurationSec({ lengthSeconds: "999999" })).toBe(0);
-  });
 
-  it("the metadata call supplies the start offset, with the watch page only as backup", () => {
-    const src = PIPELINE();
-    /**
-     * YOUTUBE PRODUCTION REPAIR — the call gained a fourth argument and this expectation follows
-     * its shape. The RULE is untouched and every part of it is still asserted: the RapidAPI
-     * metadata answers the duration, the watch-page context is only the backup, and a zero falls
-     * through to the fixed start.
-     *
-     * What changed is that the probe now has to be AFFORDABLE. `onlyIfCached` is how the scene's
-     * remaining budget reaches the fetcher: render 576 spent up to twenty un-abortable seconds
-     * here, thirteen times, in front of downloads that then found nothing left — 75 of 79 refusals
-     * across the production logs read `0s left`. A cached answer is still free and still used, so
-     * this weakens nothing about WHERE a clip is cut; it only stops the question being asked when
-     * asking it costs the clip.
-     */
-    expect(src).toContain(
-      "rapidApiYoutubeMetaDurationSec(\n" +
-        "                await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache, {\n" +
-        "                  onlyIfCached: !probe.probe,\n" +
-        "                })\n" +
-        "              ) || peekYoutubeVideoContext(videoId)?.durationSec || 0"
-    );
-    expect(src).toContain("pickLongVideoStartSec(sourceDurationSec, clipDur, videoId)");
-  });
 
   it("the planner is handed the length the caller already knows", () => {
     const src = PIPELINE();

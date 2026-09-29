@@ -42,24 +42,14 @@ describe("§1 — whose address a RapidAPI file link was made for", () => {
     expect(googlevideoLinkLock("not a url")).toBe("unparseable");
   });
 
-  it("the 403 line carries that fact, never the link", () => {
-    expect(PIPE).toContain("`http_${dlResp.status}:${googlevideoLinkLock(format.url)}`");
-  });
 });
 
 describe("§2 — one route at a time, without changing a render", () => {
-  it("onlyRoute gates each route, and no render caller passes it", () => {
-    expect(PIPE).toContain('onlyRoute === "rapidapi" ? "" : process.env.YOUTUBE_CC_DL_SERVICE');
-    expect(PIPE).toContain('if (RAPIDAPI_KEY && onlyRoute !== "cloud") {');
-    /** The route test clears the held source first, so a reuse can never stand in for a transfer. */
-    expect(readFileSync(path.join(__dirname, "youtubeRouteTest.ts"), "utf8")).toMatch(
-      /forgetYoutubeSourceFile\(id\);\n\s+const outcome/
-    );
-  });
 
   it("routes are read by presence only", () => {
-    expect(configuredRoutes({ YOUTUBE_CC_DL_SERVICE: "x", RAPIDAPI_KEY: "y" } as never)).toEqual(["cloud", "rapidapi"]);
-    expect(configuredRoutes({ RAPIDAPI_KEY: " " } as never)).toEqual([]);
+    /** RapidAPI is no route at all any more, whatever the environment holds. */
+    expect(configuredRoutes({ YOUTUBE_CC_DL_SERVICE: "x", RAPIDAPI_KEY: "y" } as never)).toEqual(["cloud"]);
+    expect(configuredRoutes({ YOUTUBE_CC_DL_SERVICE: " " } as never)).toEqual([]);
   });
 });
 

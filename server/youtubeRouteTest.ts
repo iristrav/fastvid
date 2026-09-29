@@ -4,9 +4,8 @@
  * ── Why this exists ─────────────────────────────────────────────────────────────────────────
  *
  * Render 603 found 49 YouTube videos and downloaded none, so nothing from YouTube could reach the
- * film. Its log answers "did it fail" and not "which route cannot deliver": every attempt tried the
- * cloud route, then RapidAPI, inside one shrinking scene budget, so a cloud timeout, a RapidAPI 403
- * and "no time left" are tangled in each line.
+ * film. Its log answers "did it fail" and not "which route cannot deliver": a timeout and "no time
+ * left" are tangled in each line.
  *
  * The boot preflight asks the yt-dlp service whether it can REACH YouTube, and it says yes — while
  * the same service's downloads time out. Reaching is not delivering. This asks for a FILE.
@@ -17,8 +16,7 @@
  * seconds of one small public video, through the pipeline's own `downloadYouTubeCCClip` (restricted
  * with `onlyRoute`) — same request, same headers, same checks as a render uses. One line per route:
  *
- *     [YouTubeRouteTest] route=rapidapi ok=false status=DOWNLOAD_FAILED
- *                        detail=rapidapi:DOWNLOAD_FAILED(http_403:ip_locked) ms=2140
+ *     [YouTubeRouteTest] route=cloud ok=true status=DOWNLOAD_SUCCESS ms=12038
  *
  * It decides nothing and changes nothing a render reads: the latch and memos it may have touched
  * are reset by every render's own start, and the file is deleted.
@@ -37,7 +35,7 @@ import path from "path";
  */
 export const ROUTE_TEST_DEFAULT_VIDEO_ID = "aqz-KE-bpKQ";
 
-export type YoutubeRoute = "cloud" | "rapidapi";
+export type YoutubeRoute = "cloud";
 
 export type RouteTestResult = {
   route: YoutubeRoute;
@@ -57,7 +55,6 @@ export function routeTestVideoId(): string {
 export function configuredRoutes(env: NodeJS.ProcessEnv = process.env): YoutubeRoute[] {
   const out: YoutubeRoute[] = [];
   if (env.YOUTUBE_CC_DL_SERVICE?.trim()) out.push("cloud");
-  if (env.RAPIDAPI_KEY?.trim()) out.push("rapidapi");
   return out;
 }
 
@@ -136,10 +133,8 @@ export async function runProductionYoutubeRouteTest(): Promise<RouteTestResult[]
   const videoId = routeTestVideoId();
   const results = await runYoutubeRouteTests(configuredRoutes(), videoId, {
     download: async (route, id, outPath) => {
-      /** Each route starts from a clean latch, so one route's refusal cannot skip the other's test. */
+      /** The test starts from a clean latch, so an earlier refusal cannot skip it. */
       failure.resetCloudEgressBlocked();
-      /** A source held from the other route's test would be re-cut instead of fetched. */
-      failure.forgetYoutubeSourceFile(id);
       const outcome: { status?: string; reason?: string } = {};
       const ok = await pipeline.withSceneFetchTimeout(
         () =>
@@ -149,7 +144,6 @@ export async function runProductionYoutubeRouteTest(): Promise<RouteTestResult[]
         120_000,
         `youtube route test ${route}`
       );
-      failure.forgetYoutubeSourceFile(id);
       return { ok, status: outcome.status, reason: outcome.reason };
     },
     workDir: () => fs.mkdtempSync(path.join(pipeline.TMP_DIR, "fastvid_ytroutetest_")),

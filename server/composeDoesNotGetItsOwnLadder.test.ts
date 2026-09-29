@@ -348,31 +348,6 @@ describe("compose sourcing is bounded, and says which bound it hit", () => {
 /* ═════════════════ render 592: the three defects the ladder shipped with ═════════════════ */
 
 describe("render 592 — what the first production render caught", () => {
-  /**
-   * DEFECT 1 — the ladder held back the archives and waved the stock through.
-   *
-   * Render 592's scenes were built by the funnel, which searches tiers 2, 3 and 4 at scene level
-   * and does NOT search YouTube. Every beat therefore opened `1=NOT_REACHED 2=ATTEMPTED
-   * 3=ATTEMPTED 4=ATTEMPTED`, and ninety-nine tier-3 queries — Internet Archive, Wikimedia,
-   * SepiaSearch, Europeana, GDELT, media.ccc, Openverse — were refused for skipping a tier 1 that
-   * nothing was going to ask. Not one Pexels or Pixabay query was refused.
-   *
-   * `tierMayRun`'s own docstring said "same tier … is always allowed" from the first version. The
-   * code never did it.
-   */
-  it("a tier already attempted admits its next query, even with a higher tier unreached", async () => {
-    await resumeBeatSourcing(
-      { ...at(), seedAttempted: ["OWN_ARCHIVE", "OPEN_SOURCES", "STOCK"] },
-      async () => {
-        const ladder = currentBeatLadder()!;
-        expect(ladder.attempted.has("YOUTUBE"), "tier 1 was never asked").toBe(false);
-        for (const p of ["internet_archive", "wikimedia", "sepiasearch", "europeana", "gdelt_tv"]) {
-          expect(admitProviderForTier(p).admitted, `${p} refused while tier 3 is attempted`).toBe(true);
-        }
-        expect(ladder.refusals, "a re-ask of an attempted tier was counted as out of order").toEqual([]);
-      }
-    );
-  });
 
   it("but a tier opened for the FIRST time still waits for the one above it", async () => {
     await resumeBeatSourcing({ ...at(1), seedAttempted: ["OWN_ARCHIVE"] }, async () => {

@@ -728,13 +728,6 @@ describe("I. a YouTube Short is never downloaded, on any route", () => {
         for (const q of [undefined, 0, 1, 2, 3]) expect(youtubeSearchDurationForPass(pass, count, q)).toBe("medium");
   });
 
-  it("the per-beat result filter and the RapidAPI fallback both refuse Shorts before download", () => {
-    expect(PIPE).toContain("const short = youtubeResultIsShort(item.snippet?.title, item.snippet?.description);");
-    expect(PIPE).toContain("return !genre && !short;");
-    expect(PIPE).toContain("const longEnough = rapidSearchRowsLongerThanAShort(all, query);");
-    expect(PIPE).toContain("const kept = all.filter((r) => lengthSec(r.lengthText) > YOUTUBE_SHORT_MAX_SEC);");
-    expect(PIPE).toContain(".filter((r) => !youtubeResultIsShort(r.title, r.description))");
-  });
 
   const poolDeps = (store = memoryYoutubeSearchBudgetStore(), details?: () => Promise<Map<string, { durationSec: number; embeddable: boolean; live: boolean }>>): PoolDeps => ({
     store,
@@ -1063,31 +1056,7 @@ describe("L. an approval that rests on a guess about who is on screen is refused
 });
 
 describe("M. video 615 — the cloud cut is waited for, a sentence starts two downloads, the service says where the time goes", () => {
-  it("two RapidAPI 403s on a link signed for another address close RapidAPI for the render; a success or a new render opens it", async () => {
-    const f = await import("./providerFailureClass");
-    f.resetCloudEgressBlocked();
-    expect(f.rapidApiLinkLocked()).toBe(false);
-    expect(f.noteRapidApiLinkLocked()).toBe(false);
-    expect(f.rapidApiLinkLocked()).toBe(false);
-    expect(f.noteRapidApiLinkLocked()).toBe(true);
-    expect(f.rapidApiLinkLocked()).toBe(true);
-    expect(f.noteRapidApiLinkLocked()).toBe(false); // announced once
-    f.noteRapidApiTransferOk();
-    expect(f.rapidApiLinkLocked()).toBe(false);
-    f.noteRapidApiLinkLocked();
-    f.noteRapidApiLinkLocked();
-    f.resetCloudEgressBlocked();
-    expect(f.rapidApiLinkLocked()).toBe(false);
-  });
 
-  it("only a 403 on an ip-locked link counts, and a latched RapidAPI gives the cloud route the whole window", () => {
-    expect(PIPE).toContain('if (dlResp.status === 403 && googlevideoLinkLock(format.url) === "ip_locked" && noteRapidApiLinkLocked())');
-    expect(PIPE).toContain("const cloudIsOnlyRoute = Boolean(onlyRoute) || rapidApiLinkLocked();");
-    expect(PIPE).toMatch(/cloudTimeoutMs = rapidApiLinkLocked\(\) && Number\.isFinite\(remainingForCloud\)\s*\?\s*remainingForCloud/);
-    expect(PIPE).toMatch(/"rapidapi_links_ip_locked_this_render"\);\s*\} else if \(RAPIDAPI_KEY && onlyRoute !== "cloud"\) \{/);
-    expect(PIPE).toContain('note("rapidapi", "DOWNLOAD_FAILED", "rapidapi_links_ip_locked_this_render");');
-    expect(PIPE).toMatch(/noteRapidApiTransferOk\(\);\s*note\("rapidapi", "DOWNLOAD_SUCCESS"/);
-  });
 
   it("a YouTube turn starts at most `count` downloads, counted when the slot is claimed", () => {
     const fn = PIPE.slice(PIPE.indexOf("export async function fetchYouTubeCCClips("));

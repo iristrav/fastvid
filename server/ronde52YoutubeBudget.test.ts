@@ -168,34 +168,12 @@ describe("RONDE 52 — the wiring is where it needs to be", () => {
     return readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
   };
 
-  it("every YouTube step is clamped, none of them flat", async () => {
-    const s = await src();
-    // Search and download are clamped to the budget containing them.
-    expect(s).toContain("scopedTimeoutMs(15_000, 3_000)");
-    expect(s).toContain("scopedTimeoutMs(youtubeDownloadTimeoutMs(), 5_000)");
-    // RONDE 56: the metadata step is no longer clamped — it is no longer INSIDE the beat scope.
-    // Clamping it there bottomed out at the 3s floor on every one of render 531's 85 attempts,
-    // because the scene had nothing left to give. It now runs detached with its own full 20s;
-    // see ronde56YoutubeMetaCache.test.ts for that half.
-    // YOUTUBE PRODUCTION REPAIR: the literal became a named constant, whose value is asserted on
-    // the next line. The rule this test guards — the metadata step is DETACHED and FLAT, never
-    // clamped to a spent scene budget — is unchanged. What is new is a decision made before the
-    // step runs at all: `shouldProbeYoutubeDuration` asks whether the scene can afford twenty
-    // un-abortable seconds AND still start a download, because render 576 could not, thirteen
-    // times over. That decision needs the price, and two copies of a price drift.
-    expect(s).toContain("fetchWithTimeout(metaUrl, YOUTUBE_META_PROBE_TIMEOUT_MS,");
-    expect(YOUTUBE_META_PROBE_TIMEOUT_MS).toBe(20_000);
-    expect(s).toContain("sceneFetchScopeStorage.exit(");
-    // The flat download value that could not fit is still gone.
-    expect(s).not.toMatch(/youtubeDownloadTimeoutMs\(\),\s*\n\s*`RapidAPI YouTube download/);
-  });
 
-  it("both YouTube catch paths reach the breaker, and both exempt scope aborts", async () => {
+  it("the YouTube search catch reaches the breaker, and exempts scope aborts", async () => {
     const s = await src();
     const guarded = [...s.matchAll(/if \(!isScopeAbortError\(err\)\) markYoutubeSearchResult\(false\);/g)];
-    // Search catch, RapidAPI download catch, and (RONDE 56) the detached metadata helper —
-    // which owns the marking for its own step, so the download catch never double-counts it.
-    expect(guarded).toHaveLength(3);
+    // The search catch. The RapidAPI download catch and its metadata helper left with RapidAPI.
+    expect(guarded).toHaveLength(1);
     // And the breaker is never called unguarded from a catch block.
     expect(s).not.toMatch(/catch \(err\) \{\s*\n\s*markYoutubeSearchResult\(false\);/);
   });

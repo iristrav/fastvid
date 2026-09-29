@@ -57,74 +57,6 @@ const FLOOR = (() => {
 
 /* ═══════════ 1. the probe no longer spends what the download needs ═══════════ */
 
-describe("YT-REPAIR §1 — the order in which one scene budget is spent", () => {
-  it("RENDER 576's SITUATION: 20s left is not enough for a 20s probe AND a download", () => {
-    const d = shouldProbeYoutubeDuration({ remainingMs: 20_000, downloadFloorMs: FLOOR });
-    expect(d.probe, "the probe would again leave 0s for the download").toBe(false);
-    if (d.probe) throw new Error("unreachable");
-    expect(d.reason).toBe("BUDGET_RESERVED_FOR_DOWNLOAD");
-    expect(d.needMs).toBe(YOUTUBE_META_PROBE_TIMEOUT_MS + FLOOR);
-  });
-
-  it("A BUDGET THAT CAN PAY FOR BOTH STILL PROBES — nothing was taken away", () => {
-    const d = shouldProbeYoutubeDuration({
-      remainingMs: YOUTUBE_META_PROBE_TIMEOUT_MS + FLOOR,
-      downloadFloorMs: FLOOR,
-    });
-    expect(d.probe).toBe(true);
-  });
-
-  it("THE BOUNDARY IS EXACT, and one millisecond under it refuses", () => {
-    const need = YOUTUBE_META_PROBE_TIMEOUT_MS + FLOOR;
-    expect(shouldProbeYoutubeDuration({ remainingMs: need, downloadFloorMs: FLOOR }).probe).toBe(true);
-    expect(shouldProbeYoutubeDuration({ remainingMs: need - 1, downloadFloorMs: FLOOR }).probe).toBe(false);
-  });
-
-  it("NO SCOPE MEANS NO DEADLINE TO PROTECT — the prefetch case is unchanged", () => {
-    /** `remainingScopeMs()` returns Infinity when nothing encloses the call. */
-    expect(shouldProbeYoutubeDuration({ remainingMs: Infinity, downloadFloorMs: FLOOR }).probe).toBe(true);
-    expect(shouldProbeYoutubeDuration({ remainingMs: Number.NaN, downloadFloorMs: FLOOR }).probe).toBe(true);
-  });
-
-  it("AN ALREADY-SPENT BUDGET REFUSES rather than going negative", () => {
-    const d = shouldProbeYoutubeDuration({ remainingMs: 0, downloadFloorMs: FLOOR });
-    expect(d.probe).toBe(false);
-    if (d.probe) throw new Error("unreachable");
-    expect(d.remainingMs).toBe(0);
-  });
-
-  it("THE PROBE FIX ITSELF RAISED NO BUDGET AND LOWERED NO FLOOR", () => {
-    /**
-     * The point of the probe change is that the same seconds are spent in a better ORDER, not that
-     * there are more of them. These three numbers are still the ones render 576 ran with.
-     *
-     * The download CAP is deliberately not asserted here any more: a later round raised it from 20
-     * to 60 as an explicit supply decision, and it has its own test below rather than being quietly
-     * carried by a guard whose subject is the probe.
-     */
-    expect(FLOOR).toBe(12_000);
-    expect(YOUTUBE_META_PROBE_TIMEOUT_MS).toBe(20_000);
-    expect(youtubeDownloadTimeoutMs()).toBe(180_000);
-    expect(PIPE).toContain("const YOUTUBE_MIN_DOWNLOAD_WINDOW_MS = 12_000;");
-  });
-
-  it("A SKIPPED PROBE IS NEVER SILENT — it says what it protected and what it cost", () => {
-    const d = shouldProbeYoutubeDuration({ remainingMs: 6_000, downloadFloorMs: FLOOR });
-    if (d.probe) throw new Error("unreachable");
-    const line = formatYoutubeProbeSkip(2, "wFkJyj92uLo", d);
-    expect(line).toContain("wFkJyj92uLo");
-    expect(line).toContain("6s left");
-    expect(line).toContain("32s");
-    expect(line, "the reader is not told the start offset degraded").toContain("falls back");
-  });
-
-  it("the decision is one function with one definition, and the price is one constant", () => {
-    expect((POLICY.match(/export function shouldProbeYoutubeDuration/g) ?? []).length).toBe(1);
-    expect((POLICY.match(/export const YOUTUBE_META_PROBE_TIMEOUT_MS/g) ?? []).length).toBe(1);
-    /** The probe's timeout and the price the decision pays are the same number, not two copies. */
-    expect(PIPE).toContain("fetchWithTimeout(metaUrl, YOUTUBE_META_PROBE_TIMEOUT_MS,");
-  });
-});
 
 /* ═══════════ 2. the pipeline actually asks, before it probes ═══════════ */
 
@@ -135,43 +67,11 @@ describe("YT-REPAIR §2 — wired into the route that lost the downloads", () =>
     return PIPE.slice(at, at + 900);
   };
 
-  it("IT ASKS WITH THE SCENE'S REAL REMAINING TIME AND THE DOWNLOAD'S REAL FLOOR", () => {
-    expect(site()).toContain("remainingMs: remainingScopeMs(),");
-    expect(site()).toContain("downloadFloorMs: YOUTUBE_MIN_DOWNLOAD_WINDOW_MS,");
-  });
 
-  it("THE DECISION REACHES THE FETCHER — a computed value that is not carried is the old defect", () => {
-    expect(site()).toContain("onlyIfCached: !probe.probe,");
-  });
 
-  it("IT IS ASKED BEFORE THE PROBE, not after it", () => {
-    const decide = PIPE.indexOf("const probe = shouldProbeYoutubeDuration({");
-    const fetch = PIPE.indexOf("await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache, {", decide);
-    expect(fetch).toBeGreaterThan(decide);
-  });
 
-  it("A CACHED ANSWER IS STILL FREE AND STILL USED", () => {
-    const at = PIPE.indexOf("async function fetchRapidApiYoutubeMeta(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    const cacheHit = body.indexOf("metadataCacheHits++");
-    const bail = body.indexOf("if (opts?.onlyIfCached) return null;");
-    expect(cacheHit).toBeGreaterThan(0);
-    expect(bail, "the cache is consulted after the bail-out, so hits are thrown away").toBeGreaterThan(cacheHit);
-  });
 
-  it("A SKIPPED MISS COUNTS NO METADATA CALL — a counter that says otherwise lies", () => {
-    const at = PIPE.indexOf("async function fetchRapidApiYoutubeMeta(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body.indexOf("metadataCount++")).toBeGreaterThan(body.indexOf("if (opts?.onlyIfCached) return null;"));
-  });
 
-  it("A SKIPPED MISS IS NOT CACHED — the clock must not become a fact about the video", () => {
-    const at = PIPE.indexOf("async function fetchRapidApiYoutubeMeta(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body.indexOf("if (opts?.onlyIfCached) return null;")).toBeLessThan(
-      body.indexOf("putCachedProviderAsset")
-    );
-  });
 
   it("THE START OFFSET STILL HAS ITS EXISTING FALLBACK — nothing new was invented", () => {
     /** Exactly the path a video RapidAPI knows nothing about has always taken. */
@@ -179,10 +79,6 @@ describe("YT-REPAIR §2 — wired into the route that lost the downloads", () =>
     expect(PIPE).toContain("? pickLongVideoStartSec(sourceDurationSec, clipDur, videoId)");
   });
 
-  it("THE DOWNLOAD ITSELF IS UNTOUCHED — its guard, its floor and its report all stand", () => {
-    expect(PIPE).toContain("if (remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {");
-    expect(PIPE).toContain('reportDownload("DOWNLOAD_TIMEOUT", "scene_budget_too_short_to_start");');
-  });
 });
 
 /* ═══════════ 3. the preflight answers three questions, not one ═══════════ */

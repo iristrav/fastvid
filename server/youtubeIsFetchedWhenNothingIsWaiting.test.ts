@@ -284,14 +284,13 @@ describe("§5 — the fetch yields to a render, and always cleans up", () => {
     expect(deps.log.filter((l) => l.startsWith("download"))).toHaveLength(1);
   });
 
-  it("the held source is released and the work dir removed on every path, a throw included", async () => {
+  it("the work dir is removed on every path, a throw included", async () => {
     const deps = fakeDeps({
       download: async () => {
         throw new Error("boom");
       },
     });
     const r = await prefetchOneVideo(row, deps, 2);
-    expect(deps.log).toContain("release abcDEF12345");
     expect(deps.log).toContain("remove /nonexistent/prefetch-test");
     expect(r.segments.every((s) => !s.downloaded)).toBe(true);
   });

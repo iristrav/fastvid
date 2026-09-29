@@ -103,7 +103,6 @@ describe("RONDE 113 — the default is no text", () => {
 
 describe("RONDE 113 — every text engine is held off", () => {
   const gates: Array<[string, () => Promise<boolean>]> = [
-    ["editorialOverlay", async () => (await import("./editorialOverlay/index")).editorialOverlayEnabled()],
     ["editorialGraphics", async () => (await import("./editorialGraphicsEngine")).editorialGraphicsEnabled()],
     ["screenLabels", async () => (await import("./sourcingPolicy")).screenLabelsEnabled()],
     ["facelessSubtitles", async () => (await import("./sourcingPolicy")).facelessSubtitlesEnabled()],
@@ -166,7 +165,6 @@ describe("RONDE 113 — every drawtext module is accounted for", () => {
    * genuinely unreachable from the render.
    */
   const REACHABLE_AND_GATED = [
-    "editorialOverlay/renderer.ts",
     "editorialGraphicsEngine.ts",
     "motionGraphicsEngine.ts",
     "cinematicEffectsEngine.ts",
@@ -176,11 +174,6 @@ describe("RONDE 113 — every drawtext module is accounted for", () => {
   /** Not imported by videoPipeline.ts, directly or through the modules it does import. */
   const UNREACHABLE_FROM_RENDER = [
     "cinematicEditingEngine/captionPlanner.ts",
-    "cinematicMotion/renderer.ts",
-    "cinematicMotion/counter.ts",
-    "professionalRenderEngine/filterGraphBuilder.ts",
-    "professionalRenderEngine/captionRenderer.ts",
-    "professionalRenderEngine/motionGraphicsRenderer.ts",
     "motionGraphicsLayer.ts",
     "ffmpegSanitize.ts",
     /**

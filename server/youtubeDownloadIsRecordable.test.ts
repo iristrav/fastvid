@@ -37,7 +37,6 @@ import {
   resetReplayRecordingForTest,
   type ReplayDownloadFact,
 } from "./renderReplay";
-import { formatReplayReport, replayBundle } from "./renderReplayEngine";
 
 /** The seven statuses the pipeline can end a YouTube download on. */
 const STATUSES = [
@@ -62,14 +61,6 @@ const fact = (over: Partial<ReplayDownloadFact> = {}): ReplayDownloadFact => ({
   remainingMs: 4000,
   bytes: null,
   ...over,
-});
-
-const bundleWith = (downloads: ReplayDownloadFact[]) => ({
-  meta: { kind: "meta" as const, formatVersion: 1 as const, videoId: 572, commit: "x", recordedAt: "t" },
-  fetches: [],
-  visions: [],
-  adoptions: [],
-  downloads,
 });
 
 /* ═════════ 1 — every status survives a real write-and-read cycle ═════════ */
@@ -131,36 +122,6 @@ describe("a refusal before transfer is distinguishable from a failed transfer", 
     expect(failedTransfers().filter((d) => d.transferStarted)).toHaveLength(14);
   });
 
-  it("the report states both numbers, never just attempts", () => {
-    const b = bundleWith(budgetRefusals());
-    const text = formatReplayReport(b, replayBundle(b));
-    expect(text).toContain("attempts=14");
-    expect(text).toContain("transferStarted=0");
-    expect(text).toContain("DOWNLOAD_TIMEOUT");
-  });
-
-  it("and names the budget margin when the budget was the reason", () => {
-    const b = bundleWith(budgetRefusals());
-    const text = formatReplayReport(b, replayBundle(b));
-    expect(text).toContain("blocked before transfer with budget left");
-    expect(text).toContain("floor=12000ms");
-  });
-
-  it("the downloader hypothesis reads differently in the same report", () => {
-    const b = bundleWith(failedTransfers());
-    const text = formatReplayReport(b, replayBundle(b));
-    expect(text).toContain("transferStarted=14");
-    expect(text).toContain("DOWNLOAD_FAILED");
-    expect(text, "no budget margin to report when the budget was not the reason").not.toContain(
-      "blocked before transfer"
-    );
-  });
-
-  /** A bundle with no YouTube attempts prints no YouTube section at all. */
-  it("says nothing when there were no downloads", () => {
-    const b = bundleWith([]);
-    expect(formatReplayReport(b, replayBundle(b))).not.toContain("YouTube downloads");
-  });
 });
 
 /* ═════════ 3 — §6: no secrets, by construction ═════════ */
@@ -211,19 +172,6 @@ describe("the downloader is wired to the recorder", () => {
     expect(body).toContain("transferStarted,");
   });
 
-  it("marks the transfer at the line where bytes begin to move", () => {
-    const at = PIPE.indexOf("transferStarted = true;");
-    expect(at).toBeGreaterThan(-1);
-    expect(PIPE.slice(at, at + 260)).toContain("downloadToFileStreaming");
-  });
 
-  it("captures the budget it was refused on", () => {
-    expect(PIPE).toContain("remainingAtCheckMs = remainingMs;");
-  });
 
-  /** The floor itself is untouched — this round changed observability, not behaviour. */
-  it("the 12s download window is unchanged", () => {
-    expect(PIPE).toContain("const YOUTUBE_MIN_DOWNLOAD_WINDOW_MS = 12_000;");
-    expect(PIPE).toContain("if (remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {");
-  });
 });

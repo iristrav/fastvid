@@ -137,7 +137,6 @@ async function runVideoJob(video: Video): Promise<void> {
     video.videoLength ?? "15-20",
     video.videoType ?? "documentary",
     video.voiceId ?? undefined,
-    video.customVoiceoverUrl ?? undefined,
     enableSubtitles
   );
 }

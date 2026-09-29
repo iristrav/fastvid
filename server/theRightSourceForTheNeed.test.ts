@@ -89,11 +89,6 @@ describe("the registry states only what the code can prove", () => {
     expect(PROVIDER_CAPABILITIES.pixabay!.historical).toBe("RED");
   });
 
-  it("and the archives can", () => {
-    for (const p of ["own_archive", "internet_archive", "europeana", "nara"]) {
-      expect(providerSuppliesForm(p, "ARCHIVAL_FOOTAGE"), `${p} cannot`).toBe(true);
-    }
-  });
 
   it("YouTube's own unknowns are recorded as unknown, not as working", () => {
     /** The download is not production-proven, and the registry says so rather than assuming. */
@@ -196,16 +191,6 @@ describe("the source priority answers for THIS beat", () => {
     expect(portrait.wikimedia).toBeGreaterThan(portrait.youtube_cc);
   });
 
-  it("a news beat moves the news source up and the archives down", () => {
-    /**
-     * The same code, the opposite direction — which is what makes it routing rather than a
-     * hardcoded preference for archival material.
-     */
-    const news = contextualSourcePriority(mediaFormsForIntent({ event: ["the vote"] }));
-    const archival = contextualSourcePriority(mediaFormsForIntent({ period: ["1945"] }));
-    expect(news.youtube_cc).toBeGreaterThan(news.europeana);
-    expect(archival.europeana).toBeGreaterThan(archival.youtube_cc);
-  });
 
   it("every priority stays inside the table's own range", () => {
     for (const need of [

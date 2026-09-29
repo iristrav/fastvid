@@ -132,18 +132,18 @@ describe("RONDE 68 TEST 3 — one provider's cancellation cannot trip another's 
   it("each guard names its own provider's marker, so no streak is shared", () => {
     const src = SRC().split("\n");
     const guarded = src.filter((l) => l.includes("isScopeAbortError(err)) mark"));
-    /** Thirteen before VIDEO 619 removed the providers that never delivered to a film. */
-    expect(guarded.length).toBeGreaterThanOrEqual(9);
+    /** Thirteen before VIDEO 619 removed the providers that never delivered to a film and RapidAPI. */
+    expect(guarded.length).toBeGreaterThanOrEqual(7);
     for (const line of guarded) {
       const m = /if \(!isScopeAbortError\(err\)\) mark(\w+)SearchResult\(false\);/.exec(line.trim());
       expect(m).not.toBeNull();
     }
   });
 
-  it("YouTube's own guards are unchanged", () => {
+  it("YouTube's own guard is unchanged (its two RapidAPI siblings left with RapidAPI)", () => {
     const src = SRC();
     const yt = [...src.matchAll(/if \(!isScopeAbortError\(err\)\) markYoutubeSearchResult\(false\);/g)];
-    expect(yt.length).toBe(3);
+    expect(yt.length).toBe(1);
   });
 
   it("every provider with a catch-based breaker is now guarded, not just Wikimedia", () => {
@@ -182,11 +182,6 @@ describe("RONDE 68 TEST 4/5 — the archival sources get their turn", () => {
     expect([...src.matchAll(/downloadsSoFar\(\) >= maxDownloadAttempts/g)]).toHaveLength(3);
   });
 
-  it("and cannot start a transfer the remaining scene budget cannot finish", () => {
-    const src = SRC();
-    expect(src).toContain("remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS");
-    expect(src).toContain("not enough to finish");
-  });
 
   it("a cancelled archival search no longer removes the source for three minutes", () => {
     // The full chain from render 533, now broken at its first link.
@@ -215,7 +210,7 @@ describe("RONDE 68 TEST 6/7/8 — nothing was loosened to achieve this", () => {
   it("TEST 8 — no request lost its limiter or its timeout", () => {
     const src = SRC();
     // providerLimiter still fronts the provider calls, and fetchWithTimeout still bounds them.
-    expect([...src.matchAll(/providerLimiter\(/g)].length).toBeGreaterThan(10);
+    expect([...src.matchAll(/providerLimiter\(/g)].length).toBeGreaterThanOrEqual(8);
     expect([...src.matchAll(/fetchWithTimeout\(/g)].length).toBeGreaterThan(10);
     // The guard adds a condition to a breaker call; it starts no request of its own.
     const guardLines = src.split("\n").filter((l) => l.includes("isScopeAbortError(err)) mark"));
