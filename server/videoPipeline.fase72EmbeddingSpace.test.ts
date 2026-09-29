@@ -73,60 +73,6 @@ describe("FASE 7.2 Test 4 — dimension-mismatch regression (the actual bug)", (
   });
 });
 
-describe("FASE 7.2 Test 2 — VisionGate no longer receives the 1536-dim funnel embedding", () => {
-  it("the funnel's evaluateClipVisionGate call does not pass funnelBeatEmb", () => {
-    const block = funnelBlock();
-    const callStart = block.indexOf("await evaluateClipVisionGate(");
-    expect(callStart).toBeGreaterThan(-1);
-    const call = block.slice(callStart, block.indexOf(");", callStart));
-    expect(call).not.toContain("funnelBeatEmb");
-  });
-
-  it("queryEmb is the 11th positional argument and is explicitly undefined on this call", () => {
-    // Guards against a future edit silently re-introducing a vector in that slot.
-    const block = funnelBlock();
-    const callStart = block.indexOf("await evaluateClipVisionGate(");
-    const call = block.slice(callStart, block.indexOf(");", callStart));
-    const args = call
-      .slice(call.indexOf("(") + 1)
-      .split("\n")
-      .map((l) => l.trim().replace(/,$/, ""))
-      .filter((l) => l.length > 0 && !l.startsWith("//"));
-    // clipPath, beat.text, videoTitle, workDir, scene.index, beat.index, fastMode,
-    // minScore, visualDescription, segmentGeoLock, queryEmb  -> index 10
-    expect(args[10]).toBe("undefined");
-  });
-});
-
-describe("FASE 7.2 Test 1 — the text embedding is preserved for archive/text ranking", () => {
-  it("createTextEmbedding is still computed on the funnel path", () => {
-    const block = funnelBlock();
-    expect(block).toContain("await createTextEmbedding(beatDoc)");
-    expect(block).toContain("funnelBeatEmb = beatEmb");
-  });
-
-  it("findBestArchiveScoreForBeat still receives the text embedding", () => {
-    const block = funnelBlock();
-    // RONDE 38 appended an optional out-object for the [FunnelBeatCalib] line, so the
-    // call now has a third argument. What this test guards — the TEXT embedding in the
-    // second position — is unchanged, so the match ends at the argument boundary.
-    expect(block).toMatch(/findBestArchiveScoreForBeat\(funnelResult\.candidates,\s*beatEmb[,)]/);
-  });
-
-  it("computeSegmentSimilarities still receives funnelBeatEmb", () => {
-    // This call sits after pickBestFunnelCandidate (outside funnelBlock()'s window), in the
-    // archive-annotation branch — there is exactly one call site in the file.
-    const calls = pipelineSrc.match(/computeSegmentSimilarities\([^)]*\)/g) ?? [];
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain("funnelBeatEmb");
-  });
-
-  it("findBestArchiveScoreForBeat operates in the text-embedding space (runtime, 1536 dim)", () => {
-    // No archive candidates -> null, but the call must accept a 1536-dim vector unchanged.
-    expect(findBestArchiveScoreForBeat([], vec(TEXT_EMBED_DIM))).toBeNull();
-  });
-});
-
 describe("FASE 7.2 Test 3 — VisionGate resolves its own CLIP query embedding when queryEmb is absent", () => {
   it("scoreClipAcrossFrames falls back to resolveBeatQueryEmbedding when queryEmb is nullish", () => {
     expect(gateSrc).toMatch(
@@ -170,18 +116,3 @@ describe("FASE 7.2 Test 5 — non-funnel VisionGate paths are unchanged", () => 
   });
 });
 
-describe("FASE 7.2 — observability", () => {
-  it("the funnel logs which embedding source VisionGate will use, once per beat (not per frame)", () => {
-    const block = funnelBlock();
-    expect(block).toContain("[FunnelVisionGate]");
-    expect(block).toContain("queryEmbeddingSource=resolved-by-vision-gate");
-    // Must sit OUTSIDE the per-candidate loop so it cannot become per-frame noise.
-    // RONDE 5 batched the downloads; the per-candidate work now starts at the batch loop, which
-    // iterates `downloadOrder` — the same screened set, with YouTube moved to the front.
-    const logIdx = block.indexOf("[FunnelVisionGate]");
-    const loopIdx = block.indexOf("for (let slotIdx = 0; slotIdx < tierAdmittedOrder.length;");
-    expect(logIdx).toBeGreaterThan(-1);
-    expect(loopIdx).toBeGreaterThan(-1);
-    expect(logIdx).toBeLessThan(loopIdx);
-  });
-});

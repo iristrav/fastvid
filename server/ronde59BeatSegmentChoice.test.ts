@@ -122,31 +122,6 @@ describe("RONDE 59 — it can never ask for a second that is not there", () => {
 describe("RONDE 59 — the trim actually receives the offset", () => {
   const SRC = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("downloadAndTrimPoolCandidate passes a start offset to the trim", () => {
-    const src = SRC();
-    const idx = src.indexOf("export async function downloadAndTrimPoolCandidate(");
-    expect(idx).toBeGreaterThan(-1);
-    /**
-     * Bounded by the function's OWN end, not by a byte count.
-     *
-     * This was `slice(idx, idx + 10_000)`, widened once already by RONDE 165 and broken again by
-     * RONDE 133, which added the technical-gate checks and their reasoning to this function. Each
-     * time the assertion was about code that had not changed at all — the window had simply
-     * stopped reaching it, and the fix was to guess a bigger number.
-     *
-     * The next declaration after downloadAndTrimPoolCandidate is trimDownloadedStockClip, so its
-     * doc comment is where this function ends. That marker moves only when the file is genuinely
-     * restructured, which is exactly when this test SHOULD be re-read.
-     */
-    const end = src.indexOf("/** Stable stock trim", idx);
-    expect(end, "trimDownloadedStockClip's doc comment no longer follows this function").toBeGreaterThan(idx);
-    const block = src.slice(idx, end);
-    expect(block).toContain("pickBeatSegmentStartSec(sourceDur, takeSec, beatIndex)");
-    expect(block).toContain(
-      "trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`, startOffsetSec)"
-    );
-  });
-
   it("the bare no-offset call that cut every clip from second 0 is gone", () => {
     const src = SRC();
     expect(src).not.toContain(

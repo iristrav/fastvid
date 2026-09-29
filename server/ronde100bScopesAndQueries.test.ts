@@ -289,57 +289,6 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
     expect(bodyOf(PIPELINE_SRC, "fetchBeatClipInner")).toContain("fetchBeatClipFromScript(");
   });
 
-  /* ── RONDE 177: the pool route, proved rather than exempted ──────────────────────────────── */
-
-  /**
-   * The scope TEST 5b relies on for `scenePoolYoutubeSearch`, asserted where it actually lives.
-   *
-   * Three separate things have to hold, and each is a different way the exemption could become a
-   * lie: the pool must still open a scope, the helper must only ever be handed TO the pool, and it
-   * must not acquire callers in this file that would reach a provider outside any scope.
-   */
-  it("TEST 5c — the pool opens the scope its injected sources run under", () => {
-    const poolSrc = fs.readFileSync(path.join(SERVER_DIR, "scenePool.ts"), "utf8");
-    const entry = bodyOf(poolSrc, "buildSceneCandidatePool");
-    /** A beat scope already active wins; otherwise the scene's own text is the evidence. */
-    expect(entry, "buildSceneCandidatePool no longer opens a provenance scope").toContain(
-      "withSearchProvenance("
-    );
-    expect(entry).toContain("getSearchProvenance()");
-    expect(entry).toContain("emptyQueryContext(");
-    /**
-     * And the sources run INSIDE it. If the wrapper stopped calling the inner builder, the scope
-     * would be opened around nothing and every pool search would go back to LEGACY_QUERY_BUILDER.
-     */
-    expect(entry).toContain("buildSceneCandidatePoolInner(req)");
-    /** The YouTube task is one of the sources that inner builder runs. */
-    expect(bodyOf(poolSrc, "buildSceneCandidatePoolInner")).toContain("youtubeSearch");
-  });
-
-  it("TEST 5d — the pool's YouTube helper is only ever handed to the pool", () => {
-    /**
-     * `scenePoolYoutubeSearch(...)` returns a function; it does not itself search. The call sites
-     * that matter are the ones that RUN it, and there must be none in this file: every appearance
-     * is an argument to `buildSceneCandidatePool`, which is what puts the pool's scope between the
-     * helper and the provider.
-     */
-    const re = /(?<![\w.])scenePoolYoutubeSearch\s*\(/g;
-    const uses: string[] = [];
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(PIPELINE_SRC))) {
-      const before = PIPELINE_SRC.slice(Math.max(0, m.index - 200), m.index);
-      const isDeclaration = /function\s+$/.test(before);
-      if (isDeclaration) continue;
-      uses.push(before.slice(-80));
-    }
-    expect(uses.length, "the helper is not used at all — TEST 5b's skip covers nothing").toBeGreaterThan(0);
-    for (const before of uses) {
-      expect(before, `scenePoolYoutubeSearch used outside a pool call: ...${before}`).toContain(
-        "youtubeSearch:"
-      );
-    }
-  });
-
   it("TEST 6 — LEGACY_QUERY_BUILDER still means exactly one thing", () => {
     // If this ever gets minted somewhere else, the whole trace in RONDE 100A stops holding.
     const mints = CONTRACT_SRC.split("\n").filter((l) => l.includes('"LEGACY_QUERY_BUILDER"'));

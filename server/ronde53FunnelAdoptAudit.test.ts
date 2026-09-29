@@ -34,37 +34,6 @@ function funnelWinnerBlock(src: string): string {
   throw new Error("unbalanced funnel winner block");
 }
 
-describe("RONDE 53 — the funnel winner is recorded", () => {
-  it("the block that adopts a funnel winner records the adoption", () => {
-    const block = funnelWinnerBlock(SRC());
-    expect(block).toContain("funnelClip = clipPath;");
-    expect(block).toContain("recordClipAdopt(");
-    expect(block).toContain("dedup.clipAdoptAudit");
-  });
-
-  it("it records the candidate's own source, not a hardcoded label", () => {
-    const block = funnelWinnerBlock(SRC());
-    // candidate.source is already the vocabulary summarizeAdoptAudit classifies.
-    expect(block).toMatch(/recordClipAdopt\([\s\S]{0,400}?candidate\.source/);
-    expect(block).not.toMatch(/recordClipAdopt\([\s\S]{0,400}?"fallback"/);
-    expect(block).not.toMatch(/recordClipAdopt\([\s\S]{0,400}?"unknown"/);
-  });
-
-  it("it records the beat it was fetched for, not the scene", () => {
-    const block = funnelWinnerBlock(SRC());
-    expect(block).toMatch(/recordClipAdopt\(\s*[\s\S]{0,120}?scene\.index,\s*beat\.index,\s*beat\.text/);
-  });
-
-  it("the clip it records is the one that actually becomes the beat's clip", () => {
-    const block = funnelWinnerBlock(SRC());
-    // Both must be `clipPath` — recording a different path is what breaks the manifest lookup.
-    const adoptIdx = block.indexOf("recordClipAdopt(");
-    const adoptCall = block.slice(adoptIdx, adoptIdx + 400);
-    expect(adoptCall).toContain("clipPath");
-    expect(block.indexOf("funnelClip = clipPath;")).toBeLessThan(adoptIdx);
-  });
-});
-
 /**
  * The FunnelCandidateSource union, READ from retrievalFunnel.ts rather than restated here.
  *
@@ -85,29 +54,6 @@ function declaredFunnelSources(): string[] {
 }
 
 describe("RONDE 53 — every funnel source lands in a real category", () => {
-  it("every FunnelCandidateSource value is classified by the audit", async () => {
-    const { createClipAdoptAudit, recordClipAdopt, summarizeAdoptAudit } = await import(
-      "./clipAdoptAudit"
-    );
-    const sources = declaredFunnelSources();
-    const audit = createClipAdoptAudit();
-    sources.forEach((s, i) => recordClipAdopt(audit, 0, i, `b${i}`, `/w/c${i}.mp4`, s));
-    const summary = summarizeAdoptAudit(audit);
-
-    expect(summary.beatsFilled).toBe(sources.length);
-    // Nothing may fall through into "counted as a beat but categorised as nothing" — that is
-    // what produced "beats=13 wiki=0 arch=7 stock=0" in render 530.
-    const categorised =
-      summary.archiveBeats + summary.wikiBeats + summary.stockBeats + summary.klingBeats +
-      summary.fallbackBeats + summary.youtubeBeats;
-    expect(
-      categorised,
-      `${sources.length - categorised} funnel source(s) fell into no bucket: ` +
-        `${JSON.stringify(summary.bySource)}`
-    ).toBe(sources.length);
-    // And none of them is a placeholder: these are all real media.
-    expect(summary.fallbackBeats).toBe(0);
-  });
 
   it("the source union in retrievalFunnel has not grown past what the audit knows", () => {
     const audit = readFileSync(path.join(__dirname, "clipAdoptAudit.ts"), "utf8");
@@ -115,68 +61,5 @@ describe("RONDE 53 — every funnel source lands in a real category", () => {
     for (const source of declaredFunnelSources()) {
       expect(audit.includes(`"${source}"`), `${source} is not named in clipAdoptAudit`).toBe(true);
     }
-  });
-
-  /**
-   * RONDE 177 — YouTube is counted, and counted as itself.
-   *
-   * The bug this pins: `youtube_cc` joined the funnel in R169 and matched no branch, so a beat
-   * filled from YouTube was counted as filled and as nothing. Two assertions, because either one
-   * alone can be satisfied wrongly — a beat could be counted by being folded into `archiveBeats`,
-   * which would report archival footage the render never found.
-   */
-  it("a YouTube-filled beat is counted, and not as archive or stock", async () => {
-    const { createClipAdoptAudit, recordClipAdopt, summarizeAdoptAudit } = await import(
-      "./clipAdoptAudit"
-    );
-    const audit = createClipAdoptAudit();
-    recordClipAdopt(audit, 0, 0, "b0", "/w/c0.mp4", "youtube_cc");
-    const summary = summarizeAdoptAudit(audit);
-    expect(summary.beatsFilled).toBe(1);
-    expect(summary.youtubeBeats).toBe(1);
-    expect(summary.archiveBeats).toBe(0);
-    expect(summary.stockBeats).toBe(0);
-    expect(summary.fallbackBeats).toBe(0);
-  });
-
-  it("does not tell the reader every beat came from stock when they came from YouTube", async () => {
-    const { createClipAdoptAudit, recordClipAdopt, summarizeAdoptAudit } = await import(
-      "./clipAdoptAudit"
-    );
-    const audit = createClipAdoptAudit();
-    recordClipAdopt(audit, 0, 0, "b0", "/w/c0.mp4", "youtube_cc");
-    const hints = summarizeAdoptAudit(audit).hints.join(" ");
-    expect(hints).not.toContain("stock/Kling");
-    expect(hints).toContain("YouTube");
-  });
-});
-
-describe("RONDE 53 — both adoption routes are now covered", () => {
-  it("the scene-pool route from RONDE 51 is still recorded", () => {
-    const src = SRC();
-    const idx = src.indexOf("if (poolClip) {\n          clip = poolClip;");
-    expect(idx).toBeGreaterThan(-1);
-    /**
-     * Bounded by the block's own end rather than by a character count. The archive-first round put
-     * `storeExternalClipForTimeline` between the adoption and this call — the handle must exist
-     * before the clip is an adopted timeline asset — and a fixed 1400-character window then ended
-     * before `recordClipAdopt`, reporting a route that IS recorded as one that is not.
-     */
-    const block = src.slice(idx, src.indexOf("recordUse(", idx));
-    expect(block).toContain("recordClipAdopt(");
-    /** And the order the round established: archived first, then recorded as adopted. */
-    const storeAt = block.indexOf("await storeExternalClipForTimeline({");
-    const adoptAt = block.indexOf("recordClipAdopt(");
-    expect(storeAt).toBeGreaterThan(-1);
-    expect(adoptAt).toBeGreaterThan(storeAt);
-  });
-
-  it("downloadFunnelCandidate has exactly one caller, and that caller records", () => {
-    const src = SRC();
-    const callers = [...src.matchAll(/await downloadFunnelCandidate\(/g)];
-    // If a second call site appears, it needs the same treatment — fail loudly rather than
-    // silently losing another route's adoptions.
-    expect(callers).toHaveLength(1);
-    expect(funnelWinnerBlock(src)).toContain("recordClipAdopt(");
   });
 });

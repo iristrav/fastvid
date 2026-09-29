@@ -270,16 +270,4 @@ describe("§6 — adopt sources", () => {
       expect(isFillerAdoptSource(s), s).toBe(adoptSourceIsPlaceholder(s));
     }
   });
-
-  it("adoptRouteForSource's own distinction is NOT overruled", () => {
-    /**
-     * It maps `guaranteed` to `backfill`, not `fallback`, because it answers a different question:
-     * which route filled the beat, not whether the picture depicts anything. Collapsing the two
-     * would have been the easy mistake here.
-     */
-    expect(adoptRouteForSource("guaranteed")).toBe("backfill");
-    expect(adoptRouteForSource("rescue_placeholder")).toBe("fallback");
-    expect(lineageRouteIsPlaceholder(adoptRouteForSource("rescue_placeholder"))).toBe(true);
-    expect(lineageRouteIsPlaceholder(adoptRouteForSource("youtube_cc"))).toBe(false);
-  });
 });

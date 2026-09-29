@@ -52,101 +52,6 @@ import {
 
 const c = (source: string, id: string) => ({ source, id });
 
-describe("the per-source download cap is one rule, and both routes read it", () => {
-  it("STOCK GETS ONE SLOT — the number the funnel has used since FASE 4", () => {
-    expect(shortlistCapForSource("pexels")).toBe(1);
-    expect(shortlistCapForSource("pixabay")).toBe(1);
-    expect(isStockSource("pexels")).toBe(true);
-    expect(isStockSource("wikimedia")).toBe(false);
-  });
-
-  it("an open or historical source gets two, and the curated archive three", () => {
-    expect(shortlistCapForSource("wikimedia")).toBe(2);
-    expect(shortlistCapForSource("internet_archive")).toBe(2);
-    expect(shortlistCapForSource("openverse")).toBe(2);
-    expect(shortlistCapForSource("archive")).toBe(3);
-  });
-
-  it("RENDER 593'S BEAT: eight stock candidates become one download attempt", () => {
-    const eightPexels = Array.from({ length: 8 }, (_, i) => c("pexels", `p${i}`));
-    expect(capCandidatesPerSource(eightPexels, 8)).toEqual([c("pexels", "p0")]);
-  });
-
-  it("and the source that was being crowded out keeps its slots", () => {
-    const mixed = [
-      c("pexels", "p0"),
-      c("pexels", "p1"),
-      c("pexels", "p2"),
-      c("wikimedia", "w0"),
-      c("wikimedia", "w1"),
-      c("openverse", "o0"),
-    ];
-    const out = capCandidatesPerSource(mixed, 6);
-    expect(out.filter((x) => x.source === "pexels")).toHaveLength(1);
-    expect(out.filter((x) => x.source === "wikimedia")).toHaveLength(2);
-    expect(out.filter((x) => x.source === "openverse")).toHaveLength(1);
-  });
-
-  it("NO PROVIDER IS SWITCHED OFF — a beat whose pool is only stock still asks stock", () => {
-    /**
-     * The whole safety argument. The cap removes DUPLICATE attempts at one library, never the
-     * library. A beat with nothing else keeps its attempt, and a beat this leaves empty falls
-     * through to the cascade and the rescue ladder exactly as a beat that found nothing always has.
-     */
-    expect(capCandidatesPerSource([c("pexels", "only")], 8)).toEqual([c("pexels", "only")]);
-    expect(capCandidatesPerSource([c("pixabay", "a"), c("pixabay", "b")], 8)).toHaveLength(1);
-  });
-
-  it("the non-stock backfill is the funnel's, kept verbatim", () => {
-    /**
-     * Unused room goes back to what the cap refused — NON-STOCK ONLY. The exclusion is the
-     * funnel's own and for its own stated reason: six generic stock clips of one query are
-     * interchangeable, so fetching six to fill six slots buys nothing but wall time. Different
-     * holdings of different archival material are not interchangeable, and get the room back.
-     */
-    const archiveHeavy = Array.from({ length: 6 }, (_, i) => c("wikimedia", `w${i}`));
-    expect(capCandidatesPerSource(archiveHeavy, 6)).toHaveLength(6);
-    const stockHeavy = Array.from({ length: 6 }, (_, i) => c("pexels", `p${i}`));
-    expect(capCandidatesPerSource(stockHeavy, 6)).toHaveLength(1);
-  });
-
-  it("it only ever REMOVES — the result is a subsequence of the input, in the caller's order", () => {
-    const mixed = [
-      c("wikimedia", "w0"),
-      c("pexels", "p0"),
-      c("wikimedia", "w1"),
-      c("pexels", "p1"),
-      c("openverse", "o0"),
-    ];
-    const out = capCandidatesPerSource(mixed, 5);
-    let at = -1;
-    for (const kept of out) {
-      const next = mixed.indexOf(kept);
-      expect(next, "the caller's ranking order was not preserved").toBeGreaterThan(at);
-      at = next;
-    }
-    expect(out.every((x) => mixed.includes(x))).toBe(true);
-  });
-
-  it("a zero or empty budget invents nothing", () => {
-    expect(capCandidatesPerSource([c("pexels", "p")], 0)).toEqual([]);
-    expect(capCandidatesPerSource([], 8)).toEqual([]);
-  });
-
-  it("THE POOL ROUTE READS IT — the half of the fix that is not in this module", () => {
-    const pipe = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-    const at = pipe.indexOf("poolCandidates = capCandidatesPerSource(");
-    expect(at, "the scene-pool download loop is uncapped again").toBeGreaterThan(-1);
-    /** And it runs BEFORE the loop that downloads, or it caps nothing. */
-    const loopAt = pipe.indexOf("for (const candidate of poolCandidates) {", at);
-    expect(loopAt).toBeGreaterThan(at);
-  });
-
-  it("and the funnel still reads the same function, so the two cannot drift", () => {
-    const funnel = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
-    expect(funnel).toContain("const capFor = (source: FunnelCandidateSource): number => shortlistCapForSource(source);");
-  });
-});
 
 /* ═══════════════════ B. one picture is one candidate ═══════════════════ */
 
@@ -306,12 +211,6 @@ describe("the invariants this round is not allowed to have moved", () => {
     expect(mismatch.slice(mismatch.indexOf("export function reprieveAllowedFor"))).toContain("return false;");
   });
 
-  it("the download BUDGET is untouched — only who may fill it changed", () => {
-    const funnel = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
-    expect(funnel).toContain("export const MAX_FUNNEL_CANDIDATES_TO_SCORE = 6;");
-    expect(funnel).toContain("const MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2;");
-    expect(funnel).toContain("const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;");
-  });
 
   it("dedup, the archive and the delivery gate are not mentioned by either fix", () => {
     const audit = readFileSync(join(__dirname, "beatOutcomeAudit.ts"), "utf8");

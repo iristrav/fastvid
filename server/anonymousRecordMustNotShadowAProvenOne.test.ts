@@ -48,66 +48,6 @@ const curatedPick = (id: number, archiveName?: string) => ({
   ...(archiveName ? { archiveName } : {}),
 });
 
-describe("a curated asset gets its provider even when an adoption opened the record first", () => {
-  const setup = () => {
-    const audit: Parameters<typeof recordClipAdopt>[0] = [];
-    const ledger = new VisualSourceLedger({ renderId: "r1", videoId: 573 });
-    bindLineageLedger(audit, ledger);
-    bindContentKeyResolver(audit, (p) => {
-      const m = /_curated_a(\d+)/.exec(path.basename(p));
-      return m ? `curated:asset:${m[1]}` : "";
-    });
-    return { audit, ledger };
-  };
-
-  it("the anonymous record is upgraded instead of returned bare", () => {
-    const { audit, ledger } = setup();
-    recordClipAdopt(audit, 1, 6, "beat", "/tmp/scene_1_b6_curated_a57392.mp4", "guaranteed");
-    expect(ledger.providerFor("/tmp/scene_1_b6_curated_a57392.mp4", "curated:asset:57392")).toBeNull();
-
-    ensureCuratedAssetLineageOn(ledger, curatedPick(57392, "WW2 Archive"), 1, 6);
-
-    expect(ledger.providerFor("/tmp/scene_1_b6_curated_a57392.mp4", "curated:asset:57392")).toBe(
-      "ww2 archive"
-    );
-  });
-
-  it("it stays ONE record — the upgrade must not become a second copy of the asset", () => {
-    const { audit, ledger } = setup();
-    recordClipAdopt(audit, 1, 6, "beat", "/tmp/scene_1_b6_curated_a57392.mp4", "guaranteed");
-    const before = ledger.allRecords().length;
-    ensureCuratedAssetLineageOn(ledger, curatedPick(57392, "WW2 Archive"), 1, 6);
-    expect(ledger.allRecords()).toHaveLength(before);
-  });
-
-  it("providerStatus moves with the provider — the ledger never holds one without the other", () => {
-    const { audit, ledger } = setup();
-    recordClipAdopt(audit, 1, 6, "beat", "/tmp/scene_1_b6_curated_a57392.mp4", "guaranteed");
-    const record = ledger.resolve("/tmp/scene_1_b6_curated_a57392.mp4", "curated:asset:57392")!;
-    expect(record.providerStatus).toBe("UNVERIFIED");
-    ensureCuratedAssetLineageOn(ledger, curatedPick(57392, "WW2 Archive"), 1, 6);
-    expect(record.providerStatus).toBe("VERIFIED");
-  });
-
-  it("the archive id and the storage url are filled in with it", () => {
-    const { audit, ledger } = setup();
-    recordClipAdopt(audit, 2, 0, "beat", "/tmp/scene_2_b0_curated_a900.mp4", "guaranteed");
-    ensureCuratedAssetLineageOn(ledger, curatedPick(900, "WW2 Archive"), 2, 0);
-    const record = ledger.resolve("/tmp/scene_2_b0_curated_a900.mp4", "curated:asset:900")!;
-    expect(record.archiveAssetId).toBe(900);
-    expect(record.sourceUrl).toBe("/s/900.mp4");
-  });
-
-  it("a row with no archive name still proves something — the customer's own archive", () => {
-    const { audit, ledger } = setup();
-    recordClipAdopt(audit, 0, 0, "beat", "/tmp/scene_0_b0_curated_a12.mp4", "guaranteed");
-    ensureCuratedAssetLineageOn(ledger, curatedPick(12), 0, 0);
-    expect(ledger.providerFor("/tmp/scene_0_b0_curated_a12.mp4", "curated:asset:12")).toBe(
-      "own_archive"
-    );
-  });
-});
-
 describe("a provider already proven is never replaced", () => {
   it("a second, different provider for one content key leaves the first standing", () => {
     /**

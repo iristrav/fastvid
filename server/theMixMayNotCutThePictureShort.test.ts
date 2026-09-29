@@ -162,17 +162,6 @@ describe("§3 — the measurement reaches the log", () => {
 /* ═══════════ §4 — the two providers the funnel never asked ═══════════ */
 
 describe("§4 — the funnel asks YouTube and the archive", () => {
-  it("THE DEFECT, NAMED: the funnel's pool call used to carry neither", () => {
-    /**
-     * Guarded by the shape rather than by absence: the call must now name both, and both must come
-     * from the request rather than from a client this module would have to hold.
-     */
-    const at = FUNNEL.indexOf("buildSceneCandidatePool({");
-    expect(at, "the funnel no longer builds a pool").toBeGreaterThan(-1);
-    const call = FUNNEL.slice(at, FUNNEL.indexOf("}).then(r => r.candidates)", at));
-    expect(call).toContain("youtubeSearch: req.youtubeSearch");
-    expect(call).toContain("archiveSearch: req.archiveSearch");
-  });
 
   it("the funnel holds no key and opens no client — they are injected", () => {
     const at = FUNNEL.indexOf("export async function buildRetrievalFunnel(");
@@ -181,42 +170,4 @@ describe("§4 — the funnel asks YouTube and the archive", () => {
     expect(body, "the funnel grew its own archive selection").not.toContain("listCuratedArchiveCandidates(");
   });
 
-  it("every production caller of the funnel supplies YouTube", () => {
-    /**
-     * Two call sites: the inline per-scene funnel and the prefetch that runs during TTS. Both must
-     * supply it, or the route that happens to run decides whether YouTube exists.
-     */
-    const sites = [...PIPELINE.matchAll(/buildRetrievalFunnel\(\{/g)].map((m) => m.index ?? 0);
-    expect(sites.length, "a call site appeared or vanished").toBe(2);
-    for (const at of sites) {
-      const call = PIPELINE.slice(at, at + 2500);
-      expect(call, `funnel call at ${at} does not supply YouTube`).toContain(
-        "youtubeSearch: scenePoolYoutubeSearch("
-      );
-    }
-  });
-
-  it("the inline funnel supplies the archive too; the prefetch cannot, and says why", () => {
-    /**
-     * `scenePoolArchiveSearch` reads the render's used-asset state, and the prefetch runs before
-     * that state exists — the sibling pool prefetch has the same pair for the same reason. The
-     * absence is a stated limit, not an oversight, and this pins the stated reason.
-     */
-    const sites = [...PIPELINE.matchAll(/buildRetrievalFunnel\(\{/g)].map((m) => m.index ?? 0);
-    const withArchive = sites.filter((at) =>
-      PIPELINE.slice(at, at + 2500).includes("archiveSearch: scenePoolArchiveSearch(")
-    );
-    expect(withArchive.length, "exactly one funnel call site can reach the archive").toBe(1);
-    const prefetch = sites.find((at) => !withArchive.includes(at))!;
-    expect(PIPELINE.slice(prefetch, prefetch + 2500)).toContain("createVisualDedupState");
-  });
-
-  it("the pool's own distinction is untouched: not supplied is not found-nothing", () => {
-    /**
-     * RONDE 177's rule, and the reason this defect was visible at all. Collapsing the two would
-     * have hidden it completely.
-     */
-    expect(POOL).toContain("if (req.youtubeSearch) {");
-    expect(POOL).toContain('skipped.youtube_cc = "no_search_function_supplied";');
-  });
 });

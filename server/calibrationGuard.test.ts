@@ -281,22 +281,6 @@ describe("RONDE 43 — placement and blast radius", () => {
     expect(block).not.toContain("console.warn");
   });
 
-  it("no ranking or retrieval function was touched", () => {
-    // The six functions Ronde 42 put out of bounds must read exactly as before.
-    expect(FUNNEL).toContain("async function computeArchiveCoverage(");
-    expect(FUNNEL).toContain('if (coverage > ARCHIVE_DOMINANT_THRESHOLD) return "archive_dominant";');
-    expect(FUNNEL).toContain('if (bestArchiveScore >= BEAT_ARCHIVE_STOP_THRESHOLD) strategy = "archive_only";');
-    expect(FUNNEL).toContain("const kwBase = Math.min(1, pick.score / KEYWORD_SCORE_MAX);");
-    expect(FUNNEL).toContain("export function pickBestFunnelCandidate(");
-    expect(FUNNEL).toContain("export function orderCandidatesForBeatGap(");
-    // and no threshold moved
-    expect(FUNNEL).toContain("const KEYWORD_SCORE_MAX = 100;");
-    expect(FUNNEL).toMatch(/const ARCHIVE_DOMINANT_THRESHOLD = envThreshold\("ARCHIVE_DOMINANT_THRESHOLD", 0\.46\)/);
-    expect(FUNNEL).toMatch(/const INTERNET_DOMINANT_THRESHOLD = envThreshold\("INTERNET_DOMINANT_THRESHOLD", 0\.25\)/);
-    expect(FUNNEL).toMatch(/export const BEAT_ARCHIVE_STOP_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_STOP_THRESHOLD", 0\.50\)/);
-    expect(FUNNEL).toMatch(/export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD", 0\.42\)/);
-    expect(FUNNEL).toMatch(/export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD", 0\.30\)/);
-  });
 
   it("the guard module itself touches nothing but env", () => {
     const GUARD = readFileSync(path.join(__dirname, "calibrationGuard.ts"), "utf8");

@@ -644,17 +644,4 @@ describe("RONDE 77 §K — nothing here touches how a candidate is scored", () =
       expect(nonAction).toContain(group);
     }
   });
-
-  it("combinedTypedQueriesForBeat with no action returns what RONDE 73 returned", () => {
-    // The action parameter defaults to "", and a defaulted action must add nothing at all.
-    const withoutAction = combinedTypedQueriesForBeat(BEAT_3, [], "Reichstag");
-    const withAction = combinedTypedQueriesForBeat(BEAT_3, [], "Reichstag", "raised");
-    // RONDE 88 reordered this family and added the place+object+time form; the RONDE 73 members
-    // are all still present, which is what this test exists to hold.
-    for (const q of ["Reichstag 1945", "Reichstag flag 1945", "Reichstag archival footage"]) {
-      expect(withoutAction).toContain(q);
-    }
-    for (const q of withoutAction) expect(withAction).toContain(q);
-    expect(withAction.length).toBeGreaterThan(withoutAction.length);
-  });
 });

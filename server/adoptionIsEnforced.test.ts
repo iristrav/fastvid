@@ -70,8 +70,8 @@ describe("no adoption route reaches the montage undeclared", () => {
   /** And the intents that ARE declared must all be labels the policy table knows. */
   it("every declared intent is a label the policy table declares", () => {
     const literals = [...PIPE.matchAll(/withAdoptionIntent\(\s*"([a-z0-9_]+)"/g)].map((m) => m[1]!);
-    /** Four — the other intents were on the deleted rescue, recovery and AI routes. */
-    expect(literals.length).toBeGreaterThanOrEqual(4);
+    /** Three — the other intents were on the deleted rescue, recovery, AI, pool and funnel routes. */
+    expect(literals.length).toBeGreaterThanOrEqual(3);
     for (const label of new Set(literals)) {
       expect(adoptionPolicyFor(label).category, `route "${label}" is undeclared`).not.toBe(
         "UNDECLARED"

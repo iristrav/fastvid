@@ -107,33 +107,6 @@ describe("RONDE 124 — VERIFIED / UNVERIFIED / REJECTED", () => {
     ).toBe("UNVERIFIED");
   });
 
-  it("CRITICAL: VERIFIED is exactly what the old boolean called allowed", () => {
-    /**
-     * This is what makes the default behaviour provably unchanged. Both existing gates — the one
-     * in videoPipeline and the deliberate copy in scenePool — must agree with the classifier on
-     * every case, or the flag being off would not reproduce today's pipeline.
-     */
-    const cases: Array<[string | null, string | null]> = [
-      [null, null],
-      ["", ""],
-      ["https://creativecommons.org/publicdomain/zero/1.0/", null],
-      ["https://creativecommons.org/licenses/by/4.0/", null],
-      ["https://creativecommons.org/licenses/by-sa/3.0/", null],
-      ["https://creativecommons.org/licenses/by-nc-nd/4.0/", null],
-      ["https://creativecommons.org/licenses/by-nc/4.0/", null],
-      ["https://example.com/some-licence", null],
-      [null, "Public Domain"],
-      [null, "No known copyright restrictions"],
-      [null, "CC BY-NC 4.0"],
-      [null, "no derivative works"],
-      [null, "Contact the rights holder"],
-    ];
-    for (const [url, rights] of cases) {
-      const verified = classifyArchiveLicense(url, rights) === "VERIFIED";
-      expect(isAllowedInternetArchiveLicense(url, rights)).toBe(verified);
-      expect(isAllowedInternetArchiveLicensePool(url, rights)).toBe(verified);
-    }
-  });
 });
 
 /* ═══════════ 3. the decision, which is what the pipeline acts on ═══════════ */
@@ -236,11 +209,6 @@ describe("RONDE 124 — the whole chain, not the first hit", () => {
     expect(p).toContain("formatYoutubeLicenseLine(licenseDecision)");
   });
 
-  it("scenePool's copy of the same gate asks it too", () => {
-    const p = src("scenePool.ts");
-    expect(p).toContain("const poolLicense = youtubeLicenseDecision({");
-    expect(p).toContain("if (!poolLicense.allowed) continue;");
-  });
 
   it("the module has no pipeline imports, so the scenePool cycle stays impossible", () => {
     const m = src("youtubeLicenseStatus.ts");

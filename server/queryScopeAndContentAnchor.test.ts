@@ -123,13 +123,6 @@ describe("the scope is opened where the beat is known", () => {
     expect(body).toContain("getActiveVideoId()");
   });
 
-  /** The pool runs above the beat loop and has always had its scene index in hand. */
-  it("the scene candidate pool states its scene", () => {
-    const at = POOL.indexOf("export async function buildSceneCandidatePool(");
-    expect(at).toBeGreaterThan(-1);
-    const body = POOL.slice(at, at + 1600);
-    expect(body).toContain("withQueryScope({ videoId: getActiveVideoId(), sceneIndex: req.sceneIndex }");
-  });
 
   /** The ticket carries it too, so anything reading a ticket sees the same answer as the log. */
   it("the gate mints its ticket with the scope", () => {

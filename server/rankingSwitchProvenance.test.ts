@@ -35,76 +35,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("the ranking switch reports which switch it was", () => {
-  it("an explicit true is explicit", () => {
-    vi.stubEnv("POOL_RANKING_V2", "true");
-    vi.stubEnv("CINEMATIC_EDITING_ENGINE", "false");
-    expect(describePoolRankingV2()).toEqual({ on: true, decidedBy: "explicit" });
-  });
 
-  /** The override has to work in BOTH directions, or the cinematic route cannot be compared. */
-  it("an explicit false beats a cinematic deployment", () => {
-    vi.stubEnv("POOL_RANKING_V2", "false");
-    vi.stubEnv("CINEMATIC_EDITING_ENGINE", "true");
-    expect(describePoolRankingV2()).toEqual({ on: false, decidedBy: "explicit" });
-  });
-
-  it("unset means the cinematic route decides, and says so", () => {
-    vi.stubEnv("POOL_RANKING_V2", "");
-    vi.stubEnv("CINEMATIC_EDITING_ENGINE", "true");
-    expect(describePoolRankingV2()).toEqual({ on: true, decidedBy: "cinematic_route" });
-  });
-
-  it("and off with it", () => {
-    vi.stubEnv("POOL_RANKING_V2", "");
-    vi.stubEnv("CINEMATIC_EDITING_ENGINE", "");
-    expect(describePoolRankingV2()).toEqual({ on: false, decidedBy: "cinematic_route" });
-  });
-
-  /** Nonsense is not a setting. It falls through to the route, rather than reading as `false`. */
-  it("an unparseable value is not treated as an answer", () => {
-    vi.stubEnv("POOL_RANKING_V2", "yes");
-    vi.stubEnv("CINEMATIC_EDITING_ENGINE", "true");
-    expect(describePoolRankingV2()).toEqual({ on: true, decidedBy: "cinematic_route" });
-  });
-
-  /** One predicate, two callers. The boolean must not be able to disagree with the description. */
-  it("the predicate is the description, not a second copy of the rule", () => {
-    for (const [v2, cine] of [
-      ["true", "false"],
-      ["false", "true"],
-      ["", "true"],
-      ["", ""],
-    ]) {
-      vi.stubEnv("POOL_RANKING_V2", v2!);
-      vi.stubEnv("CINEMATIC_EDITING_ENGINE", cine!);
-      expect(poolRankingV2Enabled()).toBe(describePoolRankingV2().on);
-    }
-  });
-});
-
-describe("the route line names which switch decided", () => {
-  it("says when an operator asked for this ranking", () => {
-    vi.stubEnv("POOL_RANKING_V2", "true");
-    expect(formatProductionRoute(7)).toContain("POOL_RANKING_V2=on(explicit)");
-  });
-
-  it("says when the render inherited it from the cinematic route", () => {
-    vi.stubEnv("POOL_RANKING_V2", "");
-    vi.stubEnv("CINEMATIC_EDITING_ENGINE", "true");
-    expect(formatProductionRoute(7)).toContain("POOL_RANKING_V2=on(cinematic_route)");
-  });
-
-  /**
-   * The case the coupling actually bites in: the engine is off, so the ranking is off too, and
-   * nobody chose that. The line has to make it readable without a second variable lookup.
-   */
-  it("an inherited OFF is just as much a decision as an inherited on", () => {
-    vi.stubEnv("POOL_RANKING_V2", "");
-    vi.stubEnv("CINEMATIC_EDITING_ENGINE", "");
-    expect(formatProductionRoute(7)).toContain("POOL_RANKING_V2=off(cinematic_route)");
-  });
-});
 
 describe("the code no longer tells a reader the opposite of what it does", () => {
   const POOL = () => fs.readFileSync(path.join(__dirname, "scenePool.ts"), "utf8");
@@ -117,14 +48,6 @@ describe("the code no longer tells a reader the opposite of what it does", () =>
     expect(POOL()).not.toContain("Set POOL_RANKING_V2=true to activate");
   });
 
-  /** The coupling itself, stated where someone changing either switch will meet it. */
-  it("the docstring says what the inheritance costs", () => {
-    const src = POOL();
-    const at = src.indexOf("export function poolRankingV2Enabled(");
-    const doc = src.slice(src.lastIndexOf("/**", at), at);
-    expect(doc).toContain("CINEMATIC_EDITING_ENGINE");
-    expect(doc).toContain("changes which asset every beat picks");
-  });
 
   /**
    * RONDE 206's justification named compose as "the route that actually ships". That stopped being

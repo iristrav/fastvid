@@ -251,23 +251,7 @@ describe("RONDE 132 §2 — wired where the pictures are actually adopted", () =
     return readFileSync(join(__dirname, file), "utf8");
   };
 
-  it("the funnel adopt point records every identity, not just the funnel id", () => {
-    const pipe = read("videoPipeline.ts");
-    const idx = pipe.indexOf("markAssetUsedInVideo(dedup, {");
-    expect(idx).toBeGreaterThan(0);
-    const block = pipe.slice(idx, pipe.indexOf("});", idx));
-    expect(block).toContain("funnelCandidateId: candidate.id");
-    expect(block).toContain("archiveAssetId: candidate.archivePick?.asset?.id");
-    expect(block).toContain("contentKey: clipContentKey(clipPath)");
-    expect(block).toContain("providerAssetId: candidate.poolCandidate?.assetId");
-  });
 
-  it("the memory recall is handed the video's used-asset set and a reporter", () => {
-    const pipe = read("videoPipeline.ts");
-    expect(pipe).toContain("memoryExcludeAssetIds: dedup.usedCuratedAssetIds,");
-    expect(pipe).toContain("onMemoryAssetExcluded:");
-    expect(pipe).toContain("formatVisualDedupReject({");
-  });
 
   it("the render report prints the dedup summary", () => {
     expect(read("videoPipeline.ts")).toContain("formatVisualDedupSummary(getActiveVideoId()");
@@ -428,41 +412,3 @@ describe("RONDE 132 §10 — a short montage says HOW short", () => {
   });
 });
 
-describe("RONDE 132 §13 — a provider that was never asked says so", () => {
-  it("T. the skip reason distinguishes a missing key from a disabled flag", () => {
-    /**
-     * The render reported "Geen Wikimedia-stills" with no way to tell whether Wikimedia had been
-     * asked and found nothing, or had never been called. Those need completely different work:
-     * "the queries are wrong" versus "the key is missing".
-     */
-    expect(formatProviderSkips({ pexels: "no_api_key", europeana: "disabled_by_flag" }))
-      .toBe("europeana=disabled_by_flag pexels=no_api_key");
-  });
-
-  it("nothing skipped produces nothing", () => {
-    expect(formatProviderSkips({})).toBe("");
-  });
-
-  it("every provider guard routes through the recorder", () => {
-    // Source-bound: the guards live inside the pool builder, which needs a whole scene to call.
-    const { readFileSync } = require("fs") as typeof import("fs");
-    const { join } = require("path") as typeof import("path");
-    const pool = readFileSync(join(__dirname, "scenePool.ts"), "utf8");
-    for (const source of [
-      "pexels", "pixabay", "internet_archive", // europeana, openverse, nasa, nara, loc: removed in VIDEO 619
-    ]) {
-      expect(pool, source).toContain(`noteSkip("${source}"`);
-    }
-    expect(pool).toContain("[ProviderSkipped] scene=");
-    /**
-     * And the recorder actually assigns BOTH reasons. Asserting only that `noteSkip` is called
-     * leaves a version that skips the provider and records nothing — which is the state this
-     * round exists to fix, and a mutation proved the test could not see it.
-     */
-    const idx = pool.indexOf("const noteSkip =");
-    expect(idx).toBeGreaterThan(0);
-    const body = pool.slice(idx, pool.indexOf("};", idx));
-    expect(body).toContain('skipped[source] = "disabled_by_flag";');
-    expect(body).toContain('skipped[source] = "no_api_key";');
-  });
-});

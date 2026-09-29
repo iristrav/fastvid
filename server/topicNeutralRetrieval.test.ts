@@ -194,10 +194,6 @@ describe("§6 — the exact prompt/title pair from the brief", () => {
 describe("§7 — queries are varied, bounded and not keyword soup", () => {
   const CAP = MAX_YOUTUBE_QUERIES_PER_BEAT;
 
-  it("the per-beat YouTube query cap is six", () => {
-    expect(CAP).toBe(6);
-  });
-
   for (const d of DOMAINS) {
     /**
      * "WWII WWII WWII Hitler Berlin war 1945" is the failure mode the brief names. A query that

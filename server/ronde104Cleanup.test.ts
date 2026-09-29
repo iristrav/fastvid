@@ -107,11 +107,8 @@ describe("RONDE 104 #3 — the dead functions are gone", () => {
 /* ═══════════ 4. a test that could pass for the wrong reason ═══════════ */
 
 describe("RONDE 104 #4 — source-reading helpers find the BODY, not a return type", () => {
-  const HELPERS = [
-    "archiveCoverageCalibration.ronde36.test.ts",
-    "ronde56YoutubeMetaCache.test.ts",
-    "videoPipeline.ronde50PreRenderHardening.test.ts",
-  ];
+  /** `ronde56YoutubeMetaCache`'s helper left with the RapidAPI metadata call it read. */
+  const HELPERS = ["videoPipeline.ronde50PreRenderHardening.test.ts"];
 
   it("none of them still walks to the first close-paren", () => {
     /**
@@ -133,15 +130,6 @@ describe("RONDE 104 #4 — source-reading helpers find the BODY, not a return ty
         })
         .join("\n");
       expect(code, `${f} still uses the fragile pattern`).not.toContain('indexOf(")", start)');
-    }
-  });
-
-  it("they balance the parameter list and take the last brace on the signature line", () => {
-    for (const f of HELPERS.slice(0, 2)) {
-      const src = fs.readFileSync(path.join(__dirname, f), "utf8");
-      expect(src).toContain("function signatureBodyBrace(");
-      expect(src).toContain('else if (src[i] === ")" && --depth === 0) break;');
-      expect(src).toContain("line.lastIndexOf(\"{\")");
     }
   });
 });
@@ -276,9 +264,10 @@ describe("RONDE 104 #7 — one record of the verdict, one record of the requeue"
     expect(PIPELINE).toContain("RONDE 104 looked at whether this duplicated the relevance ledger");
   });
 
-  it("both reprieve paths still record the override against the clip, not as a pass", () => {
+  it("the reprieve path still records the override against the clip, not as a pass", () => {
     const calls = PIPELINE.split("reprieveBeatClip(").length - 1;
-    expect(calls).toBeGreaterThanOrEqual(2);
+    /** The scene pool and funnel routes left when the three candidate systems became one. */
+    expect(calls).toBeGreaterThanOrEqual(1);
     const idx = RELEVANCE.indexOf("export function reprieveBeatClip(");
     const body = RELEVANCE.slice(idx, RELEVANCE.indexOf("\n}", idx));
     expect(body).toContain("allowed: true, reprieved: true");

@@ -109,41 +109,6 @@ describe("RONDE 86 §A — a clip's origin outlives its filename", () => {
     expect(l.resolve("/w/a.mp4")).toBeNull();
   });
 
-  it("TEST 4 — every recordClipAdopt call site writes lineage, without one of them changing", () => {
-    const audit = createClipAdoptAudit();
-    const l = ledger();
-    bindLineageLedger(audit, l);
-    expect(lineageLedgerFor(audit)).toBe(l);
-
-    recordClipAdopt(audit, 4, 1, "The bunker in April 1945.", "/w/scene_4_b1_curated_a55995.mp4",
-      "archive", "Führerbunker exterior", null, 55995, 8);
-    const record = l.resolve("/w/scene_4_b1_curated_a55995.mp4");
-    expect(record).not.toBeNull();
-    expect(record!.sceneIndex).toBe(4);
-    expect(record!.archiveAssetId).toBe(55995);
-    expect(record!.visionScore).toBe(8);
-    expect(record!.route).toBe("primary");
-    // RONDE 87: "archive" is the adopt ROUTE, and this clip's provider was never proven, so the
-    // record says so instead of borrowing the route label.
-    expect(record!.sourceLabel).toBe("archive");
-    expect(record!.provider).toBeNull();
-    expect(record!.providerStatus).toBe("UNVERIFIED");
-  });
-
-  it("TEST 5 — lineage is not truncated by the adopt audit's 120-entry cap", () => {
-    const audit = createClipAdoptAudit();
-    const l = ledger();
-    bindLineageLedger(audit, l);
-    for (let i = 0; i < 150; i++) {
-      recordClipAdopt(audit, i, 0, "beat", `/w/clip_${i}.mp4`, "archive");
-    }
-    // The audit array is capped on purpose — it is a log. The lineage is the record of what is
-    // in the finished video, and a long render must not stop recording it at clip 120.
-    expect(audit.length).toBe(120);
-    expect(l.size).toBe(150);
-    expect(l.resolve("/w/clip_149.mp4")).not.toBeNull();
-  });
-
   it("TEST 6 — the quality report counts the ledger's provider, not the filename's", () => {
     // `pad_combined_...` matches no pattern in inferClipSourceFromPath, which is why render 536's
     // report filed 27 real clips under `unknown` while the score read bySource.
@@ -338,25 +303,6 @@ describe("RONDE 86 §E — every funnel stage is counted, per provider and in to
     const bare = createClipRejectAudit();
     expect(() => recordClipReject(bare, 1, 2, "/w/x.mp4", "vision_gate", "q")).not.toThrow();
     expect(bare.recorded).toBe(1);
-  });
-
-  it("TEST 28 — the rescue ladder and the colour card are counted apart from a normal fill", () => {
-    expect(adoptRouteForSource("archive")).toBe("primary");
-    expect(adoptRouteForSource("rescue_wikimedia")).toBe("rescue");
-    expect(adoptRouteForSource("fallback")).toBe("fallback");
-    expect(adoptRouteForSource("rescue_placeholder")).toBe("fallback");
-    expect(adoptRouteForSource("guaranteed")).toBe("backfill");
-
-    const audit = createClipAdoptAudit();
-    const l = ledger87();
-    bindLineageLedger(audit, l);
-    recordClipAdopt(audit, 0, 0, "b", "/w/a.mp4", "fallback");
-    recordClipAdopt(audit, 0, 1, "b", "/w/b.mp4", "rescue_wikimedia");
-    recordClipAdopt(audit, 0, 2, "b", "/w/c.mp4", "archive");
-    const s = l.summary();
-    expect(s.total.fallback).toBe(1);
-    expect(s.total.rescue).toBe(1);
-    expect(s.total.adopted).toBe(3);
   });
 
   it("TEST 29 — the report is one readable block, ordered by contribution", () => {

@@ -232,10 +232,6 @@ describe("R223 §5 — the genre word stops standing in for a subject", () => {
     expect(FUNNEL, "the funnel stub still invents a subject").not.toContain(`|| "documentary"`);
   });
 
-  it("`words[0]` is kept — a weak real word beats an invented one", () => {
-    const at = FUNNEL.indexOf("powerWord: stubPowerWordFromSceneText(");
-    expect(FUNNEL.slice(at, at + 160)).toContain("words[0]");
-  });
 
   it("RONDE 88A's downstream guard still stands — this round fixed the source, not it", () => {
     const heal = fs.readFileSync(path.join(__dirname, "pipelineSelfHeal.ts"), "utf8");

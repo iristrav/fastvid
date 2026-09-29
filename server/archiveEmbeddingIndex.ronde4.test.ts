@@ -345,38 +345,10 @@ describe("downstream contracts and earlier rounds are untouched", () => {
   const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
   const poolSrc = readFileSync(path.join(__dirname, "scenePool.ts"), "utf8");
 
-  it("retrievalFunnel.ts is byte-for-byte untouched by RONDE 4 (sync call site intact)", () => {
-    // mergeCandidates still calls the sync loader — the very reason the cache exists.
-    expect(funnelSrc).toContain("const storedEmb = loadStoredAssetEmbedding(pick.asset.id);");
-    // scoreBeatAgainstStoredEmbedding call sites unchanged.
-    expect(funnelSrc).toContain("scoreBeatAgainstStoredEmbedding(beatDocument, c.asset.id).catch(() => null)");
-    // No RONDE 4 identifiers leaked into the funnel.
-    expect(funnelSrc).not.toContain("ensureArchiveEmbeddingCacheLoaded");
-  });
-
   it("every async entry point that precedes the sync reads awaits the cache load", () => {
     const src = readFileSync(path.join(__dirname, "archiveEmbeddingIndex.ts"), "utf8");
     const fn = src.slice(src.indexOf("export async function scoreBeatAgainstStoredEmbedding"));
     expect(fn).toContain("await ensureArchiveEmbeddingCacheLoaded();");
-  });
-
-  it("coverage thresholds and funnel constants did not move (FIX 5 still not done)", () => {
-    expect(funnelSrc).toContain("const KEYWORD_SCORE_MAX = 100;");
-    expect(funnelSrc).toMatch(/const ARCHIVE_DOMINANT_THRESHOLD = envThreshold\("ARCHIVE_DOMINANT_THRESHOLD", 0\.46\)/);
-    expect(funnelSrc).toMatch(/export const BEAT_ARCHIVE_STOP_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_STOP_THRESHOLD", 0\.50\)/);
-    expect(funnelSrc).toContain("export const STOCK_TIER_WIN_MARGIN = 1.0;");
-  });
-
-  it("RONDE 1/2/3 are intact", () => {
-    expect(funnelSrc).toContain("const unusedPassers = usedCandidateIds?.size");
-    expect(funnelSrc).toContain('case "archive_only":\n    case "one_external":\n    case "all_external":');
-    // RONDE 132 counts both forms: the winner's registration moved into markAssetUsedInVideo,
-    // which writes this same Set plus the identities the funnel never recorded. Same invariant.
-    const code = pipelineSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    const adds = code.match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
-    const viaRegistry = code.match(/funnelCandidateId: candidate\.id,/g) ?? [];
-    expect(adds.length + viaRegistry.length).toBe(2);
-    expect(poolSrc).toContain("const DETAIL_FETCH_CONCURRENCY = 5;");
   });
 
   it("the write call sites (upload/ingest/retag) still call the same function", () => {

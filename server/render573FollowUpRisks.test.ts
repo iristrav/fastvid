@@ -13,80 +13,6 @@ import { recordClipAdopt, bindLineageLedger, bindContentKeyResolver } from "./cl
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-describe("one asset adopted for several beats keeps naming the beat that opened it", () => {
-  /**
-   * The regression this closes, created by giving the untraced record a content key.
-   *
-   * With `contentKey: ""` the record was never registered in `byContentKey`, so every adoption of
-   * the same curated asset opened its own unfindable record. With a real key the second adoption
-   * FINDS the first — and `record.sceneIndex = sceneIndex` then moved it to the later beat.
-   * Render 573 selected archive asset 57364 for four beats (s0b0, s1b0, s1b4, s2b0), so
-   * `[SourceLineage] scene= beat=` would have described whichever came last.
-   */
-  const setup = () => {
-    const audit: Parameters<typeof recordClipAdopt>[0] = [];
-    const cache = createSourcingCache(573);
-    bindLineageLedger(audit, cache.lineage);
-    bindContentKeyResolver(audit, (p) => {
-      const m = /_curated_a(\d+)/.exec(path.basename(p));
-      return m ? `curated:asset:${m[1]}` : "";
-    });
-    return { audit, cache };
-  };
-
-  it("the first beat wins and the later ones do not move it", () => {
-    const { audit, cache } = setup();
-    recordClipAdopt(audit, 0, 0, "first beat", "/tmp/scene_0_b0_curated_a57364.mp4", "archive");
-    recordClipAdopt(audit, 2, 0, "later beat", "/tmp/scene_2_b0_curated_a57364.mp4", "archive");
-
-    const record = cache.lineage.resolve("/tmp/scene_0_b0_curated_a57364.mp4", "curated:asset:57364")!;
-    expect(record.sceneIndex).toBe(0);
-    expect(record.beatIndex).toBe(0);
-  });
-
-  it("the sharing is counted rather than hidden", () => {
-    const { audit, cache } = setup();
-    for (const [s, b] of [[0, 0], [1, 0], [1, 4], [2, 0]] as const) {
-      recordClipAdopt(audit, s, b, "beat", `/tmp/scene_${s}_b${b}_curated_a57364.mp4`, "archive");
-    }
-    const record = cache.lineage.resolve("/tmp/scene_0_b0_curated_a57364.mp4", "curated:asset:57364")!;
-    /** Three further beats after the one that opened it. */
-    expect(record.reusedOnBeats).toBe(3);
-  });
-
-  it("a single adoption writes no counter — a number nobody wrote is not a measurement", () => {
-    const { audit, cache } = setup();
-    recordClipAdopt(audit, 1, 6, "beat", "/tmp/scene_1_b6_curated_a57392.mp4", "archive");
-    expect(
-      cache.lineage.resolve("/tmp/scene_1_b6_curated_a57392.mp4", "curated:asset:57392")!.reusedOnBeats
-    ).toBeUndefined();
-  });
-
-  it("re-adopting the SAME beat is not counted as reuse", () => {
-    const { audit, cache } = setup();
-    recordClipAdopt(audit, 1, 6, "beat", "/tmp/scene_1_b6_curated_a57392.mp4", "archive");
-    recordClipAdopt(audit, 1, 6, "beat", "/tmp/scene_1_b6_curated_a57392.mp4", "rescue_archive");
-    expect(
-      cache.lineage.resolve("/tmp/scene_1_b6_curated_a57392.mp4", "curated:asset:57392")!.reusedOnBeats
-    ).toBeUndefined();
-  });
-
-  it("a record opened at -1/-1 by a downloader is still placed by the first adoption", () => {
-    /** `tagPathWithProviderAsset` uses `meta?.sceneIndex ?? -1` when the fetcher knew no beat. */
-    const { audit, cache } = setup();
-    cache.lineage.createLineage({
-      sceneIndex: -1, beatIndex: -1,
-      candidateId: "curated:asset:57500", contentKey: "curated:asset:57500",
-      localPath: "/tmp/elsewhere_a57500.mp4", mediaType: "video", route: "primary",
-    });
-    recordClipAdopt(audit, 2, 3, "beat", "/tmp/scene_2_b3_curated_a57500.mp4", "archive");
-    const record = cache.lineage.resolve("/tmp/scene_2_b3_curated_a57500.mp4", "curated:asset:57500")!;
-    expect(record.sceneIndex).toBe(2);
-    expect(record.beatIndex).toBe(3);
-    expect(record.reusedOnBeats).toBeUndefined();
-  });
-});
-
 describe("the archive segment fetch uses a container that holds what the filter accepts", () => {
   it("matroska, not mp4 — the item filter admits Ogg Video and WebM", () => {
     /**
@@ -144,20 +70,6 @@ describe("a beat with no searchable subject says so before the ladder moves on",
 
 describe("the note about resolving by content key says what is actually true", () => {
   const ADOPT = fs.readFileSync(path.join(__dirname, "clipAdoptAudit.ts"), "utf8");
-
-  it("it no longer claims production was missing records", () => {
-    /**
-     * `setContentKeyResolver(clipContentKey)` is bound at cache creation and
-     * `bindContentKeyResolver(audit, clipContentKey)` at dedup creation — the same function — so
-     * `resolve()` already derived the identical key. Passing it explicitly is right for callers
-     * that bind nothing, and it fixed nothing in a render.
-     */
-    const at = ADOPT.indexOf("const record = ledger.resolve(clipPath, adoptedContentKey");
-    expect(at).toBeGreaterThan(-1);
-    const note = ADOPT.slice(at - 1_400, at);
-    expect(note).toContain("It had not; the resolver was already bound.");
-    expect(note).not.toContain("A record that exists under a canonical key was therefore missed");
-  });
 
   it("both resolvers really are the same function", () => {
     expect(PIPE).toContain("cache.lineage.setContentKeyResolver(clipContentKey);");

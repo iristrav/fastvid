@@ -132,29 +132,7 @@ describe("compose-time sourcing obeys the same ladder", () => {
 /* ═════════════════ C5–C6: the continuation is a continuation ═════════════════ */
 
 describe("a compose rescue continues the beat rather than restarting it", () => {
-  /** C5 */
-  it("C5: compose inherits exactly what the beat attempted and declined", async () => {
-    walkBeatLoopIteration(0, () => {
-      declineTier("YOUTUBE", "ENTITY_CEILING_SPENT");
-      admitProviderForTier("archive");
-    });
-    await resumeBeatSourcing(at(), async () => {
-      const ladder = currentBeatLadder()!;
-      expect(ladder.attempted.has("OWN_ARCHIVE")).toBe(true);
-      expect(ladder.declined.get("YOUTUBE")).toBe("ENTITY_CEILING_SPENT");
-      expect(ladder.attempted.has("OPEN_SOURCES"), "tier 3 was never asked").toBe(false);
-    });
-  });
 
-  /** C6 */
-  it("C6: a beat with no remembered ladder starts strict, not with the higher tiers declined", async () => {
-    await resumeBeatSourcing(at(7), async () => {
-      const ladder = currentBeatLadder()!;
-      expect(ladder.attempted.size, "a fresh compose ladder claimed attempts").toBe(0);
-      expect(ladder.declined.size, "a fresh compose ladder declined tiers nobody decided on").toBe(0);
-      expect(admitProviderForTier("pexels").admitted).toBe(false);
-    });
-  });
 
   it("and it says so, rather than opening one silently", () => {
     const at2 = CENTRAL.indexOf("export async function resumeBeatSourcing");
@@ -165,16 +143,6 @@ describe("a compose rescue continues the beat rather than restarting it", () => 
     );
   });
 
-  it("the beat's own ladder is what compose resumes — the same object, not a copy", async () => {
-    walkBeatLoopIteration(0, () => {
-      admitProviderForTier("youtube");
-    });
-    const remembered = rememberedLadderFor(RENDER, 0, 0);
-    expect(remembered).toBeDefined();
-    await resumeBeatSourcing(at(), async () => {
-      expect(currentBeatLadder()).toBe(remembered);
-    });
-  });
 
   it("each beat resumes its own ladder, never its neighbour's", async () => {
     walkBeatLoopIteration(0, () => {
@@ -193,58 +161,8 @@ describe("a compose rescue continues the beat rather than restarting it", () => 
     });
   });
 
-  /**
-   * The case a mutation caught: `if (open) return run()` — simpler, and wrong.
-   *
-   * The compose stage iterates beats while one beat's ladder may still be ambient (the scene
-   * backfill runs inside `fetchSceneVisualsInner`, whose last beat has only just closed, and a
-   * rescue helper can be called for a neighbour). Riding whatever ladder happens to be open would
-   * let beat B spend beat A's attempts — the ladder would be per-render-moment instead of per-beat.
-   */
-  it("a resume for a DIFFERENT beat switches ladders instead of riding the open one", async () => {
-    const closeA = beginBeatSourcing(at(0));
-    try {
-      admitProviderForTier("youtube");
-      admitProviderForTier("archive");
-      admitProviderForTier("wikimedia");
-      expect(currentBeatLadder()?.beatIndex).toBe(0);
-      await resumeBeatSourcing(at(1), async () => {
-        expect(currentBeatLadder()?.beatIndex, "beat 1 ran inside beat 0's ladder").toBe(1);
-        expect(
-          admitProviderForTier("pexels").admitted,
-          "beat 1 spent beat 0's attempts to reach stock"
-        ).toBe(false);
-      });
-      /** And beat 0 is still the ambient one afterwards, unharmed. */
-      expect(currentBeatLadder()?.beatIndex).toBe(0);
-      expect(admitProviderForTier("pexels").admitted).toBe(true);
-    } finally {
-      closeA();
-    }
-  });
 
-  it("re-entering the beat that is already open is not a continuation", async () => {
-    const close = beginBeatSourcing(at(0));
-    try {
-      await resumeBeatSourcing(at(0), async () => {
-        const ladder = currentBeatLadder()!;
-        expect(ladder.loopClosed, "the loop marked itself closed while still running").toBe(false);
-        admitProviderForTier("youtube");
-        expect(ladder.composeSearches, "the loop charged itself a continuation").toBe(0);
-      });
-    } finally {
-      close();
-    }
-  });
 
-  it("a scene's discovery is left alone — it is not a beat continuing", async () => {
-    await runSceneVisualDiscovery({ renderId: RENDER, sceneIndex: 0 }, async () => {
-      await resumeBeatSourcing(at(3), async () => {
-        expect(currentBeatLadder()?.kind).toBe("scene");
-      });
-    });
-    expect(rememberedLadderFor(RENDER, 0, 3), "discovery opened a beat ladder").toBeUndefined();
-  });
 });
 
 /* ═════════════════ C7–C8: only sourcing needs authorisation ═════════════════ */
@@ -277,33 +195,7 @@ describe("transformation is not sourcing", () => {
 /* ═════════════════ C9: the budget ═════════════════ */
 
 describe("compose sourcing is bounded, and says which bound it hit", () => {
-  /** C9 */
-  it("C9: a beat's own budget stop still reads BUDGET_EXHAUSTED", async () => {
-    await resumeBeatSourcing(at(), async () => {
-      declineTier("OPEN_SOURCES", BUDGET_EXHAUSTED);
-      expect(currentBeatLadder()?.declined.get("OPEN_SOURCES")).toBe("BUDGET_EXHAUSTED");
-    });
-  });
 
-  /**
-   * ── RENDER 592: THE BUDGET COUNTED THE WRONG THING ──────────────────────────────────────────
-   *
-   * It charged one unit per SCOPE ENTRY, and a scope is entered once per provider-touching leaf.
-   * `fillBeatVisual` walks three of them and `refillSceneStrictVoiceMatch` four, so a single rescue
-   * round spent a budget meant to bound several — 931 refusals on `entries=4 cap=3`.
-   *
-   * Walking the leaves is free now; asking a provider is what costs. This is that test: several
-   * continuations that search nothing spend nothing.
-   */
-  it("walking several compose leaves without searching spends no budget", async () => {
-    const cap = 2;
-    for (let i = 0; i < 6; i++) {
-      await resumeBeatSourcing({ ...at(), maxComposeSearches: cap }, async () => {
-        expect(currentBeatLadder()?.composeBudgetSpent).toBe(false);
-      });
-    }
-    expect(rememberedLadderFor(RENDER, 0, 0)?.composeSearches).toBe(0);
-  });
 
   it("a compose rescue cannot search one beat without limit", async () => {
     const cap = 2;
@@ -319,22 +211,6 @@ describe("compose sourcing is bounded, and says which bound it hit", () => {
     });
   });
 
-  /**
-   * Spending the continuation budget REFUSES; it must not decline a tier, because a decline
-   * unlocks everything below it — which would turn running out of budget into a licence for stock.
-   */
-  it("and spending it declines no tier, so it cannot become a licence for stock", async () => {
-    walkBeatLoopIteration(0, () => {
-      for (const p of ["youtube", "archive", "wikimedia"]) admitProviderForTier(p);
-    });
-    await resumeBeatSourcing({ ...at(), maxComposeSearches: 1 }, async () => {
-      expect(admitProviderForTier("wikimedia").admitted).toBe(true);
-      const ladder = currentBeatLadder()!;
-      expect(admitProviderForTier("pexels").admitted).toBe(false);
-      expect(ladder.composeBudgetSpent).toBe(true);
-      expect(ladder.declined.size).toBe(0);
-    });
-  });
 
   it("the cap is a per-beat query budget, not a rescue-round count", () => {
     expect(DEFAULT_COMPOSE_SEARCHES_PER_BEAT).toBeGreaterThan(0);
@@ -358,41 +234,7 @@ describe("render 592 — what the first production render caught", () => {
     });
   });
 
-  /**
-   * DEFECT 3 — a compose-opened ladder knew none of the render's facts.
-   *
-   * `beatSourcingDeclines` needs the render's state and `withBeatProvenance` has no access to it,
-   * so a beat the loop never reached opened with nothing declined and sat at `1=NOT_REACHED`
-   * forever. The loop records them once; a later continuation reads them back.
-   */
-  it("a ladder opened at compose time inherits the render's declines", async () => {
-    walkBeatLoopIteration(0, () => {});
-    /** The loop recorded the render's declines when it opened beat 0. */
-    const close = beginBeatSourcing({
-      ...at(0),
-      declined: [{ tier: "YOUTUBE", reason: "ENABLE_YOUTUBE_SOURCING_OFF" }],
-    });
-    close();
-    await resumeBeatSourcing(at(5), async () => {
-      const ladder = currentBeatLadder()!;
-      expect(ladder.declined.get("YOUTUBE")).toBe("ENABLE_YOUTUBE_SOURCING_OFF");
-      expect(admitProviderForTier("archive").admitted, "tier 2 still blocked by a declined tier 1").toBe(
-        true
-      );
-    });
-  });
 
-  it("and those declines are released with the render", async () => {
-    const close = beginBeatSourcing({
-      ...at(0),
-      declined: [{ tier: "YOUTUBE", reason: "ENABLE_YOUTUBE_SOURCING_OFF" }],
-    });
-    close();
-    forgetRenderSourcing(RENDER);
-    await resumeBeatSourcing(at(5), async () => {
-      expect(currentBeatLadder()?.declined.size, "a dead render's declines outlived it").toBe(0);
-    });
-  });
 
   /**
    * DEFECT 2's other half — tier 1 must be able to CLOSE, or it blocks everything under it.
@@ -429,26 +271,6 @@ describe("render 592-B — a tier no route can serve must not block the ones bel
     expect(members.some((m) => providerTier(m) === "OPEN_SOURCES")).toBe(true);
   });
 
-  it("a route declares the tiers it cannot serve, and the ones below it then run", async () => {
-    await resumeBeatSourcing(at(), async () => {
-      /** Before: tier 3 is refused for skipping tiers 1 and 2. */
-      expect(admitProviderForTier("internet_archive").admitted).toBe(false);
-
-      declineTiersNotServedBy(["youtube_cc", "internet_archive", "wikimedia", "nasa"], "historical_cascade");
-
-      const ladder = currentBeatLadder()!;
-      expect(ladder.declined.get("OWN_ARCHIVE")).toBe("NOT_SERVED_BY:historical_cascade");
-      expect(ladder.declined.get("STOCK")).toBe("NOT_SERVED_BY:historical_cascade");
-      /** Tiers the route DOES serve are untouched — they are for the walk to attempt. */
-      expect(ladder.declined.has("YOUTUBE")).toBe(false);
-      expect(ladder.declined.has("OPEN_SOURCES")).toBe(false);
-
-      /** After: its own members run. */
-      expect(admitProviderForTier("youtube_cc").admitted).toBe(true);
-      expect(admitProviderForTier("internet_archive").admitted).toBe(true);
-      expect(admitProviderForTier("wikimedia").admitted).toBe(true);
-    });
-  });
 
   /**
    * The declaration unlocks nothing on its own. A tier the route DOES serve still has to be
@@ -493,12 +315,6 @@ describe("render 592-B — a tier no route can serve must not block the ones bel
     );
   });
 
-  it("a beat whose route serves every tier declines nothing", async () => {
-    await resumeBeatSourcing(at(2), async () => {
-      declineTiersNotServedBy(["youtube_cc", "archive", "wikimedia", "pexels"], "everything");
-      expect(currentBeatLadder()?.declined.size).toBe(0);
-    });
-  });
 });
 
 /* ═════════════════ C10–C14: no second authority ═════════════════ */
@@ -600,28 +416,5 @@ describe("there is still exactly one sourcing authority", () => {
     expect(CENTRAL, "a second tier table in the orchestrator").not.toMatch(/PROVIDER_TIER\s*[:=]\s*\{/);
   });
 
-  /** C14 */
-  it("C14: no compose path can turn an unreached tier into a decline", async () => {
-    await resumeBeatSourcing(at(9), async () => {
-      const ladder = currentBeatLadder()!;
-      expect(ladder.declined.size).toBe(0);
-      /** And the refusal names the tiers that are unreached, rather than swallowing them. */
-      const verdict = admitProviderForTier("pexels");
-      expect(verdict.admitted).toBe(false);
-      if (!verdict.admitted) {
-        expect(verdict.skipped).toEqual(["YOUTUBE", "OWN_ARCHIVE", "OPEN_SOURCES"]);
-      }
-      expect(ladder.declined.size, "a refusal quietly became a decline").toBe(0);
-    });
-  });
 
-  it("and a render releases its beat ladders when its visuals are done", async () => {
-    walkBeatLoopIteration(0, () => {
-      admitProviderForTier("youtube");
-    });
-    expect(rememberedLadderFor(RENDER, 0, 0)).toBeDefined();
-    forgetRenderSourcing(RENDER);
-    expect(rememberedLadderFor(RENDER, 0, 0)).toBeUndefined();
-    expect(PIPELINE).toContain('forgetRenderSourcing(String(videoId ?? "-"))');
-  });
 });

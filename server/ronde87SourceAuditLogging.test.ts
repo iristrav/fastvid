@@ -546,32 +546,6 @@ describe("RONDE 87 §I/§J — the official statistics come from the ledger", ()
     const proven = await buildEditorClipFromPath("/w/scene_0_b0_thing.mp4", () => "nara");
     expect(proven.source).toBe("nara");
   });
-
-  it("TEST 38 — a route label is never stored as a provider", () => {
-    const audit = createClipAdoptAudit();
-    const l = ledger();
-    bindLineageLedger(audit, l);
-    // "rescue_wikimedia" is how the beat was FILLED, not who supplied the picture.
-    recordClipAdopt(audit, 1, 2, "beat", "/w/unrecorded.mp4", "rescue_wikimedia");
-    const record = l.resolve("/w/unrecorded.mp4")!;
-    expect(record.provider).toBeNull();
-    expect(record.providerStatus).toBe("UNVERIFIED");
-    expect(record.sourceLabel, "the label is kept, in the field that means label").toBe("rescue_wikimedia");
-    expect(record.route).toBe("rescue");
-  });
-
-  it("TEST 39 — an adoption of a known clip keeps the provider it was proven with", () => {
-    const audit = createClipAdoptAudit();
-    const l = ledger();
-    bindLineageLedger(audit, l);
-    const r = provenCandidate(l);
-    recordClipAdopt(audit, 7, 3, "beat", r.localPath, "archive", "A title", null, 55995, 8);
-    const after = l.resolve(r.localPath)!;
-    expect(after.provider, "the adopt label must not overwrite the proven provider").toBe("youtube_cc");
-    expect(after.sourceLabel).toBe("archive");
-    expect(after.visionScore).toBe(8);
-    expect(l.summary().total.adopted).toBe(1);
-  });
 });
 
 /* ═════════════ §K — renders stay separate ═════════════ */

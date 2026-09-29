@@ -251,26 +251,8 @@ describe("RONDE 62 #6 — the protest gate can finally fire", () => {
     }
   });
 
-  it("and the funnel now registers the real title, so the fallback is rarely needed", () => {
-    const src = PIPELINE();
-    expect(src).toContain("providerText: { ...existingMeta.providerText, title: candidate.title },");
-  });
 });
 
-describe("RONDE 62 #7 — the render can measure its own visual mix", () => {
-  it("the funnel counts moving and still, like the adoption path already did", () => {
-    const src = PIPELINE();
-    const idx = src.indexOf("funnelClip = clipPath;");
-    expect(idx).toBeGreaterThan(-1);
-    // Bounded by the end of the adoption block, not a character count — RONDE 165 and 166 both
-    // added lines inside it, and a fixed +N window stops reaching the counters each time.
-    const end = src.indexOf("[VisualDiscovery] audit line", idx);
-    expect(end).toBeGreaterThan(idx);
-    const block = src.slice(idx, end);
-    expect(block).toContain("dedup.stillClipCount++");
-    expect(block).toContain("dedup.movingClipCount++");
-  });
-});
 
 describe("RONDE 62 #5 — the stock rescue stops asking once the answer is clearly no", () => {
 

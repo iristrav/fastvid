@@ -46,64 +46,12 @@ const FUNNEL = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
 
 /* ═══════════ §1 — the two readers now agree ═══════════ */
 
-describe("§1 — one refusal, read by everything that can act on it", () => {
-  it("PASSINGSCORED EXCLUDES WHAT THE BEAT IMAGE GATE REFUSED", () => {
-    expect(PIPE).toContain(
-      "const passingScored = scored\n" +
-        "          .filter(s => s.visionResult.pass)\n" +
-        "          .filter(s => !dedup.beatImageRejectedIds.has(s.candidate.id));"
-    );
-  });
-
-  it("and pickBestFunnelCandidate still applies the same exclusion it always did", () => {
-    expect(FUNNEL).toContain(".filter(s => s.visionResult.pass)");
-    expect(FUNNEL).toContain(".filter(s => !rejectedCandidateIds?.has(s.candidate.id));");
-  });
-
-  it("THE WINNER IS STILL CHOSEN BY THAT FUNCTION — this round did not move the decision", () => {
-    expect(PIPE).toContain(
-      "pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds, dedup.beatImageRejectedIds)"
-    );
-  });
-});
 
 /* ═══════════ §2 — the archive is what this protects ═══════════ */
 
-describe("§2 — ingestion reads the corrected set", () => {
-  it("THE INGESTION LOOP ITERATES passingScored", () => {
-    expect(PIPE).toContain("for (const s of passingScored) {");
-    expect(PIPE).toContain("queueArchiveIngestion(s.clipPath, s.candidate);");
-  });
-
-  it("RONDE 9's rule is untouched — stock is still never archive material", () => {
-    expect(PIPE).toContain('if (src === "pexels" || src === "pixabay") continue;');
-  });
-
-  it("and an already-archived clip is still not re-ingested", () => {
-    expect(PIPE).toContain('if (src === "archive") continue;');
-  });
-});
 
 /* ═══════════ §3 — the claim the log makes is now true ═══════════ */
 
-describe("§3 — 'the picture editor passed' has to mean it", () => {
-  it("the line still says what it says", () => {
-    expect(PIPE).toContain("runner-up clip(s) the picture editor passed");
-  });
-
-  it("A REFUSED CLIP CAN NO LONGER REACH THAT SENTENCE", () => {
-    /**
-     * The sentence is unchanged; what changed is that it is now earned. A clip in
-     * beatImageRejectedIds is filtered out before `approvedKept` can count it, so the log cannot
-     * describe a refusal as an approval again.
-     */
-    const at = PIPE.indexOf("const passingScored = scored");
-    const ingest = PIPE.indexOf("for (const s of passingScored) {");
-    expect(at).toBeGreaterThan(-1);
-    expect(ingest).toBeGreaterThan(at);
-    expect(PIPE.slice(at, at + 400)).toContain("beatImageRejectedIds");
-  });
-});
 
 /* ═══════════ §4 — nothing was loosened ═══════════ */
 
@@ -116,8 +64,4 @@ describe("§4 — this removes from a set and admits nothing", () => {
     }
   });
 
-  it("and the reason the fix exists is recorded where the code is", () => {
-    expect(PIPE).toContain("RONDE 631 — THE PICTURE EDITOR'S REFUSAL REACHES THE ARCHIVE");
-    expect(PIPE).toContain("NOTHING IS LOOSENED");
-  });
 });

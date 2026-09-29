@@ -363,18 +363,6 @@ describe("every provider route adopts the canonical text, not its own string", (
   const POOL = readFileSync(join(__dirname, "scenePool.ts"), "utf8");
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("THE POOL'S NINE SOURCES READ gate.text", () => {
-    /**
-     * The stop-condition this test exists for: a boundary that rewrites while its callers keep
-     * sending their own string is cosmetic. Every one of these used to do
-     * `if (!searchGateDecision(...).admitted) continue;` and then search with `query`.
-     */
-    const gated = [...POOL.matchAll(/searchGateDecision\(/g)].length;
-    const adopted = [...POOL.matchAll(/const query = gate\.text;/g)].length;
-    expect(gated, "scenePool no longer calls the gate").toBeGreaterThan(0);
-    expect(adopted, `${gated} gate calls but only ${adopted} adopt its text`).toBe(gated);
-  });
-
   it("and the legacy fetchers already did — admitProviderQuery returns decision.text", () => {
     const fn = PIPE.slice(PIPE.indexOf("export function admitProviderQuery"));
     expect(fn.slice(0, 400)).toContain("decision.admitted ? decision.text : null");

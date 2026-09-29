@@ -28,34 +28,7 @@ const scriptSrc = readFileSync(path.join(__dirname, "..", "scripts", "cleanup-po
 // ─── 1. Stock never enters the curated archive ───────────────────────────────────────────────
 
 describe("RONDE 9.1 — stock footage is never archived", () => {
-  /**
-   * ARCHIVE-FIRST ROUND — the same rule, asked of the one predicate TWO routes now read.
-   *
-   * The funnel tested the source names inline. The scene-pool route needed the same rule and had
-   * no way to ask for it, which is how the two routes came to disagree about whether a downloaded
-   * clip is stored at all — so the expression became `sourceMayEnterCuratedArchive`.
-   *
-   * The claim is not weakened, it is widened: the predicate is exercised directly here (so the
-   * rule itself is tested, not a spelling of it) AND both call sites are required to ask it. A
-   * route that grows its own copy of the source names no longer passes.
-   */
-  it("the funnel call site refuses pexels/pixabay winners", () => {
-    const idx = pipelineSrc.indexOf("const archiveEligible = !!(");
-    expect(idx).toBeGreaterThan(-1);
-    const block = pipelineSrc.slice(idx, idx + 900);
-    expect(block).toContain("sourceMayEnterCuratedArchive(winningExternalCandidate.source)");
-    expect(sourceMayEnterCuratedArchive("pexels")).toBe(false);
-    expect(sourceMayEnterCuratedArchive("pixabay")).toBe(false);
-    expect(pipelineSrc).toContain("const willArchive = archiveEligible;");
-    expect(pipelineSrc).toContain("if (archiveEligible && funnelClip && winningExternalCandidate) {");
-  });
 
-  it("AND THE SCENE-POOL ROUTE REFUSES THEM TOO — one rule, both routes", () => {
-    const at = pipelineSrc.indexOf("const adopted = poolCandidates.find(");
-    expect(at, "the pool adoption block is gone").toBeGreaterThan(-1);
-    const block = pipelineSrc.slice(at, pipelineSrc.indexOf("recordUse(", at));
-    expect(block).toContain("sourceMayEnterCuratedArchive(adopted.source)");
-  });
 
   it("the ingestion itself blocks stock from EVERY caller (defense in depth)", () => {
     expect(ingestionSrc).toContain('platform === "pexels" || platform === "pixabay"');
@@ -109,14 +82,6 @@ describe("RONDE 9.2 — tags describe what is SHOWN, never what is SAID", () => 
     expect(ingestionSrc).toMatch(/const contentTags = Array\.from\(\s*new Set\(\[\.\.\.\(metadata\.tags \?\? \[\]\), \.\.\.recognizedPersonTags\]\)\s*\)/);
   });
 
-  it("RONDE 9b — Rekognition runs ONLY for person-locked renders, at both call points", () => {
-    // Ingestion: gated on the explicit person-context flag from the render.
-    expect(ingestionSrc).toContain("if (metadata.personContext === true && isRekognitionEnabled()) {");
-    // The funnel call site passes that flag from the person lock — and nothing else sets it.
-    expect(pipelineSrc).toContain("personContext: Boolean(dedup.personTopicLock && dedup.primaryPerson),");
-    // Render-time winner verification: already gated on the person lock.
-    expect(pipelineSrc).toContain("if (winner && dedup.personTopicLock && dedup.primaryPerson) {");
-  });
 
   it("both the DB row and the embedding index use the content-true tag set", () => {
     expect(ingestionSrc).toContain("tags: contentTags,");
@@ -132,38 +97,6 @@ describe("RONDE 9.2 — tags describe what is SHOWN, never what is SAID", () => 
 
 // ─── 3. Person-locked winner verification ────────────────────────────────────────────────────
 
-describe("RONDE 9.3 — Rekognition verifies the funnel winner on person-locked renders", () => {
-  const helperStart = pipelineSrc.indexOf("async function clipShowsWrongCelebrity(");
-  const helperEnd = pipelineSrc.indexOf("function textMentionsPersonName(", helperStart);
-  const helper = pipelineSrc.slice(helperStart, helperEnd);
-
-  it("the helper exists and is a NEGATIVE filter only", () => {
-    expect(helperStart).toBeGreaterThan(-1);
-    // no keys configured -> off; nobody recognized -> pass; locked person recognized -> pass
-    expect(helper).toContain("if (!isRekognitionEnabled()) return false;");
-    expect(helper).toContain("if (!names.length) return false;");
-    expect(helper).toContain("if (locked) return false;");
-  });
-
-  it("only ≥90-confidence recognitions can reject, and any error fails open", () => {
-    expect(helper).toContain("p.confidence >= 90");
-    expect(helper).toMatch(/catch \(err\) \{[\s\S]{0,300}return false;/);
-  });
-
-  it("results are cached per clip content key (Rekognition bills per image)", () => {
-    expect(helper).toContain("rekognitionClipPersonsCache");
-    expect(helper).toContain("clipContentKey(clipPath)");
-  });
-
-  it("the funnel winner is vetoed only under a person lock, and the id is registered", () => {
-    const idx = pipelineSrc.indexOf("if (winner && dedup.personTopicLock && dedup.primaryPerson) {");
-    expect(idx).toBeGreaterThan(-1);
-    const block = pipelineSrc.slice(idx, idx + 700);
-    expect(block).toContain("await clipShowsWrongCelebrity(");
-    expect(block).toContain("dedup.usedFunnelCandidateIds.add(winner.candidate.id);");
-    expect(block).toContain("winner = null;");
-  });
-});
 
 // ─── 4. Negative curated scores are mismatches, not "no signal" ──────────────────────────────
 

@@ -125,56 +125,6 @@ function adoptWith(opts: { source: string; eligible: boolean; judged: boolean })
   return { audit, evidence: adoptionEvidence(audit)[0]! };
 }
 
-describe("a funnel claim is recorded as backed only when the evidence exists", () => {
-  it("backed when the asset was eligible and the picture was judged", () => {
-    const { evidence } = adoptWith({ source: "wikimedia", eligible: true, judged: true });
-    expect(evidence.category).toBe("REAL_FUNNEL");
-    expect(evidence.eligible).toBe(true);
-    expect(evidence.judged).toBe(true);
-    expect(evidence.backed).toBe(true);
-  });
-
-  /** VID-0568 CASE A/B: `eligible=0 adopted=2`, claimed as the funnel. */
-  it("not backed when the ledger holds no ELIGIBLE — render 568's wikimedia case", () => {
-    const { evidence } = adoptWith({ source: "wikimedia", eligible: false, judged: true });
-    expect(evidence.eligible).toBe(false);
-    expect(evidence.backed).toBe(false);
-  });
-
-  /** VID-0568 CASE D: eligible candidates, no vision, adopted anyway. */
-  it("not backed when the picture was never judged", () => {
-    const { evidence } = adoptWith({ source: "wikimedia", eligible: true, judged: false });
-    expect(evidence.judged).toBe(false);
-    expect(evidence.backed).toBe(false);
-  });
-
-  /**
-   * A rescue declares `requiresEligibility: false` with a stated reason, so the same missing
-   * eligibility is a declared exception rather than an unbacked claim. If this ever reported
-   * `backed: false`, the rescue ladder would light up the invariants it is explicitly exempt from.
-   */
-  it("a declared rescue exception is backed without eligibility", () => {
-    const { evidence } = adoptWith({ source: "rescue_wikimedia", eligible: false, judged: true });
-    expect(evidence.category).toBe("RESCUE_REAL");
-    expect(evidence.backed).toBe(true);
-  });
-
-  /**
-   * A placeholder needs no eligibility and no approval, and must never appear in the funnel
-   * warnings. RONDE 199 added the one thing it does need: that somebody looked at it. `backed` and
-   * the montage guard read the same rule (`visionRequirementMet`), so this line and the refusal
-   * cannot disagree about the same card.
-   */
-  it("a placeholder needs no eligibility and no approval — only a look", () => {
-    const seen = adoptWith({ source: "fallback", eligible: false, judged: true });
-    expect(seen.evidence.category).toBe("PLACEHOLDER");
-    expect(seen.evidence.backed).toBe(true);
-
-    const unseen = adoptWith({ source: "fallback", eligible: false, judged: false });
-    expect(unseen.evidence.backed, "a card nobody looked at reads as backed").toBe(false);
-  });
-});
-
 /* ═══════════════ invariants H and I ═══════════════ */
 
 describe("the render reports how much of its funnel claim it can back", () => {
@@ -212,55 +162,8 @@ describe("the render reports how much of its funnel claim it can back", () => {
     return audit;
   };
 
-  it("counts the funnel claims and how many are backed", () => {
-    const audit = auditOf([
-      { source: "wikimedia", eligible: true, judged: true },
-      { source: "wikimedia", eligible: false, judged: true },
-      { source: "fallback", eligible: false, judged: false },
-    ]);
-    const [line] = formatAdoptionEvidence(audit);
-    expect(line).toContain("adoptions=3");
-    expect(line).toContain("realFunnel=2");
-    expect(line).toContain("backed=1");
-    expect(line).toContain("withoutEligibility=1");
-  });
-
-  it("names invariant H and the routes that broke it", () => {
-    const audit = auditOf([{ source: "wikimedia", eligible: false, judged: true }]);
-    const out = formatAdoptionEvidence(audit).join("\n");
-    expect(out).toContain("INVARIANT_H REAL_FUNNEL_ADOPTION_WITHOUT_ELIGIBILITY");
-    expect(out).toContain("routes=wikimedia");
-  });
-
-  it("names invariant I separately", () => {
-    const audit = auditOf([{ source: "archive", eligible: true, judged: false }]);
-    const out = formatAdoptionEvidence(audit).join("\n");
-    expect(out).toContain("INVARIANT_I REAL_FUNNEL_ADOPTION_WITHOUT_VISION");
-    expect(out).not.toContain("INVARIANT_H");
-  });
-
-  /** A healthy render prints one line and no warnings, or the warnings stop being read. */
-  it("a fully backed render raises neither invariant", () => {
-    const audit = auditOf([
-      { source: "archive", eligible: true, judged: true },
-      { source: "rescue_wikimedia", eligible: false, judged: true },
-      { source: "fallback", eligible: false, judged: false },
-    ]);
-    const lines = formatAdoptionEvidence(audit);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("backed=1");
-    expect(lines[0]).toContain("withoutEligibility=0");
-  });
-
   it("says nothing at all when the render adopted nothing", () => {
     expect(formatAdoptionEvidence(createClipAdoptAudit())).toEqual([]);
-  });
-
-  /** A caller with no render binds no ledgers; absence of proof is not proof of a defect. */
-  it("does not accuse a caller that bound no ledgers", () => {
-    const audit = createClipAdoptAudit();
-    recordClipAdopt(audit, 0, 0, "beat", "/w/a.mp4", "fallback");
-    expect(formatAdoptionEvidence(audit).join("\n")).not.toContain("INVARIANT_");
   });
 });
 

@@ -68,14 +68,6 @@ describe("RONDE 159 §A — the gate's real wording is now understood", () => {
     expect(kind).toBe("UNRELATED");
   });
 
-  it("and that verdict is one a different search can act on", () => {
-    for (const prose of VIDEO_552_REFUSALS) {
-      const kind = classifyMismatch({ reason: prose });
-      // QUESTION fault → the beat tries a different search rather than falling through to a card.
-      expect(mismatchFault(kind)).toBe("QUESTION");
-      expect(mismatchWasPreventableBySearch(kind)).toBe(true);
-    }
-  });
 
   it("the adjective form still works — nothing was traded away", () => {
     expect(classifyMismatch({ reason: "This footage is not related to the topic." })).toBe("UNRELATED");
@@ -135,85 +127,6 @@ describe("RONDE 159 §A — the specific kinds still win over the general one", 
   });
 });
 
-describe("RONDE 159 §A — the log shows the verdict, not just the description", () => {
-  const long = (word: string, n: number) => Array(n).fill(word).join(" ");
-
-  it("the reason and the description get their own windows", () => {
-    const out = formatMismatchFeedback({
-      sceneIndex: 1,
-      beatIndex: 2,
-      source: "archive",
-      kind: "UNCLEAR",
-      reordered: false,
-      remaining: 0,
-      depicts: long("picture", 60),
-      reason: "and the verdict is right here at the end",
-    });
-    expect(out).toContain("unclassified reason:");
-    expect(out).toContain("the verdict is right here at the end");
-    expect(out).toContain("unclassified prose:");
-  });
-
-  it("a long description can no longer crowd the verdict out", () => {
-    /**
-     * The defect this replaces: one 160-character window shared between the two, description
-     * first. Video 552's lines ended "…which do" and "…likely during the WWII perio" — cut off
-     * exactly where the classifying words are.
-     */
-    const out = formatMismatchFeedback({
-      sceneIndex: 2,
-      beatIndex: 3,
-      source: "archive",
-      kind: "UNCLEAR",
-      reordered: false,
-      remaining: 0,
-      depicts: long("a long description of the picture", 40),
-      reason: "it shows a wedding, which does not belong here",
-    });
-    expect(out).toContain("does not belong here");
-  });
-
-  it("both are still bounded, so one answer cannot flood the log", () => {
-    const out = formatMismatchFeedback({
-      sceneIndex: 0,
-      beatIndex: 0,
-      source: "archive",
-      kind: "UNCLEAR",
-      reordered: false,
-      remaining: 0,
-      depicts: long("x", 500),
-      reason: long("y", 500),
-    });
-    for (const line of out.split("\n")) expect(line.length).toBeLessThan(400);
-  });
-
-  it("an empty answer is still reported as empty", () => {
-    const out = formatMismatchFeedback({
-      sceneIndex: 0,
-      beatIndex: 0,
-      source: "archive",
-      kind: "UNCLEAR",
-      reordered: false,
-      remaining: 0,
-    });
-    expect(out).toContain("the gate returned no prose to classify");
-  });
-
-  it("a classified refusal still logs one line and no prose", () => {
-    const out = formatMismatchFeedback({
-      sceneIndex: 0,
-      beatIndex: 0,
-      source: "archive",
-      kind: "UNRELATED",
-      reordered: true,
-      remaining: 2,
-      depicts: "something",
-      reason: "does not relate",
-    });
-    expect(out.split("\n")).toHaveLength(1);
-    expect(out).not.toContain("unclassified");
-  });
-});
 
 /**
  * RONDE 159 §B — the render throws footage away for want of time it is not using.
@@ -295,50 +208,6 @@ describe("RONDE 159 §B — the beat budget spends headroom that exists", () => 
  *
  * The footage existed. The render refused to fetch it while holding eleven unused minutes.
  */
-describe("RONDE 159 §C — a starved scene may fetch, a thin one may not", () => {
-  const starved = {
-    videoLength: "1",
-    clipsOnDisk: 2,
-    clipsNeeded: 7,
-    remainingWallClockMs: 11 * 60_000,
-  };
-
-  it("video 552's scene 2 would now be allowed to go and get its footage", async () => {
-    const { composeMayFetchForStarvedScene } = await import("./sourcingPolicy");
-    expect(composeMayFetchForStarvedScene(starved)).toBe(true);
-  });
-
-  it("a scene that is merely thinner than planned stays blocked", async () => {
-    const { composeMayFetchForStarvedScene } = await import("./sourcingPolicy");
-    // 4 of 7 is thin, not starved: the montage can still be built from what is here.
-    expect(composeMayFetchForStarvedScene({ ...starved, clipsOnDisk: 4 })).toBe(false);
-  });
-
-  it("no headroom, no exemption — the deadline still wins", async () => {
-    const { composeMayFetchForStarvedScene, SOURCING_RESERVE_MS } = await import("./sourcingPolicy");
-    expect(
-      composeMayFetchForStarvedScene({ ...starved, remainingWallClockMs: SOURCING_RESERVE_MS })
-    ).toBe(false);
-    expect(composeMayFetchForStarvedScene({ ...starved, remainingWallClockMs: null })).toBe(false);
-  });
-
-  it("longer videos were never blocked, so nothing changes for them", async () => {
-    const { composeMayFetchForStarvedScene } = await import("./sourcingPolicy");
-    expect(composeMayFetchForStarvedScene({ ...starved, videoLength: "8-10" })).toBe(true);
-  });
-
-  it("an operator who forces local-only keeps it", async () => {
-    const { composeMayFetchForStarvedScene } = await import("./sourcingPolicy");
-    const prev = process.env.COMPOSE_LOCAL_CLIPS_ONLY;
-    try {
-      process.env.COMPOSE_LOCAL_CLIPS_ONLY = "true";
-      expect(composeMayFetchForStarvedScene(starved)).toBe(false);
-    } finally {
-      if (prev === undefined) delete process.env.COMPOSE_LOCAL_CLIPS_ONLY;
-      else process.env.COMPOSE_LOCAL_CLIPS_ONLY = prev;
-    }
-  });
-});
 
 describe("RONDE 159 §D — the funnel check no longer cries wolf", () => {
   const summaryOf = (counts: Record<string, number>) =>

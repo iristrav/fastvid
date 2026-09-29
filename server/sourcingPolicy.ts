@@ -5,121 +5,9 @@ import fs from "fs";
 import os from "os";
 import { targetVideoDurationMinutes } from "../shared/videoLengths";
 
-// ─── Visual Matching Engine V2 (build-out, off until proven — see /server/visualMatchingV2) ──
-
-/** V2 VideoContext layer (one LLM call per video, cached/reused across videos). Inert until read by the active pipeline. */
-export function visualMatchingV2ContextEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_CONTEXT === "true";
-}
-
-/** V2 VisualIntent Extractor (scene-batched, context-aware). Inert until read by the active pipeline. */
-export function visualMatchingV2IntentEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_INTENT === "true";
-}
-
-/** V2 SourceAdapter framework (uniform candidate fetch across sources). Inert until read by the active pipeline. */
-export function visualMatchingV2SourceAdaptersEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_ADAPTERS === "true";
-}
-
-/** V2 Candidate Fetcher (parallel search across all source adapters, search cache, fetch trace). Inert until read by the active pipeline. */
-export function visualMatchingV2FetcherEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_FETCHER === "true";
-}
-
-/** V2 embedding infrastructure (provider interface, embedding cache, vector store, embedding search engine). Inert until read by the active pipeline. */
-export function visualMatchingV2EmbeddingsEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_EMBEDDINGS === "true";
-}
-
-/** V2 Retrieval Orchestrator — single component deciding source order/parallelism/timeouts/
- *  fallback/dedup for every candidate fetch. Inert until read by the active pipeline. */
-export function visualMatchingV2RetrievalOrchestratorEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_RETRIEVAL_ORCHESTRATOR === "true";
-}
-
-/** V2 Retrieval Strategy Engine — determines which retrieval strategy (mode, sources,
- *  timeouts, embedding/keyword flags) to use before the Orchestrator executes. Inert
- *  until read by the active pipeline. */
-export function visualMatchingV2RetrievalStrategyEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_RETRIEVAL_STRATEGY === "true";
-}
-
-/** V2 CLIP Pre-Filter — second funnel stage (Candidate Pool -> top 3-5 by CLIP similarity).
- *  Wraps the existing localClipVision.ts CLIP infrastructure; no second CLIP implementation.
- *  Inert until read by the active pipeline. */
-export function visualMatchingV2ClipPreFilterEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_CLIP_PREFILTER === "true";
-}
-
-/** V2 Candidate Ranking Layer — third funnel stage (CLIP Pre-Filter -> weighted ranking by
- *  existing retrieval signals, before LLM Vision scoring). Inert until read by the active
- *  pipeline. */
-export function visualMatchingV2CandidateRankingEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_CANDIDATE_RANKING === "true";
-}
-
-/** V2 LLM Vision Scorer — fourth funnel stage (Ranked candidates -> per-dimension content
- *  scores via a single multi-image LLM call per beat). Inert until read by the active
- *  pipeline. */
-export function visualMatchingV2VisionScorerEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_VISION_SCORER === "true";
-}
-
-/** V2 Candidate Selector — fifth and final funnel stage (scored candidates -> single winner
- *  or needsResearch signal). The only component in the V2 pipeline permitted to choose a
- *  winner. Inert until read by the active pipeline. */
-export function visualMatchingV2SelectorEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_SELECTOR === "true";
-}
-
-/** V2 Pipeline Orchestrator — chains all V2 stages end-to-end for one scene.
- *  Off by default; enable only after individual stage flags have been validated.
- *  The active production pipeline is not affected regardless of this flag. */
-export function visualMatchingV2PipelineEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_PIPELINE === "true";
-}
-
-/** V2 SelectionFeedback — enables human feedback submission on beat selections.
- *  Writes to selection_feedback + selection_feedback_events only; traces are immutable. */
-export function visualMatchingV2SelectionFeedbackEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_SELECTION_FEEDBACK === "true";
-}
-
-/** V2 VideoQualityReport — generates aggregated quality reports from stored traces.
- *  Off by default; reads exclusively from beat_selection_traces and pipeline_run_traces. */
-export function visualMatchingV2VideoQualityReportEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_VIDEO_QUALITY_REPORT === "true";
-}
-
-/** V2 PipelineRunTrace store — persists one run-level trace per complete video-scene run.
- *  Off by default; enable together with the pipeline flag for full observability. */
-export function visualMatchingV2PipelineRunTraceEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_PIPELINE_RUN_TRACE === "true";
-}
-
-/** V2 BeatSelectionTrace store — persists SelectorTrace to the database after each beat.
- *  Off by default; enable to start recording selection decisions. Video production is
- *  unaffected if this flag is off or if the store write fails. */
-export function visualMatchingV2BeatSelectionTraceEnabled(): boolean {
-  return process.env.VISUAL_MATCHING_V2_BEAT_SELECTION_TRACE === "true";
-}
-
 /** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
 export function externalVisualSourcingEnabled(): boolean {
   return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";
-}
-
-/** Openverse CC stills — off in archive-first mode (unvetted random internet photos). */
-export function openverseStillsEnabled(): boolean {
-  return process.env.ENABLE_OPENVERSE_STILLS !== "false";
-}
-
-/** Openverse for geo/urban documentary beats even in archive-first strict mode. */
-export function openverseGeoDocumentaryEnabled(): boolean {
-  if (process.env.ENABLE_OPENVERSE_GEO === "false") return false;
-  if (process.env.ENABLE_OPENVERSE_GEO === "true") return true;
-  return strictVoiceVisualMatchEnabled() || visualFootageFocusEnabled();
 }
 
 /** When true, voiceover uses ElevenLabs only (no Fish Audio). */
@@ -161,13 +49,6 @@ export function extraOnScreenTextEnabled(): boolean {
 /** When extra overlays are off, skip cinematic pills/grain (year labels use screenLabelsEnabled). */
 export function yearsOnlyOnScreen(): boolean {
   return !extraOnScreenTextEnabled();
-}
-
-/** Year/stat labels burned on footage — default OFF. Set ENABLE_SCREEN_LABELS=true to enable. */
-export function screenLabelsEnabled(): boolean {
-  // RONDE 113: one rule, asked first — see onScreenTextPolicy.
-  if (!burnedInTextAllowed()) return false;
-  return process.env.ENABLE_SCREEN_LABELS === "true";
 }
 
 /** When true (default), use Pexels stock if no archive clip matches a sentence. */
@@ -307,13 +188,6 @@ export function pipelineEmergencyFinishMs(videoLength?: string | null): number {
   return escalationThresholdMs(videoLength, EMERGENCY_FRACTION);
 }
 
-/** 1-min Railway: hard-cut plain montage — skip cinematic/year-label compose passes. */
-export function fastShortPlainComposeEnabled(videoLength?: string | null): boolean {
-  if (!isFastShortVideoLength(videoLength)) return false;
-  if (process.env.FAST_SHORT_PLAIN_COMPOSE === "false") return false;
-  return true;
-}
-
 /** 1-min: compose may only read clips already on disk — no Wikimedia/Pexels/archive fetch during render. */
 export function composeLocalClipsOnly(videoLength?: string | null): boolean {
   if (!isFastShortVideoLength(videoLength)) return false;
@@ -417,11 +291,6 @@ export function availableCpuCount(): number {
   }
   cachedCpuCount = Math.max(1, Math.floor(quota > 0 ? Math.min(quota, hostCount) : hostCount));
   return cachedCpuCount;
-}
-
-/** Test seam — the quota cannot change under a running process, so this is only for tests. */
-export function _resetCpuCountCache(): void {
-  cachedCpuCount = null;
 }
 
 function clampInt(n: number, min: number, max: number): number {
@@ -551,26 +420,6 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
 
-/** Beat cadence for 1-min fast path — fewer beats → faster visual stage (default 24s). */
-// F3-23: this used to default to 24s (allowed range 12-24s) — on the 1-min fast/short path
-// (isFastShortVideoLength), this value is used directly as several beats' holdSec (see e.g.
-// videoPipeline.ts's fetchArchivalMontageBeat/rescue-clip call sites), so a single archive clip
-// could be held on screen for up to 24s — nearly half of a 60s video. That's the exact "same
-// image held far too long" defect a critical review of the "Why Hitler Killed Himself" 1-min
-// render flagged. minBeatsForVisualCadence/maxBeatCapForVisualCadence's beat-count math already
-// targets ~6s/beat regardless of video length (sceneBeatCapForCadenceForVideo's own comment), so
-// tightening just this single hold-duration ceiling doesn't reduce how many distinct visuals a
-// scene gets — it only stops any one of them from being held far longer than the others.
-export function archiveVisualBeatSecForVideo(videoLength?: string | null): number {
-  if (!isFastShortVideoLength(videoLength)) return archiveVisualBeatSec();
-  const raw = process.env.FAST_ARCHIVE_BEAT_SEC?.trim();
-  if (raw) {
-    const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 6 && n <= 12) return n;
-  }
-  return 10;
-}
-
 /**
  * RONDE 81 — the escalation thresholds, for every video length.
  *
@@ -656,42 +505,6 @@ export function archiveBeatBudgetMs(
 }
 
 /**
- * RONDE 159 — may the compose stage still fetch, for a scene that has too little footage?
- *
- * composeLocalClipsOnly exists for a real reason: on the short-video path, compose runs against a
- * deadline and a fetch there can blow it. But it was unconditional, and video 552 shows what that
- * costs when it fires on a starved scene:
- *
- *     Scene 2: 2/7 compose-ready clips — pre-compose cache fill
- *     Scene 2: compose local-only — blocked visual rescue        (13 blocks in that render)
- *     12 assets VANISHED_WITHOUT_OUTCOME — found, chosen, never on disk
- *
- * Two clips for 21.5s of narration, and that shortfall is precisely the gap RONDE 157 and 158
- * had to fill with slowed and replayed footage. The footage existed; the render refused to go
- * and get it while holding eleven minutes of unused budget.
- *
- * So the block is kept, and lifted only where it is doing harm: a scene genuinely short of clips,
- * with real headroom left. A scene that has what it needs still never fetches at compose time.
- */
-export function composeMayFetchForStarvedScene(params: {
-  videoLength?: string | null;
-  clipsOnDisk: number;
-  clipsNeeded: number;
-  remainingWallClockMs?: number | null;
-}): boolean {
-  // Not in local-only mode at all — fetching was never blocked, so there is nothing to lift.
-  if (!composeLocalClipsOnly(params.videoLength)) return true;
-  if (process.env.COMPOSE_LOCAL_CLIPS_ONLY === "true") return false;
-  const { clipsOnDisk, clipsNeeded, remainingWallClockMs } = params;
-  if (!(clipsNeeded > 0)) return false;
-  // "Starved" means the montage cannot be built from what is here, not merely that it is thinner
-  // than planned: below half of what the scene asked for.
-  if (clipsOnDisk * 2 >= clipsNeeded) return false;
-  if (remainingWallClockMs == null || !Number.isFinite(remainingWallClockMs)) return false;
-  return remainingWallClockMs - SOURCING_RESERVE_MS > 0;
-}
-
-/**
  * RONDE 25: how many DISTINCT clips one render may text-check before the filter stops spending.
  *
  * Each check costs an ffprobe, two ffmpeg frame extractions and an LLM vision call (up to 18s) —
@@ -737,58 +550,6 @@ export function downloadStallTimeoutMs(): number {
     if (!isNaN(n) && n >= 5_000 && n <= 300_000) return n;
   }
   return 30_000;
-}
-
-/**
- * RONDE 239 — THE BACKSTOP THE IDLE TIMEOUT ABOVE CANNOT BE.
- *
- * Everything the comment above says is still true: an idle timeout is the right instrument for a
- * transfer that stops delivering, and turning IT into a total cap would break a legitimately large
- * download. This is a different instrument for a different failure, sitting above the whole
- * operation rather than inside the byte stream.
- *
- * ── Why one was needed ──────────────────────────────────────────────────────────────────────
- *
- * A pool download already carries `AbortSignal.timeout(22_000)`. Across every render log in this
- * repo, 262 of 263 fetches returned — the slowest in 4.4s — and ONE did not return at all. Its
- * beat's heartbeat counted upward every five seconds for twenty-five minutes and was still
- * counting when the log ended:
- *
- *     [WorkerHeartbeat] downloadAndTrim s0b1 src=loc (601s)
- *     ...
- *     [WorkerHeartbeat] downloadAndTrim s0b1 src=loc (1506s)
- *
- * Twenty-two seconds of abort signal did not stop it. WHY it did not is not established, and this
- * bound deliberately does not depend on knowing: it is an outer wall clock that fires whether or
- * not the inner one worked. A guard that assumes the guard below it works is not a backstop.
- *
- * ── Why 45 seconds, and not a number that looked reasonable ─────────────────────────────────
- *
- * Measured over 130 pool downloads that completed, from every source the pipeline uses:
- *
- *     median 2.2s · p90 4.3s · p99 8.0s · slowest that EVER succeeded 11.4s
- *     by source: pexels max 8.0s · loc max 11.4s · wikimedia max 6.0s · archive max 5.4s
- *
- * And per sub-step, across the same logs: fetch max 4.4s, ffprobe max 3.2s, trim max 7.6s.
- *
- * There is no middle ground to protect. Downloads either finish inside twelve seconds or run for
- * ten minutes and more — of 536 measured in-flight durations, 403 were past ten minutes and nine
- * were under fifteen seconds. 45s is four times the slowest success ever recorded, so it cuts
- * nothing that would have arrived, and it is under half the 96s retrieval budget, so one stuck
- * transfer can no longer eat the turn every other source — YouTube included — was waiting for.
- *
- * The Library of Congress is the proof that this is a per-attempt accident and not a slow source:
- * the same `loc` that hung for 25 minutes has a median of 2.8s and has never taken more than 11.4s
- * when it worked.
- */
-export function poolDownloadTotalTimeoutMs(): number {
-  const raw = process.env.POOL_DOWNLOAD_TOTAL_TIMEOUT_MS?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    /** Floor above the slowest sub-step ever measured (7.6s), so it can never cut a working path. */
-    if (!isNaN(n) && n >= 15_000 && n <= 300_000) return n;
-  }
-  return 45_000;
 }
 
 /**
@@ -1099,21 +860,6 @@ export function youtubeDownloadTimeoutMs(capMs?: number): number {
 /** Below this a transfer has no chance at all, and an instant abort would misreport the cause. */
 export const YOUTUBE_DOWNLOAD_TIMEOUT_FLOOR_MS = 8_000;
 
-/**
- * RONDE 27: lowest source height still worth downloading from YouTube.
- *
- * The clip is scaled into a 1920x1080 frame as B-roll behind narration. Below this the source
- * starts to look soft enough to notice; at or above it, the smallest file wins on download time.
- */
-export function youtubeMinFormatHeight(): number {
-  const raw = process.env.YOUTUBE_MIN_FORMAT_HEIGHT?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 144 && n <= 1080) return n;
-  }
-  return 480;
-}
-
 /** Target on-screen duration per archive clip (seconds). */
 export function archiveVisualBeatSec(): number {
   const raw = process.env.ARCHIVE_VISUAL_BEAT_SEC?.trim();
@@ -1195,29 +941,6 @@ export function archiveMaxImageClipsPerVideo(videoLength?: string | null): numbe
   return Math.max(2, Math.round(mins * archiveStillsPerMinute()));
 }
 
-/** Min moving archive/authentic video clips before stills fill the remaining beats. */
-export function archiveMinVideoClipsTarget(videoLength?: string | null): number {
-  const raw = process.env.ARCHIVE_OPENING_VIDEO_BEATS?.trim();
-  if (raw !== undefined && raw !== "") {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 0) return n;
-  }
-  const mins = targetVideoDurationMinutes(videoLength);
-  const beatSec = isFastShortVideoLength(videoLength)
-    ? archiveVisualBeatSecForVideo(videoLength)
-    : archiveVisualBeatSec();
-  const expectedBeats = Math.max(1, Math.ceil((mins * 60) / beatSec));
-  const maxStills = archiveMaxImageClipsPerVideo(videoLength);
-  const target = Math.max(1, expectedBeats - maxStills);
-  if (isFastShortVideoLength(videoLength)) return 0;
-  return target;
-}
-
-/** @deprecated alias — prefer archiveMinVideoClipsTarget */
-export function archiveOpeningVideoBeatsTarget(videoLength?: string | null): number {
-  return archiveMinVideoClipsTarget(videoLength);
-}
-
 /** Archive stills on gray mat (smaller photo, documentary YouTube style). */
 export function framedArchiveStillsEnabled(): boolean {
   return process.env.ENABLE_FRAMED_ARCHIVE_STILLS !== "false";
@@ -1226,16 +949,6 @@ export function framedArchiveStillsEnabled(): boolean {
 /** Archive stills: blurred fill background + sharp photo + light zoom (Locomotive Historian style). */
 export function archiveBlurFillStillsEnabled(): boolean {
   return process.env.ARCHIVE_BLUR_FILL_STILLS !== "false";
-}
-
-/** On-screen label cadence (years + keywords) in seconds. */
-export function screenLabelIntervalSec(): number {
-  const raw = process.env.SCREEN_LABEL_INTERVAL_SEC?.trim();
-  if (raw) {
-    const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 15 && n <= 60) return n;
-  }
-  return 30;
 }
 
 /** Prefer different archive clips across consecutive videos on the same topic.
@@ -1341,41 +1054,6 @@ export function youtubeOperatorAuthorized(): boolean {
 }
 
 /**
- * WHICH LICENCE QUESTION THE POOL ASKS YOUTUBE — and the reason it is no longer `creative_common`.
- *
- * ── The setting that had no caller ───────────────────────────────────────────────────────────
- *
- * `PoolRequest.youtubeLicenseMode` was built, typed and documented, and NOTHING in production ever
- * set it. `scenePool` fell through to its hardcoded `?? "creative_common"` on every render, so the
- * ranked retrieval path RONDE 175 wired up specifically so YouTube could compete as a source asked
- * YouTube for Creative Commons material and nothing else — in every render, silently. Same shape
- * as the counters of RONDE 115, 119 and 120: something exists, nothing calls it, and its default
- * quietly governs the system.
- *
- * ── What the answer is now ───────────────────────────────────────────────────────────────────
- *
- * `any` — no `videoLicense` filter at all — under the project's YouTube sourcing authorisation.
- * That is the highest-recall question the Data API takes: CC and standard-licence material ranked
- * together by YouTube's own relevance, which is precisely the objective. `creative_common` narrows
- * a search to a small and largely modern slice of the platform, and under an authorisation that
- * covers YouTube generally there is no reason for retrieval to carry that narrowing.
- *
- * ── What did NOT change ──────────────────────────────────────────────────────────────────────
- *
- * Everything a candidate has to survive after retrieval. The relevance score, the person gate, the
- * historical anchoring, the vision judgement, the image gate that screens a downloaded clip on what
- * it SHOWS, adoption, deduplication, the lineage ledger and the delivery proof are all untouched —
- * a wider net is not a lower bar. Nothing here claims a licence either: `any` sends no filter, so
- * `youtubeLicenseMetadata` records `retrievedUnder: any` and reports NO licence, which is the
- * honest description of an unfiltered search.
- */
-export function youtubeRetrievalMode(): YoutubeLicenseMode {
-  const forced = process.env.YOUTUBE_LICENSE_MODE?.trim().toLowerCase();
-  if (forced === "creative_common" || forced === "youtube" || forced === "any") return forced;
-  return youtubeOperatorAuthorized() ? "any" : "creative_common";
-}
-
-/**
  * WHY YOUTUBE IS OR IS NOT SEARCHING — the flag alone never answered that.
  *
  * ── What render 562 shows ───────────────────────────────────────────────────────────────────
@@ -1452,11 +1130,6 @@ export function europeanaSourcingEnabled(): boolean {
   return process.env.ENABLE_EUROPEANA !== "false";
 }
 
-/** Run bulk geo-retag on all archive assets once at worker startup. */
-export function autoArchiveGeoRetagOnStart(): boolean {
-  return process.env.AUTO_ARCHIVE_GEO_RETAG_ON_START === "true";
-}
-
 // ─── Performance optimisation — caches ───────────────────────────────────────
 
 /** Persistent Media Asset Cache (P3): cache downloaded Pexels/Wikimedia/Archive
@@ -1483,19 +1156,6 @@ export function sceneCandidateCacheEnabled(): boolean {
  *  to opt out. */
 export function beatSemanticCacheEnabled(): boolean {
   return process.env.ENABLE_BEAT_SEMANTIC_CACHE !== "false";
-}
-
-/** Scene-level Candidate Pool (P1): build ONE candidate pool per scene instead
- *  of one retrieval per beat.  Reduces 108 API calls to ~18.
- *  F3-27: default ON — this is the gate for the archive→web fallback→ingest→learning
- *  flow (F3-26). Falls back to the legacy per-beat waterfall on any pool/funnel error
- *  (see the try/catch around its call site in videoPipeline.ts), so this does not
- *  replace the legacy path, it only runs ahead of it. Set ENABLE_SCENE_CANDIDATE_POOL=false
- *  to opt back out. */
-export function sceneCandidatePoolEnabled(): boolean {
-  /** RONDE 648 — a beat asks YouTube first, itself; the scene no longer asks everyone at once. */
-  if (youtubeFirstPerBeatEnabled()) return false;
-  return process.env.ENABLE_SCENE_CANDIDATE_POOL !== "false";
 }
 
 /**
@@ -1533,68 +1193,6 @@ export const YOUTUBE_FIRST_BEAT_WORST_MS = YOUTUBE_FIRST_TURN_MS + YOUTUBE_FIRST
  * side by side, so this is the scene parallelism. The operator chose three.
  */
 export const YOUTUBE_FIRST_PARALLEL_BEATS = 3;
-
-/** Thumbnail-first selection (P2): download thumbnails for pool candidates and
- *  run CLIP similarity scoring before downloading the full asset.  Only the
- *  winner is fully downloaded.  Requires ENABLE_POOL_THUMBNAIL_RANKING=true
- *  AND local vision (ENABLE_LOCAL_VISION != false).  Off by default. */
-export function poolThumbnailRankingEnabled(): boolean {
-  return process.env.ENABLE_POOL_THUMBNAIL_RANKING === "true";
-}
-
-/** Hybrid Retrieval Funnel (parallel archive + internet with coverage-based weighting).
- *  Replaces the waterfall "archive first → fallback to internet" logic with a model
- *  where both are queried in parallel and the archive's embedding coverage determines
- *  how much weight it receives.  Requires ENABLE_SCENE_CANDIDATE_POOL=true.
- *  F3-27: default ON, same reasoning as sceneCandidatePoolEnabled() above — this is
- *  what makes web sourcing (Internet Archive/Wikimedia/YouTube CC/Pexels/Pixabay) an
- *  actual fallback when the archive alone is insufficient, instead of dormant code.
- *  Set ENABLE_RETRIEVAL_FUNNEL=false to opt back out. */
-export function retrievalFunnelEnabled(): boolean {
-  return process.env.ENABLE_RETRIEVAL_FUNNEL !== "false";
-}
-
-/** How long a scene may wait for its retrieval funnel to deliver, before falling back to
- *  per-beat retrieval. This is purely a delivery deadline: it decides whether the funnel's
- *  candidates are available in time, and has no bearing on how any candidate is scored,
- *  ranked or gated once they are.
- *
- *  Default is 60_000 — the value this await has always used — so production behaviour is
- *  unchanged unless FASTVID_FUNNEL_TIMEOUT_MS is explicitly set.
- *
- *  It exists as a knob because the funnel branch turned out to be reachable only by winning
- *  a race: in render 512 the funnel delivered with 1243ms to spare (`prefetch waited
- *  58757ms` against the 60s deadline), while in render 513 slower providers pushed it from
- *  91s to 140s and all three scenes timed out — which silently skipped the entire funnel
- *  scoring branch, and with it the code under test. Raising this for one controlled render
- *  lets that branch actually execute; it does not make the funnel produce anything it
- *  wouldn't otherwise produce, only wait long enough to receive it.
- *
- *  Bounded to [60_000, 600_000]: never below the production default (so a stray value can't
- *  tighten live behaviour) and never beyond the render's own wall-clock budget. */
-export function funnelAwaitTimeoutMs(): number {
-  const raw = process.env.FASTVID_FUNNEL_TIMEOUT_MS?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 60_000 && n <= 600_000) return n;
-  }
-  return 60_000;
-}
-
-/** Archive-first per-beat gap detection (self-learning retrieval).
- *  When enabled, the archive is always consulted first per beat.  The embedding
- *  confidence score determines how many external sources are queried:
- *    > 0.90 → archive only (no internet call)
- *    0.75–0.90 → one external source
- *    0.50–0.75 → all external sources
- *    < 0.50 → aggressive external retrieval
- *  Requires ENABLE_RETRIEVAL_FUNNEL=true.
- *  F3-27: default ON — this is the "genuine coverage sufficiency" gate (F3-26 #11):
- *  archive-only when confidence is high, web sourcing only kicks in on a real gap.
- *  Set ENABLE_ARCHIVE_FIRST_BEATS=false to opt back out. */
-export function archiveFirstBeatsEnabled(): boolean {
-  return process.env.ENABLE_ARCHIVE_FIRST_BEATS !== "false";
-}
 
 /** Self-learning ingestion: winning external clips are uploaded to the own archive
  *  (quality gate → R2 → DB record → embedding index) so future videos can use them

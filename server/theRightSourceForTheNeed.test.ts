@@ -149,70 +149,6 @@ describe("fit orders sources and refuses none", () => {
 
 /* ═══════════════════ C · the priority table, re-answered ═══════════════════ */
 
-describe("the source priority answers for THIS beat", () => {
-  it("WITHOUT A NEED IT IS THE DEFAULT TABLE, UNCHANGED", () => {
-    /**
-     * The compatibility guarantee. Every existing caller passes no need, so every existing caller
-     * gets exactly the behaviour it had.
-     */
-    expect(contextualSourcePriority()).toEqual(DEFAULT_SOURCE_PRIORITY);
-    expect(contextualSourcePriority(mediaFormsForIntent({}))).toEqual(DEFAULT_SOURCE_PRIORITY);
-    expect(contextualSourcePriority(mediaFormsForIntent(null))).toEqual(DEFAULT_SOURCE_PRIORITY);
-  });
-
-  it("ON A DATED BEAT THE ARCHIVES PASS THE STOCK LIBRARIES", () => {
-    /** The single outcome the audit proved wrong, asserted as the single outcome that changed. */
-    const p = contextualSourcePriority(mediaFormsForIntent({ period: ["1945"] }));
-    expect(p.internet_archive).toBeGreaterThan(p.pexels);
-    expect(p.internet_archive).toBeGreaterThan(p.pixabay);
-    expect(p.europeana).toBeGreaterThan(p.pexels);
-    expect(p.own_archive).toBeGreaterThan(p.pexels);
-  });
-
-  it("and generated imagery falls furthest on a beat that wants the real past", () => {
-    const p = contextualSourcePriority(mediaFormsForIntent({ period: ["1945"] }));
-    expect(p.ai_generated).toBeLessThan(DEFAULT_SOURCE_PRIORITY.ai_generated);
-    expect(p.ai_generated).toBeLessThan(p.internet_archive);
-  });
-
-  it("YOUTUBE IS NOT PREFERRED — it gains where it supplies the form and nowhere else", () => {
-    /**
-     * The rule the round was given twice: YouTube must become strong where it genuinely is the
-     * best source, never by artificial preference. On a dated beat it supplies archival footage
-     * and moves up; on a beat that wants a photograph it supplies none and does not.
-     */
-    const archival = contextualSourcePriority(mediaFormsForIntent({ period: ["1945"] }));
-    expect(archival.youtube_cc).toBeGreaterThan(DEFAULT_SOURCE_PRIORITY.youtube_cc);
-    /** And it still does not outrank the archives, which is the other half of the same rule. */
-    expect(archival.youtube_cc).toBeLessThan(archival.internet_archive);
-    expect(archival.youtube_cc).toBeLessThan(archival.own_archive);
-
-    const portrait = contextualSourcePriority(mediaFormsForIntent({ people: ["Marie Curie"] }));
-    expect(portrait.wikimedia).toBeGreaterThan(portrait.youtube_cc);
-  });
-
-
-  it("every priority stays inside the table's own range", () => {
-    for (const need of [
-      mediaFormsForIntent({ period: ["1945"] }),
-      mediaFormsForIntent({ people: ["Curie"] }),
-      mediaFormsForIntent({ event: ["the vote"] }),
-      mediaFormsForIntent({ location: ["Tokyo"] }),
-      mediaFormsForIntent({ action: ["smelting"] }),
-    ]) {
-      for (const [source, value] of Object.entries(contextualSourcePriority(need))) {
-        expect(value, source).toBeGreaterThanOrEqual(0);
-        expect(value, source).toBeLessThanOrEqual(100);
-      }
-    }
-  });
-
-  it("and the table keeps exactly the sources the engine knows", () => {
-    expect(Object.keys(contextualSourcePriority(mediaFormsForIntent({ period: ["1945"] })).valueOf()).sort()).toEqual(
-      Object.keys(DEFAULT_SOURCE_PRIORITY).sort()
-    );
-  });
-});
 
 /* ═══════════════════ D · the round is ordered, never pruned ═══════════════════ */
 
@@ -334,23 +270,8 @@ describe("THE NEED IS ACTUALLY SUPPLIED — this round does not add another read
    */
   const read = (f: string) => readFileSync(join(__dirname, f), "utf8");
 
-  it("the pipeline builds a need for the beat it is selecting for", () => {
-    const PIPE = read("videoPipeline.ts");
-    expect(PIPE).toContain("mediaFormNeed: mediaFormsForIntent(");
-    expect(PIPE).toContain("beatVisualIntent(dedup.beatIntent, scene.index, beat.index)");
-  });
 
-  it("the pool's selection context carries it", () => {
-    const POOL = read("scenePool.ts");
-    expect(POOL).toContain("mediaFormNeed?: {");
-    expect(POOL).toContain("...(ctx.mediaFormNeed ? { mediaFormNeed: ctx.mediaFormNeed } : {}),");
-  });
 
-  it("AND THE RANKING ENGINE RECEIVES IT", () => {
-    const RANK = read("poolRanking.ts");
-    expect(RANK).toContain("sourcePriority: contextualSourcePriority(req.mediaFormNeed)");
-    expect(RANK).toContain("weights: freshnessAwareWeights(req.mediaFormNeed)");
-  });
 
   it("and the retrieval round is ordered by the same need, from the same builder", () => {
     const PIPE = read("videoPipeline.ts");

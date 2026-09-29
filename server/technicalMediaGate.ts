@@ -266,54 +266,6 @@ export function stillResolutionVerdict(
   return reject("still_too_low_res", `${widthPx}px`, `${minWidthPx}px`);
 }
 
-/** Is the downloaded file big enough to be a real asset rather than an error page or a stub? */
-export function fileSizeVerdict(sizeBytes: number, minBytes: number): TechnicalVerdict {
-  if (sizeBytes >= minBytes) return OK;
-  return reject("file_too_small", `${sizeBytes}B`, `${minBytes}B`);
-}
-
-/**
- * Is there enough footage to cut a shot out of?
- *
- * ── RONDE 134: the duration has to come off the FILE ─────────────────────────────────────────
- *
- * The pool route used to do this:
- *
- *     let sourceDur = candidate.durationSec ?? 0;         // what the provider CLAIMED
- *     try { sourceDur = <ffprobe format=duration> } catch { }
- *     if (sourceDur < 1.5) return null;
- *
- * so a file ffprobe could not read at all still cleared the duration check — on the strength of a
- * number from a search response, which says nothing whatsoever about whether the bytes on disk are
- * readable. Worse, it made the SAME unreadable file pass or fail depending on metadata: a provider
- * that reported 12s got through and spent a full libx264 encode before failing; a provider that
- * reported nothing was refused. Two answers to one question about one file.
- *
- * Three states, and the middle one is the point:
- *
- *   measured, below the floor   → refuse. The file is genuinely too short.
- *   measured, at or above       → accept.
- *   NOT MEASURED (pass null)    → unknown, and unknown is neutral. Accept, and say so.
- *
- * Unknown may not refuse, because ffprobe times out under exactly the memory pressure this
- * pipeline creates for itself — turning "the machine was busy" into "throw the shot away" would
- * lose good footage at the worst possible moment. And unknown may not be ANSWERED by the
- * provider either. It stays unknown.
- */
-export function sourceDurationVerdict(
-  measuredDurationSec: number | null,
-  minSec: number
-): TechnicalVerdict {
-  if (measuredDurationSec == null || !Number.isFinite(measuredDurationSec)) return OK;
-  if (!(measuredDurationSec > 0)) return OK;
-  if (!(measuredDurationSec < minSec)) return OK;
-  return reject(
-    "duration_too_short",
-    `${measuredDurationSec.toFixed(2)}s`,
-    `${minSec.toFixed(2)}s`
-  );
-}
-
 /**
  * One line, one shape, for every technical refusal.
  *

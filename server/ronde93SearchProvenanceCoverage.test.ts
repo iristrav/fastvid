@@ -87,20 +87,7 @@ describe("RONDE 93 §1 — LEGACY_QUERY_BUILDER means 'no scope', not 'old build
 /* ═══════════ §2 — the scene pool now has a scope ═══════════ */
 
 describe("RONDE 93 §2 — the scene candidate pool searches inside a scope", () => {
-  it("TEST 4 — buildSceneCandidatePool establishes one from its own scene text", () => {
-    const idx = POOL_SRC.indexOf("export async function buildSceneCandidatePool(");
-    expect(idx).toBeGreaterThan(-1);
-    const body = POOL_SRC.slice(idx, POOL_SRC.indexOf("\n}", idx));
-    expect(body).toContain("withSearchProvenance(");
-    expect(body).toContain("emptyQueryContext(req.sceneText");
-  });
 
-  it("TEST 5 — an already-active beat scope wins: the pool never widens it", () => {
-    const idx = POOL_SRC.indexOf("export async function buildSceneCandidatePool(");
-    const body = POOL_SRC.slice(idx, POOL_SRC.indexOf("\n}", idx));
-    // The more specific claim is checked first and returned unchanged.
-    expect(body).toContain("if (getSearchProvenance()) return buildSceneCandidatePoolInner(req);");
-  });
 
   it("TEST 6 — a pool query proven by the scene text is admitted", () => {
     withStrict(true, () =>

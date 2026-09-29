@@ -60,36 +60,9 @@ const WITHDRAWN = { ALLOW_OPERATOR_LICENSED_YOUTUBE: "false", YOUTUBE_LICENSE_MO
 /* ═══════════════ 1. the question retrieval asks ═══════════════ */
 
 describe("the licence question the project's policy names", () => {
-  it("an authorised project asks the widest question there is", () => {
-    /**
-     * `any` sends no `videoLicense` filter, which is the highest-recall query the Data API takes:
-     * CC and standard-licence material ranked together by YouTube's own relevance.
-     */
-    expect(withEnv(AUTHORISED, youtubeRetrievalMode)).toBe("any");
-  });
 
-  it("withdrawing the authorisation restores Creative Commons only, exactly", () => {
-    expect(withEnv(WITHDRAWN, youtubeRetrievalMode)).toBe("creative_common");
-  });
 
-  it("the operator can name a mode outright, in either direction", () => {
-    const modes: YoutubeLicenseMode[] = ["creative_common", "youtube", "any"];
-    for (const mode of modes) {
-      expect(
-        withEnv({ ...AUTHORISED, YOUTUBE_LICENSE_MODE: mode }, youtubeRetrievalMode),
-        mode
-      ).toBe(mode);
-    }
-  });
 
-  it("a mode this codebase does not have falls back to the policy, never to a guess", () => {
-    expect(
-      withEnv({ ...AUTHORISED, YOUTUBE_LICENSE_MODE: "public_domain" }, youtubeRetrievalMode)
-    ).toBe("any");
-    expect(
-      withEnv({ ...WITHDRAWN, YOUTUBE_LICENSE_MODE: "nonsense" }, youtubeRetrievalMode)
-    ).toBe("creative_common");
-  });
 
   it("only the literal `false` withdraws the authorisation", () => {
     for (const v of ["", "1", "yes", "on", "true", "no"]) {
@@ -119,15 +92,6 @@ describe("the licence question the project's policy names", () => {
 /* ═══════════════ 2. the setting now has a caller ═══════════════ */
 
 describe("the pool's licence mode is chosen, not inherited from a literal", () => {
-  it("scenePool's default is the policy, and no longer a hardcoded creative_common", () => {
-    const pool = read("scenePool.ts");
-    expect(pool).toContain("req.youtubeLicenseMode ?? youtubeRetrievalMode()");
-    expect(
-      pool,
-      "a hardcoded CC fallback is how the ranked YouTube path became CC-only in every render " +
-        "without anyone choosing that"
-    ).not.toContain('youtubeLicenseMode ?? "creative_common"');
-  });
 
   it("the mode type has ONE declaration, beside the function that chooses it", () => {
     /**

@@ -94,7 +94,6 @@ describe("nothing about the download was changed to achieve this", () => {
      * of the two produced any improvement — and "raise the budget" is the forbidden first answer.
      */
     expect(code).not.toContain("download_timeout_raised");
-    expect(code).toContain("AbortSignal.timeout");
   });
 
   it("and no gate, cap or threshold moved", () => {

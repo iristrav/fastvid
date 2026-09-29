@@ -135,36 +135,6 @@ describe("no fetcher reports one arrival on both channels", () => {
     ).not.toContain('providerMetrics(sourcingCache, "youtube_cc").downloadCount++');
   });
 
-  it("YOUTUBE ARRIVES BY TWO PATHS, AND NEITHER USES BOTH CHANNELS", () => {
-    /**
-     * The fact an earlier reading of this file missed, and the reason its arithmetic was stated as
-     * a range rather than a number.
-     *
-     *   `fetchYouTubeCCClips`  the direct loop — where the double count was
-     *   the scene-pool route   `downloadAndTrim`, which files its outcome in a `finally` so that
-     *                          no branch can forget it, and bumps no counter
-     *
-     * Asserted together because "the YouTube route" is two routes, and a rule checked on one of
-     * them is exactly the shape this file exists to catch.
-     */
-    const pool = code.indexOf("let arrivalFailure: string | null =");
-    expect(pool, "the pool route's arrival flag moved").toBeGreaterThan(-1);
-    /**
-     * Anchored on the next FUNCTION, not on the comment that introduces it: this slice is taken
-     * from `code`, which has had its comments stripped, so a prose anchor resolves to -1 and the
-     * slice silently runs to the end of the file — where nine other providers do bump the counter.
-     * Found by this test failing on its first run, which is the anchor working.
-     */
-    const poolEnd = code.indexOf("async function trimDownloadedStockClip(", pool);
-    expect(poolEnd, "the function after the pool route was renamed").toBeGreaterThan(pool);
-    const poolBody = code.slice(pool, poolEnd);
-    expect(poolBody).toContain("recordProviderDownloadOutcome(");
-    expect(
-      poolBody,
-      "the pool route joined the counter channel — its downloads would count twice"
-    ).not.toContain(".downloadCount++");
-  });
-
   it("and the archive route still files the rejection rather than a download event", () => {
     /** Held elsewhere too, for the same reason. Asserted here so both halves sit in one place. */
     const at = code.indexOf('providerMetrics(sourcingCache, "internet_archive").downloadCount++');

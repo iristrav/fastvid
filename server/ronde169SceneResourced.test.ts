@@ -218,11 +218,6 @@ describe("RONDE 169 — every assignment site is covered", () => {
 });
 
 describe("RONDE 169 — earlier rounds intact", () => {
-  it("RONDE 167's invariant and RONDE 168's judged-winner rule still stand", () => {
-    expect(PIPE).toContain("assertNoSelectedClipWithoutOutcome(ledger)");
-    expect(PIPE).toContain("const judgedOnly = keepOnlyJudgedWinner(");
-    expect(PIPE).toContain("cache.lineage.setContentKeyResolver(clipContentKey);");
-  });
 
   it("hasOutcomeFor uses the one shared definition of an ending", () => {
     // A download that never finished counts, exactly as reconcile() and the audit read it.

@@ -270,18 +270,7 @@ describe("P0-8 §3 — a scene's need is the union of its sentences', not one of
 /* ═══════════ 4. nothing about which providers exist changed ═══════════ */
 
 describe("P0-8 §4 — order, and only order", () => {
-  it("THE RE-TIERING IS APPLIED TO THE REAL TASK LIST, BEFORE THE RUN", () => {
-    expect(POOL).toContain("const tieredTasks = tierTasksByNeed(tasks, req.mediaFormNeed);");
-    expect(POOL).toContain("tasks: tieredTasks,");
-    const at = POOL.indexOf("const tieredTasks = tierTasksByNeed");
-    const run = POOL.indexOf("runTieredRetrieval({");
-    expect(at, "the tiers are re-answered after the round has already started").toBeLessThan(run);
-  });
 
-  it("and the pipeline supplies a REAL need, built from the scene's own beats", () => {
-    expect(PIPE).toContain("mediaFormNeed: mediaFormsForScene(");
-    expect(PIPE).toContain("beats.map((b) => beatVisualIntent(dedup.beatIntent, scene.index, b.index))");
-  });
 
   it("NO SOURCE CAN BE DROPPED — the output holds exactly the input's sources", () => {
     /**
@@ -340,7 +329,4 @@ describe("P0-8 §5 — a re-ordering nobody can see is a re-ordering nobody can 
     expect(describeTierChanges(PRODUCTION_TIERS, [...PRODUCTION_TIERS])).toBe("");
   });
 
-  it("the pool logs it — a decision made silently is one nobody can check", () => {
-    expect(POOL).toContain("describeTierChanges(tasks, tieredTasks)");
-  });
 });

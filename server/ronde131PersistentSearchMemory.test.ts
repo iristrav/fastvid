@@ -542,19 +542,6 @@ describe("RONDE 131 — wired into the real path, and no second cache", () => {
     return readFileSync(join(__dirname, file), "utf8");
   };
 
-  it("the funnel consults memory BEFORE coverage decides how hard to lean on the internet", () => {
-    /**
-     * Placement is the saving. Coverage decides the archive/internet weighting; a subject FastVid
-     * has good footage for should read as covered. Recalling after coverage would arrive too late
-     * to spare anything.
-     */
-    const funnel = read("retrievalFunnel.ts");
-    const recall = funnel.indexOf("recallProvenAssetsForEntity)(req.memoryEntity");
-    const coverage = funnel.indexOf("const archiveCoverage = await computeArchiveCoverage(");
-    expect(recall).toBeGreaterThan(0);
-    expect(coverage).toBeGreaterThan(recall);
-  });
-
   it("the SearchGate still runs before anything reaches a provider", () => {
     // §4: memory changes what is offered, never what is allowed. The gate is untouched.
     const pipe = read("videoPipeline.ts");
@@ -562,19 +549,6 @@ describe("RONDE 131 — wired into the real path, and no second cache", () => {
     const body = pipe.slice(idx, pipe.indexOf("export function logSourcingMetrics(", idx));
     expect(body.indexOf("if (!decision.admitted)")).toBeLessThan(body.indexOf("const activeCache"));
     expect(read("searchQueryContract.ts")).toContain("SEARCH_GATE_STRICT");
-  });
-
-  it("write and read use ONE key function, so the memory cannot go blind to itself", () => {
-    /**
-     * RONDE 28 had to fix exactly this once: writes lowercased the entity, reads did not, and the
-     * memory could not find its own rows. Both sides now come from `activeMemoryEntity()`.
-     */
-    const pipe = read("videoPipeline.ts");
-    expect(pipe).toContain("function activeMemoryEntity(): string | undefined {");
-    expect(pipe).toContain("memoryEntity: activeMemoryEntity(),");
-    // The writer's key, unchanged, and the same expression the helper returns.
-    expect(pipe).toContain("subject: memoryTopic.primaryPerson || memoryTopic.videoTitle,");
-    expect(pipe).toContain("return (topic.primaryPerson || topic.videoTitle)?.trim() || undefined;");
   });
 
   it("no new table and no new cache — the memory that already existed is the one used", () => {
@@ -608,18 +582,6 @@ describe("RONDE 131 — wired into the real path, and no second cache", () => {
     );
   });
 
-  it("only a vision rejection counts against the memory", () => {
-    /**
-     * Losing to a better candidate is the funnel working, not the memory being wrong. Counting it
-     * would make the metric read as a failure rate for something that is a success.
-     */
-    const pipe = read("videoPipeline.ts");
-    const idx = pipe.indexOf("dedup.searchMemoryMetrics.memoryRejectedAfterValidation++");
-    expect(idx).toBeGreaterThan(0);
-    const block = pipe.slice(Math.max(0, idx - 400), idx);
-    expect(block).toContain('reason === "vision_rejected"');
-    expect(block).toContain("dedup.recalledAssetIds.has(recalledId)");
-  });
 });
 
 /* ═══════════════════════ §11 — the regression surface ═══════════════════════ */
@@ -661,104 +623,4 @@ describe("RONDE 131 — nothing earlier was traded for this", () => {
     // "what did asking this ever find, in ANY render".
     expect(read("searchMemoryRecall.ts")).toContain("across renders");
   });
-});
-
-/* ═══════════════════════ the funnel, driven for real ═══════════════════════ */
-
-describe("RONDE 131 — the funnel really offers what memory recalled", () => {
-  it("recalled picks reach mergeCandidates as archive candidates", async () => {
-    /**
-     * Not a source-text claim: `buildRetrievalFunnel` is called with an injected recall and the
-     * resulting candidate list is inspected. A recalled asset must come out the other end as a
-     * `source: "archive"` candidate carrying its `archivePick` — which is what makes the download,
-     * vision and licence path treat it like any other archive clip.
-     */
-    vi.resetModules();
-    const { buildRetrievalFunnel } = await import("./retrievalFunnel");
-    const metrics = createSearchMemoryRecallMetrics();
-    const recalledInto = new Set<number>();
-
-    const result = await buildRetrievalFunnel({
-      sceneIndex: 0,
-      sceneText: "Göring inspects the Luftwaffe in 1936.",
-      primaryQuery: "Hermann Göring Munich historical footage",
-      videoTitle: "Hermann Göring",
-      memoryEntity: GORING,
-      memoryMetrics: metrics,
-      memoryRecalledInto: recalledInto,
-      recallProvenAssets: async () => [
-        {
-          memory: {
-            assetId: 101,
-            query: "Hermann Göring Berlin archival footage",
-            source: CURATED_ARCHIVE_MEMORY_SOURCE,
-            usageCount: 3,
-            qualityScore: 82,
-          },
-          pick: {
-            asset: {
-              id: 101,
-              archiveId: 1,
-              title: "Göring at the Nuremberg rally, 1936",
-              mediaType: "video",
-            } as unknown as ArchiveAssetRow,
-            archiveName: "Bundesarchiv",
-            score: RECALLED_ASSET_BASE_SCORE,
-          },
-        },
-      ],
-    });
-
-    const fromMemory = result.candidates.find((c) => c.archivePick?.asset?.id === 101);
-    expect(fromMemory, "the recalled asset should be a funnel candidate").toBeTruthy();
-    expect(fromMemory!.source).toBe("archive");
-    // It carries the archivePick, which is what the download/vision/licence path needs.
-    expect(fromMemory!.archivePick?.archiveName).toBe("Bundesarchiv");
-    // And the counters saw it.
-    expect(metrics.memoryHits).toBe(1);
-    expect(metrics.assetsReused).toBe(1);
-    expect(metrics.providerSearchesAvoided).toBe(1);
-    expect(recalledInto.has(101)).toBe(true);
-  }, 60_000);
-
-  it("a funnel with no memory entity counts nothing and recalls nothing", async () => {
-    vi.resetModules();
-    const { buildRetrievalFunnel } = await import("./retrievalFunnel");
-    const metrics = createSearchMemoryRecallMetrics();
-    let recallCalled = false;
-
-    await buildRetrievalFunnel({
-      sceneIndex: 0,
-      sceneText: "An unrelated scene.",
-      primaryQuery: "something new",
-      memoryMetrics: metrics,
-      recallProvenAssets: async () => {
-        recallCalled = true;
-        return [];
-      },
-    });
-
-    expect(recallCalled).toBe(false);
-    expect(metrics.memoryHits).toBe(0);
-    expect(metrics.memoryMisses).toBe(0);
-  }, 60_000);
-
-  it("a miss is counted as a miss and the beat goes on to the providers", async () => {
-    vi.resetModules();
-    const { buildRetrievalFunnel } = await import("./retrievalFunnel");
-    const metrics = createSearchMemoryRecallMetrics();
-
-    await buildRetrievalFunnel({
-      sceneIndex: 0,
-      sceneText: "A subject nothing is known about.",
-      primaryQuery: "new unknown subject",
-      memoryEntity: "Somebody Nobody Filmed",
-      memoryMetrics: metrics,
-      recallProvenAssets: async () => [],
-    });
-
-    expect(metrics.memoryMisses).toBe(1);
-    expect(metrics.newSearches).toBe(1);
-    expect(metrics.memoryHits).toBe(0);
-  }, 60_000);
 });

@@ -180,19 +180,6 @@ describe("RONDE 91 §3 — the director plan cannot introduce a subject", () => 
 /* ═══════════ §4 — every provider stays behind the one gate ═══════════ */
 
 describe("RONDE 91 §4 — no provider search has an alternative route", () => {
-  it("TEST 12 — the scene candidate pool consults the gate for every provider", () => {
-    for (const fn of [
-      "searchPexelsCandidates",
-      "searchPixabayCandidates",
-      "searchWikimediaCandidates",
-      "searchInternetArchiveCandidates",
-      // Europeana, Openverse, NASA and NARA: removed in VIDEO 619.
-    ]) {
-      const idx = POOL_SRC.indexOf(`function ${fn}(`);
-      expect(idx, `${fn} missing`).toBeGreaterThan(-1);
-      expect(POOL_SRC.slice(idx, idx + 4000), `${fn} bypasses the gate`).toContain("searchGateDecision(");
-    }
-  });
 
   /**
    * RONDE 148 — functions that talk to a provider WITHOUT searching, and why each is exempt.
@@ -590,14 +577,6 @@ describe("RONDE 91 §13 — M1–M8: each mutation must turn something red", () 
     expect(validateSearchQuery("She France").reason).toBe("FORBIDDEN_PRONOUN");
   });
 
-  it("M8 — restoring a direct provider call is caught", () => {
-    // The same repo-wide scan TEST 14 runs, stated here as the mutation it guards: adding a
-    // provider search that does not consult the gate turns this red.
-    const idx = POOL_SRC.indexOf("function searchPexelsCandidates(");
-    const body = POOL_SRC.slice(idx, POOL_SRC.indexOf("\n}", idx));
-    expect(body.indexOf("searchGateDecision(")).toBeGreaterThan(-1);
-    expect(body.indexOf("searchGateDecision(")).toBeLessThan(body.indexOf("api.pexels.com"));
-  });
 });
 
 /* ═══════════ §14 — RONDE 87–90 still stand ═══════════ */

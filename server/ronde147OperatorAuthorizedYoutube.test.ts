@@ -340,25 +340,6 @@ describe("RONDE 147 — the log says who authorised it", () => {
 // ─── the pipeline reads the decision, not the environment ────────────────────────────────────
 
 describe("RONDE 147 — one decision, no second engine", () => {
-  it("P1. both sourcing routes gate on `.allowed` and read no flag of their own", () => {
-    const fs = require("fs") as typeof import("fs");
-    const path = require("path") as typeof import("path");
-    const pipe = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const pool = fs.readFileSync(path.join(__dirname, "scenePool.ts"), "utf8");
-    expect(pipe).toContain("if (!licenseDecision.allowed) {");
-    expect(pool).toContain("if (!poolLicense.allowed) continue;");
-    /**
-     * The rule is that neither sourcing route READS the variable — it asks for a decision.
-     *
-     * Asserted on `process.env.<name>`, which is what reading it looks like, rather than on the
-     * bare name: both files now explain in prose which variable withdraws the authorisation and
-     * what happens then, and a rule that forbids naming a flag in a comment stops being a rule
-     * about the code. The two doc mentions are the reason this became specific.
-     */
-    for (const src of [pipe, pool]) {
-      expect(src).not.toContain("process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE");
-    }
-  });
 
   it("P1b. the archive gate and the live-retrieval policy read the one flag the same way", () => {
     /**

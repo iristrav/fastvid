@@ -244,8 +244,6 @@ describe("Tests 1–9 — every provider, decided by one rule", () => {
 
 describe("Tests 10–15 — the routes", () => {
   const ROUTES: Array<[string, string]> = [
-    ["funnel", 'route: "funnel",'],
-    ["scene pool", 'route: "pool",'],
     ["historical cascade / everything else", 'route: "push_gate",'],
   ];
 
@@ -273,7 +271,8 @@ describe("Tests 10–15 — the routes", () => {
      * route can skip the step. A clip they stored reaches the gate already archived.
      */
     /** Five before VIDEO 619; the two web-wide rescue stores left with their providers. */
-    expect((PIPELINE.match(/await storeExternalClipForTimeline\(\{/g) ?? []).length).toBe(3);
+    /** The scene pool and funnel routes left when the three candidate systems became one. */
+    expect((PIPELINE.match(/await storeExternalClipForTimeline\(\{/g) ?? []).length).toBe(1);
   });
 
   /**
@@ -374,13 +373,6 @@ describe("Test 18/19 — reuse, and no second download", () => {
 });
 
 describe("Test 20 + §9 — runners-up keep their background behaviour", () => {
-  it("the runner-up path is still fire-and-forget, and is not a timeline asset", () => {
-    const at = PIPELINE.indexOf("const queueArchiveIngestion = (");
-    expect(at).toBeGreaterThan(0);
-    const body = PIPELINE.slice(at, at + 500);
-    expect(body).toContain("void (async () => {");
-    expect(body).toContain("await ingestExternalClipToArchive(clipPath, archiveMetadataFor(wec));");
-  });
 
   it("A RUNNER-UP THAT LATER BECOMES A TIMELINE CLIP STILL PASSES THE GATE", () => {
     /**
@@ -527,12 +519,6 @@ describe("§6 — the invariant is not subject-specific", () => {
 });
 
 describe("what this round did not touch", () => {
-  it("the gates, thresholds and budgets named as untouchable are where they were", () => {
-    /** The stock subject anchor and the repeated-query skip went with `adoptStockBeatClipFallback`. */
-    expect(PIPELINE).toContain("capCandidatesPerSource(poolCandidates, before)");
-    const CURATED = readFileSync(join(__dirname, "curatedMediaSourcing.ts"), "utf8");
-    expect(CURATED).toContain("NO_RELEVANT_ARCHIVE");
-  });
 
   it("the YouTube operator authorisation default is still ON unless literally false", () => {
     const LIC = readFileSync(join(__dirname, "youtubeLicenseStatus.ts"), "utf8");

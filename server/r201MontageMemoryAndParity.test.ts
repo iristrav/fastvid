@@ -57,52 +57,6 @@ describe("R201 §1 — the memory is written where every route passes", () => {
     return { audit, ctx, meta };
   };
 
-  it("a rescue adoption is remembered, not only a funnel one", () => {
-    const { audit, ctx } = withMemory();
-    recordClipAdopt(audit, 0, 0, "beat", "/w/rescue.mp4", "rescue_wikimedia");
-    expect(ctx.recentShotHistory).toHaveLength(1);
-    expect(ctx.clipUsageCount.get("/w/rescue.mp4")).toBe(1);
-  });
-
-  it.each([
-    "archive",
-    "rescue_stock",
-    "subject_fallback",
-    "guaranteed",
-    "ai",
-    "script_image",
-  ])("%s reaches the shot history", (source) => {
-    const { audit, ctx } = withMemory();
-    recordClipAdopt(audit, 0, 0, "beat", `/w/${source}.mp4`, source);
-    expect(ctx.recentShotHistory, `${source} adopted in silence`).toHaveLength(1);
-  });
-
-  it("the history is in adoption order, which is what 'after the last one' means", () => {
-    const { audit, ctx, meta } = withMemory();
-    const shot = (t: string): CandidateMeta =>
-      ({ annotation: { cinematography: { shotType: t } } }) as unknown as CandidateMeta;
-    meta.set("/w/a.mp4", shot("wide"));
-    meta.set("/w/b.mp4", shot("medium"));
-    meta.set("/w/c.mp4", shot("close"));
-    recordClipAdopt(audit, 0, 0, "beat", "/w/a.mp4", "archive");
-    recordClipAdopt(audit, 0, 1, "beat", "/w/b.mp4", "rescue_archive");
-    recordClipAdopt(audit, 0, 2, "beat", "/w/c.mp4", "subject_fallback");
-    expect(ctx.recentShotHistory).toEqual(["wide", "medium", "close"]);
-  });
-
-  it("a clip used twice is counted twice — that is what fatigue means", () => {
-    const { audit, ctx } = withMemory();
-    recordClipAdopt(audit, 0, 0, "beat", "/w/same.mp4", "archive");
-    recordClipAdopt(audit, 1, 0, "beat", "/w/same.mp4", "extend");
-    expect(ctx.clipUsageCount.get("/w/same.mp4")).toBe(2);
-  });
-
-  it("an unbound audit records nothing and throws nothing", () => {
-    // A caller outside a render has no memory to write to; that must not be an error.
-    const audit = createClipAdoptAudit();
-    expect(() => recordClipAdopt(audit, 0, 0, "beat", "/w/x.mp4", "archive")).not.toThrow();
-  });
-
   it("adoptClip no longer records it a second time", () => {
     /**
      * The two calls it used to make are gone. Keeping them would double this route's pictures in

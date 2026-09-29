@@ -82,71 +82,6 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
     expect(seen).toEqual([1, 2, 99]);
   });
 
-  it("a reprieve is announced, so it is never silent", () => {
-    /**
-     * SUPERSEDED BY RONDE 103, deliberately — and the rule got stricter.
-     *
-     * RONDE 67 required the reprieve to be announced. That was necessary but not sufficient: the
-     * announcement went to the log while the pipeline itself carried the clip forward as though
-     * it had passed, so nothing downstream — and nothing in the quality report — could tell a
-     * shot used over the picture editor's objection from one nobody objected to. The reprieve is
-     * now recorded against the clip, with the verdict left as the model gave it.
-     */
-    const src = PIPELINE();
-    expect(src).toContain("reprieveBeatClip(dedup.beatRelevance,");
-    expect(src).toContain("a real picture beats a placeholder");
-
-    const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
-    const idx = mod.indexOf("export function reprieveBeatClip(");
-    expect(idx).toBeGreaterThan(-1);
-    const block = mod.slice(idx, mod.indexOf("\n}", idx));
-    // The verdict is NOT relabelled — that is the RONDE 103 addition.
-    expect(block).toContain("allowed: true, reprieved: true");
-    expect(block).not.toContain('verdict: "fits"');
-
-    /**
-     * RONDE 166 moved the announcement into the shared [VisualFitDecision] line, so the rule is
-     * asserted on the line the function actually emits rather than on the string it used to
-     * build. Same rule, checked one level closer: a reprieve is announced, and the announcement
-     * names the verdict it is overruling.
-     */
-    const ledger = createBeatRelevanceLedger();
-    recordExternalRelevanceVerdict(
-      ledger, "/w/r67.mp4", "k:r67",
-      { sceneIndex: 1, beatIndex: 6, beatText: "the beat" },
-      {
-        verdict: "does_not_fit",
-        depicts: "a newsreel crowd",
-        reason: "this is from a different decade than the narration describes",
-      },
-      "funnel"
-    );
-    /**
-     * RONDE 200 — the rule is unchanged and the outcome is the other one.
-     *
-     * The rule this test defends is that the decision is never silent and always names the verdict
-     * it concerns. RONDE 200 answered the owner's "er mag nooit een beeld in de video die er niet
-     * bij past" by refusing every override, so what has to be announced here is the DECLINE — and
-     * it is, on the same [VisualFitDecision] line, with the same verdict named and the kind that
-     * could not be lifted spelled out.
-     *
-     * The structural assertions above are untouched: the reprieve path still exists (the last-rung
-     * colour card reaches it) and still refuses to relabel a verdict as `fits`.
-     */
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      expect(reprieveBeatClip(ledger, "/w/r67.mp4", "nothing else passed")).toBe(false);
-      const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes("decision=REJECTED"));
-      expect(line, "declining an override must never be silent either").toBeTruthy();
-      expect(line).toContain("verdict=does_not_fit");
-      expect(line).toContain("_may_not_be_reprieved");
-      expect(line).not.toContain("verdict=fits");
-    } finally {
-      warn.mockRestore();
-    }
-    expect(ledger.byClipPath.get("/w/r67.mp4")!.decision.verdict).toBe("does_not_fit");
-    expect(ledger.byClipPath.get("/w/r67.mp4")!.decision.reprieved).toBe(false);
-  });
 
   it("the rejection is still recorded — the reprieve does not hide it from the audit", () => {
     const src = PIPELINE();
@@ -162,25 +97,7 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
     expect(block).toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');
   });
 
-  it("the funnel keeps its refused winner instead of discarding it", () => {
-    const src = PIPELINE();
-    expect(src).toContain("let gateReprieveWinner: typeof winner = null;");
-    expect(src).toContain("gateReprieveWinner = winner;");
-    expect(src).toContain("held as reprieve");
-    // Used only once nothing else has been found.
-    expect(src).toContain("if (!winner && gateReprieveWinner) {");
-    expect(src).toContain("winner = gateReprieveWinner;");
-  });
 
-  it("the funnel still tries every other source first — the reprieve is last", () => {
-    const src = PIPELINE();
-    const held = src.indexOf("gateReprieveWinner = winner;");
-    const used = src.indexOf("if (!winner && gateReprieveWinner) {");
-    expect(held).toBeGreaterThan(-1);
-    expect(used).toBeGreaterThan(held);
-    // winner is still nulled at the point of refusal, so the normal cascade runs unchanged.
-    expect(src.slice(held, held + 120)).toContain("winner = null;");
-  });
 });
 
 describe("RONDE 67 — the context lookup stops knocking", () => {

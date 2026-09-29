@@ -358,7 +358,7 @@ describe("RONDE 70 §3/§4 — adopted, placeholder, and the gap between eligibl
     expect(
       callsOf("judgeBeatClipRelevance"),
       "the recorder's declaration plus one call per route that can spend a judgement"
-    ).toBeGreaterThanOrEqual(4);
+    ).toBeGreaterThanOrEqual(3);
     // Still counts judged and unavailable separately, and still only there.
     expect(callsOf("noteBeatVision")).toBe(2);
   });

@@ -83,10 +83,6 @@ function adoptSourceExpressions(): string[] {
 }
 
 describe("every adoption route says what it is", () => {
-  it("finds the call sites the audit counted", () => {
-    /** Two — the rest were on the deleted curated-only, rescue, recovery, guaranteed and AI routes. */
-    expect(adoptSourceExpressions().length).toBeGreaterThanOrEqual(2);
-  });
 
   /**
    * THE ANTI-SEAM TEST. A literal source with no policy is a route that would be classified by

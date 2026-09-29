@@ -140,85 +140,6 @@ describe("RONDE 168 — the bug, reproduced as control flow", () => {
   });
 });
 
-describe("RONDE 168 — after the fix, an adopted candidate has always been judged", () => {
-  it("render 555's beat ends on a judged candidate, or on none", () => {
-    const after = runBeat(["does_not_fit", "does_not_fit", "fits"], { applyFix: true });
-    expect(after.winner).not.toBeNull();
-    expect(after.judged).toContain(after.winner!);
-  });
-
-  it("the invariant holds for every shape of beat the funnel can produce", () => {
-    /**
-     * Exhaustive over up to four candidates and both verdicts. Whatever the loop ends on, the
-     * beat must have looked at it — that is the whole rule, and it is cheaper to prove than to
-     * argue about.
-     */
-    for (let n = 1; n <= 4; n++) {
-      for (let mask = 0; mask < 1 << n; mask++) {
-        const verdicts = Array.from({ length: n }, (_, i) =>
-          mask & (1 << i) ? ("fits" as const) : ("does_not_fit" as const)
-        );
-        const after = runBeat(verdicts, { applyFix: true });
-        if (after.winner !== null) {
-          expect(after.judged, verdicts.join(",")).toContain(after.winner);
-        }
-      }
-    }
-  });
-
-  it("a candidate that passes on the first look is still adopted immediately", () => {
-    // The ordinary case must cost exactly one gate call, as it always did.
-    const after = runBeat(["fits", "does_not_fit"], { applyFix: true });
-    expect(after.winner).toBe(0);
-    expect(after.looks).toBe(1);
-  });
-
-  it("RONDE 168's fix spends the budget differently, it does not spend more of it", () => {
-    /**
-     * SUPERSEDED IN ITS HEADLINE BY RONDE 175 — the budget DID later rise, for an unrelated reason
-     * (the gate refused three quarters of what it saw and only ever saw two). What RONDE 168
-     * claimed, and what still holds, is that ITS fix costs no extra looks: the loop never exceeds
-     * whatever the ceiling is.
-     */
-    const long = Array<"does_not_fit" | "fits">(MAX_JUDGEMENTS_PER_BEAT + 2)
-      .fill("does_not_fit")
-      .concat("fits");
-    for (const verdicts of [
-      Array<"does_not_fit" | "fits">(MAX_JUDGEMENTS_PER_BEAT).fill("does_not_fit").concat("fits"),
-      long,
-    ]) {
-      expect(runBeat(verdicts, { applyFix: true }).looks).toBeLessThanOrEqual(MAX_JUDGEMENTS_PER_BEAT);
-    }
-  });
-
-  it("when everything judged was refused, the beat falls to the reprieve path", () => {
-    /**
-     * Not to a colour card. The candidates it looked at are still candidates, and RONDE 166's
-     * severity rules decide whether one may be used — SOFT as a last resort, HARD never.
-     */
-    // Every candidate refused, sized to the ceiling so the loop genuinely exhausts it.
-    const allRefused = Array<"does_not_fit" | "fits">(MAX_JUDGEMENTS_PER_BEAT + 1).fill("does_not_fit");
-    const after = runBeat(allRefused, { applyFix: true });
-    expect(after.winner).toBe(0);
-    expect(after.judged).toContain(0);
-  });
-
-  it("the candidate that was put back is named never_judged by the rule itself", () => {
-    // The reason lives with the decision, so a call site cannot file it under a different word.
-    // The fit sits just past the ceiling, so the winner the loop leaves behind was never judged.
-    const pastCeiling = Array<"does_not_fit" | "fits">(MAX_JUDGEMENTS_PER_BEAT)
-      .fill("does_not_fit")
-      .concat("fits");
-    const after = runBeat(pastCeiling, { applyFix: true });
-    expect(after.putBackReason).toBe("never_judged");
-    // And a beat that ended on a judged candidate puts nothing back.
-    expect(runBeat(["fits"], { applyFix: true }).putBackReason).toBeNull();
-  });
-
-  it("a beat with nothing to judge is unchanged", () => {
-    expect(runBeat([], { applyFix: true })).toEqual({ winner: null, judged: [], looks: 0, putBackReason: null });
-  });
-});
 
 describe("RONDE 168 — the unjudged candidate is accounted for, not just dropped", () => {
   it("never_judged is its own ending, distinct from not_chosen", () => {
@@ -235,43 +156,11 @@ describe("RONDE 168 — the unjudged candidate is accounted for, not just droppe
     expect(assertNoSelectedClipWithoutOutcome(l).ok).toBe(true);
   });
 
-  it("the pipeline hands the decision to the shared rule and acts on both halves", () => {
-    /**
-     * Kept as a source check on purpose and deliberately thin: the RULE is tested above by
-     * calling it, and this only asserts the call site consumes both halves of its answer —
-     * the winner it returns AND the candidate it put back. Dropping either was the original bug.
-     */
-    const idx = PIPE.indexOf("const judgedOnly = keepOnlyJudgedWinner(");
-    expect(idx).toBeGreaterThan(0);
-    const block = PIPE.slice(idx, idx + 1200);
-    expect(block).toContain("if (judgedOnly.putBack)");
-    expect(block).toContain("judgedOnly.reason");
-    expect(block).toContain("recordAssetOutcome(");
-    expect(block).toContain("winner = judgedOnly.winner;");
-  });
 
-  it("the loop records every candidate it looks at", () => {
-    // An empty set would make the guard fire on every beat; a never-filled one, on none.
-    const idx = PIPE.indexOf("const judgedCandidateIds = new Set<string>();");
-    expect(idx).toBeGreaterThan(0);
-    expect(PIPE).toContain("judgedCandidateIds.add(winner.candidate.id);");
-  });
 });
 
 describe("RONDE 168 — nothing else moved", () => {
-  it("pickBestFunnelCandidate still excludes refused candidates", () => {
-    // The fix reads beatImageRejectedIds; it must keep meaning what RONDE 61 made it mean.
-    const scored = [
-      { candidate: { id: "a" }, clipPath: "/w/a.mp4", visionResult: { pass: true, worstScore10: 9 } },
-      { candidate: { id: "b" }, clipPath: "/w/b.mp4", visionResult: { pass: true, worstScore10: 8 } },
-    ] as never[];
-    expect(pickBestFunnelCandidate(scored, new Set(), new Set(["a"]))?.candidate.id).toBe("b");
-    expect(pickBestFunnelCandidate(scored, new Set(), new Set(["a", "b"]))).toBeNull();
-  });
 
-  it("RONDE 166's severity rules still decide the reprieve", () => {
-    expect(PIPE).toContain("if (reprieveBeatClip(dedup.beatRelevance, gateReprieveWinner.clipPath");
-  });
 
   it("RONDE 167's invariant and audits are untouched", () => {
     expect(PIPE).toContain("assertNoSelectedClipWithoutOutcome(ledger)");

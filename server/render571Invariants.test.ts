@@ -176,19 +176,6 @@ describe("P0-B: INVARIANT_H no longer fires on a curated adoption the guard allo
     return a;
   };
 
-  /** The defect, pinned: the same ledger, the same clip, two different answers. */
-  it("without the resolver the audit calls an eligible clip ineligible", () => {
-    const line = formatAdoptionEvidence(audit(false)).join("\n");
-    expect(line).toContain("withoutEligibility=1");
-    expect(line).toContain("INVARIANT_H");
-  });
-
-  it("with the resolver it agrees with the guard", () => {
-    const line = formatAdoptionEvidence(audit(true)).join("\n");
-    expect(line).toContain("withoutEligibility=0");
-    expect(line).not.toContain("INVARIANT_H");
-  });
-
   /** The ledger fact both readings rest on — measured, not assumed. */
   it("the two spellings of the question genuinely differ", () => {
     const ledger = new VisualSourceLedger({ renderId: "t" });
@@ -197,54 +184,6 @@ describe("P0-B: INVARIANT_H no longer fires on a curated adoption the guard allo
     expect(ledger.isEligible(CLIP, KEY)).toBe(true);
     expect(ledger.isEligible(CLIP), "this is what the audit was asking").toBe(false);
   });
-});
-
-describe("P0-B: nothing was made easier", () => {
-  const auditFor = (markEligible: boolean): ClipAdoptEntry[] => {
-    const a: ClipAdoptEntry[] = [];
-    const ledger = new VisualSourceLedger({ renderId: "t" });
-    ensureCuratedAssetLineageOn(ledger, { asset: { id: ASSET }, archiveName: "ww2", score: 9 }, 1, 6);
-    if (markEligible) ledger.markEligible(CLIP, KEY, "vision_gate:archive");
-    bindLineageLedger(a, ledger);
-    bindContentKeyResolver(a, () => KEY);
-    recordClipAdopt(a, 1, 6, "beat", CLIP, "archive");
-    return a;
-  };
-
-  /** A clip that never became eligible is still reported, key or no key. */
-  it("an adoption the guard would refuse is still unbacked", () => {
-    const line = formatAdoptionEvidence(auditFor(false)).join("\n");
-    expect(line).toContain("withoutEligibility=1");
-    expect(line).toContain("REAL_FUNNEL_ADOPTION_WITHOUT_ELIGIBILITY");
-  });
-
-  it("a resolver that throws leaves the answer exactly as it was", () => {
-    const a: ClipAdoptEntry[] = [];
-    const ledger = new VisualSourceLedger({ renderId: "t" });
-    ensureCuratedAssetLineageOn(ledger, { asset: { id: ASSET }, archiveName: "ww2", score: 9 }, 1, 6);
-    ledger.markEligible(CLIP, KEY, "vision_gate:archive");
-    bindLineageLedger(a, ledger);
-    bindContentKeyResolver(a, () => {
-      throw new Error("no key");
-    });
-    expect(() => recordClipAdopt(a, 1, 6, "beat", CLIP, "archive")).not.toThrow();
-    expect(formatAdoptionEvidence(a).join("\n")).toContain("withoutEligibility=1");
-  });
-
-  it("an unbound resolver behaves as before the change", () => {
-    expect(formatAdoptionEvidence(audit(false)).join("\n")).toContain("withoutEligibility=1");
-  });
-
-  const audit = (bindResolver: boolean): ClipAdoptEntry[] => {
-    const a: ClipAdoptEntry[] = [];
-    const ledger = new VisualSourceLedger({ renderId: "t" });
-    ensureCuratedAssetLineageOn(ledger, { asset: { id: ASSET }, archiveName: "ww2", score: 9 }, 1, 6);
-    ledger.markEligible(CLIP, KEY, "vision_gate:archive");
-    bindLineageLedger(a, ledger);
-    if (bindResolver) bindContentKeyResolver(a, () => KEY);
-    recordClipAdopt(a, 1, 6, "beat", CLIP, "archive");
-    return a;
-  };
 });
 
 /* ═════════════ the render binds the resolver ═════════════ */

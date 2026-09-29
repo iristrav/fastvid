@@ -126,15 +126,3 @@ describe("§3 — legacy compose, pinned so it can only shrink", () => {
 
 /* ═══════════ §4 — the pool is the one media route's entry ═══════════ */
 
-describe("§4 — every pool caller supplies the same providers", () => {
-  it("the retrieval funnel asks YouTube and the archive — RONDE 603's repair, still wired", () => {
-    const FUNNEL = read("retrievalFunnel.ts");
-    expect(FUNNEL).toContain("youtubeSearch: req.youtubeSearch");
-    expect(FUNNEL).toContain("archiveSearch: req.archiveSearch");
-  });
-
-  it("and the pool still distinguishes 'not supplied' from 'found nothing'", () => {
-    /** RONDE 177's rule. Collapsing the two is what hid the funnel defect for six rounds. */
-    expect(read("scenePool.ts")).toContain('skipped.youtube_cc = "no_search_function_supplied";');
-  });
-});

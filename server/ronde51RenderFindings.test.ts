@@ -108,61 +108,7 @@ describe("RONDE 51 #5b — the vision query says each thing once", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 2. The adopt audit could not see most of the video
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("RONDE 51 #2 — pool providers are classified as the archives they are", () => {
-  it("counts Internet Archive, LoC, NARA and the rest as archive beats", async () => {
-    const { createClipAdoptAudit, recordClipAdopt, summarizeAdoptAudit } = await import(
-      "./clipAdoptAudit"
-    );
-    const audit = createClipAdoptAudit();
-    const sources = ["internet_archive", "loc", "nara", "nasa", "openverse", "europeana"];
-    sources.forEach((s, i) => recordClipAdopt(audit, 0, i, `b${i}`, `/w/c${i}.mp4`, s));
-    const summary = summarizeAdoptAudit(audit);
-    expect(summary.beatsFilled).toBe(sources.length);
-    // Pre-fix: every one of these matched no branch, so beatsFilled counted them and no
-    // category did — render 530 reported "beats=13 wiki=0 arch=7 stock=0".
-    expect(summary.archiveBeats).toBe(sources.length);
-    expect(summary.fallbackBeats).toBe(0);
-  });
-
-  it("does not reclassify anything that already had a category", async () => {
-    const { createClipAdoptAudit, recordClipAdopt, summarizeAdoptAudit } = await import(
-      "./clipAdoptAudit"
-    );
-    const audit = createClipAdoptAudit();
-    recordClipAdopt(audit, 0, 0, "b0", "/w/a.mp4", "pexels");
-    recordClipAdopt(audit, 0, 1, "b1", "/w/b.mp4", "wikimedia");
-    recordClipAdopt(audit, 0, 2, "b2", "/w/c.mp4", "archive");
-    recordClipAdopt(audit, 0, 3, "b3", "/w/d.mp4", "fallback");
-    const s = summarizeAdoptAudit(audit);
-    expect(s.stockBeats).toBe(1);
-    expect(s.wikiBeats).toBe(1);
-    expect(s.archiveBeats).toBe(1);
-    expect(s.fallbackBeats).toBe(1);
-  });
-});
-
 describe("RONDE 51 #2 — the pool path records its adoptions at all", () => {
-  it("the one place a pool candidate becomes the beat clip now records it", async () => {
-    const { readFileSync } = await import("fs");
-    const path = await import("path");
-    const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const idx = src.indexOf("if (poolClip) {\n          clip = poolClip;");
-    expect(idx).toBeGreaterThan(-1);
-    /**
-     * Bounded by the block's own end rather than by a character count — see the same note in
-     * ronde53FunnelAdoptAudit. The archive step now sits between the adoption and this call.
-     */
-    const block = src.slice(idx, src.indexOf("recordUse(", idx));
-    expect(block).toContain("recordClipAdopt(");
-    expect(block).toContain("dedup.clipAdoptAudit");
-    // The source must come from the candidate, never be hardcoded to a placeholder label.
-    expect(block).toMatch(/adopted\?\.source/);
-    expect(block).not.toMatch(/recordClipAdopt\([^)]*"fallback"/);
-  });
 
   it("scenePool itself still performs no auditing — the boundary stays in the pipeline", async () => {
     const { readFileSync } = await import("fs");
@@ -194,29 +140,6 @@ describe("RONDE 51 #6 — the archive thresholds sit inside the measured band", 
     const OLD_ONE = 0.75;
     expect(RENDER_530_BEAT_SCORES.filter((s) => s >= OLD_STOP)).toHaveLength(0);
     expect(RENDER_530_BEAT_SCORES.filter((s) => s >= OLD_ONE)).toHaveLength(0);
-  });
-
-  it("the new thresholds spread the same measurement across all three tiers", async () => {
-    const {
-      BEAT_ARCHIVE_STOP_THRESHOLD,
-      BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD,
-      BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD,
-    } = await import("./retrievalFunnel");
-
-    const stop = RENDER_530_BEAT_SCORES.filter((s) => s >= BEAT_ARCHIVE_STOP_THRESHOLD);
-    const one = RENDER_530_BEAT_SCORES.filter(
-      (s) => s >= BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD && s < BEAT_ARCHIVE_STOP_THRESHOLD
-    );
-    const all = RENDER_530_BEAT_SCORES.filter((s) => s < BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD);
-
-    // Each tier now carries beats. That is the property that was missing, not any exact split.
-    expect(stop.length).toBeGreaterThan(0);
-    expect(one.length).toBeGreaterThan(0);
-    expect(all.length).toBeGreaterThan(0);
-    expect(stop.length + one.length + all.length).toBe(14);
-    // And the ordering that makes the tiers mean anything at all still holds.
-    expect(BEAT_ARCHIVE_STOP_THRESHOLD).toBeGreaterThan(BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD);
-    expect(BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD).toBeGreaterThan(BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD);
   });
 });
 

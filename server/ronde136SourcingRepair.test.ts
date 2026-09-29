@@ -64,50 +64,11 @@ const readCode = (rel: string) =>
 /* ═══════════════════════ 1. Wikimedia ═══════════════════════ */
 
 describe("RONDE 136 §2 — Wikimedia asks once, not once per title", () => {
-  it("THE BUG: neither route may issue one imageinfo request per title", () => {
-    /**
-     * The N+1 is the whole defect. Both routes now build a pipe-separated `titles=` list; a return
-     * to a single-title URL inside the per-title loop is what this forbids.
-     */
-    const pipeline = readCode("server/videoPipeline.ts");
-    const start = pipeline.indexOf("const maxScan = excludeUrls ? titles.length");
-    expect(start).toBeGreaterThan(0);
-    const loop = pipeline.slice(start, pipeline.indexOf("poolForCache.push(", start));
-    expect(loop.length).toBeGreaterThan(50);
-    expect(loop, "the per-title imageinfo request is back").not.toContain("api.php?action=query&titles=");
-    expect(loop).toContain("fetchWikimediaImageInfoBatch(");
-
-    const pool = readCode("server/scenePool.ts");
-    const wiki = pool.slice(
-      pool.indexOf("async function searchWikimediaCandidates("),
-      pool.indexOf("async function searchInternetArchiveCandidates(")
-    );
-    expect(wiki.length).toBeGreaterThan(500);
-    expect(wiki).toContain('batch.join("|")');
-  });
 
   it("one request covers a whole batch, and the batch size is MediaWiki's documented cap", () => {
     // The API accepts 50 titles per call; asking for more would be silently truncated.
     expect(WIKIMEDIA_IMAGEINFO_BATCH_SIZE).toBeLessThanOrEqual(50);
     expect(WIKIMEDIA_IMAGEINFO_BATCH_SIZE).toBeGreaterThan(1);
-  });
-
-
-
-
-  it("the pool route counts ONE api call per batch, not one per title", () => {
-    /**
-     * A batched request that still reports five calls would misreport exactly the saving this
-     * change makes — and the round's own brief asks for metrics that follow the real lifecycle.
-     */
-    const wiki = readCode("server/scenePool.ts");
-    const block = wiki.slice(
-      wiki.indexOf("async function searchWikimediaCandidates("),
-      wiki.indexOf("async function searchInternetArchiveCandidates(")
-    );
-    expect(block.length).toBeGreaterThan(500);
-    expect(block).toContain("called: n === 0");
-    expect(block, "every entry counting as a call would inflate apiCalls fivefold").not.toContain("called: true");
   });
 });
 
@@ -187,9 +148,4 @@ describe("RONDE 136 §4 — the 480 bar refuses stock and spares the archive", (
     expect(minShortSideForSource("Internet Archive scene 1")).toBe(VIDEO_MIN_SHORT_SIDE_PX);
   });
 
-  it("neither number is new — both are sourcingPolicy's own bounds", () => {
-    expect(VIDEO_MIN_SHORT_SIDE_PX).toBe(144);
-    expect(VIDEO_QUALITY_BAR_SHORT_SIDE_PX).toBe(480);
-    expect(read("server/sourcingPolicy.ts")).toContain("n >= 144 && n <= 1080");
-  });
 });

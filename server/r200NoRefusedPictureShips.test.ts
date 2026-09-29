@@ -184,15 +184,6 @@ describe("R200 §3 — how often the rule took a picture away is answerable", ()
 /* ═══════════ 4. the beat looks further; it is not handed a card ═══════════ */
 
 describe("R200 §4 — a refused picture costs a candidate, not the beat", () => {
-  it("the funnel keeps every remaining route when the override is declined", () => {
-    const at = PIPE.indexOf("if (reprieveBeatClip(dedup.beatRelevance, gateReprieveWinner.clipPath");
-    expect(at).toBeGreaterThan(0);
-    // `winner` stays null, so the beat falls through to the rescue ladder, the curated archive
-    // and the research pass — exactly as a beat that found nothing would.
-    const block = PIPE.slice(at, at + 200);
-    expect(block).toContain("winner = gateReprieveWinner;");
-    expect(PIPE.slice(Math.max(0, at - 700), at)).toContain("falls through to every remaining route");
-  });
 
   it("the adopt loop moves to the next candidate rather than adopting the refused one", () => {
     const at = PIPE.indexOf("const reprieved = reprieveBeatClip(");
@@ -202,8 +193,4 @@ describe("R200 §4 — a refused picture costs a candidate, not the beat", () =>
     expect(block).toContain("continue;");
   });
 
-  it("both call sites read the answer — a returned boolean nobody reads would be the same bug", () => {
-    expect(PIPE).toContain("if (!reprieved) {");
-    expect(PIPE).toContain("if (reprieveBeatClip(dedup.beatRelevance, gateReprieveWinner.clipPath");
-  });
 });

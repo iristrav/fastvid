@@ -76,21 +76,7 @@ describe("§7 — no tier may be skipped", () => {
     });
   });
 
-  it("an admitted search marks its tier attempted — nobody has to announce it", async () => {
-    await onBeat(async () => {
-      admitProviderForTier("youtube_cc");
-      expect(currentBeatLadder()?.attempted.has("YOUTUBE")).toBe(true);
-      expect(currentBeatLadder()?.attempted.has("OPEN_SOURCES")).toBe(false);
-    });
-  });
 
-  it("a refused search does NOT mark its tier attempted", async () => {
-    /** Otherwise one refused stock call would unlock every later one. */
-    await onBeat(async () => {
-      admitProviderForTier("pexels");
-      expect(currentBeatLadder()?.attempted.has("STOCK")).toBe(false);
-    });
-  });
 });
 
 /* ═══════════ 2 — declined is not the same as not called ═══════════ */
@@ -134,28 +120,11 @@ describe("§6 — a decline is a decision, an omission is not", () => {
     });
   });
 
-  it("the three states stay three states in the line a person reads", async () => {
-    await onBeat(
-      async () => {
-        admitProviderForTier("youtube_cc");
-        const line = formatLadder(currentBeatLadder()!);
-        expect(line).toContain("1=ATTEMPTED");
-        expect(line).toContain("2=DECLINED(ARCHIVE_EMPTY)");
-        expect(line).toContain("3=NOT_REACHED");
-        expect(line).toContain("4=NOT_REACHED");
-      },
-      [{ tier: "OWN_ARCHIVE", reason: "ARCHIVE_EMPTY" }]
-    );
-  });
 });
 
 /* ═══════════ 3 — the scope, and what happens outside it ═══════════ */
 
 describe("§2 — outside a beat there is no order to enforce", () => {
-  it("a provider outside the orchestrator is always admitted", () => {
-    expect(currentBeatLadder()).toBeUndefined();
-    expect(admitProviderForTier("pexels").admitted).toBe(true);
-  });
 
   it("each beat gets its own ladder — one beat's archive does not unlock another's stock", async () => {
     await onBeat(async () => {
@@ -169,15 +138,6 @@ describe("§2 — outside a beat there is no order to enforce", () => {
     });
   });
 
-  it("the ladder is closed even when the beat throws", async () => {
-    await expect(
-      onBeat(async () => {
-        admitProviderForTier("youtube_cc");
-        throw new Error("beat failed");
-      })
-    ).rejects.toThrow("beat failed");
-    expect(currentBeatLadder(), "the scope leaked past the beat").toBeUndefined();
-  });
 
   /**
    * THE RULE THIS ROUND TIGHTENED.

@@ -29,28 +29,6 @@ function pick(id: number): CuratedCandidatePick {
   return { asset: { id }, score: 50 } as unknown as CuratedCandidatePick;
 }
 
-describe("RONDE 13 — the funnel type carries the cross-video exclude set", () => {
-  const code = codeOnly(funnelSrc);
-
-  it("RetrievalFunnelRequest declares crossVideoExcludeIds", () => {
-    expect(code).toContain("crossVideoExcludeIds?: Set<number>");
-  });
-
-  it("buildRetrievalFunnel imports and applies applyCrossVideoVarietyDegrade to the archive picks", () => {
-    expect(code).toContain("applyCrossVideoVarietyDegrade");
-    // Applied to the archive search result, guarded on a non-empty set.
-    expect(code).toContain("req.crossVideoExcludeIds && req.crossVideoExcludeIds.size > 0");
-    expect(code).toContain("applyCrossVideoVarietyDegrade(archiveSearchResult.candidates, req.crossVideoExcludeIds)");
-  });
-
-  it("the degrade runs BEFORE coverage scoring (so coverage reflects fresh material)", () => {
-    const degradeIdx = code.indexOf("applyCrossVideoVarietyDegrade(archiveSearchResult.candidates");
-    const coverageIdx = code.indexOf("computeArchiveCoverage(archivePicks");
-    expect(degradeIdx).toBeGreaterThan(-1);
-    expect(coverageIdx).toBeGreaterThan(-1);
-    expect(degradeIdx).toBeLessThan(coverageIdx);
-  });
-});
 
 describe("RONDE 13 — the pipeline feeds the exclude set into BOTH funnel call sites", () => {
   const code = codeOnly(pipelineSrc);
@@ -60,11 +38,6 @@ describe("RONDE 13 — the pipeline feeds the exclude set into BOTH funnel call 
     expect(code).toContain("getCrossVideoExcludeAssetIds(topicContext, videoId)");
   });
 
-  it("the prefetch funnel receives crossVideoExcludeIds", () => {
-    // The prefetch buildRetrievalFunnel({...}) passes the computed set.
-    const prefetchIdx = code.indexOf("crossVideoExcludeIds: crossVideoExcludeIdsForRun");
-    expect(prefetchIdx).toBeGreaterThan(-1);
-  });
 
   it("the inline funnel receives dedup.crossVideoExcludeIds", () => {
     expect(code).toContain("crossVideoExcludeIds: dedup.crossVideoExcludeIds");

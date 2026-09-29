@@ -84,18 +84,6 @@ describe("§14 — every render says which route it takes", () => {
     expect(line, "a route that ran needs no excuse").not.toContain("reason=");
   });
 
-  /** Every switch that changes what the render does is on the line, so one grep answers "how was this configured". */
-  it("reports each flag that decides the route", () => {
-    const line = formatProductionRoute(1);
-    for (const flag of ROUTE_FLAGS) {
-      const label = flag === "ENABLE_SCENE_CANDIDATE_POOL" ? "scenePool="
-        : flag === "ENABLE_YOUTUBE_SOURCING" ? "youtube="
-          : flag === "AI_DIRECTOR" ? "aiDirector="
-            : flag === "SEARCH_GATE_STRICT" ? "searchGateStrict="
-              : `${flag}=`;
-      expect(line, `${flag} is not reported`).toContain(label);
-    }
-  });
 
   /**
    * The values must be READ from the real predicates, not restated from a copy. A line that says

@@ -44,60 +44,6 @@ describe("RONDE 65 — the measurement that started it", () => {
   });
 });
 
-describe("RONDE 65 — a flat field is not a ranking", () => {
-  it("the exact render-531 beat no longer hands the win to the sticker", () => {
-    const scored = [
-      // In funnel ranking order: the archive material the funnel itself ranked first.
-      cand("signed-photograph-of-adolf-hitler", "wikimedia", 8),
-      cand("bundesarchiv-183", "wikimedia", 8),
-      cand("white-lives-matter-montana", "internet_archive", 9),
-      cand("faces-of-ancient-europe", "internet_archive", 9),
-    ];
-    // One point across the whole field is noise, so the funnel's own order stands.
-    expect(pickBestFunnelCandidate(scored)?.candidate.id).toBe("signed-photograph-of-adolf-hitler");
-  });
-
-  it("a real difference is still respected", () => {
-    const scored = [cand("a", "archive", 4), cand("b", "archive", 9)];
-    expect(pickBestFunnelCandidate(scored)?.candidate.id).toBe("b");
-  });
-
-  it("exactly one point apart is noise; two points is a signal", () => {
-    expect(pickBestFunnelCandidate([cand("a", "archive", 8), cand("b", "archive", 9)])?.candidate.id)
-      .toBe("a");
-    expect(pickBestFunnelCandidate([cand("a", "archive", 8), cand("b", "archive", 10)])?.candidate.id)
-      .toBe("b");
-  });
-
-  it("a single candidate is unaffected", () => {
-    expect(pickBestFunnelCandidate([cand("only", "archive", 3)])?.candidate.id).toBe("only");
-  });
-
-  it("the non-stock tier still wins on a flat field — provenance is a real signal", () => {
-    const scored = [cand("stockish", "pexels", 9), cand("archival", "archive", 8)];
-    expect(pickBestFunnelCandidate(scored)?.candidate.id).toBe("archival");
-  });
-
-  it("and stock can still win when the gap is genuinely large", () => {
-    const scored = [cand("archival", "archive", 3), cand("stockish", "pexels", 10)];
-    expect(pickBestFunnelCandidate(scored)?.candidate.id).toBe("stockish");
-  });
-
-  it("the refusal set and the used set still do their jobs on a flat field", () => {
-    const scored = [cand("a", "archive", 8), cand("b", "archive", 9)];
-    expect(pickBestFunnelCandidate(scored, new Set(["a"]))?.candidate.id).toBe("b");
-    expect(pickBestFunnelCandidate(scored, new Set(), new Set(["a"]))?.candidate.id).toBe("b");
-    expect(pickBestFunnelCandidate(scored, new Set(), new Set(["a", "b"]))).toBeNull();
-  });
-
-  it("the threshold is tunable, and a 0 restores the old ranking exactly", async () => {
-    vi.resetModules();
-    vi.stubEnv("NON_DISCRIMINATING_SCORE_SPREAD", "0");
-    const { pickBestFunnelCandidate: pick } = await import("./retrievalFunnel");
-    const scored = [cand("a", "archive", 8), cand("b", "archive", 9)];
-    expect(pick(scored)?.candidate.id).toBe("b");
-  });
-});
 
 describe("RONDE 65 — the player API, tried before the page", () => {
   const playerResponse = (lengthSeconds = 2400, tracks = 1) =>

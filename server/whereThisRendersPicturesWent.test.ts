@@ -276,9 +276,13 @@ describe("P0-9 §4 — the boundary of this proof", () => {
     const removed = PIPE.match(/"extended_removed"|"not_chosen"/g)?.length ?? 0;
     /** One SELECTED site: the other was in the curated-only branch of `adoptArchiveBeatClip`. */
     expect(selected, "nothing records SELECTED any more").toBeGreaterThanOrEqual(1);
-    expect(adopted, "nothing records ADOPTED any more").toBeGreaterThanOrEqual(2);
-    /** One REMOVED reason left: `extended_removed` belonged to the rescue ladder's `extendLastClip`. */
-    expect(removed, "nothing records REMOVED any more").toBeGreaterThanOrEqual(1);
+    /** The scene pool and funnel routes left when the three candidate systems became one. */
+    expect(adopted, "nothing records ADOPTED any more").toBeGreaterThanOrEqual(1);
+    /**
+     * No REMOVED reason is left: `extended_removed` left with the rescue ladder and `not_chosen` with
+     * the funnel, the last route that picked one winner out of several downloads.
+     */
+    expect(removed).toBe(0);
     expect(PIPE).toContain("recordAssetOutcome(");
   });
 

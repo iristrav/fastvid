@@ -178,16 +178,6 @@ describe("adoptClip registers a curated pick in both registries", () => {
     expect(mark).toBeGreaterThan(key);
     expect(b.slice(key, mark)).not.toMatch(/\b(if|return|continue)\b/);
   });
-
-  /**
-   * The funnel really can adopt a curated row — otherwise this whole block would be dead code
-   * defended by a dead test.
-   */
-  it("the funnel's own download branch produces curated clips", () => {
-    const at = PIPE.indexOf("if (candidate.archivePick) {");
-    expect(at).toBeGreaterThan(-1);
-    expect(PIPE.slice(at, at + 2600)).toContain("prepareCuratedArchiveClip(");
-  });
 });
 
 /* ═══════════════ the ladder: never buy what this beat's push will refuse ═══════════════ */

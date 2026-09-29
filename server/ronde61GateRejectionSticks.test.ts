@@ -43,59 +43,6 @@ const cand = (id: string, source: string, score: number) =>
     visionResult: { pass: true, worstScore10: score },
   }) as unknown as Parameters<typeof pickBestFunnelCandidate>[0][number];
 
-describe("RONDE 61 — a refused candidate stays refused", () => {
-  it("the sole passer on a beat is NOT handed back after it is refused", () => {
-    const scored = [cand("white-lives-matter-montana", "internet_archive", 9)];
-    const used = new Set(["white-lives-matter-montana"]);
-    const refused = new Set(["white-lives-matter-montana"]);
-
-    // The old behaviour, still intact for the soft used-set: variety yields to availability.
-    expect(pickBestFunnelCandidate(scored, used)?.candidate.id).toBe("white-lives-matter-montana");
-    // The new hard exclusion does not yield. The beat gets nothing and falls through.
-    expect(pickBestFunnelCandidate(scored, used, refused)).toBeNull();
-  });
-
-  it("a refused candidate steps aside for one that was not refused", () => {
-    const scored = [
-      cand("bundesarchiv-marburg", "wikimedia", 9),
-      cand("signed-photograph-of-adolf-hitler", "wikimedia", 4),
-    ];
-    // Untouched, the higher score wins — which in render 532 was the wrong picture.
-    expect(pickBestFunnelCandidate(scored)?.candidate.id).toBe("bundesarchiv-marburg");
-    // Refused, the beat takes the genuine Hitler photograph even though it scores lower.
-    expect(
-      pickBestFunnelCandidate(scored, new Set(), new Set(["bundesarchiv-marburg"]))?.candidate.id
-    ).toBe("signed-photograph-of-adolf-hitler");
-  });
-
-  it("refusing every candidate returns null rather than the least-bad one", () => {
-    const scored = [cand("a", "pexels", 9), cand("b", "archive", 8), cand("c", "wikimedia", 7)];
-    expect(pickBestFunnelCandidate(scored, new Set(), new Set(["a", "b", "c"]))).toBeNull();
-  });
-
-  it("the soft used-set still behaves exactly as before when nothing is refused", () => {
-    const scored = [cand("a", "archive", 9), cand("b", "archive", 8)];
-    // Prefers the unused one...
-    expect(pickBestFunnelCandidate(scored, new Set(["a"]))?.candidate.id).toBe("b");
-    // ...and restores the full set once everything has been used, so a beat is never starved.
-    expect(pickBestFunnelCandidate(scored, new Set(["a", "b"]))?.candidate.id).toBe("a");
-  });
-
-  it("an empty refusal set changes nothing", () => {
-    const scored = [cand("a", "archive", 9), cand("b", "archive", 8)];
-    expect(pickBestFunnelCandidate(scored, new Set(), new Set())?.candidate.id).toBe("a");
-    expect(pickBestFunnelCandidate(scored, undefined, undefined)?.candidate.id).toBe("a");
-  });
-
-  it("a candidate that failed VisionGate is still excluded, refusals aside", () => {
-    const failing = {
-      candidate: { id: "z", source: "archive", title: "z" },
-      clipPath: "/tmp/z.mp4",
-      visionResult: { pass: false, worstScore10: 10 },
-    } as unknown as Parameters<typeof pickBestFunnelCandidate>[0][number];
-    expect(pickBestFunnelCandidate([failing], new Set(), new Set())).toBeNull();
-  });
-});
 
 describe("RONDE 61 — the pipeline records and honours the refusal", () => {
   const SRC = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
@@ -106,69 +53,8 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
     expect(src).toContain("beatImageRejectedIds: new Set<string>(),");
   });
 
-  it("every pick on the beat passes the refusal set, including the first", () => {
-    const src = SRC();
-    const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    expect(idx).toBeGreaterThan(-1);
-    // RONDE 142 widened this again: the judging loop and the research pass were split so the
-    // research pass is reachable for a beat with no candidate, which lengthened the block.
-    // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
-    // block, which pushed the reprieve check past the old edge. The window says "in the
-    // funnel's adopt block"; no assertion below it changed.
-    // RONDE 168: bounded by the adopt block's own end marker. Widened at 131, 142 and 168 — a
-    // fixed +N cannot survive the block growing, and it says nothing the marker does not.
-    const end = src.indexOf("[VisualDiscovery] audit line", idx);
-    expect(end).toBeGreaterThan(idx);
-    const block = src.slice(idx, end);
-    const picks = [...block.matchAll(/pickBestFunnelCandidate\(\s*\n?\s*scored, dedup\.usedFunnelCandidateIds, dedup\.beatImageRejectedIds/g)];
-    expect(picks.length).toBe(2);
-    // The bare two-argument call that could hand a refused clip back is gone from this block.
-    expect(block).not.toMatch(/pickBestFunnelCandidate\(scored, dedup\.usedFunnelCandidateIds\)/);
-  });
 
-  it("a refusal is added to the hard set, not only to the soft one", () => {
-    const src = SRC();
-    const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    // RONDE 142 widened this again: the judging loop and the research pass were split so the
-    // research pass is reachable for a beat with no candidate, which lengthened the block.
-    // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
-    // block, which pushed the reprieve check past the old edge. The window says "in the
-    // funnel's adopt block"; no assertion below it changed.
-    // RONDE 168: bounded by the adopt block's own end marker. Widened at 131, 142 and 168 — a
-    // fixed +N cannot survive the block growing, and it says nothing the marker does not.
-    const blockEnd = src.indexOf("[VisualDiscovery] audit line", idx);
-    expect(blockEnd).toBeGreaterThan(idx);
-    const block = src.slice(idx, blockEnd);
-    expect(block).toContain("dedup.beatImageRejectedIds.add(winner.candidate.id);");
-  });
 
-  /**
-   * RONDE 67 amends this. Dropping the winner let the beat fall through to another source, which
-   * is right when another source has something — and render 533 showed what it costs when none
-   * does: eight beats ended on a grey placeholder, which matches the narration worse than the
-   * imperfect picture that was refused. The refusal still removes it from THIS decision; it is
-   * now held and used only if nothing else is found anywhere.
-   */
-  it("running out of looks releases the winner, but keeps it as a last resort", () => {
-    const src = SRC();
-    const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    // RONDE 142 widened this again: the judging loop and the research pass were split so the
-    // research pass is reachable for a beat with no candidate, which lengthened the block.
-    // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
-    // block, which pushed the reprieve check past the old edge. The window says "in the
-    // funnel's adopt block"; no assertion below it changed.
-    // RONDE 168: bounded by the adopt block's own end marker. Widened at 131, 142 and 168 — a
-    // fixed +N cannot survive the block growing, and it says nothing the marker does not.
-    const blockEnd = src.indexOf("[VisualDiscovery] audit line", idx);
-    expect(blockEnd).toBeGreaterThan(idx);
-    const block = src.slice(idx, blockEnd);
-    expect(block).toContain("if (winner && dedup.beatImageRejectedIds.has(winner.candidate.id))");
-    expect(block).toContain("no acceptable candidate");
-    // Still nulled here, so every other route is tried first — that half is unchanged.
-    expect(block).toMatch(/no acceptable candidate[\s\S]{0,320}winner = null;/);
-    // And no longer thrown away.
-    expect(block).toMatch(/gateReprieveWinner = winner;[\s\S]{0,80}winner = null;/);
-  });
 });
 
 /**

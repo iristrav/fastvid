@@ -85,110 +85,9 @@ function withCachedRefusal(s: SubjectGateScope): SubjectGateScope {
   return s;
 }
 
-/* ═══════════════════════ the scope, and what it does without one ═══════════════════════ */
-
-describe("the screen every download route passes through", () => {
-  /** Outside a render nothing changes — no scope, no judgement, no counter moved. */
-  it("allows and counts nothing when no scope is open", async () => {
-    const decision = await screenCandidateBeforeDownload({
-      facts: FACTS,
-      sceneIndex: 0,
-      beatIndex: 0,
-    });
-    expect(decision.allowed).toBe(true);
-    expect(decision.evaluated).toBe(false);
-    expect(decision.reason).toContain("no subject-gate scope");
-  });
-
-  /**
-   * A beat the render cannot place is a DECLINE, counted. `asked=0 declined=0` was how this whole
-   * defect looked in the log: indistinguishable from a render with nothing to screen.
-   */
-  it("declines audibly when the beat cannot be placed", async () => {
-    const s = scope({ contextFor: () => undefined });
-    const decision = await withSubjectGateScope(s, () =>
-      screenCandidateBeforeDownload({ facts: FACTS, sceneIndex: 1, beatIndex: 2 })
-    );
-    expect(decision.allowed, "an unplaceable beat must still let the render continue").toBe(true);
-    expect(decision.reason).toContain("s1b2");
-    expect(s.state.skipped, "the decline was not counted, so the log reads as idle").toBe(1);
-  });
-
-  /** The refusal reaches the caller as a refusal, not as an advisory. */
-  it("refuses the candidate the gate was built for", async () => {
-    const s = withCachedRefusal(scope());
-    const decision = await withSubjectGateScope(s, () =>
-      screenCandidateBeforeDownload({ facts: FACTS, sceneIndex: 0, beatIndex: 0 })
-    );
-    expect(decision.allowed).toBe(false);
-    expect(decision.reason).toContain("does not belong");
-  });
-
-  /** And is recorded in the render's own reject audit, through the scope. */
-  it("reports the refusal to the render, not to the download site", async () => {
-    const onRefusal = vi.fn();
-    const s = withCachedRefusal(scope({ onRefusal }));
-    await withSubjectGateScope(s, () =>
-      screenCandidateBeforeDownload({ facts: FACTS, sceneIndex: 3, beatIndex: 4 })
-    );
-    expect(onRefusal).toHaveBeenCalledTimes(1);
-    expect(onRefusal.mock.calls[0]![0]).toMatchObject({
-      sceneIndex: 3,
-      beatIndex: 4,
-      facts: { assetId: FACTS.assetId },
-    });
-  });
-
-  /** A candidate that passes is not reported as a refusal. */
-  it("says nothing about a candidate it lets through", async () => {
-    const onRefusal = vi.fn();
-    const s = scope({ onRefusal });
-    s.state.seen.set(candidateSubjectKey(FACTS.id, BEAT), {
-      verdict: "plausible",
-      allowed: true,
-      reason: "could belong",
-      evaluated: true,
-    });
-    const decision = await withSubjectGateScope(s, () =>
-      screenCandidateBeforeDownload({ facts: FACTS, sceneIndex: 0, beatIndex: 0 })
-    );
-    expect(decision.allowed).toBe(true);
-    expect(onRefusal).not.toHaveBeenCalled();
-  });
-
-  /** Scopes do not leak between renders — one video's refusal cannot ban an asset for another. */
-  it("does not outlive its own scope", async () => {
-    const s = withCachedRefusal(scope());
-    await withSubjectGateScope(s, () =>
-      screenCandidateBeforeDownload({ facts: FACTS, sceneIndex: 0, beatIndex: 0 })
-    );
-    const after = await screenCandidateBeforeDownload({ facts: FACTS, sceneIndex: 0, beatIndex: 0 });
-    expect(after.allowed, "a previous render's scope is still in force").toBe(true);
-    expect(after.reason).toContain("no subject-gate scope");
-  });
-});
-
 /* ═══════════════════════ it is at the download, not at a caller ═══════════════════════ */
 
 describe("the check sits where the bytes are fetched", () => {
-  /** The chokepoint: no route can reach a pool candidate's bytes without passing this. */
-  it("downloadAndTrimPoolCandidate screens before anything else", () => {
-    const at = CODE.indexOf("export async function downloadAndTrimPoolCandidate(");
-    expect(at, "the download chokepoint has moved").toBeGreaterThan(-1);
-    const body = CODE.slice(at, at + 3000);
-    expect(body, "the pool route downloads without a subject screen again").toContain(
-      "screenCandidateBeforeDownload({"
-    );
-    const screen = body.indexOf("screenCandidateBeforeDownload({");
-    const refusal = body.indexOf("if (!subjectScreen.allowed)");
-    expect(refusal, "the screen's answer is computed and ignored").toBeGreaterThan(screen);
-    /** Before the filename is even built, so nothing is written for a refused candidate. */
-    const firstWork = body.indexOf("const safeId =");
-    expect(
-      screen,
-      "the screen runs after the download has already started preparing"
-    ).toBeLessThan(firstWork);
-  });
 
   /**
    * ONE expression of the decision. A second direct call to the judge is exactly how the funnel
@@ -201,17 +100,6 @@ describe("the check sits where the bytes are fetched", () => {
     ).not.toContain("judgeCandidateSubject(");
   });
 
-  /** The funnel still screens early — but through the same door. */
-  it("the funnel asks the same question, not its own", () => {
-    const at = CODE.indexOf("const subjectVerdicts = await Promise.all(");
-    expect(at, "the funnel's parallel pre-screen is gone").toBeGreaterThan(-1);
-    const block = CODE.slice(at, at + 1200);
-    expect(block).toContain("screenCandidateBeforeDownload({");
-    /** Still in parallel — RONDE 5 FIX 6's budget finding applies to this loop too. */
-    expect(block, "the pre-screen went sequential and will eat the beat budget").toContain(
-      "toScore.map(async (candidate)"
-    );
-  });
 });
 
 /* ═══════════════════════ the render opens the scope, once ═══════════════════════ */

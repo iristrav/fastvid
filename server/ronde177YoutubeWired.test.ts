@@ -36,9 +36,6 @@ function poolCallArgs(): string[] {
 }
 
 describe("R177 — every production pool call passes the YouTube search", () => {
-  it("there is more than one call site, so this is worth checking", () => {
-    expect(poolCallArgs().length).toBeGreaterThanOrEqual(2);
-  });
 
   /**
    * The assertion R176's audit turned into a requirement. One call site without the argument is a
@@ -54,47 +51,6 @@ describe("R177 — every production pool call passes the YouTube search", () => 
     for (const args of poolCallArgs()) {
       expect(args).toContain("scenePoolYoutubeSearch(");
     }
-  });
-});
-
-describe("R177 — the helper is honest about why YouTube is absent", () => {
-  function helperBody(): string {
-    const at = SRC.indexOf("function scenePoolYoutubeSearch(");
-    expect(at, "the shared helper is gone").toBeGreaterThan(-1);
-    return SRC.slice(at, SRC.indexOf("\n}", at));
-  }
-
-  /**
-   * `undefined` and `async () => []` are different answers. An absent function is recorded by the
-   * pool as `no_search_function_supplied` — a configuration fact — while a function returning
-   * nothing is a search that ran and found nothing. Collapsing them loses the one distinction that
-   * makes "why was YouTube not used for this beat" answerable.
-   */
-  it("returns undefined when YouTube is not configured, rather than an empty search", () => {
-    const body = helperBody();
-    expect(body).toContain("return undefined");
-    expect(body, "an empty-result stub would hide the difference").not.toMatch(/=>\s*\[\]/);
-    expect(body, "an empty-result stub would hide the difference").not.toMatch(/Promise\.resolve\(\[\]\)/);
-  });
-
-  it("checks both the feature flag and the key", () => {
-    const body = helperBody();
-    expect(body).toContain("youtubeSourcingEnabled()");
-    expect(body).toContain("YOUTUBE_API_KEY");
-  });
-
-  /** RULE: no second YouTube client. The helper must delegate to the existing search. */
-  it("delegates to the existing search client and builds no second one", () => {
-    const body = helperBody();
-    expect(body).toContain("searchYoutubeVideoCandidates(");
-    for (const forbidden of ["googleapis.com", "fetch(", "new URL(", "RAPIDAPI"]) {
-      expect(body, forbidden).not.toContain(forbidden);
-    }
-  });
-
-  /** The render's sourcing cache travels with it, so quota and cooldown stay per-render. */
-  it("passes the render's own sourcing cache through", () => {
-    expect(helperBody()).toContain("sourcingCache");
   });
 });
 

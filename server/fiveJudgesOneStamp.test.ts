@@ -53,7 +53,8 @@ describe("§1 — the five judges", () => {
      */
     const calls = [...PIPE.matchAll(/(?<!function )judgeBeatClipRelevance\(\s*(?:dedup|relevance\.dedup)/g)];
     /** Three — `generateGuaranteedBeatClip` and `beatClipPassesVisionGate` were deleted with the routes that used them. */
-    expect(calls.length, "a judge appeared or vanished — check it reaches the stamp").toBe(3);
+    /** The scene pool and funnel routes left when the three candidate systems became one. */
+    expect(calls.length, "a judge appeared or vanished — check it reaches the stamp").toBe(2);
   });
 
   it("THE STAMP IS INSIDE THE JUDGE, so all five reach it", () => {

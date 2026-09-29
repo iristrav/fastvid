@@ -374,7 +374,8 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
      * spend AND its verdict and then calls `checkBeatRelevance`. Counting the wrapper is counting
      * the same routes; counting the raw call would now find only the wrapper's own.
      */
-    expect(SRC.split("judgeBeatClipRelevance(").length - 1).toBeGreaterThanOrEqual(4);
+    /** The scene pool and funnel routes left when the three candidate systems became one. */
+    expect(SRC.split("judgeBeatClipRelevance(").length - 1).toBeGreaterThanOrEqual(3);
     expect(
       SRC.split("await checkBeatRelevance({").length - 1,
       "a route reaches the gate without going through the recorder"

@@ -47,46 +47,6 @@ const attempt = (): string => {
   return PIPE.slice(at, PIPE.indexOf("\n}\n", at));
 };
 
-describe("1. the cap is the measured one, not a number that looked reasonable", () => {
-  it("defaults to 45 seconds", () => {
-    expect(poolDownloadTotalTimeoutMs()).toBe(45_000);
-  });
-
-  /** Four times the slowest download that has ever completed, so it cuts nothing that works. */
-  it("is far above every completed download ever measured", () => {
-    expect(poolDownloadTotalTimeoutMs()).toBeGreaterThan(11_400 * 3);
-  });
-
-  /** And below half the retrieval budget, so one stuck transfer cannot take the scene. */
-  it("is under half the 96-second retrieval budget", () => {
-    expect(poolDownloadTotalTimeoutMs()).toBeLessThan(96_000 / 2);
-  });
-
-  it("can be retuned without a code change", () => {
-    vi.stubEnv("POOL_DOWNLOAD_TOTAL_TIMEOUT_MS", "60000");
-    expect(poolDownloadTotalTimeoutMs()).toBe(60_000);
-    vi.unstubAllEnvs();
-  });
-
-  /**
-   * The floor sits above the slowest sub-step ever recorded (trim, 7.6s). Below that the cap would
-   * start cutting transfers that were going to arrive — which is the defect, not the fix.
-   */
-  it("cannot be set low enough to cut a working download", () => {
-    for (const bad of ["1", "5000", "14999", "-1", "nonsense"]) {
-      vi.stubEnv("POOL_DOWNLOAD_TOTAL_TIMEOUT_MS", bad);
-      expect(poolDownloadTotalTimeoutMs(), bad).toBeGreaterThanOrEqual(15_000);
-    }
-    vi.unstubAllEnvs();
-  });
-
-  it("nor absurdly high", () => {
-    vi.stubEnv("POOL_DOWNLOAD_TOTAL_TIMEOUT_MS", "9999999");
-    expect(poolDownloadTotalTimeoutMs()).toBe(45_000);
-    vi.unstubAllEnvs();
-  });
-});
-
 describe("2. it is a TOTAL clock, and the idle timeout is left alone", () => {
   /**
    * The idle timeout answers "has this stopped delivering". Its own comment argues, correctly, that
@@ -95,67 +55,5 @@ describe("2. it is a TOTAL clock, and the idle timeout is left alone", () => {
    */
   it("the stall timeout is unchanged at 30s", () => {
     expect(downloadStallTimeoutMs()).toBe(30_000);
-  });
-
-  it("and they are different numbers, measuring different things", () => {
-    expect(poolDownloadTotalTimeoutMs()).not.toBe(downloadStallTimeoutMs());
-  });
-});
-
-describe("3. firing it actually cancels, rather than abandoning the transfer", () => {
-  /**
-   * `fetchWithTimeout`'s own comment records what orphaned downloads cost this pipeline: a detached
-   * fetch outliving its render and crashing on ENOENT when the workDir it was writing into had
-   * already been deleted. A clock that only stops WAITING would reproduce exactly that.
-   */
-  it("the clock's signal is threaded into the fetch", () => {
-    const body = attempt();
-    expect(body).toContain("const totalClock = new AbortController()");
-    expect(body).toMatch(/AbortSignal\.any\(\[AbortSignal\.timeout\(22_000\), totalClock\.signal\]\)/);
-  });
-
-  /** The inner abort is the first line of defence and keeps its own budget. */
-  it("the 22-second abort is still there, first", () => {
-    expect(attempt()).toContain("AbortSignal.timeout(22_000)");
-  });
-
-  /**
-   * ffprobe and ffmpeg are child processes; an AbortSignal does not reach them. So the steps after
-   * the transfer are CHECKED rather than raced — otherwise a clock that fired mid-download would
-   * still be followed by a trim nobody bounded.
-   */
-  it("the steps a signal cannot interrupt are checked instead", () => {
-    const body = attempt();
-    expect(body).toContain('if (outOfTime("ffprobe")) return null;');
-    expect(body).toContain('if (outOfTime("trim")) return null;');
-  });
-
-  /** A timer left armed on a worker that outlives renders is a leak, and this worker does. */
-  it("the timer is cleared in the finally that runs on every exit", () => {
-    const body = attempt();
-    const fin = body.lastIndexOf("} finally {");
-    expect(fin).toBeGreaterThan(0);
-    expect(body.slice(fin)).toContain("clearTimeout(totalClockTimer)");
-  });
-});
-
-describe("4. a render can prove it happened", () => {
-  /**
-   * The whole reason this defect survived so long is that nothing said it. A beat simply stopped,
-   * and the only trace was a heartbeat counting upward that nobody was reading.
-   */
-  it("abandoning says so, with the source and the elapsed cap", () => {
-    const body = attempt();
-    expect(body).toContain("ABANDONED src=");
-    expect(body).toContain("cancelled so the beat keeps its budget");
-  });
-
-  it("and stopping before a later step says which step", () => {
-    expect(attempt()).toContain("stopping before ${step}");
-  });
-
-  /** Filed as its own outcome, so it can never be confused with a provider that answered badly. */
-  it("the outcome is recorded under its own name", () => {
-    expect(attempt()).toContain('arrivalFailure = "download_exceeded_total_budget"');
   });
 });

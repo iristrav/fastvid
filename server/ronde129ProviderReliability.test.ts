@@ -115,13 +115,6 @@ describe("RONDE 129 — Wikimedia stands down on the first 429, not the third", 
 
 /* ═══════════ 4. the fallback ladder ═══════════ */
 
-describe("RONDE 129 — the colour fallback no longer retries a cancelled render", () => {
-
-  it("the retry is budget-aware — the tracker can now be asked", () => {
-    expect(src("renderBudgetTracker.ts")).toContain("remainingMs(): number {");
-    expect(src("videoPipeline.ts")).toContain("remainingBudgetMs: get_activeBudgetTracker()?.remainingMs?.()");
-  });
-});
 
 /* ═══════════ 5. nothing earlier is disturbed ═══════════ */
 

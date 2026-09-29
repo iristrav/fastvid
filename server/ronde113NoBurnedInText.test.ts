@@ -104,7 +104,6 @@ describe("RONDE 113 — the default is no text", () => {
 describe("RONDE 113 — every text engine is held off", () => {
   const gates: Array<[string, () => Promise<boolean>]> = [
     ["editorialGraphics", async () => (await import("./editorialGraphicsEngine")).editorialGraphicsEnabled()],
-    ["screenLabels", async () => (await import("./sourcingPolicy")).screenLabelsEnabled()],
     ["facelessSubtitles", async () => (await import("./sourcingPolicy")).facelessSubtitlesEnabled()],
     ["extraOnScreenText", async () => (await import("./sourcingPolicy")).extraOnScreenTextEnabled()],
     ["motionGraphics", async () => (await import("./sourcingPolicy")).motionGraphicsInVideosEnabled()],

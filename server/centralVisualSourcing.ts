@@ -101,11 +101,6 @@ export type BeatSourcingLadder = {
 
 const ladderStore = new AsyncLocalStorage<BeatSourcingLadder>();
 
-/** The beat or scene currently being sourced, or undefined outside any scope. */
-export function currentBeatLadder(): BeatSourcingLadder | undefined {
-  return ladderStore.getStore();
-}
-
 function ladderKey(renderId: string, sceneIndex: number, beatIndex: number): string {
   return `${renderId}|s${sceneIndex}|b${beatIndex}`;
 }
@@ -404,50 +399,6 @@ export function forgetRenderSourcing(renderId: string): void {
   forgetSceneDiscovery(renderId);
 }
 
-/** The ladder a beat walked, whether or not it is currently open. For tests and audits. */
-export function rememberedLadderFor(
-  renderId: string,
-  sceneIndex: number,
-  beatIndex: number
-): BeatSourcingLadder | undefined {
-  return rememberedBeatLadders.get(ladderKey(renderId, sceneIndex, beatIndex));
-}
-
-/**
- * Open a SCENE scope around a funnel or pool build.
- *
- * Order is not enforced here and that is the point: this asks many providers at once for a whole
- * scene, so there is no lower tier running "instead of" a higher one. What it does is write down
- * which tiers were really asked, so every beat of the scene starts from that fact.
- */
-export async function runSceneVisualDiscovery<T>(
-  params: { renderId: string; sceneIndex: number; declined?: readonly TierDecline[] },
-  run: () => Promise<T>
-): Promise<T> {
-  const ladder = newLadder("scene", {
-    renderId: params.renderId,
-    sceneIndex: params.sceneIndex,
-    beatIndex: -1,
-    declined: params.declined,
-  });
-  try {
-    return await ladderStore.run(ladder, run);
-  } finally {
-    const key = ladderKey(params.renderId, params.sceneIndex, -1);
-    const prior = sceneDiscovery.get(key);
-    /**
-     * Merged, not replaced. A scene can be discovered more than once — a prefetch and an inline
-     * build, a rebuild after a starved scene — and the second run forgetting the first would throw
-     * away attempts that really happened.
-     */
-    const merged: SceneDiscoveryRecord = prior ?? { attempted: new Set(), declined: new Map() };
-    for (const t of ladder.attempted) merged.attempted.add(t);
-    for (const [t, reason] of ladder.declined) if (!merged.declined.has(t)) merged.declined.set(t, reason);
-    sceneDiscovery.set(key, merged);
-    console.log(formatLadder(ladder));
-  }
-}
-
 /**
  * Record that the caller has decided a tier is unavailable.
  *
@@ -499,15 +450,6 @@ export function declineTiersNotServedBy(providers: readonly string[], route: str
   }
 }
 
-/**
- * The one reason a tier may be declined for running out of clock rather than out of material.
- *
- * Kept as a constant so the budget path cannot quietly reach for a reason that reads like a
- * provider verdict. A tier the render had no time to ask is not a tier that had nothing to give,
- * and a log that cannot tell those apart is a log that will be used to justify the wrong fix.
- */
-export const BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED";
-
 /** Record that a tier was genuinely attempted, for a provider that does not pass the search gate. */
 export function noteTierAttempted(tier: SourcingTier, provider: string): void {
   const ladder = ladderStore.getStore();
@@ -533,15 +475,6 @@ export function noteTierAttempted(tier: SourcingTier, provider: string): void {
  * legitimately has no scope, so this is a counter and not a refusal.
  */
 const unscopedSearches = new Map<string, number>();
-
-/** How many provider searches ran with no sourcing scope, by provider. */
-export function unscopedProviderSearches(): Record<string, number> {
-  return Object.fromEntries([...unscopedSearches].sort((a, b) => b[1] - a[1]));
-}
-
-export function resetUnscopedProviderSearches(): void {
-  unscopedSearches.clear();
-}
 
 /* ═══════════════════════ the question the gate asks ═══════════════════════ */
 
@@ -639,21 +572,6 @@ export function admitProviderForTier(provider: string): TierAdmission {
   }
   noteTierAttempted(tier, provider);
   return { admitted: true };
-}
-
-/**
- * May a candidate ALREADY FOUND by a scene-level pool be adopted for this beat?
- *
- * The funnel and the pool find their candidates one scope up, so by the time a beat picks one
- * there is no provider search left for the gate to refuse — the network call happened for the
- * scene. This is the same question asked at the other end of that: the beat is about to spend this
- * candidate's tier, so the ladder gets its say before the download starts.
- *
- * Deliberately NOT a second rule. It calls `admitProviderForTier`, so a change to the ladder can
- * never apply to searches and miss adoptions.
- */
-export function admitPoolCandidateTier(source: string): TierAdmission {
-  return admitProviderForTier(source);
 }
 
 /* ═══════════════════════ the end-of-beat line ═══════════════════════ */

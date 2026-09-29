@@ -40,22 +40,6 @@ function stripComments(src: string): string {
 const WORKER_CODE = stripComments(WORKER);
 const PROBE = readFileSync(join(__dirname, "youtubeEgressProbe.ts"), "utf8");
 
-/** The scene-pool adoption block, bounded so the assertions cannot wander. */
-const POOL = (() => {
-  const at = PIPELINE.indexOf("const adopted = poolCandidates.find(");
-  expect(at, "the pool adoption block is gone").toBeGreaterThan(0);
-  const end = PIPELINE.indexOf("recordUse(", at);
-  expect(end).toBeGreaterThan(at);
-  return PIPELINE.slice(at, end);
-})();
-
-/** The funnel's archive block. */
-const FUNNEL = (() => {
-  const at = PIPELINE.indexOf("if (archiveEligible && funnelClip && winningExternalCandidate) {");
-  expect(at, "the funnel archive block is gone").toBeGreaterThan(0);
-  return PIPELINE.slice(at, at + 700);
-})();
-
 /** The one shared wrapper both routes go through. */
 const WRAPPER = (() => {
   const at = PIPELINE.indexOf("async function storeExternalClipForTimeline(params: {");
@@ -66,26 +50,6 @@ const WRAPPER = (() => {
 })();
 
 describe("Test 1 — a scene-pool external winner is archived before it is adopted", () => {
-  it("the pool route calls the shared store, and awaits it", () => {
-    expect(POOL).toContain("await storeExternalClipForTimeline({");
-    expect(POOL).toContain('route: "pool",');
-    expect(POOL).toContain("clipPath: poolClip,");
-  });
-
-  it("IT RUNS BEFORE recordClipAdopt — afterwards is 'attempted', not 'guaranteed'", () => {
-    const storeAt = POOL.indexOf("await storeExternalClipForTimeline({");
-    const adoptAt = POOL.indexOf("recordClipAdopt(");
-    expect(storeAt).toBeGreaterThan(0);
-    expect(adoptAt).toBeGreaterThan(storeAt);
-  });
-
-  it("it is not fire-and-forget on either route", () => {
-    /** `void` here would reintroduce exactly the defect: adopted now, archived maybe. */
-    expect(POOL).not.toContain("void storeExternalClipForTimeline");
-    expect(FUNNEL).not.toContain("void storeExternalClipForTimeline");
-    expect(FUNNEL).toContain("await storeExternalClipForTimeline({");
-    expect(FUNNEL).toContain('route: "funnel",');
-  });
 
   it("THE HANDLE IS ATTACHED TO THE LEDGER, which is the whole point", () => {
     expect(WRAPPER).toContain("params.lineage?.attachArchiveAssetToPath(");
@@ -159,13 +123,6 @@ describe("Test 3 — an already-archived candidate is not ingested twice", () =>
     expect(DB.slice(byChecksum, byChecksum + 700)).toContain('eq(mediaArchiveAssets.mediaStatus, "READY")');
     expect(DB.slice(byProvider, byProvider + 900)).toContain('eq(mediaArchiveAssets.mediaStatus, "READY")');
   });
-
-  it("the pool route passes the file it already has — nothing is downloaded again", () => {
-    expect(POOL).toContain("clipPath: poolClip,");
-    expect(WRAPPER).toContain("localPath: clipPath,");
-    /** The only fetch in the wrapper is the archive's own read-back verification. */
-    expect(WRAPPER).toContain('"productionArchive:readBack"');
-  });
 });
 
 describe("Test 4 — RONDE 9's exception is intact", () => {
@@ -188,21 +145,6 @@ describe("Test 4 — RONDE 9's exception is intact", () => {
       expect(sourceMayEnterCuratedArchive(s), `${s} must be archivable`).toBe(true);
     }
   });
-
-  it("BOTH routes ask the same predicate — that is why they cannot disagree again", () => {
-    expect(FUNNEL.length + POOL.length).toBeGreaterThan(0);
-    const eligAt = PIPELINE.indexOf("const archiveEligible = !!(");
-    expect(PIPELINE.slice(eligAt, eligAt + 600)).toContain(
-      "sourceMayEnterCuratedArchive(winningExternalCandidate.source)"
-    );
-    expect(POOL).toContain("sourceMayEnterCuratedArchive(adopted.source)");
-  });
-
-  it("and both still honour the ingestion switch", () => {
-    const eligAt = PIPELINE.indexOf("const archiveEligible = !!(");
-    expect(PIPELINE.slice(eligAt, eligAt + 600)).toContain("externalAssetIngestionEnabled()");
-    expect(POOL).toContain("externalAssetIngestionEnabled()");
-  });
 });
 
 /**
@@ -217,26 +159,6 @@ describe("Test 5a — the rescue routes left with their providers", () => {
 });
 
 describe("Test 5 — runners-up keep their background ingestion", () => {
-  /**
-   * The invariant is about clips entering the CURRENT timeline. A runner-up is kept for FUTURE
-   * renders' searches; nothing in this render waits on it, and making it awaitable would spend a
-   * beat's budget on an asset the beat is not using.
-   */
-  it("the runner-up path is still fire-and-forget", () => {
-    const at = PIPELINE.indexOf("const queueArchiveIngestion = (");
-    expect(at).toBeGreaterThan(0);
-    const body = PIPELINE.slice(at, at + 500);
-    expect(body).toContain("void (async () => {");
-    expect(body).toContain("await ingestExternalClipToArchive(clipPath, archiveMetadataFor(wec));");
-  });
-
-  it("and it builds its provenance from the SAME literal as the winner", () => {
-    /** Two copies would be two chances for one clip to be archived under different provenance. */
-    const literals = PIPELINE.split("export function archiveMetadataForExternalClip(").length - 1;
-    expect(literals).toBe(1);
-    expect(PIPELINE).toContain("archiveMetadataForExternalClip(archiveFactsFor(wec), {");
-    expect(POOL).toContain("archiveMetadataForExternalClip(facts, {");
-  });
 
   it("the shared provenance keeps RONDE 9's and RONDE 28's rules", () => {
     const facts: ExternalClipArchiveFacts = {
@@ -287,21 +209,6 @@ describe("Test 6 — a YouTube pool winner reaches the archive", () => {
   it("youtube_cc is a pool source, so this is the route it actually takes", () => {
     const POOLSRC = readFileSync(join(__dirname, "scenePool.ts"), "utf8");
     expect(POOLSRC).toContain('| "youtube_cc"');
-  });
-
-  it("nothing in the pool archive branch is provider-specific", () => {
-    /**
-     * The fix must not be a YouTube special case. The branch asks one predicate about the source
-     * and otherwise treats every archivable provider identically.
-     */
-    const branch = POOL.slice(POOL.indexOf("if (\n            adopted &&"));
-    expect(branch).not.toMatch(/youtube/i);
-    expect(branch).not.toMatch(/wikimedia/i);
-    expect(branch).toContain("sourceMayEnterCuratedArchive(adopted.source)");
-  });
-
-  it("the identity it stores is the pool's own stable key, not a filename", () => {
-    expect(POOL).toContain('providerAssetId: String(adopted.id ?? adopted.assetId ?? "").trim() || null,');
   });
 });
 
@@ -399,7 +306,6 @@ describe("what this round did not touch", () => {
   });
 
   it("the subject anchor, the archive router and the per-source caps are where they were", () => {
-    expect(PIPELINE).toContain("capCandidatesPerSource(poolCandidates, before)");
     const CURATED = readFileSync(join(__dirname, "curatedMediaSourcing.ts"), "utf8");
     expect(CURATED).toContain("NO_RELEVANT_ARCHIVE");
   });

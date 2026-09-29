@@ -307,10 +307,4 @@ describe("the invariants this round may not have touched", () => {
     expect(relevance).toContain("BEAT_LOOK_CEILING");
   });
 
-  it("the download cap of abbc97f is intact", () => {
-    const funnel = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
-    expect(funnel).toContain("export function shortlistCapForSource");
-    expect(funnel).toContain("const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;");
-    expect(PIPELINE).toContain("poolCandidates = capCandidatesPerSource(poolCandidates, before);");
-  });
 });

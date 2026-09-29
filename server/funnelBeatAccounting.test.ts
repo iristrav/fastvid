@@ -65,37 +65,16 @@ describe("beat audit — the funnel reports what it did", () => {
    * The regression. One caller means one route counted; the funnel is the route that does the
    * downloads, so a render whose beats are served by the funnel reported nothing at all.
    */
-  it("more than one route counts the candidates a beat was offered", () => {
+  /** One route is left since the scene pool and the funnel went; it must still count. */
+  it("the beat route counts the candidates a beat was offered", () => {
     const calls = [...CODE.matchAll(/noteBeatCandidatesOffered\(/g)].length;
     expect(
       calls,
       "only one route counts offered candidates — a beat served by any other route reports " +
         "offered=0, which resolveBeatStatus turns into the word no_candidates"
-    ).toBeGreaterThanOrEqual(2);
+    ).toBeGreaterThanOrEqual(1);
   });
 
-  it("the funnel records its adoption and its acceptance", () => {
-    const funnelStart = CODE.indexOf("const FUNNEL_DOWNLOAD_CONCURRENCY");
-    expect(funnelStart, "the funnel download loop has moved").toBeGreaterThan(-1);
-    /** From the download loop to the end of the winner block that follows it. */
-    const region = CODE.slice(funnelStart, funnelStart + 40_000);
-    expect(region, "the funnel counts no offered candidates").toContain("noteBeatCandidatesOffered(");
-    expect(region, "the funnel records no adoption in the beat audit").toContain("noteBeatAdopted(");
-    expect(region, "the funnel records no acceptance in the beat audit").toContain("noteBeatEligible(");
-  });
-
-  /**
-   * It must count what it actually handed to evaluation — files on disk — and not the shortlist
-   * it hoped to download. `offered` means the same thing in `adoptClip`: "candidate paths handed
-   * to the adopt path (files already on disk)".
-   */
-  it("counts the clips it really downloaded, not the shortlist it wanted", () => {
-    const at = CODE.indexOf("noteBeatCandidatesOffered(\n          dedup.beatOutcomeAudit, scene.index, beat.index");
-    expect(at, "the funnel's offered-count call has changed shape").toBeGreaterThan(-1);
-    const call = CODE.slice(at, CODE.indexOf(");", at));
-    expect(call).toContain("downloadedClips.length");
-    expect(call, "the funnel counts candidates it never downloaded").not.toContain("toScore.length");
-  });
 });
 
 /* ═══════════════════════ what the blind counter produced ═══════════════════════ */
@@ -245,28 +224,11 @@ describe("asset usage — assigned counts every adopting route", () => {
    * FUNNEL serves — while wikimedia, which came through adoptClip, read `assigned=2 rendered=1`.
    * The providers were not idle; their adoptions were filed by a route that recorded nothing.
    */
-  it("more than one route records an ADOPTED lineage event", () => {
+  it("the beat route records an ADOPTED lineage event", () => {
     const events = [...CODE.matchAll(/recordEvent\(\s*[^,]+,\s*"ADOPTED"/g)].length;
     expect(
       events,
-      "only one route records ADOPTED — every provider served by any other route reports assigned=0"
-    ).toBeGreaterThanOrEqual(2);
-  });
-
-  it("the funnel records its own adoption against the resolved record", () => {
-    const at = CODE.indexOf("const adoptedRecord =");
-    expect(at, "the funnel records no ADOPTED lineage event").toBeGreaterThan(-1);
-    const block = CODE.slice(at, at + 600);
-    expect(block, "the funnel invents a lineage record instead of resolving one").toContain(
-      ".resolve("
-    );
-    expect(block).toContain('"ADOPTED"');
-  });
-
-  /** An unresolvable candidate must record nothing rather than fabricate a record. */
-  it("records nothing when the candidate has no lineage record", () => {
-    const at = CODE.indexOf("const adoptedRecord =");
-    const block = CODE.slice(at, at + 600);
-    expect(block).toMatch(/if \(adoptedRecord/);
+      "no route records ADOPTED — every provider reports assigned=0"
+    ).toBeGreaterThanOrEqual(1);
   });
 });

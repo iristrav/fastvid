@@ -69,33 +69,14 @@ describe("one minute takes the same path as ten", () => {
     expect(postRenderSpotCheckEnabledForVideo("8-10")).toBe(true);
   });
 
-  it("gets the full montage, and may fetch while composing", () => {
-    expect(fastShortPlainComposeEnabled("1")).toBe(false);
-    expect(composeLocalClipsOnly("1")).toBe(false);
-  });
 
   it("gets the same candidate depth per beat", () => {
     expect(maxVisualCandidatesPerBeatTry("1")).toBe(maxVisualCandidatesPerBeatTry("8-10"));
   });
 
-  it("gets a minimum moving-footage target, like every other length", () => {
-    expect(archiveMinVideoClipsTarget("1")).toBeGreaterThan(0);
-  });
 });
 
 describe("the old tuning is kept, not deleted", () => {
-  /**
-   * Every branch above still exists and still does what it did. Deleting them would throw away real
-   * tuning and leave no way back from a wall-clock timeout nobody here can measure.
-   */
-  it("FAST_SHORT_PATH=true restores the fast-short behaviour", () => {
-    vi.stubEnv("FAST_SHORT_PATH", "true");
-    expect(isFastShortVideoLength("1")).toBe(true);
-    expect(fastShortPlainComposeEnabled("1")).toBe(true);
-    expect(composeLocalClipsOnly("1")).toBe(true);
-    expect(postRenderSpotCheckEnabledForVideo("1")).toBe(false);
-    expect(archiveMinVideoClipsTarget("1")).toBe(0);
-  });
 
   /** And it never reaches the lengths it was never about. */
   it("the flag does not change any other length", () => {

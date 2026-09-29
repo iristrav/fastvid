@@ -86,18 +86,6 @@ const readCode = (rel: string) =>
 /* ═══════════════════════ the rule ═══════════════════════ */
 
 describe("the video resolution rule", () => {
-  it("its floor is the codebase's own absolute bound, not a new number", () => {
-    /**
-     * youtubeMinFormatHeight's validator accepts 144..1080 and defaults to 480. Those are the two
-     * numbers this pipeline had already committed to for "a source scaled into a 1920x1080 frame",
-     * and they are the two used here — 144 to refuse, 480 to observe.
-     */
-    const policy = read("server/sourcingPolicy.ts");
-    expect(policy).toContain("n >= 144 && n <= 1080");
-    expect(youtubeMinFormatHeight()).toBe(480);
-    expect(VIDEO_MIN_SHORT_SIDE_PX).toBe(144);
-    expect(VIDEO_QUALITY_BAR_SHORT_SIDE_PX).toBe(youtubeMinFormatHeight());
-  });
 
   it("refuses below the floor and names both numbers", () => {
     const v = videoResolutionVerdict(128, 96);
@@ -139,77 +127,6 @@ describe("the video resolution rule", () => {
     expect(videoResolutionVerdict(null, null).ok).toBe(true);
     expect(videoResolutionVerdict(undefined, undefined).ok).toBe(true);
     expect(videoResolutionVerdict(0, 0).ok).toBe(true);
-  });
-});
-
-describe("the duration rule after RONDE 134", () => {
-  it("a MEASURED duration below the floor refuses", () => {
-    const v = sourceDurationVerdict(1.2, 1.5);
-    expect(v.ok).toBe(false);
-    if (!v.ok) {
-      expect(v.actual).toBe("1.20s");
-      expect(v.required).toBe("1.50s");
-    }
-  });
-
-  it("an UNMEASURABLE duration does not refuse — the machine being busy is not a fault of the file", () => {
-    expect(sourceDurationVerdict(null, 1.5).ok).toBe(true);
-    expect(sourceDurationVerdict(NaN, 1.5).ok).toBe(true);
-    // ffprobe reports 0 for a stream whose duration it cannot determine — montageStreamMetaUsable
-    // says so in as many words. That is "unknown", not "zero seconds long".
-    expect(sourceDurationVerdict(0, 1.5).ok).toBe(true);
-  });
-
-  it("the provider's claimed duration can no longer satisfy the check", () => {
-    /**
-     * THE BUG. The old code kept `candidate.durationSec` as sourceDur when the probe threw, so a
-     * file nothing could read passed on a number from a search response. The function now takes
-     * only a measured value — there is no parameter a provider's claim could arrive through.
-     */
-    const src = readCode("server/videoPipeline.ts");
-    const fn = src.slice(
-      src.indexOf("export async function downloadAndTrimPoolCandidate("),
-      src.indexOf("async function trimDownloadedStockClip(")
-    );
-    expect(fn.length).toBeGreaterThan(500);
-    expect(fn).not.toContain("let sourceDur = candidate.durationSec ?? 0;");
-    expect(fn).toContain("const measuredDur = rawMeta && rawMeta.durationSec > 0 ? rawMeta.durationSec : null;");
-    expect(fn).toContain("sourceDurationVerdict(measuredDur, POOL_MIN_SOURCE_SEC)");
-    // The claim survives only as arithmetic input for the trim, never as a check's answer.
-    expect(fn).toContain("const sourceDur = measuredDur ?? candidate.durationSec ?? 0;");
-  });
-
-  it("ONE probe now answers both questions where there were two", () => {
-    // Point 4 of the round: less processing, not more rejections. probeVideoStreamMeta is memoised
-    // on the file's inode+ctime, so the montage's later probe of the same file reuses this one.
-    const src = readCode("server/videoPipeline.ts");
-    const fn = src.slice(
-      src.indexOf("export async function downloadAndTrimPoolCandidate("),
-      src.indexOf("async function trimDownloadedStockClip(")
-    );
-    expect(fn.length).toBeGreaterThan(500);
-    expect(fn).not.toContain("-show_entries format=duration");
-    /**
-     * Two calls appear in the function and exactly one runs: the video branch's and the image
-     * branch's, on opposite sides of `if (isVideo)`. What matters is that the VIDEO branch makes
-     * one probe rather than the old two, so that is what is bounded here.
-     */
-    /**
-     * RONDE 179 added an earlier `} else {` to this function — the branch that sends a YouTube
-     * candidate to the YouTube fetcher instead of fetching its watch page. Searching for the FIRST
-     * one found that instead, and produced an end offset BEFORE the start, so the slice came back
-     * empty and every assertion below was passing over nothing.
-     *
-     * The length guard is what caught it, which is exactly what it is for. The search now starts
-     * from the video branch itself, so it finds that branch's own `else` whatever else the
-     * function grows above it.
-     */
-    const videoAt = fn.indexOf("if (isVideo) {");
-    expect(videoAt, "the video branch is gone").toBeGreaterThan(-1);
-    const videoBranch = fn.slice(videoAt, fn.indexOf("} else {", videoAt));
-    expect(videoBranch.length).toBeGreaterThan(200);
-    expect((videoBranch.match(/await probeVideoStreamMeta\(rawPath\)/g) ?? []).length).toBe(1);
-    expect(videoBranch).not.toContain("FFPROBE_BIN");
   });
 });
 
@@ -354,108 +271,11 @@ describe("RONDE 134 — real video files through the real pool route", () => {
     expect(probe(good, "c.mp4")).toBe("1280,720");
     fs.rmSync(seed, { recursive: true, force: true });
   });
-
-  it("BAD VIDEO → refused before Vision, with the full reason", async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "r134-tiny-"));
-    await serve(tinyRes);
-    const cap = capture();
-    let out: string | null;
-    try {
-      out = await downloadAndTrimPoolCandidate(videoCandidate("internet_archive"), dir, 2, 0, 4);
-    } finally {
-      cap.restore();
-    }
-    // null is the guarantee: the funnel has no file to hand to evaluateClipVisionGate or to the
-    // beat image gate, so neither is ever called for this candidate.
-    expect(out, "a 128x96 clip must not become a montage clip").toBeNull();
-    const reject = cap.lines.find((l) => l.includes("[TechnicalGate] REJECT"));
-    expect(reject, `no reject line in:\n${cap.lines.join("\n")}`).toBeTruthy();
-    expect(reject!).toContain("reason=video_too_low_res");
-    expect(reject!).toContain("actual=128x96");
-    expect(reject!).toContain("required=144 lines");
-    expect(reject!).toContain("type=video");
-    expect(reject!).toContain("contentKey=internet_archive:r134");
-    // ...and no encode was spent on it.
-    expect(fs.readdirSync(dir).filter((f) => f.endsWith(".mp4") && !f.includes("_raw"))).toEqual([]);
-  }, 120_000);
-
-  it("GOOD VIDEO → reaches Vision", async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "r134-good-"));
-    await serve(good);
-    const out = await downloadAndTrimPoolCandidate(videoCandidate("pexels"), dir, 2, 0, 4);
-    expect(out, "a 1280x720 clip must survive the technical gate").toBeTruthy();
-    expect(fs.existsSync(out!)).toBe(true);
-    expect(fs.statSync(out!).size).toBeGreaterThan(1_000);
-  }, 120_000);
-
-  it("NEWSREEL (352x240) → kept, and noted rather than refused", async () => {
-    /**
-     * The loss-aversion half of the round, proven on the real route. This is the file a 480-line
-     * floor would have destroyed.
-     */
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "r134-newsreel-"));
-    await serve(newsreel);
-    const cap = capture();
-    let out: string | null;
-    try {
-      out = await downloadAndTrimPoolCandidate(videoCandidate("loc"), dir, 3, 1, 4);
-    } finally {
-      cap.restore();
-    }
-    expect(out, "a genuine sub-SD archive clip must NOT be thrown away").toBeTruthy();
-    expect(cap.lines.some((l) => l.includes("[TechnicalGate] REJECT"))).toBe(false);
-    const note = cap.lines.find((l) => l.includes("[TechnicalGate] NOTE"));
-    expect(note, "the measurement a later round needs was not recorded").toBeTruthy();
-    expect(note!).toContain("below_quality_bar");
-    expect(note!).toContain("actual=352x240");
-  }, 120_000);
-
-  it("A VIDEO SHORTER THAN THE FLOOR → refused on its MEASURED duration, not the provider's claim", async () => {
-    /**
-     * The candidate claims 30 seconds. The file is 0.6. Before this round the measured value won
-     * here too — but only because the probe happened to succeed; the point is that the claim is
-     * now structurally unable to answer, which the fixture makes visible by disagreeing wildly.
-     */
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "r134-short-"));
-    await serve(tooShort);
-    const cap = capture();
-    let out: string | null;
-    try {
-      out = await downloadAndTrimPoolCandidate(videoCandidate("pixabay"), dir, 4, 0, 4);
-    } finally {
-      cap.restore();
-    }
-    expect(out).toBeNull();
-    const reject = cap.lines.find((l) => l.includes("reason=duration_too_short"));
-    expect(reject, `no duration reject in:\n${cap.lines.join("\n")}`).toBeTruthy();
-    expect(reject!).toContain("required=1.50s");
-    // The claimed 30s appears nowhere in the verdict.
-    expect(reject!).not.toContain("30.00s");
-  }, 120_000);
-
-  it("EVERY PROVIDER gets the same answer for the same bytes", async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "r134-providers-"));
-    await serve(tinyRes);
-    const cap = capture();
-    try {
-      for (const source of ["wikimedia", "internet_archive", "nara", "pexels"]) {
-        const out = await downloadAndTrimPoolCandidate(videoCandidate(source), dir, 5, 0, 4);
-        expect(out, `${source} accepted a 128x96 clip`).toBeNull();
-      }
-    } finally {
-      cap.restore();
-    }
-  }, 180_000);
 });
 
 /* ═══════════════════════ one truth across routes ═══════════════════════ */
 
 describe("archive video and external video ask the same question", () => {
-  it("both call videoResolutionVerdict", () => {
-    expect(read("server/curatedMediaSourcing.ts")).toContain("videoResolutionVerdict(dims?.width, dims?.height)");
-    // RONDE 136 added the per-source floor as a third argument; the call is still the shared one.
-    expect(read("server/videoPipeline.ts")).toContain("videoResolutionVerdict(\n          rawMeta?.width,\n          rawMeta?.height,\n          minShortSideForSource(candidate.source)\n        )");
-  });
 
   it("the archive route had NO video resolution check before this round", () => {
     /**

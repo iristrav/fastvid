@@ -75,13 +75,7 @@ const MUST_BE_REACHED: ReadonlyArray<[string, string]> = [
   ["graphicIsRenderable", "the renderer's own predicate decides what is drawable"],
   ["rendererGraphicType", "a planned graphic is translated to a component name"],
   ["formatCinematicGraphics", "R178 — planned/rendered/skipped reaches the render log"],
-  ["buildSceneCandidatePool", "the pool is built during a render"],
-  ["selectCandidatesFromPool", "the pool's winner is chosen"],
-  ["rankedPool", "R160 FASE 7 — the thirteen-signal engine can run"],
-  ["penaliseDuplicates", "R170 — a repeat is penalised"],
   ["newLedger", "R180 — the render has a usage ledger to penalise against"],
-  ["recordUse", "R180 — an adoption is written to that ledger"],
-  ["youtubePoolCandidates", "R169 — a YouTube row becomes a pool candidate"],
   ["searchYoutubeVideoCandidates", "R177 — the pool can ask YouTube"],
   ["downloadYouTubeCCClip", "R179 — a YouTube winner can be fetched"],
   ["planCinematicAudio", "R166 — music and ambience are planned"],
@@ -89,8 +83,6 @@ const MUST_BE_REACHED: ReadonlyArray<[string, string]> = [
   ["lookUnsupportedReason", "R160 — an unsupported look is reported"],
   ["transitionUnsupportedReason", "R183 — an unsupported transition says WHY"],
   ["newRenderId", "R172 — a render has a correlation id"],
-  ["formatFallback", "R176 — a fallback names why, from and to"],
-  ["formatSelection", "R202 — [Selection] says which asset won this beat, and what it beat"],
 ];
 
 describe("R183 — every link in the cinematic chain has a production caller", () => {
@@ -118,8 +110,6 @@ describe("R183 — every link in the cinematic chain has a production caller", (
 const SINGLE_OWNER: readonly string[] = [
   "renderTimeline",
   "translateEdl",
-  "buildSceneCandidatePool",
-  "selectCandidatesFromPool",
   "searchYoutubeVideoCandidates",
   "downloadYouTubeCCClip",
   "intentFrom",
@@ -165,7 +155,6 @@ const KNOWN_UNREACHED: ReadonlyArray<[string, string]> = [
   ["replacementSideEffects", "smart replacement's side-effect hook — the editor route does its own"],
   ["validateEffect", "per-effect validation; the renderer reports unsupported effects instead"],
   ["yExpressionFor", "a caption y-position helper superseded by captionLayout's boxes"],
-  ["formatRoute", "REDUNDANT — formatRenderRoute answers the same question and is called"],
   ["assertRenderableTimeline", "REDUNDANT — validateTimeline is the called equivalent"],
 ];
 

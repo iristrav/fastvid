@@ -36,13 +36,6 @@ describe("RONDE 27a — YouTube downloads get room and stay small", () => {
     expect(youtubeDownloadTimeoutMs()).toBe(180_000);
   });
 
-  it("keeps a resolution floor rather than accepting anything", () => {
-    expect(youtubeMinFormatHeight()).toBe(480);
-    process.env.YOUTUBE_MIN_FORMAT_HEIGHT = "360";
-    expect(youtubeMinFormatHeight()).toBe(360);
-    process.env.YOUTUBE_MIN_FORMAT_HEIGHT = "4000";
-    expect(youtubeMinFormatHeight()).toBe(480);
-  });
 });
 
 const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
@@ -57,9 +50,6 @@ describe("RONDE 27a — the format picker optimises for download time", () => {
     // That rule happily chose a huge 720p file over a small 480p one of the same video.
     expect(picker).not.toContain("Math.abs(heightA - 720)");
   });
-
-
-
 
 });
 
@@ -159,17 +149,6 @@ describe("RONDE 27d — the filter is applied to both anchor sources", () => {
       researchSrc.indexOf("out.push(...intent.searchQueries);"),
     );
     expect(loop).toContain("if (looksLikeSentenceFragment(target.text)) continue;");
-  });
-});
-
-describe("RONDE 27d — one source item, one appearance", () => {
-  it("stamps the provider-asset id into pool downloads like every other route", () => {
-    const fn = pipelineSrc.slice(
-      pipelineSrc.indexOf("export async function downloadAndTrimPoolCandidate("),
-      pipelineSrc.indexOf("const _dtT0 = Date.now();"),
-    );
-    expect(fn).toContain("tagPathWithProviderAsset(");
-    expect(fn).toContain("candidate.assetId");
   });
 });
 

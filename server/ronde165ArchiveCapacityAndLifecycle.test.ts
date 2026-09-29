@@ -158,23 +158,6 @@ describe("RONDE 165 — the funnel's losers get the ending they actually had", (
 });
 
 describe("RONDE 165 — wired into the routes render 554 lost assets on", () => {
-  it("the funnel files an outcome for every scored candidate that is not the winner", () => {
-    const idx = PIPE.indexOf("for (const candidate of scored) {");
-    expect(idx).toBeGreaterThan(0);
-    const block = PIPE.slice(idx, PIPE.indexOf("[VisualDiscovery] audit line", idx));
-    expect(block).toContain("if (winner && candidate.clipPath === winner.clipPath) continue;");
-    expect(block).toContain('"superseded_by_winner"');
-    expect(block).toContain('"not_chosen"');
-    expect(block).toContain('"vision_rejected"');
-    expect(block).toContain("recordAssetOutcome(");
-  });
-
-  it("a beat with no winner files not_chosen, never superseded_by_winner", () => {
-    // The two are told apart by `winner`, so the distinction cannot decay into one bucket.
-    const idx = PIPE.indexOf("for (const candidate of scored) {");
-    const block = PIPE.slice(idx, idx + 900);
-    expect(block).toMatch(/winner\s*\n?\s*\?\s*"superseded_by_winner"\s*\n?\s*:\s*"not_chosen"/);
-  });
 
   it("adoptClip's selected-but-not-adopted exits all file an outcome", () => {
     // SELECTED is filed for every eligible candidate; each way out of the iteration that does not
@@ -357,27 +340,6 @@ describe("RONDE 165 — the cap statistics a cap decision would need", () => {
 });
 
 describe("RONDE 165 — nothing was widened on this round's evidence", () => {
-  it("the download budget stays 6", () => {
-    /**
-     * Render 554 reported `cutByBudget=0` across all fifteen beats: the budget turned away nothing,
-     * so there is no measurement that raising it would buy anything. It costs downloads and wall
-     * time on every beat, and the next round needs a render where cutByBudget is actually non-zero
-     * before touching it.
-     */
-    // The VALUE, not the text: the same string appears in a comment further down the file, and a
-    // mutation to 8 sailed straight past a toContain() on it while this assertion caught it.
-    expect(MAX_FUNNEL_CANDIDATES_TO_SCORE).toBe(6);
-  });
-
-  it("the per-source archive cap stays 3", () => {
-    // RONDE 157 measured cap=4 starving the other sources; render 554 gives ONE binding beat.
-    // These three are module-private, so they are read from the declaration itself.
-    // RONDE 170 did NOT raise it. The slack the caps left behind is filled from what they
-    // refused, which is a different mechanism and leaves every source's share untouched.
-    expect(FUNNEL).toMatch(/^const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;$/m);
-    expect(FUNNEL).toMatch(/^const MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2;$/m);
-    expect(FUNNEL).toMatch(/^const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;$/m);
-  });
 
   it("no gate was loosened to make the numbers read better", () => {
     // The round adds accounting. Every judge that refuses a picture is untouched.

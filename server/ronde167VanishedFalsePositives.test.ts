@@ -373,12 +373,6 @@ describe("RONDE 167 — what is still open, stated rather than hidden", () => {
     expect(l.resolve("/w/extend_s1b3_170.mp4")?.beatIndex).toBe(2);
   });
 
-  it("RONDE 165 and 166 are otherwise intact", () => {
-    expect(PIPE).toContain('"superseded_by_winner"');
-    expect(PIPE).toContain("formatAssetLifecycleAudit(ledger)");
-    expect(PIPE).toContain("const reprieved = reprieveBeatClip(");
-    expect(PIPE).toContain("formatVisualFitAudit(");
-  });
 });
 
 describe("RONDE 167 §4 — render 554's s2b3, end to end", () => {

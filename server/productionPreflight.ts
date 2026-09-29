@@ -619,7 +619,6 @@ export type PreflightReport = {
 export const ROUTE_FLAGS = [
   "CINEMATIC_EDITING_ENGINE",
   "CINEMATIC_RENDER_PATH",
-  "POOL_RANKING_V2",
   "ENABLE_YOUTUBE_SOURCING",
   "AI_DIRECTOR",
 ] as const;

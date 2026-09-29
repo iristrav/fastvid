@@ -243,18 +243,6 @@ describe("RONDE 96 §6 — UNVERIFIED is reserved for genuinely unknown assets",
     }
   });
 
-  it("TEST 28 — clipAdoptAudit still refuses to guess a provider for a clip it never saw", () => {
-    const src = fs.readFileSync(path.join(__dirname, "clipAdoptAudit.ts"), "utf8");
-    const idx = src.indexOf("const created = ledger.createLineage({");
-    expect(idx).toBeGreaterThan(-1);
-    const body = src.slice(idx, src.indexOf("});", idx));
-    // No provider, no searchRoute — the record exists so reconcile() can find the hole, and says
-    // nothing it cannot prove.
-    expect(body).not.toContain("provider:");
-    expect(body).not.toContain("searchRoute:");
-    expect(body).toContain("sourceLabel: source");
-  });
-
   it("TEST 29 — an unknown clip is still recorded, still UNVERIFIED", () => {
     const { ledger } = cacheWithLedger();
     const record = silence(() =>
@@ -273,22 +261,6 @@ describe("RONDE 96 §6 — UNVERIFIED is reserved for genuinely unknown assets",
 /* ═══════════ §8 — provider coverage ═══════════ */
 
 describe("RONDE 96 §8 — every downloading provider is lineage-capable", () => {
-  it("TEST 30 — every downloader opens a record", () => {
-    const missing: string[] = [];
-    for (const fn of ALL_DOWNLOADING_FETCHERS) {
-      if (!bodyOf(fn).includes("tagPathWithProviderAsset(")) missing.push(fn);
-    }
-    expect(missing, `these still write outside the ledger:\n${missing.join("\n")}`).toEqual([]);
-  });
-
-  it("TEST 31 — every downloader passes a real searchRoute, never a generic default", () => {
-    const missing: string[] = [];
-    for (const fn of ALL_DOWNLOADING_FETCHERS) {
-      if (!/searchRoute: ("[a-zA-Z]+"|`scenePool:)/.test(bodyOf(fn))) missing.push(fn);
-    }
-    expect(missing, `no route:\n${missing.join("\n")}`).toEqual([]);
-    expect(PIPELINE_SRC).not.toMatch(/searchRoute: "provider_search"/);
-  });
 
   it("TEST 32 — the curated archive is exempt, and says why", () => {
     // Curated assets come from the database, not from a search, so there is no route to record.

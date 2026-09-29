@@ -271,11 +271,6 @@ export function realFootageFirstEnabled(): boolean {
   return process.env.REAL_FOOTAGE_FIRST !== "false";
 }
 
-/** Licensed stock (Pexels/Pixabay) only after authentic sources fail. */
-export function licensedStockFallbackEnabled(): boolean {
-  return realFootageFirstEnabled();
-}
-
 /** True when beats should prefer archival/real video over Ken Burns stills. */
 export function prefersArchivalVideo(intent: MediaSearchIntent): boolean {
   return intent.topicKind === "historical" || intent.topicKind === "news";
@@ -761,7 +756,6 @@ export interface TypedRetrievalContext {
  * engines with different orderings is exactly what RONDE 88 §18 forbids, so the unused one goes.
  */
 
-
 /**
  * RONDE 78 — the beat's context, assembled once.
  *
@@ -812,26 +806,6 @@ export function centralTypedQueries(ctx: TypedRetrievalContext): string[] {
   if (ctx.year) q.years.push(provenToken(ctx.year, "year"));
   if (ctx.time && ctx.time !== ctx.year) q.time.push(provenToken(ctx.time, "time"));
   return buildPrioritisedQueries(q).map((x) => x.query);
-}
-
-/**
- * RONDE 77 — the combined typed family for callers that hold only the beat's text.
- *
- * Exposes the combination buildHistoricalArchivalQueries already builds, without the intent, the
- * anchor set or the per-target variants. It exists so a query builder deeper in the pipeline can
- * put the typed queries in front of its own list without acquiring a SceneBeat — and, critically,
- * without calling any query builder, so it can never re-enter the one that called it.
- *
- * person, place and action are supplied by the caller because their extractors live in
- * videoPipeline, which imports this module and not the other way round.
- */
-export function combinedTypedQueriesForBeat(
-  beatText: string,
-  persons: string[],
-  place: string,
-  action = ""
-): string[] {
-  return centralTypedQueries(buildTypedRetrievalContext(beatText, { persons, place, action }));
 }
 
 /**
@@ -1144,82 +1118,6 @@ export function buildHistoricalArchivalQueries(
   return asked.slice(0, 12);
 }
 
-/** Result of anchorQueriesToHistoricalContext — `anchored` false means untouched inputs. */
-export interface HistoricalAnchoredQueries {
-  primaryQuery: string;
-  extraQueries: string[];
-  anchored: boolean;
-  /** The year the anchoring used ("" when the intent stated no year — none is ever invented). */
-  year: string;
-}
-
-const QUERY_YEAR_RE = /\b(1[0-9]{3}|20[0-2][0-9])\b/;
-
-/**
- * P1-B (render 517): the funnel/scene-pool queries came straight from the scene's stock-style
- * phrasing and carried no period at all — "berlin city skyline", "russia city street" — so for
- * historical documentaries the pool filled with present-day footage of the right place in the
- * wrong century. This anchors those queries to the historical context the script itself states:
- * the first concrete year in the scene text (or title), the primary person when THIS scene
- * mentions them, and the scene's location phrase. Strictly deterministic and strictly sourced
- * from the existing beat intent — no LLM call, no invented dates, no hardcoded topics (the
- * activation gate is the existing isHistoricalDocumentary detector). The original queries are
- * always kept in the list after the anchored variants, so a too-narrow anchored phrasing can
- * only ADD era-correct candidates, never shrink the pool below what it was.
- */
-export function anchorQueriesToHistoricalContext(params: {
-  primaryQuery: string;
-  extraQueries?: string[];
-  sceneText: string;
-  videoTitle?: string;
-  primaryPerson?: string;
-}): HistoricalAnchoredQueries {
-  const primaryQuery = toQueryString(params.primaryQuery);
-  const extraQueries = queryStringsMinLen(params.extraQueries ?? [], 3);
-  const unchanged: HistoricalAnchoredQueries = { primaryQuery, extraQueries, anchored: false, year: "" };
-  const title = asVideoTitleString(params.videoTitle);
-  const sceneText = params.sceneText ?? "";
-  if (!primaryQuery || !isHistoricalDocumentary(title, sceneText)) return unchanged;
-
-  // Period anchor: ONLY a year the narration of this scene literally states.
-  //
-  // RONDE 71 — the video title is not a period for a beat that names none.
-  //
-  // This used to fall back to a year in the title, which is true of every scene in the video.
-  // With a title of "… April 1945" the audit measured, from the real code path:
-  //
-  //     "Life inside London during the Blitz."       -> life inside london 1945   (was 1940-41)
-  //     "Churchill addresses the nation after Dunkirk." -> churchill … 1945        (was 1940)
-  //     "The construction of the Eiffel Tower."      -> Eiffel Tower construction 1945
-  //
-  // Every documentary that walks a timeline was being sent to one year of it. A query with no
-  // period is a weaker query; a query with the WRONG period is a wrong one, and the archive
-  // answers it precisely. So when the scene states no year, no year is added.
-  const year = sceneText.match(QUERY_YEAR_RE)?.[0] ?? "";
-  // Person anchor only when THIS scene's own text mentions them — the title mentioning the
-  // person is true for every scene of the video and would inject the name into beats that are
-  // not about them (the "query must come from the existing beat intent" rule).
-  const person = coercePersonName(params.primaryPerson);
-  const personInScene = person.length > 0 && mentionsPerson(sceneText, person);
-  if (!year && !personInScene) return unchanged;
-
-  const withYear = (q: string) => (year && !QUERY_YEAR_RE.test(q) ? `${q} ${year}` : q);
-  const anchoredPrimary = withYear(primaryQuery);
-  const location = extractLocationPhrase(sceneText) || extractLocationPhrase(title);
-
-  const anchoredExtras: string[] = [];
-  if (personInScene) {
-    anchoredExtras.push(withYear(location ? `${person} ${location}` : person));
-  }
-  if (location && year) anchoredExtras.push(`${location} ${year}`);
-  for (const q of extraQueries.slice(0, 2)) anchoredExtras.push(withYear(q));
-
-  const merged = uniqueQueryStrings([...anchoredExtras, primaryQuery, ...extraQueries], 3)
-    .filter((q) => q !== anchoredPrimary)
-    .slice(0, 6);
-  return { primaryQuery: anchoredPrimary, extraQueries: merged, anchored: true, year };
-}
-
 /** Split ranked pool: authentic video → stills → licensed stock (last). */
 export function partitionCandidatesForIntent(
   ranked: MediaCandidate[],
@@ -1267,31 +1165,6 @@ export function rankMediaCandidates(
       return { ...c, score };
     })
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-}
-
-/** Ordered source list for parallel fetch — topic-aware priority. */
-export function prioritizedSourcesForIntent(intent: MediaSearchIntent): MediaSourceKind[] {
-  const base: MediaSourceKind[] = [
-    "internet_archive",
-    "wikimedia_video",
-    "person_celebrity",
-    "youtube_cc",
-    "gdelt",
-    "nasa",
-    "wikimedia_image",
-    "openverse",
-    "unsplash",
-    "europeana",
-    "flickr",
-    "serpapi",
-    "pexels",
-    "pixabay",
-  ];
-
-  const weight = (src: MediaSourceKind): number =>
-    (SOURCE_BASE_SCORE[src] ?? 0) + topicSourceBoost(src, intent);
-
-  return [...base].sort((a, b) => weight(b) - weight(a));
 }
 
 const AI_RANK_JSON_SCHEMA = {

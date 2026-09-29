@@ -126,10 +126,6 @@ describe("RONDE 135 — every refusal gets a name", () => {
     ).toBe("TALKING_HEAD");
   });
 
-  it("8. an unreadable refusal is still UNCLEAR and still acted on by nobody", () => {
-    expect(classifyMismatch({ depicts: "a grey image", reason: "no" })).toBe("UNCLEAR");
-    expect(correctionStrategyFor("UNCLEAR")).toBeNull();
-  });
 });
 
 describe("RONDE 135 — QUESTION and MATERIAL stay distinct", () => {
@@ -177,132 +173,10 @@ describe("RONDE 135 — QUESTION and MATERIAL stay distinct", () => {
     }
   });
 
-  it("13. a material fault never rewrites the subject of the question", () => {
-    const ctx = researchCtxFor("The decision was his alone.");
-    for (const k of ["TEXT_ON_SCREEN", "TITLE_CARD", "TALKING_HEAD"] as MismatchKind[]) {
-      const d = decideResearch({ kind: k, ctx, alreadyResearched: false });
-      expect(d.blame).toBe("MATERIAL");
-      if (d.action !== "RESEARCH") continue;
-      expect(d.strategy).toBe("ADD_ARCHIVAL_INTENT");
-      expect(d.correctedQuery).toContain("Hermann Göring");
-    }
-  });
 
-  it("14. LOW_INFORMATION starts no research at all", () => {
-    expect(correctionStrategyFor("LOW_INFORMATION")).toBeNull();
-    const d = decideResearch({
-      kind: "LOW_INFORMATION", ctx: researchCtxFor("The decision was his alone."),
-      alreadyResearched: false,
-    });
-    expect(d.action).toBe("NONE");
-    if (d.action === "NONE") expect(d.reason).toBe("MATERIAL");
-  });
 });
 
-describe("RONDE 135 — WRONG_EVENT gets its own correction", () => {
-  function eventContext(): VerifiedQueryContext {
-    const evidence = "The Reichstag fire brought Hermann Göring to Berlin in 1933.";
-    const ctx = emptyQueryContext(evidence);
-    ctx.persons = [provenToken("Hermann Göring", "person", "beat_text", evidence)];
-    ctx.places = [provenToken("Berlin", "place", "beat_text", evidence)];
-    ctx.events = [provenToken("Reichstag fire", "event", "beat_text", evidence)];
-    ctx.years = [provenToken("1933", "year", "beat_text", evidence)];
-    return ctx;
-  }
 
-  it("15. WRONG_EVENT names the occasion instead of re-adding the person", () => {
-    expect(correctionStrategyFor("WRONG_EVENT")).toBe("ADD_EVENT");
-    const d = decideResearch({
-      kind: "WRONG_EVENT", ctx: eventContext(), alreadyResearched: false,
-      alreadyUsed: ["Hermann Göring Berlin"],
-    });
-    expect(d.action).toBe("RESEARCH");
-    if (d.action !== "RESEARCH") return;
-    expect(d.correctedQuery.toLowerCase()).toContain("reichstag fire");
-  });
-
-  it("16. a beat that names no event is told so rather than given one", () => {
-    const d = decideResearch({
-      kind: "WRONG_EVENT", ctx: researchCtxFor("The decision was his alone."),
-      alreadyResearched: false,
-    });
-    expect(d.action).toBe("NONE");
-    if (d.action === "NONE") expect(d.reason).toBe("NO_BETTER_QUERY");
-  });
-
-  it("17. MODERN_FOOTAGE takes the period correction", () => {
-    expect(correctionStrategyFor("MODERN_FOOTAGE")).toBe("ADD_TIME");
-    const d = decideResearch({
-      kind: "MODERN_FOOTAGE", ctx: researchCtxFor("The decision was his alone."),
-      alreadyResearched: false,
-    });
-    expect(d.action).toBe("RESEARCH");
-    if (d.action !== "RESEARCH") return;
-    expect(d.correctedQuery).toContain("1945");
-  });
-
-  it("18. every WRONG_EVENT correction still passes the SearchGate", () => {
-    const ctx = eventContext();
-    const d = decideResearch({ kind: "WRONG_EVENT", ctx, alreadyResearched: false });
-    if (d.action !== "RESEARCH") return;
-    for (const q of d.correctedQueries) {
-      const v = validateSearchQuery(q, ctx);
-      expect(v.ok, `"${q}" rejected as ${v.reason}`).toBe(true);
-    }
-  });
-});
-
-describe("RONDE 135 — the render learns from its own refusals", () => {
-  const cand = (id: string, source: string) => ({ id, source });
-
-  it("19. a source refused repeatedly for period faults becomes a repeat offender", () => {
-    const tally = createMismatchTally();
-    for (let i = 0; i < REPEAT_OFFENDER_MIN_REFUSALS; i++) {
-      recordMismatch(tally, { kind: "MODERN_FOOTAGE", source: "pexels" });
-    }
-    expect(repeatOffenderSources(tally).has("pexels")).toBe(true);
-  });
-
-  it("20. one refusal is noise, not a pattern", () => {
-    const tally = createMismatchTally();
-    recordMismatch(tally, { kind: "MODERN_FOOTAGE", source: "wikimedia" });
-    expect(repeatOffenderSources(tally).size).toBe(0);
-  });
-
-  it("21. WRONG_PERIOD and MODERN_FOOTAGE count together — they are one family", () => {
-    const tally = createMismatchTally();
-    recordMismatch(tally, { kind: "MODERN_FOOTAGE", source: "youtube" });
-    recordMismatch(tally, { kind: "WRONG_PERIOD", source: "youtube" });
-    recordMismatch(tally, { kind: "MODERN_FOOTAGE", source: "youtube" });
-    expect(repeatOffenderSources(tally).has("youtube")).toBe(true);
-  });
-
-  it("22. title cards do not make a source a period offender", () => {
-    const tally = createMismatchTally();
-    for (let i = 0; i < 6; i++) recordMismatch(tally, { kind: "TITLE_CARD", source: "youtube" });
-    // A source that returns title cards is not a source that returns the wrong century.
-    expect(repeatOffenderSources(tally).size).toBe(0);
-  });
-
-  it("23. a learned offender sorts last, and is never removed", () => {
-    const field = [cand("a", "youtube"), cand("b", "wikimedia"), cand("c", "loc")];
-    const tally = createMismatchTally();
-    for (let i = 0; i < 4; i++) recordMismatch(tally, { kind: "MODERN_FOOTAGE", source: "youtube" });
-
-    const out = reorderAfterMismatch(field, "MODERN_FOOTAGE", (c) => c.source, repeatOffenderSources(tally));
-    expect(out).toHaveLength(3);
-    expect(new Set(out.map((c) => c.id))).toEqual(new Set(["a", "b", "c"]));
-    // wikimedia and loc are historical archives and lead; youtube, learned-bad, goes last.
-    expect(out[out.length - 1]!.id).toBe("a");
-  });
-
-  it("24. with no learned offenders the reorder is exactly RONDE 131's", () => {
-    const field = [cand("a", "pexels"), cand("b", "wikimedia")];
-    const withEmpty = reorderAfterMismatch(field, "MODERN_FOOTAGE", (c) => c.source, new Set());
-    const without = reorderAfterMismatch(field, "MODERN_FOOTAGE", (c) => c.source);
-    expect(withEmpty.map((c) => c.id)).toEqual(without.map((c) => c.id));
-  });
-});
 
 describe("RONDE 135 — the render can finally say which provider failed it", () => {
   function tallyWithSources(): ReturnType<typeof createMismatchTally> {
@@ -313,67 +187,11 @@ describe("RONDE 135 — the render can finally say which provider failed it", ()
     return t;
   }
 
-  it("25. per-provider outcomes are derived from the tally and the adopt audit", () => {
-    const rows = summarizeProviderOutcomes({
-      tally: tallyWithSources(),
-      adoptedByProvider: new Map([["wikimedia", 6], ["internet_archive", 4], ["youtube", 3]]),
-    });
-    const byName = new Map(rows.map((r) => [r.provider, r]));
-    expect(byName.get("pexels")).toMatchObject({ judged: 8, refused: 8, accepted: 0 });
-    expect(byName.get("youtube")).toMatchObject({ judged: 8, refused: 5, accepted: 3 });
-    expect(byName.get("wikimedia")).toMatchObject({ judged: 8, refused: 2, accepted: 6 });
-    // A provider that was never refused still appears, on the strength of its adoptions.
-    expect(byName.get("internet_archive")).toMatchObject({ judged: 4, refused: 0, accepted: 4 });
-  });
 
-  it("26. the worst provider is reported first", () => {
-    const rows = summarizeProviderOutcomes({ tally: tallyWithSources() });
-    expect(rows[0]!.provider).toBe("pexels");
-  });
 
-  it("27. each provider carries the fault it is refused for most often", () => {
-    const rows = summarizeProviderOutcomes({ tally: tallyWithSources() });
-    expect(rows.find((r) => r.provider === "pexels")!.topKind).toBe("MODERN_FOOTAGE");
-    expect(rows.find((r) => r.provider === "youtube")!.topKind).toBe("TITLE_CARD");
-  });
 
-  it("28. accepted and refused partition judged", () => {
-    const rows = summarizeProviderOutcomes({
-      tally: tallyWithSources(),
-      adoptedByProvider: new Map([["wikimedia", 6]]),
-    });
-    for (const r of rows) expect(r.accepted + r.refused).toBe(r.judged);
-  });
 
-  it("29. a provider that supplied plenty and passed nothing is flagged, not removed", () => {
-    const rows = summarizeProviderOutcomes({ tally: tallyWithSources() });
-    const dead = findUnproductiveProviders(rows);
-    expect(dead.map((d) => d.provider)).toContain("pexels");
-    // Flagged only — the row is still in the report, and nothing removes the provider.
-    expect(rows.map((r) => r.provider)).toContain("pexels");
-  });
 
-  it("30. the audit block reads as one thing", () => {
-    const out = formatVisualSourcingAudit({
-      beats: 34,
-      visionAttempts: 34,
-      fits: 13,
-      doesNotFit: 21,
-      research: { attempts: 6, produced: 4, accepted: 2, rejected: 2 },
-      tally: tallyWithSources(),
-      adoptedByProvider: new Map([["wikimedia", 6], ["youtube", 3]]),
-    });
-    expect(out).toContain("[VisualSourcingAudit]");
-    expect(out).toContain("beats=34");
-    expect(out).toContain("fits=13 doesNotFit=21");
-    expect(out).toContain("research attempts=6 produced=4 accepted=2 rejected=2");
-    expect(out).toContain("MODERN_FOOTAGE");
-    expect(out).toContain("TITLE_CARD");
-    expect(out).toContain("providers:");
-    expect(out).toContain("pexels");
-    // A kind that did not occur is not printed as a zero row.
-    expect(out).not.toContain("WRONG_EVENT ");
-  });
 
   it("31. an empty render produces a block with no invented rows", () => {
     const out = formatVisualSourcingAudit({
@@ -395,9 +213,6 @@ describe("RONDE 135 — regressions this round must not touch", () => {
     expect(PIPE).toContain("tally: visualDedup.mismatchTally");
   });
 
-  it("33. the learned signal is actually passed to the reorder", () => {
-    expect(PIPE).toContain("repeatOffenderSources(dedup.mismatchTally)");
-  });
 
   it("36. the still-image rules are untouched (RONDE 128/130)", () => {
     const still = readFileSync(join(__dirname, "stillImagePolicy.ts"), "utf8");
@@ -405,25 +220,12 @@ describe("RONDE 135 — regressions this round must not touch", () => {
     expect(still).toContain("force_original_aspect_ratio=decrease");
   });
 
-  it("37. the historical source preference already in the funnel is untouched", () => {
-    const funnel = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
-    // §9/§13 were already implemented; this round added no third mechanism.
-    expect(funnel).toContain("internet_archive: 0.15");
-    expect(funnel).toContain("pexels: 0,");
-    expect(funnel).toContain("STOCK_TIER_WIN_MARGIN");
-  });
 });
 
 describe("RONDE 135 — mutation guards", () => {
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
   const FEEDBACK = readFileSync(join(__dirname, "visualMismatchFeedback.ts"), "utf8");
 
-  it("M8. removing the learned ranking signal breaks the wiring", () => {
-    expect(PIPE).toContain("repeatOffenderSources(dedup.mismatchTally)");
-    expect(FEEDBACK).toContain("export function repeatOffenderSources");
-    // It is merged into `avoid`, not applied as a filter — a signal, never a veto.
-    expect(FEEDBACK).toContain("new Set([...preference.avoid, ...learnedOffenders])");
-  });
 
   it("M11. the five-second cap is a constant, not a threshold this round can move", () => {
     const still = readFileSync(join(__dirname, "stillImagePolicy.ts"), "utf8");

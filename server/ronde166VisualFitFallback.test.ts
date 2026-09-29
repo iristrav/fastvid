@@ -288,14 +288,6 @@ describe("RONDE 166 — no route can bring a hard mismatch back", () => {
     expect(composeBarrierAllows(ledger, "/w/card_transformed.mp4").allow).toBe(true);
   });
 
-  it("both call sites in the pipeline act on the refusal instead of ignoring it", () => {
-    // A returned boolean nobody reads would be the same bug with extra ceremony.
-    expect(PIPE).toContain(
-      "if (reprieveBeatClip(dedup.beatRelevance, gateReprieveWinner.clipPath, \"nothing else passed\")) {"
-    );
-    expect(PIPE).toContain("const reprieved = reprieveBeatClip(");
-    expect(PIPE).toContain("if (!reprieved) {");
-  });
 
   it("a declined reprieve looks for another picture — it does not reach for a colour card", () => {
     /**
@@ -551,9 +543,4 @@ describe("RONDE 166 — earlier rounds are intact", () => {
     expect(movingShareDeficit(9, 13, DEFAULT_TARGET_MOVING_SHARE)).toBeGreaterThan(0);
   });
 
-  it("RONDE 163/164/165 accounting still runs", () => {
-    expect(PIPE).toContain("recordBeatOutcome(sourcingAudit, {");
-    expect(PIPE).toContain("formatAssetLifecycleAudit(ledger)");
-    expect(PIPE).toContain('"superseded_by_winner"');
-  });
 });

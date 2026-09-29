@@ -169,13 +169,6 @@ describe("R199 §3 — a refusal needs something behind it before it can act", (
 /* ═══════════ 4. one rule, two readers ═══════════ */
 
 describe("R199 §4 — the refusal and the evidence line cannot disagree", () => {
-  it("both go through the same function", () => {
-    const audit = fs.readFileSync(path.join(__dirname, "clipAdoptAudit.ts"), "utf8");
-    expect(audit).toContain("visionRequirementMet(policy, vision)");
-    expect(audit, "the second spelling of the rule is still there").not.toContain(
-      '!policy.requiresVision || vision === "APPROVED"'
-    );
-  });
 
   it("the rule itself says what each requirement accepts", () => {
     const cases: Array<[string, AdoptionVisionVerdict, boolean]> = [

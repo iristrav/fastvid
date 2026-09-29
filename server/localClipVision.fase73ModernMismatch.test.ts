@@ -212,28 +212,6 @@ describe("FASE 7.3 Test 5 — the real similarity rejection is untouched", () =>
 });
 
 describe("FASE 7.3 Test 6 — FASE 7.2 embedding separation intact", () => {
-  it("the funnel still passes no queryEmb to VisionGate", () => {
-    const start = pipelineSrc.indexOf("let funnelBeatEmb: number[] | null = null;");
-    const end = pipelineSrc.indexOf("const winner = pickBestFunnelCandidate(scored);", start);
-    const block = pipelineSrc.slice(start, end);
-    const callStart = block.indexOf("await evaluateClipVisionGate(");
-    const call = block.slice(callStart, block.indexOf(");", callStart));
-    expect(call).not.toContain("funnelBeatEmb");
-    const args = call
-      .slice(call.indexOf("(") + 1)
-      .split("\n")
-      .map((l) => l.trim().replace(/,$/, ""))
-      .filter((l) => l.length > 0 && !l.startsWith("//"));
-    expect(args[10]).toBe("undefined"); // queryEmb slot
-  });
-
-  it("the text embedding is still used for archive/text ranking", () => {
-    // RONDE 38: third (optional, diagnostic-only) argument added — arg 2 unchanged.
-    expect(pipelineSrc).toMatch(/findBestArchiveScoreForBeat\(funnelResult\.candidates,\s*beatEmb[,)]/);
-    const calls = pipelineSrc.match(/computeSegmentSimilarities\([^)]*\)/g) ?? [];
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain("funnelBeatEmb");
-  });
 
   it("VisionGate still resolves its own CLIP query embedding, and CLIP stays one model", () => {
     expect(gateSrc).toMatch(
@@ -306,15 +284,6 @@ describe("FASE 7.3 Test 9 — no other rejection gate was touched", () => {
   it("darkReject / wellFramed luma rules are unchanged", () => {
     expect(localSrc).toContain("wellFramed: luma === null || luma >= 18,");
     expect(localSrc).toContain("scoredFrames.some((s) => s.luma !== null && s.luma < 12)");
-  });
-
-  it("the funnel's binary VisionGate filter is unchanged (still out of FASE 7.3's scope)", () => {
-    const funnelSrc = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
-    // RONDE 1 renamed the local to allPassers (cross-beat reuse). What this test guards is
-    // unchanged: the funnel still considers only VisionGate passers and still returns null
-    // when there are none — FASE 7.3 did not and does not touch that.
-    expect(funnelSrc).toMatch(/const allPassers = scored\s*\n?\s*\.filter\(s => s\.visionResult\.pass\)/);
-    expect(funnelSrc).toContain("if (allPassers.length === 0) return null;");
   });
 });
 

@@ -62,18 +62,7 @@ describe("the switch", () => {
     expect(youtubeFirstPerBeatEnabled()).toBe(false);
   });
 
-  it("no scene asks every provider at once — not even when the old pool flag says yes", () => {
-    expect(sceneCandidatePoolEnabled()).toBe(false);
-    process.env.ENABLE_SCENE_CANDIDATE_POOL = "true";
-    expect(sceneCandidatePoolEnabled()).toBe(false);
-  });
 
-  it("with the switch off, the pool route is exactly what it was", () => {
-    process.env.SOURCING_YOUTUBE_FIRST = "false";
-    expect(sceneCandidatePoolEnabled()).toBe(true);
-    process.env.ENABLE_SCENE_CANDIDATE_POOL = "false";
-    expect(sceneCandidatePoolEnabled()).toBe(false);
-  });
 });
 
 describe("two minutes of YouTube per beat, and nothing above it ends them early", () => {

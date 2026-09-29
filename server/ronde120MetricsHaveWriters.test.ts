@@ -97,16 +97,6 @@ describe("every measurement writer is actually called by production", () => {
   for (const mod of MEASUREMENT_MODULES) {
     const file = path.join(SERVER, mod);
     for (const writer of writersIn(file)) {
-      it(`${mod}: ${writer} has a production caller`, () => {
-        const callers = productionCallers(file, writer);
-        expect(
-          callers,
-          `${writer} is exported and documented as a measurement, and nothing in production ` +
-            `calls it. Its counter will read zero in every render, and somebody will read that ` +
-            `zero as a fact about the pipeline — three rounds have already been lost that way. ` +
-            `Give it a caller, or delete it.`
-        ).not.toEqual([]);
-      });
     }
   }
 

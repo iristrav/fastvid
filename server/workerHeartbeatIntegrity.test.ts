@@ -107,8 +107,9 @@ describe("heartbeat — a label set on entry is removed on every exit", () => {
    * but "this function has eight returns and clears on three of them". A `finally` is the only
    * construct a future branch cannot forget, so that is what is required here.
    */
+  /** The scene-pool downloader was the other setter; it left with the pool. */
   const SETTERS = [
-    { fn: "downloadAndTrimPoolCandidate", end: "/** Stable stock trim" },
+    { fn: "fetchSceneVisuals", end: "async function fetchSceneVisualsInner(" },
   ] as const;
 
   for (const { fn, end } of SETTERS) {
@@ -124,19 +125,4 @@ describe("heartbeat — a label set on entry is removed on every exit", () => {
       );
     });
   }
-
-  /**
-   * The refusal paths specifically. `downloadAndTrimPoolCandidate` rejects candidates far more
-   * often than it accepts them, so a leak on the refusal path leaks on almost every candidate —
-   * which is why the log filled with labels for work that had finished.
-   */
-  it("the pool downloader still has the refusal paths that used to leak", () => {
-    const start = CODE.indexOf("function downloadAndTrimPoolCandidate(");
-    const body = CODE.slice(start, CODE.indexOf("async function trimDownloadedStockClip(", start));
-    const refusals = [...body.matchAll(/\n\s*return null;/g)].length;
-    expect(refusals, "the refusal paths are gone — this test is measuring the wrong function")
-      .toBeGreaterThanOrEqual(5);
-    /** And exactly one place removes the label, so no branch can drift out of step. */
-    expect([...body.matchAll(/clearWorkerHeartbeat\(/g)]).toHaveLength(1);
-  });
 });

@@ -169,67 +169,6 @@ describe("the YouTube route closes the download record it opens", () => {
   });
 });
 
-/* ═══════════════════════ the pool route, which closed nothing at all ═══════════════════════ */
-
-/**
- * The same defect, one layer up and for EVERY provider.
- *
- * `downloadAndTrimPoolCandidate` is the scene-pool retrieval path — the primary one in the
- * cinematic build. It opens a DOWNLOAD_STARTED for every candidate through
- * `tagPathWithProviderAsset` and filed no outcome on any of its exits: not on success, not on the
- * eight refusals, not on a throw. And unlike the direct fetchers it does not bump
- * `providerMetrics.downloadCount` either, so a clip retrieved this way was counted in neither
- * channel and appeared in no column of the render report.
- */
-describe("the pool route closes its download records too", () => {
-  it("files the outcome where it cannot be forgotten by a future branch", () => {
-    const src = PIPELINE();
-    const at = src.indexOf("async function downloadAndTrimPoolCandidate(");
-    expect(at).toBeGreaterThan(-1);
-    const fn = src.slice(at, src.indexOf("\n/** Stable stock trim", at));
-    // In the `finally`, alongside the heartbeat clear, which every exit already runs.
-    const clear = fn.indexOf("clearWorkerHeartbeat(heartbeatLabel);");
-    expect(clear).toBeGreaterThan(-1);
-    expect(fn.slice(clear)).toContain("recordProviderDownloadOutcome(");
-  });
-
-  /**
-   * The distinction the whole change exists for. A file that arrived and was then refused on what
-   * it shows is a DOWNLOAD that succeeded; recording it as a failed download would turn a relevance
-   * problem into a retrieval one in the report.
-   */
-  it("success is decided by the byte floor, not by whether the clip was any good", () => {
-    const src = PIPELINE();
-    const at = src.indexOf("async function downloadAndTrimPoolCandidate(");
-    const fn = src.slice(at, src.indexOf("\n/** Stable stock trim", at));
-    const floor = fn.indexOf("if (!sizeVerdict.ok) {");
-    // Bounded by the trim block that follows, so this asserts the arrival is settled BEFORE
-    // anything probes, trims or judges the file — not merely that the line exists somewhere.
-    const trim = fn.indexOf("// F3-17: rawPath is a temporary intermediate file", floor);
-    expect(floor).toBeGreaterThan(-1);
-    expect(trim).toBeGreaterThan(floor);
-    expect(fn.slice(floor, trim)).toContain("arrivalFailure = null;");
-  });
-
-  it("each refusal files the reason it already logs, rather than a second vocabulary", () => {
-    const src = PIPELINE();
-    const at = src.indexOf("async function downloadAndTrimPoolCandidate(");
-    const fn = src.slice(at, src.indexOf("\n/** Stable stock trim", at));
-    for (const reason of ["youtube_fetch_failed", "html_not_media", "below_byte_floor"]) {
-      expect(fn, `${reason} is logged but not filed`).toContain(`arrivalFailure = "${reason}"`);
-    }
-    expect(fn).toContain("arrivalFailure = `http_${resp.status}`;");
-  });
-
-  /** A throw from any branch, including one written later, must still close the record. */
-  it("starts pessimistic, so an unforeseen exit files a failure rather than nothing", () => {
-    const src = PIPELINE();
-    const at = src.indexOf("async function downloadAndTrimPoolCandidate(");
-    const fn = src.slice(at, src.indexOf("\n/** Stable stock trim", at));
-    expect(fn).toContain('let arrivalFailure: string | null = "download_did_not_complete";');
-  });
-});
-
 /* ═══════════════════════ the fold that reads it ═══════════════════════ */
 
 describe("the end-of-render fold reports arrivals", () => {

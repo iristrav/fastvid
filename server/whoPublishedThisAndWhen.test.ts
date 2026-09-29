@@ -128,94 +128,17 @@ describe("a channel is classified by what it says it is, not by a list", () => {
 
 /* ═══════════════════ B · the metadata that had no writer ═══════════════════ */
 
-describe("the publication facts now reach the ranking engine", () => {
-  it("PUBLISHED-AT IS CARRIED — the freshness signal can fire at all", () => {
-    const asset = poolCandidateToAsset(
-      candidate({ youtube: { channel: "Bundesarchiv", publishedAt: "2011-04-02T00:00:00Z" } })
-    );
-    expect(asset.metadata).toBeTruthy();
-    expect((asset.metadata as Record<string, unknown>).publishedAt).toBe("2011-04-02T00:00:00Z");
-  });
-
-  it("and the channel's class rides in the same object", () => {
-    const asset = poolCandidateToAsset(
-      candidate({ youtube: { channel: "Bundesarchiv", publishedAt: null } })
-    );
-    const m = asset.metadata as Record<string, unknown>;
-    expect(m.channelAuthority).toBe("ARCHIVE");
-    expect(m.channelAuthorityConfidence).toBe(1);
-  });
-
-  it("A CANDIDATE WITH NO PUBLICATION FACTS IS EXACTLY AS IT WAS", () => {
-    /**
-     * The compatibility guarantee. Every non-YouTube provider supplies neither field, and null is
-     * what the engine wants: it redistributes an absent signal's weight instead of scoring a
-     * fabricated zero.
-     */
-    expect(poolCandidateToAsset(candidate()).metadata).toBeNull();
-    expect(poolCandidateToAsset(candidate({ youtube: null })).metadata).toBeNull();
-    expect(
-      poolCandidateToAsset(candidate({ youtube: { channel: null, publishedAt: null } })).metadata
-    ).toBeNull();
-  });
-
-  it("authority is omitted when there is no channel to judge", () => {
-    const m = poolCandidateToAsset(
-      candidate({ youtube: { channel: null, publishedAt: "2011-04-02T00:00:00Z" } })
-    ).metadata as Record<string, unknown>;
-    expect(m.publishedAt).toBe("2011-04-02T00:00:00Z");
-    expect(m.channelAuthority).toBeUndefined();
-  });
-});
 
 /* ═══════════════════ C · recency is not a virtue on a dated beat ═══════════════════ */
 
 describe("a beat about 1945 is not pulled toward recent uploads", () => {
   const POOL = readFileSync(join(__dirname, "poolRanking.ts"), "utf8");
 
-  it("THE FRESHNESS WEIGHT IS ZERO WHEN THE BEAT ASKED FOR ARCHIVAL MATERIAL", () => {
-    /**
-     * `freshnessScore` is `1 - ageYears / 20`: newer always scores higher. Right for a current
-     * event, backwards for 1945, where a 2024 upload is likelier to be a reconstruction than the
-     * footage. The signal had never fired before this round, so the question is new.
-     */
-    expect(POOL).toContain('if (!need?.preferred.includes("ARCHIVAL_FOOTAGE"))');
-    expect(POOL).toContain("freshness: 0");
-  });
 
   it("and it is ZERO, not inverted — 'older is better' is a claim nobody proved", () => {
     expect(POOL).not.toMatch(/freshness:\s*-/);
     expect(POOL).not.toContain("invertFreshness");
   });
 
-  it("every other weight is untouched, and a beat with no need gets the defaults", () => {
-    expect(POOL).toContain("return DEFAULT_RANKING_CONFIG.weights;");
-    expect(POOL).toContain("{ ...DEFAULT_RANKING_CONFIG.weights, freshness: 0 }");
-  });
 
-  it("no signal was given a weight this round — the thirteen are still thirteen", () => {
-    /**
-     * Channel authority is carried and NOT weighted. A fourteenth signal redistributes the other
-     * thirteen, and that is a decision to make against measured data rather than in the same
-     * change that first makes the data exist.
-     */
-    /**
-     * The class IS written — into `metadata`, where it is carried and reported. What must not
-     * exist is a WEIGHT for it, which is what would redistribute the other thirteen. The first
-     * version of this test banned the field itself and so tested the opposite of the intent.
-     */
-    expect(POOL).toContain("channelAuthority: authority.authorityClass");
-    expect(POOL).not.toMatch(/weights\.[a-zA-Z]*[Aa]uthority/);
-    expect(POOL).not.toMatch(/authority[A-Za-z]*(Weight|Contribution)/);
-
-    const WEIGHTS = readFileSync(
-      join(__dirname, "visualMatchingV2", "candidateRanking.ts"),
-      "utf8"
-    );
-    const block = WEIGHTS.slice(
-      WEIGHTS.indexOf("DEFAULT_RANKING_WEIGHTS"),
-      WEIGHTS.indexOf("DEFAULT_SOURCE_PRIORITY")
-    );
-    expect(block, "a signal was added to the engine's weights").not.toMatch(/authority/i);
-  });
 });
