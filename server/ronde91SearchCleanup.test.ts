@@ -215,16 +215,27 @@ describe("RONDE 91 §4 — no provider search has an alternative route", () => {
    * The exemption is narrow and it is not a free pass: the assertion below still proves that an
    * exempted function contains no query-building construct, so it cannot quietly become a search.
    */
-  const NON_SEARCH_PROVIDER_CALLS: ReadonlyArray<{ file: string; fn: string; why: string }> = [
+  const NON_SEARCH_PROVIDER_CALLS: ReadonlyArray<{ file: string; fn: string; why: string; idMarker?: string }> = [
     {
       file: "rehydrationDeps.ts",
       fn: "providerResolver",
       why: "fetches ONE known asset by the id in our own lineage ledger; it has no search terms",
     },
+    /**
+     * VIDEO 619 — the length of ONE YouTube video, by the id a search already returned
+     * (videos.list, part=contentDetails). It replaces the RapidAPI metadata lookup, which was
+     * outside the gate for the same reason: there are no search terms in it.
+     */
+    {
+      file: "youtubeVideoDuration.ts",
+      fn: "youtubeVideoDurationSec",
+      why: "reads ONE video's length by its id; it has no search terms",
+      idMarker: "videoId",
+    },
   ];
 
   it("TEST 14b — an exempt provider call really is a lookup, not a search in disguise", () => {
-    for (const { file, fn } of NON_SEARCH_PROVIDER_CALLS) {
+    for (const { file, fn, idMarker } of NON_SEARCH_PROVIDER_CALLS) {
       const found = serverSources().find((s) => s.file === file);
       expect(found, `${file} not found`).toBeTruthy();
       const idx = found!.src.indexOf(`function ${fn}(`);
@@ -235,7 +246,7 @@ describe("RONDE 91 §4 — no provider search has an alternative route", () => {
        * If anyone ever adds a search parameter here, this fails and the exemption has to be
        * re-argued rather than silently inherited.
        */
-      expect(body, `${fn} must address an asset by id`).toContain("providerAssetId");
+      expect(body, `${fn} must address an asset by id`).toContain(idMarker ?? "providerAssetId");
       for (const searchish of ["query=", "&q=", "?q=", "search?", "per_page=", "searchTerm"]) {
         expect(body.includes(searchish), `${fn} looks like a search: ${searchish}`).toBe(false);
       }

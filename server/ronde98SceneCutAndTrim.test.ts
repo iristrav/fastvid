@@ -75,7 +75,9 @@ describe("RONDE 98 §1 — a 38-second scene is one clip", () => {
     expect(SPLITTER_SRC).not.toMatch(/ranges = splitLongRanges\(ranges\);/);
     expect(SPLITTER_SRC).toContain("ranges = splitLongRanges(ranges, splitCeiling);");
     expect(SPLITTER_SRC).toContain("const sceneAware = cuts.length > 0;");
-    expect(SPLITTER_SRC).toContain("const splitCeiling = sceneAware ? sceneSafetyMaxSec() : maxClipDurationSec();");
+    /** VIDEO 619 — and never above the operator's eleven seconds (ARCHIVE_PIECE_MAX_SEC). */
+    expect(SPLITTER_SRC).toContain("sceneAware ? sceneSafetyMaxSec() : maxClipDurationSec(),");
+    expect(SPLITTER_SRC).toContain("options?.maxPieceSec ?? ARCHIVE_PIECE_MAX_SEC");
   });
 });
 

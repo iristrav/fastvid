@@ -11,6 +11,7 @@
  */
 import type { PoolDeps, SearchItem, ItemDetails, Triage } from "./youtubeVideoPool";
 import type { PlannerInput } from "./youtubeVideoSearchPlanner";
+import { isoDurationSec } from "./youtubeVideoDuration";
 
 const TRIAGE_SCHEMA = {
   type: "json_schema" as const,
@@ -75,11 +76,6 @@ export function youtubeTriagePrompt(
   );
 }
 
-function isoDurationSec(iso: string | undefined): number {
-  const m = /^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso ?? "");
-  if (!m) return 0;
-  return (+(m[1] ?? 0)) * 86400 + (+(m[2] ?? 0)) * 3600 + (+(m[3] ?? 0)) * 60 + (+(m[4] ?? 0));
-}
 
 function llmText(resp: unknown): string {
   const c = (resp as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content;

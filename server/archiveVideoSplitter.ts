@@ -1399,8 +1399,13 @@ async function extractAllClipsSinglePass(
   return { segments, successCount, failedCount };
 }
 
+/** VIDEO 619 — the longest clip the archive keeps: one scene, at most this many seconds. */
+export const ARCHIVE_PIECE_MAX_SEC = 11;
+
 export type ArchiveSplitOptions = {
   subjectContext?: ArchiveSubjectContext;
+  /** VIDEO 619 — the longest piece to keep; defaults to ARCHIVE_PIECE_MAX_SEC. */
+  maxPieceSec?: number;
   /**
    * Called immediately after each clip is extracted and ready on disk.
    * The file at localPath is deleted by the splitter right after this callback returns.
@@ -1635,7 +1640,15 @@ export async function splitVideoBySceneChanges(
      */
     const beforeMaxDur = ranges.length;
     const sceneAware = cuts.length > 0;
-    const splitCeiling = sceneAware ? sceneSafetyMaxSec() : maxClipDurationSec();
+    /**
+     * VIDEO 619 — and no archive piece is longer than ARCHIVE_PIECE_MAX_SEC, the operator's rule
+     * for every clip the archive offers. A longer scene is cut into equal parts, each still inside
+     * the one scene, so no piece carries a transition.
+     */
+    const splitCeiling = Math.min(
+      sceneAware ? sceneSafetyMaxSec() : maxClipDurationSec(),
+      options?.maxPieceSec ?? ARCHIVE_PIECE_MAX_SEC
+    );
     ranges = splitLongRanges(ranges, splitCeiling);
     ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
     ranges = capClipRanges(ranges, maxArchiveClips());

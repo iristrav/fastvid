@@ -133,7 +133,11 @@ describe("R222 §3 — the cascade still fails open", () => {
      * The one place a clip is refused is ingestion, and only on a real `has_text`. If a second
      * refusal appears, this round quietly became a gate-tightening round.
      */
-    const refusals = [...INGEST.matchAll(/verdict === "has_text"/g)];
+    /**
+     * VIDEO 619 — the verdict is now read in three places (the refusal, the choice to cut a longer
+     * video for its clean pieces, and the row), so the refusal itself is what is counted.
+     */
+    const refusals = [...INGEST.matchAll(/return refuse\("BAKED_EDIT_TEXT"/g)];
     expect(refusals.length).toBe(1);
   });
 
@@ -153,8 +157,8 @@ describe("R222 §4 — a clip nobody looked at is stored as unjudged", () => {
     );
   });
 
-  it("ONLY A REAL `clean` IS WRITTEN AS CLEAN; ANYTHING ELSE IS null", () => {
-    expect(INGEST).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : null,`);
+  it("ONLY A REAL `clean` IS WRITTEN AS CLEAN; a real `has_text` as text (VIDEO 619: such a video is stored off and cut); anything else is null", () => {
+    expect(INGEST).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : overlay.verdict === "has_text" ? 1 : null,`);
   });
 
   it("ingestion asks for the verdict, not the boolean", () => {

@@ -287,6 +287,15 @@ export const mediaArchiveAssets = mysqlTable(
    * it (`youtubeShotCuts.ts`), so a YouTube piece is never taken across a cut in the original.
    */
   shotCutsSec: json("shotCutsSec").$type<number[]>(),
+  /**
+   * VIDEO 619 — the shot pieces a longer clip was cut into (`archiveShotPieces.ts`).
+   *
+   * A piece carries its parent's id; the parent carries the moment it was cut. A cut parent is
+   * switched off for sourcing (its pieces are offered instead) and kept for the films that already
+   * use it. Null on both = never cut.
+   */
+  parentAssetId: int("parentAssetId"),
+  splitIntoShotsAt: timestamp("splitIntoShotsAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

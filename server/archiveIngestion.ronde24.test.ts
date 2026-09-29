@@ -155,7 +155,7 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
      * re-analysed, which is what RONDE 24 was protecting; what it may no longer do is record a
      * clearance that nobody issued.
      */
-    expect(ingestionSrc).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : null,`);
+    expect(ingestionSrc).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : overlay.verdict === "has_text" ? 1 : null,`);
     expect(ingestionSrc, "a clip nobody judged is stored as cleared again").not.toContain(
       "hasBakedEditText: 0,"
     );

@@ -239,16 +239,20 @@ describe("RONDE 110 — an uploaded video is split at scenes, not at a stopwatch
     expect(body).toContain("const points = [0, ...cutPoints, totalDuration];");
   });
 
-  it("a detected scene is NOT chopped to a fixed length — only a failed detection is", () => {
+  /**
+   * VIDEO 619 — the operator's rule caps every archive piece at eleven seconds, so a long detected
+   * scene IS now cut, into equal parts inside the scene. It is still not chopped at six.
+   */
+  it("a detected scene is NOT chopped to the six-second default — only to the eleven-second archive rule", () => {
     /**
      * RONDE 98's finding, still the rule: a 38-second continuous shot used to come out as seven
      * 5.4-second clips because the six-second ceiling was applied to every range. The ceiling now
      * depends on whether the detector found anything at all.
      */
     expect(SPLITTER).toContain("const sceneAware = cuts.length > 0;");
-    expect(SPLITTER).toContain(
-      "const splitCeiling = sceneAware ? sceneSafetyMaxSec() : maxClipDurationSec();"
-    );
+    /** VIDEO 619 — and never above the operator's eleven seconds (ARCHIVE_PIECE_MAX_SEC). */
+    expect(SPLITTER).toContain("sceneAware ? sceneSafetyMaxSec() : maxClipDurationSec(),");
+    expect(SPLITTER).toContain("options?.maxPieceSec ?? ARCHIVE_PIECE_MAX_SEC");
   });
 
   it("the fixed-interval path is the fallback for a video with no detectable cuts", () => {

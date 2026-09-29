@@ -426,6 +426,17 @@ async function main() {
   await startYoutubePrefetchWorker().catch((err) =>
     console.warn("[YouTubePrefetch] could not start:", (err as Error).message)
   );
+  /**
+   * VIDEO 619 — the archive stored before the shot rule is cut into single-shot pieces of at most
+   * eleven seconds, a few videos at a time and only while nothing renders. See `archiveShotPieces`.
+   */
+  {
+    const { startArchiveShotSplitSweep } = await import("./archiveShotPieces");
+    const { workerLocalActiveJobs } = await import("./videoQueue");
+    const { activeRenderJobCount } = await import("./renderJobWorker");
+    startArchiveShotSplitSweep(() => workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0);
+    console.log("[ArchivePieces] sweep started — archive videos are cut into shots of at most 11s while idle");
+  }
 
   // ── 5s heartbeat: logs every function the pipeline is currently blocking in ──
   // getWorkerHeartbeat() now tracks one entry per concurrent call (keyed by its own label) and

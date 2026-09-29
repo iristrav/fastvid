@@ -1,5 +1,6 @@
-import { and, asc, desc, eq, gt, getTableColumns, inArray, like, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, getTableColumns, inArray, isNull, like, ne, notInArray, or, sql } from "drizzle-orm";
 import { AUTO_ARCHIVES, STOCK_ARCHIVE_SLUG, type AutoArchiveKind } from "./stockArchive";
+import { archiveTagsAtMostTwo } from "./archiveTagRule";
 import type { RenderLockStore } from "./renderLock";
 import { drizzle } from "drizzle-orm/mysql2";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
@@ -1946,10 +1947,28 @@ export async function getMediaArchiveAssetsByIds(ids: number[]) {
     .where(and(inArray(mediaArchiveAssets.id, unique), eq(mediaArchiveAssets.isActive, 1)));
 }
 
+/**
+ * VIDEO 619 — every archive row is written with at most two tags: the person's full name, then
+ * what or when (see `archiveTagRule`). Applied HERE, on the write, so no ingestion route, upload
+ * or admin edit can store more.
+ */
+function withArchiveTagRule<T extends { tags?: unknown; title?: unknown; entities?: unknown }>(data: T): T {
+  if (!Array.isArray(data.tags)) return data;
+  const persons = Array.isArray(data.entities) ? (data.entities as unknown[]).filter((e): e is string => typeof e === "string") : [];
+  return {
+    ...data,
+    tags: archiveTagsAtMostTwo(
+      (data.tags as unknown[]).filter((t): t is string => typeof t === "string"),
+      typeof data.title === "string" ? data.title : "",
+      persons
+    ),
+  };
+}
+
 export async function createMediaArchiveAsset(data: InsertMediaArchiveAsset) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.insert(mediaArchiveAssets).values(data);
+  const result = await db.insert(mediaArchiveAssets).values(withArchiveTagRule(data));
   const newId = (result as unknown as [{ insertId: number }])[0]?.insertId as number;
 
   // Async on-ingest annotation — fire-and-forget, never blocks the insert.
@@ -2017,7 +2036,31 @@ export async function getCuratedArchiveProvenance(
 export async function updateMediaArchiveAsset(id: number, data: Partial<InsertMediaArchiveAsset>) {
   const db = await getDb();
   if (!db) return;
-  await db.update(mediaArchiveAssets).set(data).where(eq(mediaArchiveAssets.id, id));
+  await db.update(mediaArchiveAssets).set(withArchiveTagRule(data)).where(eq(mediaArchiveAssets.id, id));
+}
+
+/**
+ * VIDEO 619 — archive videos the shot splitter has not looked at yet: active, not a piece, not
+ * stock, oldest first so the sweep works through the archive in the order it was filled.
+ */
+export async function listArchiveAssetsAwaitingShotSplit(limit: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({ id: mediaArchiveAssets.id })
+    .from(mediaArchiveAssets)
+    .where(
+      and(
+        eq(mediaArchiveAssets.isActive, 1),
+        eq(mediaArchiveAssets.mediaType, "video"),
+        isNull(mediaArchiveAssets.splitIntoShotsAt),
+        isNull(mediaArchiveAssets.parentAssetId),
+        or(isNull(mediaArchiveAssets.mixKind), ne(mediaArchiveAssets.mixKind, "stock"))
+      )
+    )
+    .orderBy(asc(mediaArchiveAssets.id))
+    .limit(limit);
+  return rows.map((r) => r.id);
 }
 
 /** F3-26: look up an already-ingested archive asset by its web source URL hash, so a repeat

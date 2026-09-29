@@ -23,6 +23,7 @@ import { formatPreviewRefusal, verifyArchivePreview } from "./archivePreviewChec
 import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
 import { cachedClipBakedEditTextVerdict } from "./archiveClipFilter";
+import { ARCHIVE_PIECE_MIN_SEC, queueArchiveShotSplit } from "./archiveShotPieces";
 import { beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import { recordVisualSearchMemory, type ClassifiedEntity } from "./visualSearchMemory";
 import { Semaphore } from "./_core/semaphore";
@@ -322,13 +323,32 @@ async function ingestExternalClipToArchiveInner(
       overlayKey,
       beatClipTextFilterMaxChecks()
     );
-    if (overlay.verdict === "has_text") {
+    /**
+     * VIDEO 619 — a VIDEO with text somewhere in it is not thrown away whole any more.
+     *
+     * A 30-second segment with a caption in its first seconds has clean seconds after it. Such a
+     * clip is stored switched OFF (never offered as it is) and cut into single-shot pieces, each
+     * checked for text on its own; the clean pieces become archive assets of their own. A still,
+     * or a video too short to hold a clean shot, is refused as before.
+     */
+    const cutForCleanPieces =
+      overlay.verdict === "has_text" &&
+      metadata.mediaType === "video" &&
+      (metadata.durationSec ?? 0) >= 2 * ARCHIVE_PIECE_MIN_SEC &&
+      stockArchiveId == null;
+    if (overlay.verdict === "has_text" && !cutForCleanPieces) {
       console.log(
         `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
       );
       return refuse("BAKED_EDIT_TEXT", overlay.reason ?? "the on-screen-text check said has_text", {
         mimeType: metadata.mimeType,
       });
+    }
+    if (cutForCleanPieces) {
+      console.log(
+        `[Ingestion] "${metadata.title.slice(0, 60)}" has text on screen — stored switched off and ` +
+          `cut into shots, so its clean pieces can be kept`
+      );
     }
     /**
      * RONDE 222 — a clip nobody looked at is not admitted as a clip that was cleared.
@@ -492,7 +512,8 @@ async function ingestExternalClipToArchiveInner(
        * question properly. That is the correct cost for a clip nobody has looked at, and it is paid
        * once rather than inherited forever.
        */
-      hasBakedEditText: overlay.verdict === "clean" ? 0 : null,
+      hasBakedEditText: overlay.verdict === "clean" ? 0 : overlay.verdict === "has_text" ? 1 : null,
+      ...(cutForCleanPieces ? { isActive: 0 } : {}),
       // RONDE 118: verified a few lines above, before the bytes were even stored.
       previewCheckedAt: new Date(),
     };
@@ -517,6 +538,11 @@ async function ingestExternalClipToArchiveInner(
     // F3-26: remember which query/entity/source combination found this asset — best-effort,
     // never blocks or fails the ingestion itself.
     void recordSearchMemoryForIngestion(metadata, assetId, true).catch(() => {});
+
+    /** VIDEO 619 — every video that enters the archive is cut into single shots of at most 11s. */
+    if (metadata.mediaType === "video" && stockArchiveId == null) {
+      queueArchiveShotSplit(assetId, { allowInactive: cutForCleanPieces });
+    }
 
     console.log(
       `[Ingestion] Admitted external clip to archive: assetId=${assetId} source=${metadata.sourceNote} ` +

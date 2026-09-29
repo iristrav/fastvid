@@ -262,9 +262,10 @@ describe("Fix 2/3. one other window after a black fragment; the pool's length fi
     expect(first.start).toBeGreaterThan(15);
   });
 
-  it("Fix 3 — without a pool length the existing fallback still asks RapidAPI", async () => {
+  /** VIDEO 619 — RapidAPI is switched off: without a pool length nothing is asked, and 15s is the start. */
+  it("Fix 3 — without a pool length RapidAPI is not asked any more; the start falls back to 15s", async () => {
     await fetchInPool(false);
-    expect(rapidApiMetaCalls().length).toBeGreaterThan(0);
+    expect(rapidApiMetaCalls()).toHaveLength(0);
     expect(downloads()[0]!.start).toBe(15);
   });
 

@@ -11633,6 +11633,8 @@ export async function fetchRapidApiYoutubeMeta(
    * the world — would inherit a refusal that was only ever about the clock.
    */
   if (opts?.onlyIfCached) return null;
+  /** VIDEO 619 — RapidAPI is switched off: no key, no request (it could only answer 401). */
+  if (!RAPIDAPI_KEY) return null;
 
   const metaUrl = `https://${RAPIDAPI_YT_HOST}/dl?id=${videoId}`;
   providerMetrics(sourcingCache, "youtube_cc").metadataCount++;
@@ -12077,6 +12079,52 @@ export function googlevideoLinkLock(url: string): "ip_locked" | "not_ip_locked" 
  */
 const youtubeTransfersByFile = new Map<string, { seconds: string; done: Promise<boolean> }>();
 let youtubeTransferReentry: string | null = null;
+
+/**
+ * VIDEO 619 — EVERYTHING YOUTUBE DELIVERS IS KEPT.
+ *
+ * A beat downloads several candidates and adopts one; the others were deleted with the render's
+ * work directory, and only the background fetch and the film's own shots reached the archive. Now
+ * every delivered file is copied aside at once (the work directory may be gone by the time the
+ * archive gets to it) and ingested in the background with the same provenance a background-fetched
+ * segment carries — where it is then cut into single shots like every other archive video.
+ */
+function archiveYoutubeDownloadInBackground(
+  filePath: string,
+  info: { videoId: string; title?: string; startSec: number; durationSec: number }
+): void {
+  let spool: string;
+  try {
+    spool = path.join(os.tmpdir(), `yt-archive-${info.videoId}-${Math.round(info.startSec)}-${Date.now()}.mp4`);
+    fs.copyFileSync(filePath, spool);
+  } catch {
+    return;
+  }
+  void (async () => {
+    try {
+      const [{ archiveMetadataForPrefetchedSegment }, { ingestExternalClipToArchiveWithReason }] = await Promise.all([
+        import("./youtubePrefetch"),
+        import("./archiveIngestion"),
+      ]);
+      const outcome = await ingestExternalClipToArchiveWithReason(
+        spool,
+        archiveMetadataForPrefetchedSegment(
+          { videoId: info.videoId, title: info.title ?? null, query: null, licenseMode: null },
+          info.startSec,
+          info.durationSec
+        )
+      );
+      console.log(
+        `[YouTubeArchive] ${info.videoId}@${Math.round(info.startSec)}s → ` +
+          (outcome.status === "ingested" ? `archive asset ${outcome.assetId}` : `not kept (${outcome.reasonCode})`)
+      );
+    } catch (err) {
+      console.warn(`[YouTubeArchive] ${info.videoId} could not be archived:`, (err as Error)?.message?.slice(0, 120));
+    } finally {
+      try { fs.unlinkSync(spool); } catch { /* already gone */ }
+    }
+  })();
+}
 
 export async function downloadYouTubeCCClip(
   videoId: string,
@@ -12637,6 +12685,8 @@ export async function downloadYouTubeCCClip(
             /* a clip that arrived correctly is never lost to its own bookkeeping */
           }
           reportDownload("DOWNLOAD_SUCCESS", "cloud_service");
+          /** VIDEO 619 — every YouTube download goes into the archive, used in this film or not. */
+          archiveYoutubeDownloadInBackground(outPath, { videoId, title, startSec: clipStart, durationSec: duration });
           return true;
         } else {
           /**

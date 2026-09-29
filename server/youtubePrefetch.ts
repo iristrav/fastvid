@@ -858,8 +858,11 @@ async function productionPrefetchDeps(): Promise<PrefetchDeps> {
   const { activeRenderJobCount } = await import("./renderJobWorker");
   return {
     isIdle: () => workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0,
-    sourceDurationSec: async (videoId) =>
-      pipeline.rapidApiYoutubeMetaDurationSec(await pipeline.fetchRapidApiYoutubeMeta(videoId, -1)),
+    /** VIDEO 619 — from the YouTube Data API: RapidAPI is switched off. See `youtubeVideoDuration`. */
+    sourceDurationSec: async (videoId) => {
+      const { youtubeVideoDurationSec } = await import("./youtubeVideoDuration");
+      return youtubeVideoDurationSec(videoId);
+    },
     download: async (p) => {
       /**
        * One route at a time, each inside a scope of its own with the whole window — see
