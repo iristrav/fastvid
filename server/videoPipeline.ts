@@ -5093,6 +5093,41 @@ function startSceneYoutubeLookahead(
   }
 }
 
+/**
+ * VIDEO 619 — a beat waits for its lookahead no longer than its own turn.
+ *
+ * The lookahead runs in its own scope with the full two-minute turn, because it starts for every
+ * beat when the scene starts. The beat then awaited it with a plain `await`, which no scope can
+ * cut short: render 619's s1b0 was granted 103 s (fix A, leaving room for five later beats) and
+ * used 120 s — exactly the lookahead's own limit — so s1b1 was left 13 s and s1b3, s1b4, s2b2 and
+ * s2b3 got no picture at all. Now the wait ends when the beat's time does (or its turn is
+ * cancelled) and the beat goes on with nothing; the lookahead itself is not cancelled.
+ * Null means the wait ended first.
+ */
+export async function lookaheadWithinTurn<T>(
+  result: Promise<T>,
+  waitMs: number,
+  signal?: AbortSignal
+): Promise<T | null> {
+  if (!Number.isFinite(waitMs)) return result;
+  if (signal?.aborted || waitMs <= 0) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      result,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), waitMs);
+        onAbort = () => resolve(null);
+        signal?.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 /** What one attempt at the provider produced, in the detail the outcome vocabulary needs. */
 type YoutubeAttempt = {
   clip: string | null;
@@ -5158,7 +5193,15 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
       );
     }
     if (ahead?.kind === "use") {
-      const got: LookaheadResult = await ahead.result;
+      const waitMs = remainingScopeMs();
+      const got = await lookaheadWithinTurn(ahead.result, waitMs, sceneFetchScopeStorage.getStore()?.controller.signal);
+      if (got === null) {
+        console.log(
+          `[YouTubeLookahead] s${sceneIndex}b${beat.index} WAIT_ENDED after ${Math.round(waitMs / 1000)}s — ` +
+            `the beat's own turn is over; the lookahead keeps running without it`
+        );
+        return found;
+      }
       lookaheadSearched = got.searched;
       if (got.paths.length > 0 || got.searched) {
         found = found.concat(got.paths);

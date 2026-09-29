@@ -184,7 +184,15 @@ def _ydl_options(out_path: Path, start: float, end: float) -> dict:
         # B-roll behind narration, where the difference between 480p and 720p is far less visible
         # than the difference between having the shot and not having it. RONDE 27 made the same
         # call on the RapidAPI route after a half-gigabyte 720p file cost a render three clips.
-        "format": f"bv*[height>={MIN_HEIGHT}][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
+        #
+        # VIDEO 619 — never an HLS stream (`m3u8`). ffmpeg cuts a window out of one by fetching its
+        # segments one request at a time through the proxy: `Fgr4w50Rwus` (format 609, m3u8_native)
+        # took 262-373 s for four seconds while three beats waited 35-70 s each and gave up. A video
+        # that offers only HLS now fails at once ("Requested format is not available") instead.
+        "format": (
+            f"bv*[height>={MIN_HEIGHT}][ext=mp4][protocol!*=m3u8]+ba[ext=m4a][protocol!*=m3u8]"
+            "/b[ext=mp4][protocol!*=m3u8]/b[protocol!*=m3u8]"
+        ),
         # The filter above is a floor, not a choice — without this the largest stream wins.
         "format_sort": [f"res:{MAX_HEIGHT}"],
         # THE POINT OF THIS SERVICE. Only the requested window is fetched, so a 3.5-second beat

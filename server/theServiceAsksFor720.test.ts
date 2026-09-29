@@ -19,13 +19,17 @@ describe("the service's format options", () => {
     expect(MAIN).toContain('"format_sort": [f"res:{MAX_HEIGHT}"],');
   });
 
-  it("keep the 480p floor the client relies on", () => {
-    expect(MAIN).toContain('"format": f"bv*[height>={MIN_HEIGHT}][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",');
+  it("keep the 480p floor the client relies on, and never take an HLS stream (video 619)", () => {
+    expect(MAIN).toContain(
+      'f"bv*[height>={MIN_HEIGHT}][ext=mp4][protocol!*=m3u8]+ba[ext=m4a][protocol!*=m3u8]"\n' +
+        '            "/b[ext=mp4][protocol!*=m3u8]/b[protocol!*=m3u8]"'
+    );
   });
 
   it("the real-selector check exists beside the service", () => {
     const CHECK = readFileSync(join(__dirname, "..", "services", "ytdlp-download", "check_format_choice.py"), "utf8");
     expect(CHECK).toContain('"v720+a"');
+    expect(CHECK).toContain('(audio + [hls("609", 720, with_audio=False)], "NONE")');
     expect(CHECK).toContain("main._ydl_options(");
   });
 });
