@@ -21254,6 +21254,32 @@ function isMuskTeslaTopic(videoTitle?: string, sceneText?: string): boolean {
   return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship|elon/.test(text);
 }
 
+/**
+ * VIDEO 618 — THE SCRIPT'S TITLE, WITHOUT ITS MARKDOWN.
+ *
+ * The title was the script's `# heading`, or else its first line. Render 618's script had no
+ * heading and opened with `**Title: The Real Reason Kardashians Are Multi-Billionaires**`, so the
+ * asterisks and the label became the video's title — and through it the topic context, the person
+ * lock, the archive's anchor words and the director's blueprint:
+ * `Why the Kardashians are really that rich — **Title: The Real Reason …**`.
+ *
+ * Same order as before — the `# heading`, then a line labelled "Title:", then the first line —
+ * with emphasis, heading marks and the label removed from whichever wins.
+ */
+export function scriptTitle(script: string): string {
+  const heading = /^#\s+(.+)/m.exec(script)?.[1];
+  const labelled = /^\s*[*_]{0,3}\s*title\s*[*_]{0,3}\s*:\s*(.+)$/im.exec(script)?.[1];
+  const firstLine = script.split("\n").find((l) => l.trim().length > 5);
+  const raw = heading ?? labelled ?? firstLine ?? "";
+  const clean = raw
+    .replace(/[*_`]+/g, "")
+    .replace(/^\s*#+\s*/, "")
+    .replace(/^\s*title\s*:\s*/i, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return clean.slice(0, 80) || "AI Generated Video";
+}
+
 function buildTopicContext(userPrompt: unknown, videoTitle: unknown): string {
   const prompt = asVideoTitleString(userPrompt);
   const title = asVideoTitleString(videoTitle);
@@ -32826,10 +32852,7 @@ async function _runVideoPipelineInner(
     console.warn(`[Pipeline] Video ${videoId}: no voiceId on record — using default narrator`);
   }
 
-  const titleMatch = script.match(/^#\s+(.+)/m);
-  const videoTitle = titleMatch?.[1]?.trim().slice(0, 80)
-    || script.split("\n").find(l => l.trim().length > 5)?.trim().slice(0, 80)
-    || "AI Generated Video";
+  const videoTitle = scriptTitle(script);
   const topicContext = asVideoTitleString(buildTopicContext(userPrompt ?? videoRow?.prompt, videoTitle));
   const muskLocked = isMuskTeslaTopic(topicContext, script);
   const primaryPerson = resolvePrimaryPersonLock({
