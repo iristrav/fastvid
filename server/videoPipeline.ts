@@ -52,6 +52,7 @@ import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressPro
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
 import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyQueries, sentenceOnlyYoutubeQueries, YOUTUBE_SHORT_MAX_SEC, youtubeResultIsShort, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
+import { loadUnusableYoutubeVideos, recordYoutubeVideoOutcome, withoutUnusableYoutubeVideos, youtubeVideoUnusable } from "./youtubeUnusableVideos";
 import { markYoutubeKeySpent, usableYoutubeSearchKeys } from "./youtubeApiKeys";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { sanitizeForDrawtextStrict } from "./ffmpegSanitize";
@@ -14402,6 +14403,7 @@ export async function downloadYouTubeCCClip(
     else console.warn(line);
     /** And onto the render's tally, which carries it to the summary — see `downloadOutcomes`. */
     countDownloadOutcome(sourcingCache, "youtube_cc", status);
+    void recordYoutubeVideoOutcome(videoId, status === "DOWNLOAD_SUCCESS", attempts);
     /**
      * The same facts into the bundle, so the next capture can be counted rather than read. The
      * video id is an identity and is public; the signed format URL the transfer uses never
@@ -14423,6 +14425,12 @@ export async function downloadYouTubeCCClip(
     }
   };
 
+  /** VIDEO 618 — a video YouTube has refused too often is not asked for again; see `youtubeUnusableVideos`. */
+  const writtenOff = youtubeVideoUnusable(videoId);
+  if (writtenOff) {
+    reportDownload("DOWNLOAD_FAILED", `known_unusable:${writtenOff}`);
+    return false;
+  }
   /**
    * RONDE 647 — ONE TRANSFER PER FILE AT A TIME; see `youtubeTransfersByFile`. Everything above
    * is synchronous, so the re-entry below is recognised as itself and nothing else can be.
@@ -16344,7 +16352,12 @@ export async function fetchYouTubeCCClips(
          * `youtubeRowsRankedByThumbnail`: this reorders, it never refuses, and out of budget it
          * hands back exactly the order the search produced.
          */
-        const ordered = await youtubeRowsRankedByThumbnail(items, pass.license, scriptGuided, sceneIndex)
+        const ordered = await youtubeRowsRankedByThumbnail(
+          withoutUnusableYoutubeVideos<(typeof items)[number]>(items, (r) => r.item.id?.videoId),
+          pass.license,
+          scriptGuided,
+          sceneIndex
+        )
           /** VIDEO 618 — and, off the pool, the pool's own look at what each video shows. */
           .then((rows) => (poolMode ? rows : youtubeRowsWithoutNonFootage(rows, scriptGuided, sceneIndex)));
 
@@ -32959,6 +32972,11 @@ async function _runVideoPipelineInner(
   resetCloudEgressBlocked();
   /** RONDE 261: the sources it points at live in a work directory this render is about to make. */
   resetYoutubeSourceFiles();
+  /** VIDEO 618 — and what earlier renders learned for good: the videos YouTube will not give. */
+  const writtenOffVideos = await loadUnusableYoutubeVideos();
+  if (writtenOffVideos > 0) {
+    console.log(`[YouTubeUnusable] ${writtenOffVideos} YouTube video(s) written off earlier are not asked for this render`);
+  }
   getRenderCtx().watchdog = watchdog;
 
   // Per-stage budgets — initialised to fallback values, replaced with

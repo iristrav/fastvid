@@ -109,4 +109,31 @@ joined = " ".join(records)
 assert "proxypass" not in joined and "proxyuser" not in joined and "s3cret" not in joined, records
 assert "42%" not in joined and "noise" not in joined and "already raised" not in joined, records
 assert all(len(r) < 400 for r in records)
+
+# Video 618 — the ok and failed lines say which video and which stream: title, channel, format,
+# protocol and yt-dlp's note (which names the client, and "MISSING POT"). Never a URL.
+facts = main._format_facts({
+    "title": 'Wildly Successful "Brands" | E!', "channel": "E! Entertainment",
+    "url": "https://rr1.googlevideo.com/videoplayback?ip=1.2.3.4&sig=SECRET",
+    "requested_formats": [
+        {"format_id": "136", "protocol": "https", "format_note": "720p, visionos", "url": "https://x/SECRET"},
+        {"format_id": "140", "protocol": "https", "format_note": "medium, visionos"},
+    ],
+})
+assert facts == ('title="Wildly Successful \'Brands\' | E!" channel="E! Entertainment" format=136+140 '
+                 'protocol=https+https note="720p, visionos + medium, visionos"'), facts
+assert "SECRET" not in facts and "googlevideo" not in facts, facts
+single = main._format_facts({"title": "t", "uploader": "u", "format_id": "96", "protocol": "m3u8_native",
+                             "format_note": "1080p, web MISSING POT"})
+assert single == 't="t" channel="u" format=96 protocol=m3u8_native note="1080p, web MISSING POT"'.replace('t="t"', 'title="t"'), single
+assert main._format_facts({}) == 'title="" channel="" format= protocol= note=""'
+records.clear()
+ask("aaaaaaaaac1", ["ok"])
+assert any(r.startswith("ok id=aaaaaaaaac1") and 'title="" channel=""' in r for r in records), records
+records.clear()
+ask("aaaaaaaaac2", ["ERROR: ffmpeg exited with code 8"])
+assert any(r.startswith("download failed id=aaaaaaaaac2") and "format=" in r for r in records), records
+records.clear()
+ask("aaaaaaaaac3", ["lookup:ERROR: Video unavailable", "lookup:ERROR: Video unavailable"])
+assert any(r.startswith("download failed id=aaaaaaaaac3") and "facts=none" in r for r in records), records
 print("check_retry: ok")

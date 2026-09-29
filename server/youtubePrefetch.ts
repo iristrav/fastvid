@@ -46,6 +46,13 @@ import { youtubePrefetchQueue, type YoutubePrefetchRow } from "../drizzle/schema
 import { affectedRowCount, getDb } from "./db";
 import type { IngestMetadata, IngestOutcome } from "./archiveIngestion";
 import { inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
+import { loadUnusableYoutubeVideos, withoutUnusableYoutubeVideos, youtubeVideoUnusable } from "./youtubeUnusableVideos";
+
+/** The lasting verdict on a video, in the prefetch's `refusal` shape: the class is read off the end. */
+function writtenOffReason(videoId: string): string | null {
+  const why = youtubeVideoUnusable(videoId);
+  return why ? `known_unusable:${why}` : null;
+}
 
 /* ═══════════════════════ knobs — every one bounded ═══════════════════════ */
 
@@ -221,7 +228,8 @@ export function enqueueYoutubePrefetch(
   opts: { renderKey?: object; sourceVideoId?: number } = {}
 ): void {
   if (!youtubePrefetchEnabled() || candidates.length === 0) return;
-  const take = takeEnqueueSlots(opts.renderKey, candidates);
+  /** VIDEO 618 — a video written off for good is not put on the list to fetch later either. */
+  const take = takeEnqueueSlots(opts.renderKey, withoutUnusableYoutubeVideos(candidates, (c) => c.videoId));
   if (take.length === 0) return;
   void (async () => {
     try {
@@ -505,6 +513,8 @@ export type PrefetchDeps = {
   videoRefusal: (videoId: string) => string | null;
   /** Forget that verdict before asking again: it was scoped to a render that is over. */
   forgetRefusal?: (videoId: string) => void;
+  /** VIDEO 618 — the lasting verdict, which outlives every render: see `youtubeUnusableVideos`. */
+  writtenOff?: (videoId: string) => string | null;
   probeDurationSec:(filePath: string) => Promise<number>;
   ingest: (filePath: string, metadata: IngestMetadata) => Promise<IngestOutcome>;
   /** Drop anything the download layer is holding for this video — its files are about to go. */
@@ -534,6 +544,13 @@ export async function prefetchOneVideo(
   let workDir: string | null = null;
   try {
     deps.forgetRefusal?.(row.videoId);
+    /**
+     * VIDEO 618 — a video written off for good is refused here, before its length is looked up:
+     * 5GZpQahYhPk and kqO6NANnRCc were fetched again at 08:19, 08:22 and 09:23 and refused every
+     * time. What is left after the render-scoped memo is forgotten is the lasting verdict.
+     */
+    videoRefusal = deps.writtenOff?.(row.videoId) ?? null;
+    if (videoRefusal) return { segments, interrupted, videoRefusal, stoppedEarlyFor };
     const sourceSec = await deps.sourceDurationSec(row.videoId).catch(() => 0);
     /**
      * Video 613 — a YouTube Short is never downloaded, and the queue still held what 613's search
@@ -878,8 +895,9 @@ async function productionPrefetchDeps(): Promise<PrefetchDeps> {
       }
       return { ok: false, reason: reasons.join(" ") || "no_route_configured" };
     },
-    videoRefusal: (videoId) => failure.youtubeDownloadRefusal(videoId),
+    videoRefusal: (videoId) => failure.youtubeDownloadRefusal(videoId) ?? writtenOffReason(videoId),
     forgetRefusal: (videoId) => failure.forgetYoutubeDownloadRefusal(videoId),
+    writtenOff: writtenOffReason,
     probeDurationSec: (filePath) => pipeline.probeVideoDurationSec(filePath),
     ingest: (filePath, metadata) => ingestExternalClipToArchiveWithReason(filePath, metadata),
     release: (videoId) => failure.forgetYoutubeSourceFile(videoId),
@@ -919,6 +937,8 @@ export async function runYoutubePrefetchBatch(): Promise<{ videos: number; archi
      */
     const { resetCloudEgressBlocked } = await import("./providerFailureClass");
     resetCloudEgressBlocked();
+    /** VIDEO 618 — the videos YouTube will not give, as renders and earlier batches found them. */
+    await loadUnusableYoutubeVideos();
     for (let i = 0; i < prefetchVideosPerBatch(); i++) {
       if (!deps.isIdle()) break;
       const row = await claimNextYoutubePrefetch();

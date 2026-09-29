@@ -771,6 +771,14 @@ export type YoutubeServiceRefusal =
    *     proxy', OSError('Tunnel connection failed: 403 Forbidden'))
    */
   | "network"
+  /**
+   * VIDEO 618 — googlevideo answered the stream itself with an HTTP error: ffmpeg's exit status is
+   * its error code's low byte, and every AVERROR_HTTP_* (4xx and 5xx alike) ends in 0xF8, so
+   * `ffmpeg exited with code 8`. Measured against a local server: 403, 404, 410, 429 and 500 all
+   * exit 8. Three videos were refused this way on every attempt at every start point while others
+   * fetched fine — see `youtubeUnusableVideos.ts`, which is what reads it.
+   */
+  | "stream_refused"
   | "service_error"
   | "other";
 
@@ -831,6 +839,7 @@ export function classifyYoutubeServiceRefusal(
   ) {
     return "network";
   }
+  if (/ffmpeg exited with code 8\b/.test(text)) return "stream_refused";
   if (/produced no file/.test(text)) return "no_file";
   if (/below floor/.test(text)) return "below_floor";
   if (/over ceiling/.test(text)) return "over_ceiling";

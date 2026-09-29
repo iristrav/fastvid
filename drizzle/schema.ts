@@ -1068,3 +1068,24 @@ export const youtubeVideoSearches = mysqlTable("youtube_video_searches", {
 });
 
 export type YoutubeVideoSearch = typeof youtubeVideoSearches.$inferSelect;
+
+/**
+ * VIDEO 618 — YOUTUBE VIDEOS THAT DO NOT WORK, REMEMBERED ACROSS RENDERS.
+ *
+ * Three videos were refused by YouTube on every attempt, at every start point, by render and
+ * background fetch alike — 22 of the day's 27 `code 8` failures — and every new render and every
+ * prefetch retry asked for them again. One row per YouTube video that has been refused for a
+ * reason about the video itself. `refusals` counts such refusals since the video last delivered;
+ * a delivery resets it. `unusableAt` is set once it reaches the limit, and from then on the video
+ * is not asked for again. See `youtubeUnusableVideos.ts`.
+ */
+export const youtubeUnusableVideos = mysqlTable("youtube_unusable_videos", {
+  id: int("id").autoincrement().primaryKey(),
+  videoId: varchar("videoId", { length: 32 }).notNull().unique(),
+  refusals: int("refusals").default(0).notNull(),
+  /** The last refusal's classified reason, e.g. `http_502:stream_refused`. Never a URL. */
+  lastReason: varchar("lastReason", { length: 128 }),
+  unusableAt: timestamp("unusableAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});

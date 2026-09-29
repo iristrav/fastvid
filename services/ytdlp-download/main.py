@@ -734,6 +734,28 @@ def _redact(text: str) -> str:
     return re.sub(r"(//)[^/\s:@]+:[^/\s@]+@", r"\1<credentials>@", text)
 
 
+def _format_facts(info: dict) -> str:
+    """VIDEO 618 — which video and which stream a cut asked for, for the log.
+
+    Code 8 kept coming back for the same few videos while others worked, and nothing said which
+    stream yt-dlp had chosen or from which YouTube client. Title and channel say what the video is;
+    `format_id`, `protocol` and `format_note` (yt-dlp writes the client there, and "MISSING POT"
+    when a PO token was absent) say what was asked for. Never a URL: a stream URL is signed and
+    names the proxy's address.
+    """
+    def clean(value: object, limit: int) -> str:
+        return str(value or "").replace('"', "'").replace("\n", " ").strip()[:limit]
+
+    streams = info.get("requested_formats") or [info]
+    return (
+        f'title="{clean(info.get("title"), 80)}" '
+        f'channel="{clean(info.get("channel") or info.get("uploader"), 60)}" '
+        f'format={"+".join(clean(f.get("format_id"), 20) for f in streams)} '
+        f'protocol={"+".join(clean(f.get("protocol"), 20) for f in streams)} '
+        f'note="{" + ".join(clean(f.get("format_note"), 40) for f in streams)}"'
+    )
+
+
 def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dict | None = None) -> None:
     """One cut, asked again once when the failure was about the moment. Raises the last error.
 
@@ -747,7 +769,7 @@ def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dic
     """
     timing = timing if timing is not None else {}
     for attempt in range(1, _ATTEMPTS + 1):
-        timing.update(attempt=attempt, extract_ms=None, download_ms=None)
+        timing.update(attempt=attempt, extract_ms=None, download_ms=None, facts=None)
         began = time.monotonic()
         lookup_done: list[float] = []
         hooked: list[bool] = []
@@ -772,6 +794,10 @@ def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dic
                     def timed_process_info(info_dict, _inner=process_info):
                         if not lookup_done:
                             lookup_done.append(time.monotonic())
+                        try:
+                            timing["facts"] = _format_facts(info_dict)
+                        except Exception:  # noqa: BLE001 — a log field never stops a cut
+                            timing["facts"] = None
                         return _inner(info_dict)
 
                     ydl.process_info = timed_process_info
@@ -806,8 +832,9 @@ def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileR
         # into 500 is what made the RapidAPI route's failures unreadable for so long.
         detail = str(err).strip().replace("\n", " ")[:300]
         log.warning(
-            "download failed id=%s start=%.2f dur=%.2f attempt=%s extract_ms=%s download_ms=%s: %s",
-            id, start, duration, timing.get("attempt"), timing.get("extract_ms"), timing.get("download_ms"), detail,
+            "download failed id=%s start=%.2f dur=%.2f attempt=%s extract_ms=%s download_ms=%s %s: %s",
+            id, start, duration, timing.get("attempt"), timing.get("extract_ms"), timing.get("download_ms"),
+            timing.get("facts") or "facts=none", detail,
         )
         cleanup.func(*cleanup.args, **cleanup.kwargs)
         raise HTTPException(status_code=502, detail=detail) from err
@@ -850,9 +877,10 @@ def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileR
         )
 
     log.info(
-        "ok id=%s start=%.2f dur=%.2f bytes=%d salvage=%s proxy=%s attempt=%s extract_ms=%s download_ms=%s",
+        "ok id=%s start=%.2f dur=%.2f bytes=%d salvage=%s proxy=%s attempt=%s extract_ms=%s download_ms=%s %s",
         id, start, duration, size, salvage, bool(PROXY_URL),
         timing.get("attempt"), timing.get("extract_ms"), timing.get("download_ms"),
+        timing.get("facts") or "facts=none",
     )
     # Kept under its key BEFORE the response goes out, so it survives a caller that has already
     # hung up. A cache that cannot be written costs only the reuse; the response is unchanged.
