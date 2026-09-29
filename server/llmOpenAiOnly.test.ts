@@ -76,7 +76,7 @@ describe("OpenAI only — Groq and Gemini keys are ignored", () => {
   it("the operator-facing hints name OPENAI_API_KEY, not Groq or Gemini", () => {
     const read = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");
     expect(read("llmStartupDiagnostics.ts")).toContain("set OPENAI_API_KEY on web and worker services");
-    expect(read("productionPreflight.ts")).toContain('requiresAny: ["OPENAI_API_KEY"],');
+    expect(read("productionPreflight.ts")).toContain('requiresAny: ["OPENAI_API_KEY", "LLM_API_KEY"],');
     expect(read("archiveBulkVisionTagging.ts")).toContain("AI tagging disabled — set OPENAI_API_KEY on the server");
     expect(read("routers.ts")).toContain("AI tagging disabled — set OPENAI_API_KEY on the server");
   });

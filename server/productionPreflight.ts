@@ -34,6 +34,7 @@
 import { getStorageBackend } from "./storageBackend";
 import { clipModelCacheLocation } from "./clipModelCache";
 import { envFlagIsOn } from "./envFlag";
+import { openAiKeyFromEnv } from "./_core/env";
 
 /* ═══════════════════════ what production needs ═══════════════════════ */
 
@@ -140,8 +141,15 @@ export const CAPABILITIES: readonly Capability[] = [
     id: "script",
     describes: "writing the script and the Director's narrative judgement",
     requires: [],
-    requiresAny: ["OPENAI_API_KEY"],
+    requiresAny: ["OPENAI_API_KEY", "LLM_API_KEY"],
     fatal: true,
+    /** The LLM's own key lookup: OPENAI_API_KEY, or LLM_API_KEY when it is not a Groq key. */
+    satisfiedBy: (env) => {
+      if (openAiKeyFromEnv(env)) {
+        return { available: true, detail: env.OPENAI_API_KEY?.trim() ? "OpenAI via OPENAI_API_KEY" : "OpenAI via LLM_API_KEY" };
+      }
+      return { available: false, detail: "set OPENAI_API_KEY" };
+    },
   },
   {
     id: "stock_footage",

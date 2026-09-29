@@ -170,11 +170,28 @@ describe("R191 — the verdict says what is blocked and why", () => {
   });
 
   /** OpenAI only since 29 Sep 2026: a Gemini key no longer stands in for the script's LLM. */
-  it("the script needs OPENAI_API_KEY; a Gemini key alone is not enough", async () => {
+  it("the script needs an OpenAI key; a Gemini key alone is not enough", async () => {
     const env = fullyConfigured("value");
     delete env.OPENAI_API_KEY;
+    delete env.LLM_API_KEY;
     env.GEMINI_API_KEY = "value";
     expect((await productionPreflight(ALL_GOOD, env)).verdict).toBe("PRODUCTION_RENDER_BLOCKED");
+  });
+
+  /**
+   * 29 Sep 2026: the worker's OpenAI key is in LLM_API_KEY, which the LLM has always read. The
+   * check asked for OPENAI_API_KEY only and reported the script blocked while renders wrote it.
+   */
+  it("the script is available with the OpenAI key in LLM_API_KEY, as the LLM itself reads it", async () => {
+    const env = fullyConfigured("value");
+    delete env.OPENAI_API_KEY;
+    const script = (await productionPreflight(ALL_GOOD, env)).capabilities.find((c) => c.id === "script")!;
+    expect(script.available).toBe(true);
+    expect(script.detail).toBe("OpenAI via LLM_API_KEY");
+    /** A Groq key in that slot is not an OpenAI key, for the check as for the LLM. */
+    env.LLM_API_KEY = "gsk_value";
+    const groq = (await productionPreflight(ALL_GOOD, env)).capabilities.find((c) => c.id === "script")!;
+    expect(groq.available).toBe(false);
   });
 
   /**

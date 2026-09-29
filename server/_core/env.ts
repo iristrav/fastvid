@@ -34,10 +34,10 @@ export function groqKeyFromEnv(): string {
 
 /** A dedicated OPENAI_API_KEY (matches voiceBeatAlignment.ts's convention), or LLM_API_KEY
  *  when it holds an OpenAI key (sk-) rather than a Groq one (gsk_). */
-export function openAiKeyFromEnv(): string {
-  const dedicated = process.env.OPENAI_API_KEY?.trim() ?? "";
+export function openAiKeyFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  const dedicated = env.OPENAI_API_KEY?.trim() ?? "";
   if (dedicated) return dedicated;
-  const llm = process.env.LLM_API_KEY?.trim() ?? "";
+  const llm = env.LLM_API_KEY?.trim() ?? "";
   if (!llm || llm.startsWith("gsk_")) return "";
   return llm;
 }
