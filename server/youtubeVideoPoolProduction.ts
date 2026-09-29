@@ -182,42 +182,9 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
     return out;
   };
 
-  const triage = async (item: SearchItem, title: string, sentences: string[]): Promise<Triage | null> => {
-    if (!item.thumb) return null;
-    const r = await fetch(item.thumb, { signal: AbortSignal.timeout(8_000) });
-    if (!r.ok) return null;
-    const prepared = await clipFilter.prepareImageForVision(Buffer.from(await r.arrayBuffer()), "image/jpeg");
-    if (!prepared) return null;
-    const resp = await Promise.race([
-      llm({
-        messages: [
-          { role: "system", content: "You triage YouTube results for a documentary editor. Return only JSON." },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: youtubeTriagePrompt(item, title, sentences),
-              },
-              {
-                type: "image_url",
-                image_url: { url: clipFilter.imageMimeToDataUrl(prepared.buffer, prepared.mimeType), detail: "low" },
-              },
-            ],
-          },
-        ],
-        response_format: TRIAGE_SCHEMA,
-        maxTokens: 250,
-      }),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("triage timeout")), 25_000)),
-    ]);
-    try {
-      const v = JSON.parse(llmText(resp)) as Triage;
-      return { footageType: v.footageType, servesBeats: Array.isArray(v.servesBeats) ? v.servesBeats : [], depicts: v.depicts ?? "" };
-    } catch {
-      return null;
-    }
-  };
+  /** VIDEO 618 — the same look, now shared with the per-beat search: see `triageYoutubeThumbnail`. */
+  const triage = (item: SearchItem, title: string, sentences: string[]): Promise<Triage | null> =>
+    triageYoutubeThumbnail(item, title, sentences, llm, clipFilter);
 
   /**
    * The archive's own YouTube material. The dry run found that the archive answers ~140 assets for
@@ -274,4 +241,57 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
     inCooldown: pipeline.isYoutubeInCooldown,
     log: (l) => console.log(l),
   };
+}
+
+/**
+ * The thumbnail look the pool gives every YouTube result: what the video shows most of the time,
+ * judged by the picture editor's vision model on the thumbnail at low detail.
+ *
+ * VIDEO 618 — exported so the per-beat search, which runs when the pool is empty, looks the same
+ * way before it downloads. That route downloaded ten videos for 618, eight of them commentary and
+ * list videos full of on-screen text, each refused only after its transfer.
+ */
+export async function triageYoutubeThumbnail(
+  item: SearchItem,
+  title: string,
+  sentences: string[],
+  llm?: (p: unknown) => Promise<unknown>,
+  clipFilter?: typeof import("./archiveClipFilter")
+): Promise<Triage | null> {
+  llm ??= (await import("./_core/llm")).invokeLLM as unknown as (p: unknown) => Promise<unknown>;
+  clipFilter ??= await import("./archiveClipFilter");
+  if (!item.thumb) return null;
+  const r = await fetch(item.thumb, { signal: AbortSignal.timeout(8_000) });
+  if (!r.ok) return null;
+  const prepared = await clipFilter.prepareImageForVision(Buffer.from(await r.arrayBuffer()), "image/jpeg");
+  if (!prepared) return null;
+  const resp = await Promise.race([
+    llm({
+      messages: [
+        { role: "system", content: "You triage YouTube results for a documentary editor. Return only JSON." },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: youtubeTriagePrompt(item, title, sentences),
+            },
+            {
+              type: "image_url",
+              image_url: { url: clipFilter.imageMimeToDataUrl(prepared.buffer, prepared.mimeType), detail: "low" },
+            },
+          ],
+        },
+      ],
+      response_format: TRIAGE_SCHEMA,
+      maxTokens: 250,
+    }),
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error("triage timeout")), 25_000)),
+  ]);
+  try {
+    const v = JSON.parse(llmText(resp)) as Triage;
+    return { footageType: v.footageType, servesBeats: Array.isArray(v.servesBeats) ? v.servesBeats : [], depicts: v.depicts ?? "" };
+  } catch {
+    return null;
+  }
 }

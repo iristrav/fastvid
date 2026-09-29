@@ -15772,6 +15772,94 @@ export async function searchYoutubeVideoCandidates(
  * download floor. Out of time, the rows go out in the order the search returned them, and the
  * skipped step says so rather than being silent.
  */
+/**
+ * VIDEO 618 — THE POOL'S LOOK, ON THE ROUTE THAT RUNS WITHOUT A POOL.
+ *
+ * When the video-wide pool is empty the beats search YouTube themselves, and that route never asked
+ * what a video SHOWS before downloading it: `youtubeRowsRankedByThumbnail` only orders rows. Render
+ * 618 downloaded ten videos that way; eight were commentary, list and gossip videos covered in text
+ * ("Kris Jenner Lifestyle: How Rich Is the Momager Queen?", "Kylie Jenner Lists Another Mansion -
+ * Here's What's Going On") and were refused only after the transfer, for on-screen text.
+ *
+ * The pool triages every result on its thumbnail — real footage or archival, or not — and that same
+ * judge (`triageYoutubeThumbnail`, same prompt, same model, same categories) now looks at the rows
+ * this loop could download. A row it judges as something other than footage is not downloaded; a
+ * row it could not judge keeps its place, because "not judged" is not a refusal (and says so). The
+ * look shares the ranking's budget rule: it never touches the download floor, and out of time the
+ * rows go out unfiltered, logged.
+ */
+const youtubeTriageByVideoId = new Map<string, { footageType: string } | null>();
+const YOUTUBE_ROWS_LOOKED_AT = 5;
+
+export async function youtubeRowsWithoutNonFootage(
+  rows: YoutubeSearchRow[],
+  scriptGuided: ScriptGuidedBeatContext | undefined,
+  sceneIndex: number,
+  look: (
+    item: { videoId: string; title: string; description: string; channel: string; thumb: string },
+    title: string,
+    sentences: string[]
+  ) => Promise<{ footageType: string } | null> = async (item, title, sentences) =>
+    (await import("./youtubeVideoPoolProduction")).triageYoutubeThumbnail(item, title, sentences)
+): Promise<YoutubeSearchRow[]> {
+  const beatIndex = scriptGuided?.beatIndex ?? 0;
+  const remaining = remainingScopeMs();
+  const spare = Number.isFinite(remaining) ? remaining - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS : Number.POSITIVE_INFINITY;
+  if (spare <= 0 || rows.length === 0) return rows;
+  const lookMs = Math.min(YOUTUBE_SEARCH_TIMEOUT_MS, spare);
+  const sentences = scriptGuided?.beatText?.trim() ? [scriptGuided.beatText.trim()] : [];
+  const head = rows.slice(0, YOUTUBE_ROWS_LOOKED_AT);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const verdicts = await Promise.race([
+    Promise.all(
+      head.map(async (row) => {
+        const videoId = row.item.id?.videoId ?? "";
+        if (!videoId || !row.thumb) return null;
+        if (youtubeTriageByVideoId.has(videoId)) return youtubeTriageByVideoId.get(videoId) ?? null;
+        const v = await look(
+          { videoId, title: row.title, description: row.desc, channel: "", thumb: row.thumb },
+          scriptGuided?.videoTitle ?? "",
+          sentences
+        ).catch(() => null);
+        youtubeTriageByVideoId.set(videoId, v);
+        return v;
+      })
+    ),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), lookMs);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (!verdicts) {
+    console.log(
+      `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} SKIPPED reason=LOOK_SPENT ` +
+        `budget=${Math.round(lookMs / 1000)}s — the rows go out unjudged`
+    );
+    return rows;
+  }
+  const kept: YoutubeSearchRow[] = [];
+  head.forEach((row, i) => {
+    const v = verdicts[i];
+    const type = v?.footageType;
+    if (type && type !== "real_footage" && type !== "archival_footage") {
+      console.log(
+        `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} video=${row.item.id?.videoId ?? "?"} ` +
+          `footageType=${type} title="${row.title.slice(0, 70)}" — not downloaded`
+      );
+      return;
+    }
+    if (!v) {
+      console.log(
+        `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} video=${row.item.id?.videoId ?? "?"} ` +
+          `NOT_JUDGED — kept; the frames are still checked after the download`
+      );
+    }
+    kept.push(row);
+  });
+  return [...kept, ...rows.slice(YOUTUBE_ROWS_LOOKED_AT)];
+}
+
 export async function youtubeRowsRankedByThumbnail(
   rows: YoutubeSearchRow[],
   mode: YoutubeLicenseMode,
@@ -16205,7 +16293,9 @@ export async function fetchYouTubeCCClips(
          * `youtubeRowsRankedByThumbnail`: this reorders, it never refuses, and out of budget it
          * hands back exactly the order the search produced.
          */
-        const ordered = await youtubeRowsRankedByThumbnail(items, pass.license, scriptGuided, sceneIndex);
+        const ordered = await youtubeRowsRankedByThumbnail(items, pass.license, scriptGuided, sceneIndex)
+          /** VIDEO 618 — and, off the pool, the pool's own look at what each video shows. */
+          .then((rows) => (poolMode ? rows : youtubeRowsWithoutNonFootage(rows, scriptGuided, sceneIndex)));
 
         /**
          * RONDE 640 — WRITTEN DOWN BEFORE THE CLOCK DECIDES WHETHER IT IS FETCHED.
