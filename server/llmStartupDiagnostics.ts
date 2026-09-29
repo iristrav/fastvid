@@ -39,7 +39,7 @@ export function getLlmDiagnostics(role: "web" | "worker"): LlmDiagnostics {
   } else if (provider === "forge") {
     hint = "Using Manus Forge.";
   } else {
-    hint = "No LLM key — set GEMINI_API_KEY (free) or LLM_API_KEY (OpenAI) on web and worker services.";
+    hint = "No LLM key — set OPENAI_API_KEY on web and worker services (FastVid uses OpenAI only).";
   }
 
   if (role === "web" && railway && !workerMode) {

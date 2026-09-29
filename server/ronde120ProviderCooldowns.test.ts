@@ -227,23 +227,16 @@ describe("RONDE 120 — Gemini's day is not Gemini's minute", () => {
     expect(remaining).toBeLessThan(5 * 60_000);
   });
 
-  it("a spent DAY skips the in-call retries instead of sleeping twelve seconds for nothing", async () => {
+  /**
+   * OPENAI ONLY (29 Sep 2026). The two tests that drove invokeLLM against Gemini's day and minute
+   * limits are gone with Gemini. What remains to pin is that a Gemini key alone asks nothing.
+   */
+  it("a Gemini key alone asks nothing — Gemini is no longer a provider", async () => {
     process.env.GEMINI_API_KEY = "stub-gemini";
     stubFetch({ gemini: { status: 429, body: GEMINI_TPD_BODY } });
-
-    const started = Date.now();
     await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 50 }).catch(() => undefined);
-    // One attempt, not three: the 4s and 8s sleeps cannot help a quota that resets tomorrow.
-    expect(calls).toEqual(["gemini"]);
-    expect(Date.now() - started).toBeLessThan(4000);
+    expect(calls).toEqual([]);
   }, 30_000);
-
-  it("a per-minute limit KEEPS its retries — the saving must not cost the recovery", async () => {
-    process.env.GEMINI_API_KEY = "stub-gemini";
-    stubFetch({ gemini: { status: 429, body: GEMINI_RPM_BODY } });
-    await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 50 }).catch(() => undefined);
-    expect(calls.length).toBeGreaterThan(1);
-  }, 60_000);
 });
 
 /* ═══════════ 3. the 403 nobody handled ═══════════ */
@@ -263,7 +256,7 @@ describe("RONDE 120 — PERMISSION_DENIED is an answer about the provider", () =
     expect(shouldFallbackToNextProvider(403, GEMINI_403_BODY)).toBe(true);
   });
 
-  it("it really falls through: a 403 from OpenAI still reaches Gemini", async () => {
+  it("a 403 from OpenAI, the last link, is a provider-unavailable error — Gemini is not asked", async () => {
     process.env.OPENAI_API_KEY = "stub-openai";
     process.env.GEMINI_API_KEY = "stub-gemini";
     process.env.LLM_PROVIDER = "openai";
@@ -274,9 +267,11 @@ describe("RONDE 120 — PERMISSION_DENIED is an answer about the provider", () =
       }) },
     });
 
-    const result = await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 50 });
-    expect(calls).toEqual(["openai", "gemini"]);
-    expect(result.provider).toBe("gemini");
+    const err = await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 50 })
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect(calls).toEqual(["openai"]);
+    expect(isLlmProviderUnavailable(err)).toBe(true);
   }, 30_000);
 
   it("a refused Gemini project is cooled down instead of retried on every single call", () => {
@@ -311,13 +306,12 @@ describe("RONDE 120 — render 543, once through", () => {
 
     // RONDE 119's classification still holds for the combination.
     expect(isLlmProviderUnavailable(err)).toBe(true);
-    // Both providers stood down — so the NEXT render does not repeat this discovery...
+    // OpenAI stood down — so the NEXT render does not repeat this discovery — and Gemini, no
+    // longer a provider, was never asked (OPENAI ONLY, 29 Sep 2026)...
     expect(isOpenAiInCooldown()).toBe(true);
-    expect(isGeminiInCooldown()).toBe(true);
-    // ...and neither stood down for good.
+    expect(calls).not.toContain("gemini");
+    // ...and it did not stand down for good.
     const openAiLeft = remainingMs(isOpenAiInCooldown, Date.now());
-    const geminiLeft = remainingMs(isGeminiInCooldown, Date.now());
     expect(openAiLeft).toBeLessThan(2 * 60 * 60_000);
-    expect(geminiLeft).toBeLessThan(2 * 60 * 60_000);
   }, 60_000);
 });

@@ -454,7 +454,7 @@ async function startServer() {
       const { invokeLLM } = await import("./llm");
       const { archiveAiTaggingEnabled } = await import("../archiveAssetTagging");
       if (!archiveAiTaggingEnabled()) {
-        res.status(503).json({ ok: false, error: "Archive AI disabled — set GROQ_API_KEY or LLM_API_KEY" });
+        res.status(503).json({ ok: false, error: "Archive AI disabled — set OPENAI_API_KEY" });
         return;
       }
       const response = await invokeLLM({

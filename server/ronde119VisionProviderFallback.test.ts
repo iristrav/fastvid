@@ -141,59 +141,20 @@ afterEach(() => {
 
 /* ═══════════ 1. the chain: Groq's spent day must not end the call ═══════════ */
 
-describe("RONDE 119 — Groq TPD 429 → classified → skipped → Gemini answers", () => {
-  it("THE PRODUCTION CASE: a text call falls through to Gemini and succeeds", async () => {
+/**
+ * OPENAI ONLY (29 Sep 2026). This section pinned the Groq → Gemini → OpenAI fall-through. Groq and
+ * Gemini are no longer providers, so the chain is OpenAI alone: keys left for either are ignored,
+ * and a call that prefers either is answered by OpenAI without asking them.
+ */
+describe("RONDE 119 — Groq and Gemini keys are ignored; OpenAI answers", () => {
+  it("THE PRODUCTION CASE: a call that prefers Groq, with all three keys set, asks only OpenAI", async () => {
     process.env.GROQ_API_KEY = "stub-groq";
     process.env.GEMINI_API_KEY = "stub-gemini";
+    process.env.OPENAI_API_KEY = "stub-openai";
     process.env.LLM_PROVIDER = "groq";
-    installFetchStub({ groq: { status: 429, body: TPD_BODY }, gemini: geminiVerdict(true) });
-
-    const result = await invokeLLM({
-      messages: [{ role: "user", content: "x" }],
-      maxTokens: 100,
-      preferProvider: "groq",
-    });
-
-    // Groq was asked once, said no, and Gemini answered.
-    expect(calls).toEqual(["groq", "gemini"]);
-    expect(result.choices[0]?.message?.content).toContain("belongs");
-    // ...and the answer says who produced it.
-    expect(result.provider).toBe("gemini");
-  }, 30_000);
-
-  it("the 429 arms the cooldown, so the NEXT call does not ask Groq at all", async () => {
-    process.env.GROQ_API_KEY = "stub-groq";
-    process.env.GEMINI_API_KEY = "stub-gemini";
-    installFetchStub({ groq: { status: 429, body: TPD_BODY }, gemini: geminiVerdict(true) });
-
-    await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100, preferProvider: "groq" });
-    expect(isGroqDailyExhausted()).toBe(true);
-    expect(isGroqInCooldown()).toBe(true);
-
-    calls = [];
-    await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100, preferProvider: "groq" });
-    // preferProvider: "groq" does NOT reopen the cooled-down provider.
-    expect(calls).toEqual(["gemini"]);
-  }, 30_000);
-
-  it("preferProvider 'groq' cannot bypass the cooldown even when it is the only preference", async () => {
-    markGroqCooldown(429, TPD_BODY);
-    process.env.GROQ_API_KEY = "stub-groq";
-    process.env.GEMINI_API_KEY = "stub-gemini";
-    process.env.OPENAI_API_KEY = "stub-openai";
-    installFetchStub({ gemini: geminiVerdict(true) });
-
-    await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100, preferProvider: "groq" });
-    expect(calls).not.toContain("groq");
-  }, 30_000);
-
-  it("when Gemini also fails, it goes on to OpenAI rather than stopping", async () => {
-    process.env.GROQ_API_KEY = "stub-groq";
-    process.env.GEMINI_API_KEY = "stub-gemini";
-    process.env.OPENAI_API_KEY = "stub-openai";
     installFetchStub({
       groq: { status: 429, body: TPD_BODY },
-      gemini: { status: 429, body: JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED" } }) },
+      gemini: geminiVerdict(true),
       openai: openAiVerdict(true),
     });
 
@@ -202,22 +163,32 @@ describe("RONDE 119 — Groq TPD 429 → classified → skipped → Gemini answe
       maxTokens: 100,
       preferProvider: "groq",
     });
-    expect(calls.filter((c) => c === "openai")).toHaveLength(1);
+    expect(calls).toEqual(["openai"]);
+    expect(result.choices[0]?.message?.content).toContain("belongs");
     expect(result.provider).toBe("openai");
-  }, 90_000);
+  }, 30_000);
+
+  it("and so does a call that prefers Gemini", async () => {
+    process.env.GEMINI_API_KEY = "stub-gemini";
+    process.env.OPENAI_API_KEY = "stub-openai";
+    installFetchStub({ gemini: geminiVerdict(true), openai: openAiVerdict(true) });
+
+    await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100, preferProvider: "gemini" });
+    expect(calls).toEqual(["openai"]);
+  }, 30_000);
 });
 
 /* ═══════════ 2. the classification: unavailable is not failed ═══════════ */
 
 describe("RONDE 119 — an exhausted chain throws unavailable, not a bare failure", () => {
-  it("REGRESSION: Groq's TPD 429 as the LAST link is a provider-unavailable error", async () => {
+  it("REGRESSION: a spent quota as the LAST link is a provider-unavailable error", async () => {
     /**
-     * This is the exact throw the production line came from. With Groq alone in the chain there is
-     * no `chain[i + 1]`, so the fallback branch is skipped and `throw lastError` ran — a bare
-     * Error, indistinguishable at the call site from "the model returned nonsense".
+     * With one provider in the chain there is no `chain[i + 1]`, so the fallback branch is skipped
+     * and `throw lastError` ran — a bare Error, indistinguishable at the call site from "the model
+     * returned nonsense". OpenAI is now always the last link.
      */
-    process.env.GROQ_API_KEY = "stub-groq";
-    installFetchStub({ groq: { status: 429, body: TPD_BODY } });
+    process.env.OPENAI_API_KEY = "stub-openai";
+    installFetchStub({ openai: { status: 429, body: JSON.stringify({ error: { message: "You exceeded your current quota", code: "insufficient_quota" } }) } });
 
     const err = await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100, preferProvider: "groq" })
       .then(() => null)
@@ -226,7 +197,7 @@ describe("RONDE 119 — an exhausted chain throws unavailable, not a bare failur
     expect(isLlmProviderUnavailable(err)).toBe(true);
     // It reached a provider, so it is NOT a pre-flight refusal — the two stay distinct.
     expect(isLlmPreflightRefusal(err)).toBe(false);
-    expect(String((err as Error).message)).toMatch(/tokens per day|TPD|quota|capacity/i);
+    expect(String((err as Error).message)).toMatch(/quota|capacity/i);
   }, 30_000);
 
   it("every provider out of capacity is still unavailable, not failed", async () => {
@@ -250,8 +221,8 @@ describe("RONDE 119 — an exhausted chain throws unavailable, not a bare failur
      * The risk of this change is the mirror image of the bug: calling a genuine model failure
      * "unavailable" would hide a broken prompt or a broken model behind a quota story.
      */
-    process.env.GEMINI_API_KEY = "stub-gemini";
-    installFetchStub({ gemini: { status: 400, body: "INVALID_ARGUMENT: your request is malformed" } });
+    process.env.OPENAI_API_KEY = "stub-openai";
+    installFetchStub({ openai: { status: 400, body: JSON.stringify({ error: { message: "your request is malformed" } }) } });
 
     const err = await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100 })
       .then(() => null)
@@ -275,11 +246,12 @@ describe("RONDE 119 — BeatImageGate books the verdict, not the outage", () => 
       timeoutMs: 20_000,
     });
 
-  it("THE WHOLE FLOW: Groq's day is spent, Gemini answers, the verdict is booked normally", async () => {
+  it("THE WHOLE FLOW: OpenAI answers the picture, the verdict is booked normally", async () => {
     markGroqCooldown(429, TPD_BODY);
     process.env.GROQ_API_KEY = "stub-groq";
     process.env.GEMINI_API_KEY = "stub-gemini";
-    installFetchStub({ gemini: geminiVerdict(true) });
+    process.env.OPENAI_API_KEY = "stub-openai";
+    installFetchStub({ gemini: geminiVerdict(true), openai: openAiVerdict(true) });
 
     const state = createBeatImageGateState();
     const judgement = await judge(state);
@@ -291,11 +263,10 @@ describe("RONDE 119 — BeatImageGate books the verdict, not the outage", () => 
     expect(tally.failed).toBe(0);
     expect(tally.skipped).toBe(0);
     expect(tally.inconsistent).toBe(false);
-    // Groq was never asked for a picture — it has no vision model here — and the log says which
-    // provider did decide.
-    expect(calls).not.toContain("groq");
-    expect(judgement.provider).toBe("gemini");
-    expect(formatVerdictProviders(state)).toContain("gemini");
+    // Neither Groq nor Gemini was asked, and the log says which provider did decide.
+    expect(calls).toEqual(["openai"]);
+    expect(judgement.provider).toBe("openai");
+    expect(formatVerdictProviders(state)).toContain("openai");
   }, 60_000);
 
   it("REGRESSION: an out-of-capacity chain is NOT counted as a failed judgement", async () => {
@@ -320,10 +291,11 @@ describe("RONDE 119 — BeatImageGate books the verdict, not the outage", () => 
   }, 120_000);
 
   it("a model that answers with nonsense IS still counted as failed", async () => {
-    process.env.GEMINI_API_KEY = "stub-gemini";
+    process.env.OPENAI_API_KEY = "stub-openai";
     installFetchStub({
-      gemini: { status: 200, body: JSON.stringify({
-        candidates: [{ finishReason: "STOP", content: { parts: [{ text: "not json at all" }] } }],
+      openai: { status: 200, body: JSON.stringify({
+        id: "x", created: 1, model: "stub",
+        choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "not json at all" } }],
       }) },
     });
 
@@ -336,19 +308,14 @@ describe("RONDE 119 — BeatImageGate books the verdict, not the outage", () => 
     expect(tally.skipped).toBe(0);
   }, 30_000);
 
-  it("a vision call with only a Groq key says what is missing, not 'no API key'", async () => {
-    /**
-     * Groq is stripped from every vision chain (its vision models 404), so this arrives at the
-     * empty-chain branch with GROQ_API_KEY plainly set — and used to be told the key was not
-     * configured. Same wrong signpost RONDE 117 removed from the daily-quota branch.
-     */
+  it("a vision call with only a Groq key names the key that is missing: OPENAI_API_KEY", async () => {
+    /** Groq is no provider at all now, so the signpost must point at the one that is. */
     process.env.GROQ_API_KEY = "stub-groq";
     installFetchStub({});
 
     const state = createBeatImageGateState();
     const judgement = await judge(state);
-    expect(judgement.reason).toMatch(/vision/i);
-    expect(judgement.reason).not.toMatch(/API key is not configured/);
+    expect(judgement.reason).toContain("OPENAI_API_KEY");
     expect(calls).toHaveLength(0);
     expect(judgementTally(state).failed).toBe(0);
   }, 30_000);

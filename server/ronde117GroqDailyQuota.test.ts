@@ -180,68 +180,35 @@ describe("RONDE 117 — the daily cool-off is longer than the hint, not shorter"
 
 /* ═══════════ the recovery that erased it ═══════════ */
 
-describe("RONDE 117 — a spent day is not worth one more gamble", () => {
-  it("REGRESSION: the all-blocked recovery no longer wipes a daily cooldown", async () => {
-    markGroqCooldown(429, TPD_BODY);
-    expect(isGroqDailyExhausted()).toBe(true);
-
-    // Groq is the only key, and it is cooled down → the chain is empty. The old code reset the
-    // cooldown to 0 here and tried anyway.
-    for (const k of ENV_KEYS) delete process.env[k];
-    process.env.LLM_BUDGET_ENFORCE = "false";
-    process.env.GROQ_API_KEY = "stub";
-    await expect(
-      invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100 })
-    ).rejects.toThrow(/daily token budget is spent/);
-
-    // ...and the protection is still standing for every later call.
-    expect(isGroqInCooldown()).toBe(true);
-    expect(isGroqDailyExhausted()).toBe(true);
-  }, 30_000);
-
-  it("the failure names the real problem instead of blaming the key", async () => {
-    /**
-     * The old message was "LLM API key is not configured" — with GROQ_API_KEY plainly set. That
-     * wording sent an investigation to the wrong place once already.
-     */
+/**
+ * OPENAI ONLY (29 Sep 2026). The four tests that stood here drove invokeLLM with a Groq key as the
+ * only provider: the all-blocked recovery, its wording, the burst gamble and the preflight class.
+ * Groq is no longer a provider, so a Groq key alone is simply "no provider" — which is what
+ * remains to be pinned: nothing is sent, the message names the key to set, and it is still a
+ * pre-flight refusal so RONDE 115's counters classify it as never-asked.
+ */
+describe("RONDE 117 — with Groq removed, a Groq key alone is no provider", () => {
+  it("nothing is sent, and the refusal names OPENAI_API_KEY", async () => {
     markGroqCooldown(429, TPD_BODY);
     for (const k of ENV_KEYS) delete process.env[k];
     process.env.LLM_BUDGET_ENFORCE = "false";
     process.env.GROQ_API_KEY = "stub";
-    await expect(
-      invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100 })
-    ).rejects.toThrow(/GEMINI_API_KEY/);
-    const err = await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100 })
-      .then(() => null)
-      .catch((e: Error) => e);
-    expect(String(err?.message)).not.toContain("API key is not configured");
-  }, 30_000);
-
-  it("a BURST cooldown may still be ignored — that gamble does pay off", async () => {
-    markGroqCooldown(429, TPM_BODY);
-    expect(isGroqInCooldown()).toBe(true);
-    expect(isGroqDailyExhausted()).toBe(false);
-
-    for (const k of ENV_KEYS) delete process.env[k];
-    process.env.LLM_BUDGET_ENFORCE = "false";
-    process.env.GROQ_API_KEY = "stub";
-    // It reaches Groq's real endpoint and fails there on the stub key — what matters is that it
-    // TRIED, i.e. the recovery path was taken rather than the daily throw.
-    const err = await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100 })
-      .then(() => null)
-      .catch((e: Error) => e);
-    expect(String(err?.message)).not.toContain("daily token budget is spent");
-  }, 60_000);
-
-  it("it stays a pre-flight refusal, so RONDE 115's counters still classify it as never-asked", async () => {
-    markGroqCooldown(429, TPD_BODY);
-    for (const k of ENV_KEYS) delete process.env[k];
-    process.env.LLM_BUDGET_ENFORCE = "false";
-    process.env.GROQ_API_KEY = "stub";
-    const err = await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100 })
-      .then(() => null)
-      .catch((e: unknown) => e);
-    expect(isLlmPreflightRefusal(err)).toBe(true);
+    const realFetch = globalThis.fetch;
+    let sent = 0;
+    globalThis.fetch = (async () => {
+      sent++;
+      throw new Error("no request may leave");
+    }) as typeof globalThis.fetch;
+    try {
+      const err = await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 100 })
+        .then(() => null)
+        .catch((e: unknown) => e);
+      expect(String((err as Error)?.message)).toContain("OPENAI_API_KEY");
+      expect(isLlmPreflightRefusal(err)).toBe(true);
+      expect(sent).toBe(0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   }, 30_000);
 });
 

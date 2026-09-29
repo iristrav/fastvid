@@ -34,6 +34,7 @@ import {
   __resetProviderCooldownsForTests,
   invokeLLM,
   isGroqInCooldown,
+  isOpenAiInCooldown,
   isProviderKeyRejected,
 } from "./_core/llm";
 import { stripComments } from "./sourceScan.test.support";
@@ -131,32 +132,31 @@ afterEach(() => {
 /* ═══════════ 1. the production case ═══════════ */
 
 describe("R270 §1 — a 401 removes the provider, and it stays removed", () => {
-  it("THE PRODUCTION CASE: Groq's expired key falls through and OpenAI answers", async () => {
+  /**
+   * OPENAI ONLY (29 Sep 2026). Render 618's Groq key was the expired one; Groq is no longer asked at
+   * all, so the production case is now: a Groq key left in the environment costs nothing.
+   */
+  it("THE PRODUCTION CASE: a Groq key left in the environment is never asked; OpenAI answers", async () => {
     process.env.GROQ_API_KEY = "stub-groq";
     process.env.OPENAI_API_KEY = "stub-openai";
     installFetchStub({ groq: { status: 401, body: EXPIRED_KEY_BODY }, openai: openAiAnswer() });
 
     const result = await ask();
-    expect(calls).toEqual(["groq", "openai"]);
+    expect(calls).toEqual(["openai"]);
     expect(result.provider).toBe("openai");
   }, 30_000);
 
-  it("AND THE NEXT CALL DOES NOT ASK GROQ AT ALL — this is the whole repair", async () => {
-    /**
-     * Before this round every call repeated the round trip. Sixteen call sites pass
-     * `preferProvider: "groq"`, so that was most of the system's work paying for a guaranteed
-     * refusal, for as long as the key stayed expired.
-     */
-    process.env.GROQ_API_KEY = "stub-groq";
+  it("AND AFTER A 401 THE NEXT CALL DOES NOT ASK THAT PROVIDER AT ALL — this is the whole repair", async () => {
+    /** The rejected key is now OpenAI's own: nothing is left to ask, and nothing is sent. */
     process.env.OPENAI_API_KEY = "stub-openai";
-    installFetchStub({ groq: { status: 401, body: EXPIRED_KEY_BODY }, openai: openAiAnswer() });
+    installFetchStub({ openai: { status: 401, body: EXPIRED_KEY_BODY } });
 
-    await ask();
-    expect(isProviderKeyRejected("groq")).toBe(true);
+    await ask().catch(() => undefined);
+    expect(isProviderKeyRejected("openai")).toBe(true);
 
     calls = [];
-    await ask();
-    expect(calls, "a rejected credential was asked a second time").toEqual(["openai"]);
+    await ask().catch(() => undefined);
+    expect(calls, "a rejected credential was asked a second time").toEqual([]);
   }, 30_000);
 
   it("`preferProvider: groq` cannot put a rejected provider back at the front", async () => {
@@ -176,18 +176,12 @@ describe("R270 §1 — a 401 removes the provider, and it stays removed", () => 
   }, 30_000);
 
   it("IT IS NOT A COOLDOWN — a cooldown expires, and this must not", async () => {
-    process.env.GROQ_API_KEY = "stub-groq";
     process.env.OPENAI_API_KEY = "stub-openai";
-    installFetchStub({ groq: { status: 401, body: EXPIRED_KEY_BODY }, openai: openAiAnswer() });
+    installFetchStub({ openai: { status: 401, body: EXPIRED_KEY_BODY } });
 
-    await ask();
-    /**
-     * Deliberately NOT expressed as a very long cooldown: the all-blocked branch in invokeLLM
-     * resets `groqCooldownUntilMs` to 0 on purpose, so a cooldown would be wiped and the whole
-     * discovery would repeat. §3 checks that branch directly.
-     */
-    expect(isGroqInCooldown(), "the rejection was stored as a cooldown, which gets reset").toBe(false);
-    expect(isProviderKeyRejected("groq")).toBe(true);
+    await ask().catch(() => undefined);
+    expect(isOpenAiInCooldown(), "the rejection was stored as a cooldown, which expires").toBe(false);
+    expect(isProviderKeyRejected("openai")).toBe(true);
   }, 30_000);
 
   it("and every provider is covered, not just the one production caught", async () => {
@@ -200,8 +194,11 @@ describe("R270 §1 — a 401 removes the provider, and it stays removed", () => 
     process.env.GEMINI_API_KEY = "stub-gemini";
     installFetchStub({ openai: { status: 401, body: EXPIRED_KEY_BODY }, gemini: geminiAnswer() });
 
-    await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 50, preferProvider: "openai" });
+    await invokeLLM({ messages: [{ role: "user", content: "x" }], maxTokens: 50, preferProvider: "openai" })
+      .catch(() => undefined);
     expect(isProviderKeyRejected("openai")).toBe(true);
+    /** OpenAI only: Gemini is not the fallback any more. */
+    expect(calls).toEqual(["openai"]);
   }, 30_000);
 });
 
@@ -209,28 +206,23 @@ describe("R270 §1 — a 401 removes the provider, and it stays removed", () => 
 
 describe("R270 §2 — a spent quota and a dead key are not the same finding", () => {
   it("A 429 STILL ARMS THE COOLDOWN AND NOT THE REJECTION", async () => {
-    process.env.GROQ_API_KEY = "stub-groq";
     process.env.OPENAI_API_KEY = "stub-openai";
-    installFetchStub({ groq: { status: 429, body: TPD_BODY }, openai: openAiAnswer() });
+    installFetchStub({ openai: { status: 429, body: TPD_BODY } });
 
-    await ask();
-    expect(isGroqInCooldown()).toBe(true);
+    await ask().catch(() => undefined);
+    expect(isOpenAiInCooldown()).toBe(true);
     expect(
-      isProviderKeyRejected("groq"),
-      "a spent day was recorded as a dead key — that would never retry after the reset"
+      isProviderKeyRejected("openai"),
+      "a rate limit was recorded as a dead key — that would never retry after it lifts"
     ).toBe(false);
-  }, 30_000);
+  }, 60_000);
 
   it("and a 500 is neither — a broken provider may well work on the next call", async () => {
-    process.env.GROQ_API_KEY = "stub-groq";
     process.env.OPENAI_API_KEY = "stub-openai";
-    installFetchStub({
-      groq: { status: 500, body: JSON.stringify({ error: { message: "internal" } }) },
-      openai: openAiAnswer(),
-    });
+    installFetchStub({ openai: { status: 500, body: JSON.stringify({ error: { message: "internal" } }) } });
 
-    await ask();
-    expect(isProviderKeyRejected("groq")).toBe(false);
+    await ask().catch(() => undefined);
+    expect(isProviderKeyRejected("openai")).toBe(false);
   }, 30_000);
 
   it("THE TRIGGER IS 401 AND ONLY 401", () => {
@@ -243,22 +235,17 @@ describe("R270 §2 — a spent quota and a dead key are not the same finding", (
 /* ═══════════ 3. the escape hatch cannot revive it ═══════════ */
 
 describe("R270 §3 — the all-blocked retry must not resurrect a rejected key", () => {
-  it("WHEN EVERY PROVIDER IS OUT, GROQ IS NOT RETRIED ON A DEAD KEY", async () => {
+  it("WITH ONLY A GROQ KEY, NOTHING IS SENT — Groq is never asked, not even as a last resort", async () => {
     /**
-     * invokeLLM has a branch that deliberately ignores Groq's cooldown when nothing else is left,
-     * and it resets `groqCooldownUntilMs = 0` to do so. RONDE 117 already records one condition
-     * where that bet cannot pay off — a spent daily budget. A rejected credential is the second,
-     * and it is stronger: waiting will never mint a key inside one process.
+     * invokeLLM's all-blocked branch used to ignore Groq's cooldown when nothing else was left.
+     * With Groq removed there is no key for that branch to find, so it cannot reopen anything.
      */
     process.env.GROQ_API_KEY = "stub-groq";
     installFetchStub({ groq: { status: 401, body: EXPIRED_KEY_BODY } });
 
     await ask().catch(() => undefined);
-    expect(isProviderKeyRejected("groq")).toBe(true);
-
-    calls = [];
     await ask().catch(() => undefined);
-    expect(calls, "the escape hatch re-opened a rejected credential").toEqual([]);
+    expect(calls, "Groq was asked").toEqual([]);
   }, 30_000);
 
   it("and the branch names the rejection in its own condition", () => {
@@ -273,14 +260,13 @@ describe("R270 §3 — the all-blocked retry must not resurrect a rejected key",
 
 describe("R270 §4 — a classification was added, nothing was relaxed", () => {
   it("A WORKING CHAIN IS COMPLETELY UNAFFECTED", async () => {
-    process.env.GROQ_API_KEY = "stub-groq";
     process.env.OPENAI_API_KEY = "stub-openai";
-    installFetchStub({ groq: { ...openAiAnswer() }, openai: openAiAnswer() });
+    installFetchStub({ openai: openAiAnswer() });
 
     const result = await ask();
-    expect(calls).toEqual(["groq"]);
-    expect(result.provider).toBe("groq");
-    expect(isProviderKeyRejected("groq")).toBe(false);
+    expect(calls).toEqual(["openai"]);
+    expect(result.provider).toBe("openai");
+    expect(isProviderKeyRejected("openai")).toBe(false);
   }, 30_000);
 
   it("THE REJECTION READS A STATUS, NEVER A CREDENTIAL", () => {

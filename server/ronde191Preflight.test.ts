@@ -161,9 +161,19 @@ describe("R191 — the verdict says what is blocked and why", () => {
 
   it("either of an any-of pair is enough", async () => {
     const env = fullyConfigured("value");
+    delete env.PEXELS_API_KEY;
+    const oneLeft = await productionPreflight(ALL_GOOD, env);
+    expect(oneLeft.capabilities.find((c) => c.id === "stock_footage")!.available).toBe(true);
+    delete env.PIXABAY_API_KEY;
+    const noneLeft = await productionPreflight(ALL_GOOD, env);
+    expect(noneLeft.capabilities.find((c) => c.id === "stock_footage")!.available).toBe(false);
+  });
+
+  /** OpenAI only since 29 Sep 2026: a Gemini key no longer stands in for the script's LLM. */
+  it("the script needs OPENAI_API_KEY; a Gemini key alone is not enough", async () => {
+    const env = fullyConfigured("value");
     delete env.OPENAI_API_KEY;
-    expect((await productionPreflight(ALL_GOOD, env)).blockers).toEqual([]);
-    delete env.GEMINI_API_KEY;
+    env.GEMINI_API_KEY = "value";
     expect((await productionPreflight(ALL_GOOD, env)).verdict).toBe("PRODUCTION_RENDER_BLOCKED");
   });
 

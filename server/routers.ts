@@ -2196,7 +2196,7 @@ export const appRouter = router({
         throw appTrpcError(
           "BAD_REQUEST",
           APP_ERROR.SERVICE_ERROR,
-          "AI tagging disabled — set GROQ_API_KEY or LLM_API_KEY on the server"
+          "AI tagging disabled — set OPENAI_API_KEY on the server"
         );
       }
       const archive = await getMediaArchiveById(input.archiveId);

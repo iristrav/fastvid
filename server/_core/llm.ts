@@ -962,10 +962,9 @@ function isCapacityError(err: unknown): boolean {
 }
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey && !geminiKeyFromEnv() && !groqKeyFromEnv() && !openAiKeyFromEnv()) {
+  if (!ENV.forgeApiKey && !openAiKeyFromEnv()) {
     throw new LlmUnavailableError(
-      "LLM API key is not configured. Set GEMINI_API_KEY (free, Google AI Studio) or GROQ_API_KEY " +
-      "(free) on Railway, or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
+      "LLM API key is not configured. Set OPENAI_API_KEY on Railway — FastVid uses OpenAI only"
     );
   }
 };
@@ -1308,8 +1307,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
        */
       throw new LlmUnavailableError(
         "No vision-capable provider is available: Groq is excluded from image calls and no other " +
-        "provider is usable right now. Set GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY " +
-        "(OpenAI) so image judgements can be made." +
+        "provider is usable right now. Set OPENAI_API_KEY so image judgements can be made." +
         (isGroqDailyExhausted() ? " (Groq's daily budget is also spent, which does not affect image calls.)" : "")
       );
     } else if (groqKey && isGroqDailyExhausted()) {
@@ -1317,14 +1315,13 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       // the wrong place, and the key is plainly set.
       throw new LlmUnavailableError(
         "Groq's daily token budget is spent and no other provider is available. Set " +
-        "GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY (OpenAI) so calls can fall " +
-        "through, or wait for Groq's daily quota to reset."
+        "OPENAI_API_KEY — FastVid uses OpenAI only."
       );
     } else {
       // Every provider is keyless, cooled down or quota-exhausted — again, nothing is sent.
       throw new LlmUnavailableError(
-        "LLM API key is not configured. Set GROQ_API_KEY or GEMINI_API_KEY on Railway (free), " +
-        "or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
+        "LLM API key is not configured, or OpenAI is cooled down. Set OPENAI_API_KEY on Railway — " +
+        "FastVid uses OpenAI only"
       );
     }
   }

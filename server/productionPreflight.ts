@@ -140,7 +140,7 @@ export const CAPABILITIES: readonly Capability[] = [
     id: "script",
     describes: "writing the script and the Director's narrative judgement",
     requires: [],
-    requiresAny: ["OPENAI_API_KEY", "GEMINI_API_KEY"],
+    requiresAny: ["OPENAI_API_KEY"],
     fatal: true,
   },
   {

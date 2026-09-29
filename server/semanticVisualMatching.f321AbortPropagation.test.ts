@@ -26,10 +26,11 @@ describe("analyzeBeatSemantics LLM-call abort propagation (F3-21)", () => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.BUILT_IN_FORGE_API_KEY;
     delete process.env.GEMINI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GROQ_API_KEY;
     delete process.env.GEMINI_MODEL;
     delete process.env.LLM_PROVIDER;
-    process.env.GROQ_API_KEY = "test-groq-key";
+    /** OpenAI only since 29 Sep 2026 — the provider this wiring now always reaches. */
+    process.env.OPENAI_API_KEY = "test-openai-key";
     process.env.LLM_BUDGET_ENFORCE = "false";
     vi.restoreAllMocks();
   });
@@ -39,7 +40,7 @@ describe("analyzeBeatSemantics LLM-call abort propagation (F3-21)", () => {
     vi.restoreAllMocks();
   });
 
-  function groqOkResponse(jsonBody: Record<string, unknown>) {
+  function providerOkResponse(jsonBody: Record<string, unknown>) {
     return {
       ok: true,
       status: 200,
@@ -57,7 +58,7 @@ describe("analyzeBeatSemantics LLM-call abort propagation (F3-21)", () => {
 
   it("Test A/F — a normal, fast LLM response completes successfully, exactly like before", async () => {
     vi.spyOn(global, "fetch").mockResolvedValue(
-      groqOkResponse({
+      providerOkResponse({
         summary: "soldiers marching through a ruined city",
         persons: [],
         locations: ["europe"],

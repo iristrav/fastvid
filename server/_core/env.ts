@@ -3,40 +3,37 @@
 // where platform-injected secrets (BUILT_IN_FORGE_API_KEY, etc.) may not be
 // present in the process environment until after the module graph is first loaded.
 //
-// Railway deployment: BUILT_IN_FORGE_API_KEY is not available on Railway, so "forge" never
-// actually resolves there — Gemini / Groq / OpenAI are the real providers in production.
+// LLM: OpenAI only (see `geminiKeyFromEnv`). Gemini and Groq are never resolved; Forge is not
+// configured on Railway.
 //
 // Note: GitHub Models (a previously-supported free provider here) was permanently retired by
 // GitHub on 2026-07-30 — it's not coming back, don't re-add it without checking that first.
 export type LlmProvider = "forge" | "gemini" | "groq" | "openai" | "none";
 
-/** Read a Google AI Studio (Gemini) key — GEMINI_API_KEY or GOOGLE_API_KEY. Genuinely free up
- *  to Google's daily/per-minute quota (no billing account required for an AI Studio key). */
+/**
+ * OPENAI ONLY — 29 September 2026, the owner's decision: FastVid uses OpenAI and nothing else.
+ *
+ * Render 618 showed why: Groq answered every first call with 401 `expired_api_key`, Google answered
+ * every Gemini call with 403 "Your project has been denied access", and each render paid for both
+ * before OpenAI was asked. Thirty-one call sites prefer "groq" and four prefer "gemini", so a key
+ * left for either in Railway kept putting a dead provider first.
+ *
+ * These readers are what every provider chain, every `preferProvider` and every availability check
+ * asks, so answering "no key" here is what removes Groq and Gemini everywhere at once: a call that
+ * prefers either goes straight to OpenAI. A GROQ_* / GEMINI_API_KEY / GOOGLE_API_KEY left in the
+ * environment is ignored.
+ */
 export function geminiKeyFromEnv(): string {
-  return process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || "";
+  return "";
 }
 
-/** Read Groq key — GROQ_API_KEY, GROQ_KEY, any *GROQ* env var, or gsk_* in LLM_API_KEY. */
+/** See `geminiKeyFromEnv`: Groq is not used. */
 export function groqKeyFromEnv(): string {
-  const direct =
-    process.env.GROQ_API_KEY?.trim() ||
-    process.env.GROQ_KEY?.trim() ||
-    "";
-  if (direct) return direct;
-
-  for (const [name, value] of Object.entries(process.env)) {
-    if (!/groq/i.test(name)) continue;
-    const v = value?.trim() ?? "";
-    if (v.startsWith("gsk_")) return v;
-  }
-
-  const llm = process.env.LLM_API_KEY?.trim() ?? "";
-  if (llm.startsWith("gsk_")) return llm;
   return "";
 }
 
 /** A dedicated OPENAI_API_KEY (matches voiceBeatAlignment.ts's convention), or LLM_API_KEY
- *  when it holds an OpenAI key (sk-) rather than Groq (gsk_). */
+ *  when it holds an OpenAI key (sk-) rather than a Groq one (gsk_). */
 export function openAiKeyFromEnv(): string {
   const dedicated = process.env.OPENAI_API_KEY?.trim() ?? "";
   if (dedicated) return dedicated;
@@ -45,32 +42,19 @@ export function openAiKeyFromEnv(): string {
   return llm;
 }
 
-/** Which LLM backend to use (Forge > Gemini > Groq > OpenAI unless LLM_PROVIDER is set). */
+/**
+ * The LLM backend: OpenAI (see `geminiKeyFromEnv`). Forge is the built-in Manus proxy: it is not
+ * configured on Railway and never resolves there; tests point it at a local stub.
+ */
 export function resolveLlmProvider(): LlmProvider {
-  const forced = process.env.LLM_PROVIDER?.trim().toLowerCase();
-  if (forced === "gemini" && geminiKeyFromEnv()) return "gemini";
-  if (forced === "groq" && groqKeyFromEnv()) return "groq";
-  if (forced === "openai" && openAiKeyFromEnv()) return "openai";
-  if (forced === "forge" && process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
   if (process.env.BUILT_IN_FORGE_API_KEY?.trim()) return "forge";
-  // Gemini first by default: a genuinely free (no billing account needed) Google AI Studio key.
-  // Groq next: also free, no billing account, much bigger daily quota. Falls through to OpenAI
-  // once both free daily quotas are hit. Override with LLM_PROVIDER=openai (or =groq) if ever
-  // preferred instead.
-  if (geminiKeyFromEnv()) return "gemini";
-  if (groqKeyFromEnv()) return "groq";
-  if (openAiKeyFromEnv()) return "openai";
-  return "none";
+  return openAiKeyFromEnv() ? "openai" : "none";
 }
 
 export function llmApiKeyForProvider(provider: LlmProvider): string {
   switch (provider) {
     case "forge":
       return process.env.BUILT_IN_FORGE_API_KEY?.trim() ?? "";
-    case "gemini":
-      return geminiKeyFromEnv();
-    case "groq":
-      return groqKeyFromEnv();
     case "openai":
       return openAiKeyFromEnv();
     default:

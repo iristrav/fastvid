@@ -92,8 +92,15 @@ afterEach(() => {
   __resetProviderCooldownsForTests();
 });
 
-describe("an image call names the vision cause, whatever Groq's day looks like", () => {
-  it("the refusal does not blame Groq's token budget", async () => {
+/**
+ * OPENAI ONLY (29 Sep 2026). Groq and Gemini are no longer providers, so "only a Groq key,
+ * spent or not" is now simply "no provider". What this file protected still holds and is pinned
+ * below: the refusal names the key that would fix it — now OPENAI_API_KEY — it does not blame a
+ * Groq quota, and it stays a PRE-FLIGHT refusal so the picture editor records "never asked"
+ * rather than "asked and failed".
+ */
+describe("with only a Groq key, an image call names the missing key, not Groq's day", () => {
+  it("the refusal does not blame Groq's token budget, and says which key to set", async () => {
     onlyGroqConfiguredAndSpent();
     expect(isGroqDailyExhausted()).toBe(true);
 
@@ -101,33 +108,11 @@ describe("an image call names the vision cause, whatever Groq's day looks like",
       .then(() => null)
       .catch((e: Error) => e);
 
-    expect(String(err?.message)).toContain("No vision-capable provider is available");
-    expect(String(err?.message)).not.toMatch(/^Groq's daily token budget is spent/);
-  }, 30_000);
-
-  it("it says which key to set", async () => {
-    onlyGroqConfiguredAndSpent();
-    const err = await invokeLLM({ messages: visionMessages, maxTokens: 100 })
-      .then(() => null)
-      .catch((e: Error) => e);
-    expect(String(err?.message)).toContain("GEMINI_API_KEY");
-    expect(String(err?.message)).toContain("LLM_API_KEY");
-  }, 30_000);
-
-  it("the spent budget is still mentioned, as the aside it is", async () => {
-    /** Hiding it would be its own wrong signpost: an operator watching Groq should still see it. */
-    onlyGroqConfiguredAndSpent();
-    const err = await invokeLLM({ messages: visionMessages, maxTokens: 100 })
-      .then(() => null)
-      .catch((e: Error) => e);
-    expect(String(err?.message)).toContain("does not affect image calls");
+    expect(String(err?.message)).toContain("OPENAI_API_KEY");
+    expect(String(err?.message)).not.toMatch(/Groq's daily token budget is spent/);
   }, 30_000);
 
   it("with a full Groq budget the image call fails the same way", async () => {
-    /**
-     * The point of the whole change: the condition is "no vision provider", and it does not depend
-     * on Groq's quota. Both paths must reach the same sentence.
-     */
     for (const k of ENV_KEYS) delete process.env[k];
     process.env.LLM_BUDGET_ENFORCE = "false";
     process.env.GROQ_API_KEY = "stub";
@@ -136,8 +121,7 @@ describe("an image call names the vision cause, whatever Groq's day looks like",
     const err = await invokeLLM({ messages: visionMessages, maxTokens: 100 })
       .then(() => null)
       .catch((e: Error) => e);
-    expect(String(err?.message)).toContain("No vision-capable provider is available");
-    expect(String(err?.message)).not.toContain("does not affect image calls");
+    expect(String(err?.message)).toContain("OPENAI_API_KEY");
   }, 30_000);
 
   it("it stays a pre-flight refusal, so the gate still records never-asked", async () => {
@@ -154,21 +138,13 @@ describe("an image call names the vision cause, whatever Groq's day looks like",
   }, 30_000);
 });
 
-describe("a text call keeps the daily-budget message, which is the truth for it", () => {
-  it("the wording RONDE 117 wrote is unchanged", async () => {
+describe("a text call with only a Groq key is the same refusal", () => {
+  it("it names OPENAI_API_KEY and stays a pre-flight refusal", async () => {
     onlyGroqConfiguredAndSpent();
     const err = await invokeLLM({ messages: textMessages, maxTokens: 100 })
       .then(() => null)
       .catch((e: Error) => e);
-    expect(String(err?.message)).toContain("Groq's daily token budget is spent");
-    expect(String(err?.message)).toContain("wait for Groq's daily quota to reset");
-  }, 30_000);
-
-  it("and it is still not blamed on a missing key", async () => {
-    onlyGroqConfiguredAndSpent();
-    const err = await invokeLLM({ messages: textMessages, maxTokens: 100 })
-      .then(() => null)
-      .catch((e: Error) => e);
-    expect(String(err?.message)).not.toContain("API key is not configured");
+    expect(String(err?.message)).toContain("OPENAI_API_KEY");
+    expect(isLlmPreflightRefusal(err)).toBe(true);
   }, 30_000);
 });
