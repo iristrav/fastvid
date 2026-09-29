@@ -452,6 +452,8 @@ export type TimelineCaption = {
   words?: Array<{ word: string; startSec: number; endSec: number }>;
   editedByUser?: boolean;
   disabled?: boolean;
+  /** VIDEO 619 — why it is off when the pipeline switched it off (see `leaveOnScreenTextToTheEditor`). */
+  disabledReason?: string;
 };
 
 /** Voice, music or an effect. One file, placed on the timeline, at a level. */

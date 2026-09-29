@@ -58,13 +58,19 @@ describe("the video's subtitle setting decides", () => {
     expect(captionTrack(outcome.timeline)).toHaveLength(0);
   });
 
-  it("subtitles on: they are there, so the switch really switches", async () => {
+  /**
+   * VIDEO 619 — planned, and switched OFF: they are on the timeline for the editor to turn on, and
+   * none of them is in the made video.
+   */
+  it("subtitles planned: they are there, and every one of them is off until the editor turns it on", async () => {
     const outcome = await planAndStoreCinematicTimeline({
       videoId: 606, scenes: [sceneFacts(0), sceneFacts(1)], persist, includeSubtitles: true,
     });
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
-    expect(captionTrack(outcome.timeline).length).toBeGreaterThan(0);
+    const captions = captionTrack(outcome.timeline);
+    expect(captions.length).toBeGreaterThan(0);
+    for (const c of captions) expect(c).toMatchObject({ disabled: true, disabledReason: "left_to_editor" });
   });
 });
 
@@ -82,17 +88,19 @@ describe("nobody else's text in the picture either", () => {
 });
 
 describe("the wiring", () => {
-  it("the render hands the planner the video's own setting", () => {
+  /** VIDEO 619 — always planned (so the editor can offer them), never shown until turned on there. */
+  it("the render always plans subtitles for the editor", () => {
     const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
     const call = SRC.slice(SRC.indexOf("const outcome = await planAndStoreCinematicTimeline({"));
-    expect(call.slice(0, 400)).toContain("includeSubtitles: enableSubtitles,");
+    expect(call.slice(0, 600)).toContain("includeSubtitles: true,");
   });
 
-  it("new videos start with subtitles off", () => {
+  it("new videos have no subtitle switch; they start with subtitles off", () => {
     const ROUTERS = readFileSync(join(__dirname, "routers.ts"), "utf8");
-    expect(ROUTERS).toContain("enableSubtitles: z.boolean().default(false),");
+    expect(ROUTERS).not.toContain("enableSubtitles: z.boolean()");
+    expect(ROUTERS).toContain("enableSubtitles: 0,");
     const DASH = readFileSync(join(__dirname, "..", "client", "src", "pages", "Dashboard.tsx"), "utf8");
-    expect(DASH).toContain("const [enableSubtitles, setEnableSubtitles] = useState(false);");
+    expect(DASH).not.toContain("setEnableSubtitles");
     // The internal trigger does not ask; the column's default (1) must not decide for it.
     const INTERNAL = readFileSync(join(__dirname, "_core", "index.ts"), "utf8");
     expect(INTERNAL).toContain("status: 'queued', enableSubtitles: 0 });");

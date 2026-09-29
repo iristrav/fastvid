@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CANDIDATE_WEIGHTS,
+  candidateWarnings,
   candidateFromAsset,
   formatCandidateSearch,
   rankReplacementCandidates,
@@ -148,16 +149,20 @@ describe("RONDE 156 — technical refusals remove a candidate; taste only lowers
   });
 
   /** Somebody else's burned-in caption would appear in this video. An existing FastVid gate. */
-  it("refuses an asset with baked-in edit text", () => {
-    expect(technicalRejection(asset(200, { hasBakedEditText: 1 }), ctx)).toContain("burned-in text");
+  /** VIDEO 619 — a person choosing by hand may use it; the card says what is in it. */
+  it("offers an asset with baked-in edit text, and says so", () => {
+    expect(technicalRejection(asset(200, { hasBakedEditText: 1 }), ctx)).toBeNull();
+    expect(candidateWarnings(asset(200, { hasBakedEditText: 1 }), ctx)).toContain("has text in the picture");
   });
 
   it("refuses the clip that is already in the slot", () => {
     expect(technicalRejection(asset(100), ctx)).toContain("already in this slot");
   });
 
-  it("refuses a VIDEO shorter than the slot — it would have to loop or freeze", () => {
-    expect(technicalRejection(asset(200, { durationSec: 1.5 }), ctx)).toContain("1.5s");
+  /** VIDEO 619 — a short clip loops to fill its slot; offered, with that said. */
+  it("offers a VIDEO shorter than the slot, and says it repeats", () => {
+    expect(technicalRejection(asset(200, { durationSec: 1.5 }), ctx)).toBeNull();
+    expect(candidateWarnings(asset(200, { durationSec: 1.5 }), ctx).join(" ")).toContain("1.5s");
   });
 
   /** A still is held for as long as the slot needs. That is what Ken Burns is for. */

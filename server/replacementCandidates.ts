@@ -161,27 +161,28 @@ export function technicalRejection(
 ): string | null {
   if (asset.isActive === 0) return "the asset is deactivated in the archive";
   if (asset.previewIssue) return `the asset's preview is unusable (${asset.previewIssue})`;
-  /**
-   * A clip with baked-in edit text from another production cannot be used: the words belong to
-   * somebody else's video and would appear in this one. This is an existing FastVid gate, applied
-   * here for the same reason.
-   */
-  if (asset.hasBakedEditText === 1) return "the asset has burned-in text from another edit";
   if (asset.id === context.currentArchiveAssetId) return "that is the clip already in this slot";
-
   /**
-   * A VIDEO shorter than the slot would have to loop or freeze to fill it. An IMAGE has no such
-   * problem — a still is held for as long as the slot needs, which is what Ken Burns is for.
+   * VIDEO 619 — a person choosing by hand may use ANY asset in the archive.
+   *
+   * Burned-in text and a clip shorter than the slot used to remove a candidate here. Neither makes
+   * a broken video — a short clip loops to fill its slot, and text in the picture is something the
+   * person can see in the preview — so they are now SAID on the card (`candidateWarnings`) instead
+   * of hiding the asset. What remains here is what really cannot be rendered.
    */
-  if (asset.mediaType === "video" && asset.durationSec != null) {
-    if (asset.durationSec + 0.05 < context.slotDurationSec) {
-      return (
-        `the clip is ${asset.durationSec.toFixed(1)}s and the slot is ` +
-        `${context.slotDurationSec.toFixed(1)}s`
-      );
-    }
-  }
   return null;
+}
+
+/** What a person should know before choosing this asset — shown, never used to hide it. */
+export function candidateWarnings(asset: ArchiveAssetLike, context: ReplacementContext): string[] {
+  const out: string[] = [];
+  if (asset.hasBakedEditText === 1) out.push("has text in the picture");
+  if (asset.mediaType === "video" && asset.durationSec != null && asset.durationSec + 0.05 < context.slotDurationSec) {
+    out.push(
+      `the clip is ${asset.durationSec.toFixed(1)}s and the slot is ${context.slotDurationSec.toFixed(1)}s — it repeats`
+    );
+  }
+  return out;
 }
 
 /* ═══════════════════════ the ranking ═══════════════════════ */
@@ -344,7 +345,12 @@ export function rankReplacementCandidates<T extends ArchiveAssetLike>(
       rejected.push({ archiveAssetId: asset.id, reason: refusal });
       continue;
     }
-    scored.push({ asset, scored: scoreCandidate(asset, context) });
+    const scored1 = scoreCandidate(asset, context);
+    const warnings = candidateWarnings(asset, context);
+    scored.push({
+      asset,
+      scored: warnings.length ? { ...scored1, reason: `${scored1.reason}; ${warnings.join("; ")}` } : scored1,
+    });
   }
 
   scored.sort((a, b) => b.scored.score - a.scored.score || a.asset.id - b.asset.id);

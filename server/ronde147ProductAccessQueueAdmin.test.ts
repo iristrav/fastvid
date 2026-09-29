@@ -220,8 +220,13 @@ describe("RONDE 147 §7 — voice previews actually play", () => {
   it("a stored sample is preferred over spending a generation", () => {
     expect(VOICE_HOOK).toContain("if (voice.exampleAudioUrl)");
     const idx = VOICE_HOOK.indexOf("if (voice.exampleAudioUrl)");
-    // The generate path is only reached after the stored-sample branch returns.
-    expect(VOICE_HOOK.indexOf("setLoadingId(voice.id);")).toBeGreaterThan(idx);
+    /**
+     * The stored-sample branch plays and returns; generating is only its fallback (VIDEO 619: when
+     * the stored file does not load) or the path for a voice with no sample at all.
+     */
+    const branch = VOICE_HOOK.slice(idx, VOICE_HOOK.indexOf("generateAndPlay();\n", idx));
+    expect(branch).toContain("void play(voice.exampleAudioUrl, voice, requestId, generateAndPlay);");
+    expect(branch).toContain("return;");
   });
 
   it("a stale response cannot play over the voice the user switched to", () => {

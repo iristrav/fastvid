@@ -43,7 +43,7 @@ import type { EDL, EditDecision } from "./cinematicEditingEngine/types";
 import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput } from "./aiDirector";
 import type { DirectorOutput } from "./aiDirector/types";
 import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
-import { directOnScreenText, type TextDirection } from "./onScreenTextDirector";
+import { directOnScreenText, leaveOnScreenTextToTheEditor, type TextDirection } from "./onScreenTextDirector";
 import { limitLongShots } from "./longShotLimit";
 import type { YoutubeSourceFacts } from "./youtubeShotLimit";
 import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
@@ -56,7 +56,7 @@ import {
   graphicsLifecycle,
 } from "./graphicsLifecycle";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
-import { intensityAtFrom, typewriterSfxClips } from "./typewriterSound";
+import { intensityAtFrom } from "./typewriterSound";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 import {
   formatCueSheet,
@@ -377,9 +377,16 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
         ? intensityAtFrom(videoForIntensity.clips, params.emotionalCurve)
         : undefined,
   });
-  /** And the keys are heard: the typewriter recording under each, on the SFX track. */
-  const sfxForTyping = timeline.tracks.find((t) => t.kind === "SFX");
-  if (sfxForTyping?.kind === "SFX") sfxForTyping.clips.push(...typewriterSfxClips(textDirection.typewriter));
+  /**
+   * VIDEO 619 — and then none of it is drawn: the made video carries no text. Everything the
+   * director kept stays on the timeline switched off, ready for the editor to turn on. With no text
+   * on screen there is nothing to type, so the typewriter keys are not laid either.
+   */
+  const leftToEditor = leaveOnScreenTextToTheEditor(timeline);
+  console.log(
+    `[OnScreenText] video=${params.videoId} no text in the made video — switched off for the editor: ` +
+      `captions=${leftToEditor.captions} texts=${leftToEditor.texts} graphics=${leftToEditor.graphics}`
+  );
 
   /**
    * RONDE 651 — no shot on screen longer than six seconds: see `limitLongShots`. Here rather than

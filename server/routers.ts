@@ -1,5 +1,5 @@
 import Stripe from "stripe";
-import { getUserRenderSemaphore, Semaphore } from "./_core/semaphore";
+import { getUserRenderSemaphore } from "./_core/semaphore";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -256,10 +256,6 @@ export async function generateFullVideoInternal(videoId: number, prompt: string,
 // so "3" here means the original run plus 2 retries — not 3 retries on top of the original.
 const MAX_VIDEO_ATTEMPTS = 3;
 
-// Caps concurrent custom-voiceover uploads across all users on this worker process — each request
-// base64-decodes up to 50MB into a Buffer, so several arriving at once can spike heap usage well
-// past the per-request cap.
-const customVoiceUploadLimiter = new Semaphore(4);
 
 function assertVideoRetryBudgetNotExhausted(video: Video): void {
   if (video.generationAttempt >= MAX_VIDEO_ATTEMPTS) {
@@ -1144,8 +1140,10 @@ export const appRouter = router({
       videoLength: videoLengthSchema,
       videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
       voiceId: z.string().optional(),
-      customVoiceoverUrl: z.string().optional(),
-      enableSubtitles: z.boolean().default(false),
+      /**
+       * VIDEO 619 — no own voice-over and no subtitle switch any more: the narration is always one
+       * of the listed voices, and on-screen text (subtitles included) is added in the editor.
+       */
     })).mutation(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") {
         const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);
@@ -1190,9 +1188,9 @@ export const appRouter = router({
         prompt: input.prompt,
         videoLength: input.videoLength,
         videoType: input.videoType,
-        customVoiceoverUrl: input.customVoiceoverUrl,
+        customVoiceoverUrl: null,
         voiceId: input.voiceId,
-        enableSubtitles: input.enableSubtitles ? 1 : 0,
+        enableSubtitles: 0,
         status: "queued",
         metadata: { archiveCoverage: coverage, nicheTitle },
       });
@@ -1843,30 +1841,6 @@ export const appRouter = router({
       return { url };
     }),
 
-    /** Subscribed users: upload their own voiceover audio (base64) and get back a storage URL */
-    uploadCustom: subscribedProcedure.input(z.object({
-      base64: z.string(),
-      mimeType: z.string().default("audio/mpeg"),
-      filename: z.string().max(256).optional(),
-    })).mutation(async ({ ctx, input }) => {
-      const maxBytes = 50 * 1024 * 1024; // 50 MB
-      // Reject oversized payloads by their base64 string length BEFORE decoding — decoding first
-      // means an attacker-controlled base64 string of arbitrary size gets fully materialized as a
-      // Buffer (base64 inflates ~4/3 over raw bytes) before the size check ever runs.
-      const maxBase64Len = Math.ceil((maxBytes * 4) / 3) + 4;
-      if (input.base64.length > maxBase64Len) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 50MB)");
-      }
-      const buffer = Buffer.from(input.base64, "base64");
-      if (buffer.length > maxBytes) {
-        throw appTrpcError("BAD_REQUEST", APP_ERROR.FILE_TOO_LARGE, "File too large (max 50MB)");
-      }
-      const ext = input.mimeType.includes("wav") ? "wav" : input.mimeType.includes("ogg") ? "ogg" : "mp3";
-      const key = `custom-voiceovers/${ctx.user.id}-${Date.now()}.${ext}`;
-      const { url } = await customVoiceUploadLimiter.run(() => storagePut(key, buffer, input.mimeType));
-      return { url };
-    }),
-
     /** Public: generate a live 5-second ElevenLabs preview for a given voice ID */
     preview: protectedProcedure.input(z.object({
       fishAudioReferenceId: z.string().min(1),
@@ -1882,25 +1856,24 @@ export const appRouter = router({
       if (!apiKey) {
         throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.ELEVENLABS_NOT_CONFIGURED, "ElevenLabs API key not configured");
       }
-      const previewText = "Hello! This is a preview of how this voice sounds. I hope you enjoy using it for your YouTube videos.";
       const voiceId = input.fishAudioReferenceId; // column still named fishAudioReferenceId but stores ElevenLabs voice ID
-      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-        method: "POST",
-        headers: { "xi-api-key": apiKey, "Content-Type": "application/json", "Accept": "audio/mpeg" },
-        body: JSON.stringify({ text: previewText, model_id: "eleven_multilingual_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!response.ok) {
-        const err = await response.text();
+      /**
+       * VIDEO 619 — the fresh example is written back to the voice, so a dead stored example is
+       * repaired for everyone by the first click that found it, not regenerated on every click.
+       */
+      const { makeVoiceExample } = await import("./voiceExamples");
+      let url: string;
+      try {
+        url = await makeVoiceExample(voiceId, apiKey);
+      } catch (err) {
         throw appTrpcError(
           "INTERNAL_SERVER_ERROR",
           APP_ERROR.SERVICE_ERROR,
-          `ElevenLabs preview failed: ${err.slice(0, 200)}`
+          `ElevenLabs preview failed: ${(err as Error).message}`
         );
       }
-      const audioBuffer = Buffer.from(await response.arrayBuffer());
-      const key = `voice-previews/${voiceId}-${Date.now()}.mp3`;
-      const { url } = await storagePut(key, audioBuffer, "audio/mpeg");
+      const match = (await getAllVoicesAdmin()).find((v) => v.fishAudioReferenceId === voiceId);
+      if (match) await updateVoice(match.id, { exampleAudioUrl: url });
       return { url };
     }),
   }),

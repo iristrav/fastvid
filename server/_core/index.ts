@@ -1253,8 +1253,9 @@ async function bootstrapAdmin() {
 bootstrapAdmin().catch(console.error);
 
 // ─── Voice Example Audio Bootstrap ───────────────────────────────────────────
-// Pre-generate example audio for all voices that don't have one yet.
-// Runs in the background after startup so it doesn't block the server.
+// Make sure every voice's example audio actually LOADS — an empty URL and a URL to a file the
+// storage no longer holds are the same fault from the listener's side (VIDEO 619). Runs in the
+// background after startup so it doesn't block the server.
 async function bootstrapVoiceExampleAudio() {
   const elevenKey = process.env.ELEVENLABS_API_KEY;
   if (!elevenKey) {
@@ -1263,38 +1264,29 @@ async function bootstrapVoiceExampleAudio() {
   }
   try {
     const { getAllVoicesAdmin, updateVoice } = await import("../db");
-    const { storagePut } = await import("../storage");
-    const allVoices = await getAllVoicesAdmin();
-    const missing = allVoices.filter(v => !v.exampleAudioUrl && !v.fishAudioReferenceId.startsWith("PLACEHOLDER"));
-    if (missing.length === 0) {
-      console.log("[VoiceBootstrap] All voices already have example audio");
+    const { exampleAudioLoads, makeVoiceExample } = await import("../voiceExamples");
+    const allVoices = (await getAllVoicesAdmin()).filter((v) => !v.fishAudioReferenceId.startsWith("PLACEHOLDER"));
+    const broken: typeof allVoices = [];
+    for (const v of allVoices) {
+      if (!(await exampleAudioLoads(v.exampleAudioUrl))) broken.push(v);
+    }
+    if (broken.length === 0) {
+      console.log(`[VoiceBootstrap] All ${allVoices.length} voice examples load`);
       return;
     }
-    console.log(`[VoiceBootstrap] Generating example audio for ${missing.length} voice(s) via ElevenLabs...`);
-    const previewText = "Hello! This is a preview of how this voice sounds. I hope you enjoy using it for your YouTube videos.";
-    for (const voice of missing) {
+    console.log(
+      `[VoiceBootstrap] ${broken.length} voice example(s) missing or not loading — making new ones: ` +
+        broken.map((v) => v.name).join(", ")
+    );
+    for (const voice of broken) {
       try {
-        // fishAudioReferenceId column stores ElevenLabs voice ID
-        const elevenVoiceId = voice.fishAudioReferenceId;
-        const resp = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoiceId}`, {
-          method: "POST",
-          headers: { "xi-api-key": elevenKey, "Content-Type": "application/json", "Accept": "audio/mpeg" },
-          body: JSON.stringify({ text: previewText, model_id: "eleven_multilingual_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
-          signal: AbortSignal.timeout(45_000),
-        });
-        if (!resp.ok) {
-          console.warn(`[VoiceBootstrap] ElevenLabs failed for voice ${voice.name} (${elevenVoiceId}): HTTP ${resp.status}`);
-          continue;
-        }
-        const buf = Buffer.from(await resp.arrayBuffer());
-        const { url } = await storagePut(`voice-examples/${elevenVoiceId}.mp3`, buf, "audio/mpeg");
+        const url = await makeVoiceExample(voice.fishAudioReferenceId, elevenKey);
         await updateVoice(voice.id, { exampleAudioUrl: url });
-        console.log(`[VoiceBootstrap] ✓ Example audio generated for voice: ${voice.name}`);
+        console.log(`[VoiceBootstrap] ✓ Example audio made for voice: ${voice.name}`);
       } catch (e) {
-        console.warn(`[VoiceBootstrap] Failed for voice ${voice.name}:`, e);
+        console.warn(`[VoiceBootstrap] Failed for voice ${voice.name}: ${(e as Error).message}`);
       }
     }
-    console.log("[VoiceBootstrap] Done");
   } catch (e) {
     console.error("[VoiceBootstrap] Bootstrap failed:", e);
   }

@@ -28,6 +28,7 @@ import {
   type SceneFacts,
 } from "./cinematicPipelineInputs";
 import { runCinematicPipeline } from "./cinematicPipeline";
+import { setAllCaptionsShown, setTextElementShown, type EditableTimeline } from "@shared/timelineEdits";
 import { timelineToRemotionProps } from "./remotionProps";
 import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsOverlayDeps";
 import { captionTrack, type ProjectTimeline } from "./projectTimeline";
@@ -100,7 +101,7 @@ function sceneFacts(): SceneFacts {
   };
 }
 
-function planned(opts: { words?: boolean } = {}): ProjectTimeline {
+function plannedAsMade(opts: { words?: boolean } = {}): ProjectTimeline {
   const built = buildCinematicSceneInputs({
     scenes: [sceneFacts()],
     extractors: PRODUCTION_EXTRACTORS,
@@ -113,9 +114,34 @@ function planned(opts: { words?: boolean } = {}): ProjectTimeline {
   }).timeline;
 }
 
+/**
+ * VIDEO 619 — the made video carries no text: everything is planned and switched off. This file is
+ * about how that text renders once it is ON, so it turns every suggestion on, the way a person does
+ * in the editor ("Show subtitles", then "Show" on each suggested text) — which is exactly the
+ * document this file rendered before the change.
+ */
+function planned(opts: { words?: boolean } = {}): ProjectTimeline {
+  let t = setAllCaptionsShown(plannedAsMade(opts) as unknown as EditableTimeline, true);
+  for (const track of t.tracks) {
+    const kind = track.kind as "TEXT" | "GRAPHICS";
+    const list = (track as Record<string, unknown>)[kind === "TEXT" ? "texts" : "graphics"];
+    if ((kind !== "TEXT" && kind !== "GRAPHICS") || !Array.isArray(list)) continue;
+    for (const el of list as Array<{ id: string; disabledReason?: string }>) {
+      if (el.disabledReason === "left_to_editor") t = setTextElementShown(t, kind, el.id, true);
+    }
+  }
+  return t as unknown as ProjectTimeline;
+}
+
 /* ═══════════════════════ the captions exist at all ═══════════════════════ */
 
 describe("R186 — the cinematic route produces narration captions", () => {
+  it("VIDEO 619 — as made, every caption is planned and off, waiting for the editor", () => {
+    const captions = captionTrack(plannedAsMade());
+    expect(captions.length).toBeGreaterThanOrEqual(BEATS.length);
+    for (const c of captions) expect(c).toMatchObject({ disabled: true, disabledReason: "left_to_editor" });
+  });
+
   it("puts a subtitle on the CAPTIONS track for every beat", () => {
     const captions = captionTrack(planned());
     expect(captions.length, "the CAPTIONS track is empty on the live route").toBeGreaterThanOrEqual(

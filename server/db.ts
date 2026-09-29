@@ -1847,6 +1847,44 @@ export async function listMediaArchiveAssetsPaginated(
   return { items: rows, total };
 }
 
+/**
+ * VIDEO 619 — the editor's archive browser: every active asset in every archive, newest first,
+ * optionally narrowed by a word (title or tag) and by kind. Nothing is ranked or filtered away —
+ * a person choosing a shot by hand may use anything the archive holds.
+ */
+export async function browseMediaArchiveAssets(opts: {
+  limit: number;
+  offset: number;
+  search?: string;
+  mediaType?: "video" | "image";
+}): Promise<{ items: Omit<MediaArchiveAsset, "annotationJson">[]; total: number }> {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+  const { annotationJson: _skip, ...listColumns } = getTableColumns(mediaArchiveAssets);
+  const q = opts.search?.trim();
+  const where = and(
+    eq(mediaArchiveAssets.isActive, 1),
+    ...(opts.mediaType ? [eq(mediaArchiveAssets.mediaType, opts.mediaType)] : []),
+    ...(q
+      ? [
+          or(
+            like(mediaArchiveAssets.title, `%${q}%`),
+            sql`JSON_SEARCH(${mediaArchiveAssets.tags}, 'one', ${`%${q}%`}) IS NOT NULL`
+          ),
+        ]
+      : [])
+  );
+  const [countRow] = await db.select({ count: sql<number>`count(*)` }).from(mediaArchiveAssets).where(where);
+  const items = await db
+    .select(listColumns)
+    .from(mediaArchiveAssets)
+    .where(where)
+    .orderBy(desc(mediaArchiveAssets.id))
+    .limit(opts.limit)
+    .offset(opts.offset);
+  return { items, total: Number(countRow?.count ?? 0) };
+}
+
 /** Paginated active video assets — avoids loading the full archive for CLIP backfill. */
 export async function listActiveVideoArchiveAssetsBatch(afterId: number, limit: number) {
   const db = await getDb();

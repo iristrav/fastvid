@@ -35,8 +35,33 @@ import {
   type HistoryPolicy,
 } from "@shared/timelineHistory";
 import {
+  addText,
+  captionCounts,
+  insertVideoClip,
+  moveVideoClip,
+  removeAudioClip,
+  removeTextElement,
+  removeVideoClip,
+  setAllCaptionsShown,
+  setTextElementShown,
+  setVideoClipLength,
+  setVideoClipSourceIn,
+  splitVideoClip,
+  type EditableTimeline,
+  type EditableVideoClip,
+} from "@shared/timelineEdits";
+import {
   AlertCircle,
+  ArrowLeft,
+  ArrowRight,
+  Captions,
+  Eye,
+  EyeOff,
   Film,
+  ImagePlus,
+  Plus,
+  Scissors,
+  Trash2,
   Loader2,
   Music,
   Palette,
@@ -101,7 +126,16 @@ type GraphicElement = {
   end: number;
   label?: string;
   disabled?: boolean;
+  disabledReason?: string;
   reason?: string;
+};
+
+type TextStyle = {
+  position?: string;
+  fontSizePx?: number;
+  color?: string;
+  backgroundOpacity?: number;
+  backgroundColor?: string;
 };
 
 type TextElement = {
@@ -109,8 +143,19 @@ type TextElement = {
   text: string;
   start: number;
   end: number;
-  style?: { position?: string; fontSizePx?: number; color?: string };
+  style?: TextStyle;
   disabled?: boolean;
+  /** VIDEO 619 — why the pipeline left it off; "left_to_editor" means: yours to switch on. */
+  disabledReason?: string;
+};
+
+/** VIDEO 619 — how a text the person adds looks until they change it. */
+const NEW_TEXT_STYLE = {
+  fontSizePx: 64,
+  color: "white",
+  backgroundOpacity: 0.35,
+  backgroundColor: "black",
+  position: "lower_third",
 };
 
 type AudioClip = { id: string; source: AssetSourceIdentity; start: number; end: number; gain: number };
@@ -177,7 +222,7 @@ type Selection =
 
 /* ═══════════════════════ reading a timeline without rebuilding it ═══════════════════════ */
 
-type LaneItem = { id: string; start: number; end: number; label: string; warn?: boolean };
+type LaneItem = { id: string; start: number; end: number; label: string; warn?: boolean; off?: boolean };
 
 function laneItems(timeline: Timeline, kind: TrackKind): LaneItem[] {
   const track = timeline.tracks.find((t) => t.kind === kind);
@@ -193,10 +238,10 @@ function laneItems(timeline: Timeline, kind: TrackKind): LaneItem[] {
     }));
   }
   if (track.kind === "CAPTIONS") {
-    return track.captions.map((c) => ({ id: c.id, start: c.start, end: c.end, label: c.text }));
+    return track.captions.map((c) => ({ id: c.id, start: c.start, end: c.end, label: c.text, off: c.disabled }));
   }
   if (track.kind === "TEXT") {
-    return track.texts.map((t) => ({ id: t.id, start: t.start, end: t.end, label: t.text }));
+    return track.texts.map((t) => ({ id: t.id, start: t.start, end: t.end, label: t.text, off: t.disabled }));
   }
   if (track.kind === "GRAPHICS") {
     return readGraphics(track).map((g) => ({
@@ -204,6 +249,7 @@ function laneItems(timeline: Timeline, kind: TrackKind): LaneItem[] {
       label: g.label || g.graphicType,
       /** A graphic with no words cannot be drawn by this renderer — marked, never hidden. */
       warn: !g.label?.trim(),
+      off: g.disabled,
     }));
   }
   return track.clips.map((c) => ({
@@ -400,6 +446,14 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
 
   const undoEdit = () => setHistory((h) => (h ? undo(h, historyPolicy) : h));
   const redoEdit = () => setHistory((h) => (h ? redo(h, historyPolicy) : h));
+
+  /**
+   * VIDEO 619 — the structural edits (add, remove, move, length, cut, show/hide) come from
+   * `@shared/timelineEdits`, the one place that keeps the picture unbroken and as long as the voice.
+   */
+  const edit = (fn: (t: EditableTimeline) => EditableTimeline) =>
+    applyEdit((t) => fn(t as unknown as EditableTimeline) as unknown as Timeline);
+  const [browserOpen, setBrowserOpen] = useState(false);
 
   /**
    * §13 — the keyboard, because nobody reaches for a toolbar to undo.
@@ -704,6 +758,42 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                   </span>
                 </div>
 
+                {/* ── VIDEO 619 — what a person adds to the film ── */}
+                <EditToolbar
+                  captions={captionCounts(draft as unknown as EditableTimeline)}
+                  onAddShot={() => setBrowserOpen(true)}
+                  onAddText={() => {
+                    const id = `txt_u${Date.now().toString(36)}`;
+                    edit((t) => addText(t, { text: "Your text", atSec: playheadSec, style: NEW_TEXT_STYLE, id }));
+                    setSelectedId({ kind: "TEXT", id });
+                  }}
+                  onSubtitles={(shown) => edit((t) => setAllCaptionsShown(t, shown))}
+                />
+                {browserOpen && (
+                  <ArchiveBrowser
+                    videoId={videoId}
+                    onClose={() => setBrowserOpen(false)}
+                    onChoose={async (archiveAssetId) => {
+                      try {
+                        const shot = await utils.timeline.clipFromArchive.fetch({ videoId, archiveAssetId });
+                        /** After the chosen shot, else after the shot under the playhead, else at the end. */
+                        const clips = (draft.tracks.find((t) => t.kind === "VIDEO") as { clips: VideoClip[] } | undefined)?.clips ?? [];
+                        const afterId =
+                          (selectedId?.kind === "VIDEO" ? selectedId.id : null) ??
+                          clips.find((c) => c.timelineStart <= playheadSec && playheadSec < c.timelineEnd)?.id ??
+                          clips[clips.length - 1]?.id ??
+                          null;
+                        edit((t) => insertVideoClip(t, shot as unknown as EditableVideoClip, afterId));
+                        setSelectedId({ kind: "VIDEO", id: shot.id });
+                        setBrowserOpen(false);
+                        toast.success("Shot added — save & render to see it in the video");
+                      } catch (err) {
+                        toast.error((err as Error).message);
+                      }
+                    }}
+                  />
+                )}
+
                 {/* ── §14: one lane per track, items sized by their real duration ── */}
                 <div className="rounded-xl border border-white/8 bg-black/30 p-3 space-y-1.5 overflow-x-auto">
                   {TRACK_ORDER.map((kind) => {
@@ -754,7 +844,7 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                                 style={{ left: `${left}%`, width: `${Math.max(width, 1.2)}%` }}
                                 className={`absolute top-0 h-8 rounded border px-1.5 text-[10px] text-white/90 truncate text-left transition-colors ${TRACK_COLOR[kind]} ${
                                   active ? "ring-2 ring-white/70 z-10" : ""
-                                }`}
+                                } ${item.off ? "opacity-35 border-dashed" : ""}`}
                               >
                                 {item.warn ? "⚠ " : ""}
                                 {item.label}
@@ -801,6 +891,15 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                       void utils.timeline.get.invalidate({ videoId });
                       toast.success("Shot replaced");
                     }}
+                    playheadSec={playheadSec}
+                    onLength={(sec) => edit((t) => setVideoClipLength(t, selection.clip.id, sec))}
+                    onSourceIn={(sec) => edit((t) => setVideoClipSourceIn(t, selection.clip.id, sec))}
+                    onMove={(dir) => edit((t) => moveVideoClip(t, selection.clip.id, dir))}
+                    onSplit={() => edit((t) => splitVideoClip(t, selection.clip.id, playheadSec))}
+                    onRemove={() => {
+                      edit((t) => removeVideoClip(t, selection.clip.id));
+                      setSelectedId(null);
+                    }}
                   />
                 ) : selection.kind === "VOICE" || selection.kind === "MUSIC" ||
                   selection.kind === "SFX" || selection.kind === "AMBIENT" ? (
@@ -810,14 +909,35 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                     onChange={(gain) =>
                       applyEdit((t) => withEditedAudio(t, selection.clip.id, gain))
                     }
+                    onRemove={
+                      selection.kind === "VOICE"
+                        ? undefined
+                        : () => {
+                            const kind = selection.kind as "MUSIC" | "SFX" | "AMBIENT";
+                            edit((t) => removeAudioClip(t, kind, selection.clip.id));
+                            setSelectedId(null);
+                          }
+                    }
                   />
                 ) : selection.kind === "GRAPHICS" ? (
-                  <GraphicInspector graphic={selection.graphic} />
+                  <GraphicInspector
+                    graphic={selection.graphic}
+                    onShown={(shown) => edit((t) => setTextElementShown(t, "GRAPHICS", selection.graphic.id, shown))}
+                    onRemove={() => {
+                      edit((t) => removeTextElement(t, "GRAPHICS", selection.graphic.id));
+                      setSelectedId(null);
+                    }}
+                  />
                 ) : (
                   <TextInspector
                     kind={selection.kind}
                     element={selection.element}
                     onChange={(patch) => applyEdit((t) => withEditedText(t, selection.element.id, patch))}
+                    onShown={(shown) => edit((t) => setTextElementShown(t, selection.kind, selection.element.id, shown))}
+                    onRemove={() => {
+                      edit((t) => removeTextElement(t, selection.kind, selection.element.id));
+                      setSelectedId(null);
+                    }}
                   />
                 )}
               </div>
@@ -1097,6 +1217,12 @@ function ClipInspector({
   videoId,
   timelineVersion,
   onReplaced,
+  playheadSec,
+  onLength,
+  onSourceIn,
+  onMove,
+  onSplit,
+  onRemove,
 }: {
   clip: VideoClip;
   onChange: (patch: Partial<VideoClip>) => void;
@@ -1104,6 +1230,13 @@ function ClipInspector({
   videoId: number;
   timelineVersion: number;
   onReplaced: () => void;
+  /** VIDEO 619 — the cut and trim tools. */
+  playheadSec: number;
+  onLength: (sec: number) => void;
+  onSourceIn: (sec: number) => void;
+  onMove: (direction: -1 | 1) => void;
+  onSplit: () => void;
+  onRemove: () => void;
 }) {
   const recoverable =
     Boolean(clip.source.canonicalUrl || clip.source.mediaUrl) || clip.source.archiveAssetId != null;
@@ -1132,6 +1265,38 @@ function ClipInspector({
         <Field label="Source out" value={clip.sourceOut != null ? `${clip.sourceOut.toFixed(2)}s` : "not recorded"} />
         {clip.editedByUser && <Field label="Edited" value="replaced by you" />}
       </div>
+
+      {/* ── VIDEO 619 — cut, trim, move, remove ── */}
+      <Group title="Edit">
+        <div className="grid grid-cols-2 gap-2">
+          <NumberField label="Length (s)" value={slot} min={0.5} step={0.1} onCommit={onLength} />
+          {clip.kind === "video" ? (
+            <NumberField
+              label="Starts at (s in source)"
+              value={clip.sourceIn ?? 0}
+              min={0}
+              step={0.1}
+              onCommit={onSourceIn}
+            />
+          ) : (
+            <div />
+          )}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <ToolButton onClick={() => onMove(-1)} title="Move one shot earlier"><ArrowLeft className="w-3.5 h-3.5" /> Earlier</ToolButton>
+          <ToolButton onClick={() => onMove(1)} title="Move one shot later">Later <ArrowRight className="w-3.5 h-3.5" /></ToolButton>
+          <ToolButton
+            onClick={onSplit}
+            disabled={!(playheadSec > clip.timelineStart + 0.5 && playheadSec < clip.timelineEnd - 0.5)}
+            title="Cut this shot in two at the playhead"
+          >
+            <Scissors className="w-3.5 h-3.5" /> Cut at playhead
+          </ToolButton>
+          <ToolButton onClick={onRemove} title="Remove this shot" danger>
+            <Trash2 className="w-3.5 h-3.5" /> Remove
+          </ToolButton>
+        </div>
+      </Group>
 
       {/* ── RONDE 156 — find a different shot for this slot ── */}
       <ReplacePanel
@@ -1264,10 +1429,13 @@ function AudioInspector({
   kind,
   clip,
   onChange,
+  onRemove,
 }: {
   kind: "VOICE" | "MUSIC" | "SFX" | "AMBIENT";
   clip: AudioClip;
   onChange: (gain: number) => void;
+  /** VIDEO 619 — music, effects and ambience can be taken out; the narration cannot. */
+  onRemove?: () => void;
 }) {
   return (
     <div className="space-y-3">
@@ -1279,6 +1447,11 @@ function AudioInspector({
         <Field label="Timeline" value={`${fmt(clip.start)} → ${fmt(clip.end)}`} />
       </div>
       <Slider label="Gain" min={0} max={2} step={0.05} value={clip.gain} onChange={onChange} />
+      {onRemove && (
+        <ToolButton onClick={onRemove} title="Take this sound out" danger>
+          <Trash2 className="w-3.5 h-3.5" /> Remove sound
+        </ToolButton>
+      )}
       {kind === "VOICE" && (
         <p className="text-[10px] text-slate-500 leading-relaxed">
           The narration is the permanent voiceover. Music and ambience duck underneath it
@@ -1296,7 +1469,15 @@ function AudioInspector({
  * decisions, and an editor that let them be typed over by hand would be inviting a graphic that
  * says one thing and draws another. What a person CAN change is the words, through the text route.
  */
-function GraphicInspector({ graphic }: { graphic: GraphicElement }) {
+function GraphicInspector({
+  graphic,
+  onShown,
+  onRemove,
+}: {
+  graphic: GraphicElement;
+  onShown: (shown: boolean) => void;
+  onRemove: () => void;
+}) {
   const drawn = Boolean(graphic.label?.trim());
   return (
     <div className="space-y-3">
@@ -1320,6 +1501,10 @@ function GraphicInspector({ graphic }: { graphic: GraphicElement }) {
           <Field key={k} label={k} value={typeof v === "object" ? JSON.stringify(v) : String(v)} />
         ))}
       </div>
+      <ShowHide shown={!graphic.disabled} suggestion={graphic.disabledReason === "left_to_editor"} onShown={onShown} />
+      <ToolButton onClick={onRemove} title="Remove this graphic" danger>
+        <Trash2 className="w-3.5 h-3.5" /> Remove
+      </ToolButton>
     </div>
   );
 }
@@ -1329,11 +1514,17 @@ function TextInspector({
   kind,
   element,
   onChange,
+  onShown,
+  onRemove,
 }: {
   kind: "CAPTIONS" | "TEXT";
   element: TextElement;
   onChange: (patch: Partial<TextElement>) => void;
+  onShown: (shown: boolean) => void;
+  onRemove: () => void;
 }) {
+  const style = element.style ?? {};
+  const setStyle = (patch: Partial<TextStyle>) => onChange({ style: { ...style, ...patch } });
   return (
     <div className="space-y-3">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -1372,11 +1563,280 @@ function TextInspector({
           />
         </label>
       </div>
-      {element.style?.position && <Field label="Position" value={element.style.position} />}
-      {element.style?.fontSizePx != null && <Field label="Font size" value={`${element.style.fontSizePx}px`} />}
+      <ShowHide shown={!element.disabled} suggestion={element.disabledReason === "left_to_editor"} onShown={onShown} />
+      <Group title="Look">
+        <Select
+          label="Position"
+          value={style.position ?? "bottom"}
+          options={[
+            ["top", "Top"],
+            ["center", "Center"],
+            ["lower_third", "Lower third"],
+            ["lower_center", "Lower center"],
+            ["bottom", "Bottom"],
+          ]}
+          onChange={(v) => setStyle({ position: v })}
+        />
+        <Slider
+          label="Size (px)" min={24} max={140} step={2}
+          value={style.fontSizePx ?? 64}
+          onChange={(v) => setStyle({ fontSizePx: v })}
+        />
+        <label className="flex items-center justify-between gap-2">
+          <span className="text-[10px] text-slate-500">Colour</span>
+          <input
+            type="color"
+            value={colourHex(style.color)}
+            onChange={(e) => setStyle({ color: e.target.value })}
+            className="h-7 w-12 rounded bg-transparent border border-white/10"
+          />
+        </label>
+        <Slider
+          label="Background box" min={0} max={1} step={0.05}
+          value={style.backgroundOpacity ?? 0}
+          onChange={(v) => setStyle({ backgroundOpacity: v, backgroundColor: style.backgroundColor ?? "black" })}
+        />
+      </Group>
+      <ToolButton onClick={onRemove} title="Remove this text" danger>
+        <Trash2 className="w-3.5 h-3.5" /> Remove
+      </ToolButton>
       <p className="text-[10px] text-slate-500 leading-relaxed">
         Changes are local until you press Save. Rendering always saves first.
       </p>
+    </div>
+  );
+}
+
+/* ═══════════════════════ VIDEO 619 — the editing tools ═══════════════════════ */
+
+function colourHex(c: string | undefined): string {
+  if (c && /^#[0-9a-f]{6}$/i.test(c)) return c;
+  const named: Record<string, string> = { white: "#ffffff", black: "#000000", yellow: "#ffd400", red: "#ff3b30" };
+  return named[(c ?? "white").toLowerCase()] ?? "#ffffff";
+}
+
+function ToolButton({
+  children, onClick, title, disabled, danger,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  title: string;
+  disabled?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      disabled={disabled}
+      className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg border transition-colors disabled:opacity-35 disabled:cursor-not-allowed ${
+        danger
+          ? "border-red-400/30 bg-red-500/10 text-red-200 hover:bg-red-500/20"
+          : "border-white/15 bg-white/5 text-white hover:bg-white/10"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** A number that is applied when the person finishes typing, not on every keystroke. */
+function NumberField({
+  label, value, min, step, onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  step: number;
+  onCommit: (v: number) => void;
+}) {
+  const [text, setText] = useState(value.toFixed(2));
+  useEffect(() => setText(value.toFixed(2)), [value]);
+  const commit = () => {
+    const v = Number(text);
+    if (Number.isFinite(v) && v >= min && Math.abs(v - value) > 0.001) onCommit(v);
+    else setText(value.toFixed(2));
+  };
+  return (
+    <label className="block">
+      <span className="text-[10px] text-slate-500">{label}</span>
+      <input
+        type="number"
+        min={min}
+        step={step}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
+        className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-2.5 py-1.5 text-xs text-white focus:border-cyan-400/50 focus:outline-none"
+      />
+    </label>
+  );
+}
+
+/** On screen or not. A suggestion the pipeline left off says so, so it reads as an offer. */
+function ShowHide({
+  shown, suggestion, onShown,
+}: {
+  shown: boolean;
+  suggestion: boolean;
+  onShown: (shown: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
+      <p className="text-[11px] text-slate-300">
+        {shown ? "Shown in the video" : suggestion ? "Suggested — not in the video yet" : "Hidden"}
+      </p>
+      <ToolButton onClick={() => onShown(!shown)} title={shown ? "Hide it" : "Show it in the video"}>
+        {shown ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
+      </ToolButton>
+    </div>
+  );
+}
+
+function EditToolbar({
+  captions, onAddShot, onAddText, onSubtitles,
+}: {
+  captions: { total: number; shown: number };
+  onAddShot: () => void;
+  onAddText: () => void;
+  onSubtitles: (shown: boolean) => void;
+}) {
+  const subtitlesOn = captions.total > 0 && captions.shown === captions.total;
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <ToolButton onClick={onAddShot} title="Add a shot from the archive after the selected one">
+        <ImagePlus className="w-3.5 h-3.5" /> Add shot from archive
+      </ToolButton>
+      <ToolButton onClick={onAddText} title="Add your own text at the playhead">
+        <Plus className="w-3.5 h-3.5" /> Add text
+      </ToolButton>
+      <ToolButton
+        onClick={() => onSubtitles(!subtitlesOn)}
+        disabled={captions.total === 0}
+        title={captions.total === 0 ? "This video has no subtitles planned" : "Show or hide all subtitles"}
+      >
+        <Captions className="w-3.5 h-3.5" />
+        {subtitlesOn ? "Hide subtitles" : `Show subtitles${captions.total ? ` (${captions.total})` : ""}`}
+      </ToolButton>
+      <span className="text-[10px] text-slate-500">
+        The video is made without text — show the suggested texts or add your own. Save &amp; Render to see changes.
+      </span>
+    </div>
+  );
+}
+
+/**
+ * VIDEO 619 — every asset in every archive, to add as a shot.
+ *
+ * Nothing is hidden: stills, clips with text in the picture and short clips are all offered, and
+ * the card says which it is. Previews stream through this app's own endpoint.
+ */
+function ArchiveBrowser({
+  videoId, onClose, onChoose,
+}: {
+  videoId: number;
+  onClose: () => void;
+  onChoose: (archiveAssetId: number) => void | Promise<void>;
+}) {
+  const [search, setSearch] = useState("");
+  const [committed, setCommitted] = useState("");
+  const [mediaType, setMediaType] = useState<"all" | "video" | "image">("all");
+  const [page, setPage] = useState(0);
+  const [previewing, setPreviewing] = useState<number | null>(null);
+  const [choosing, setChoosing] = useState<number | null>(null);
+  const PAGE = 24;
+  const query = trpc.timeline.archiveBrowse.useQuery({
+    videoId,
+    limit: PAGE,
+    offset: page * PAGE,
+    ...(committed ? { search: committed } : {}),
+    ...(mediaType !== "all" ? { mediaType } : {}),
+  });
+  const total = query.data?.total ?? 0;
+  return (
+    <div className="rounded-xl border border-cyan-400/25 bg-cyan-400/5 p-3 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold text-white">Add a shot from the archive</h4>
+        <button type="button" onClick={onClose} className="text-[11px] text-white/50 hover:text-white/80">Close</button>
+      </div>
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => { e.preventDefault(); setPage(0); setCommitted(search.trim()); }}
+      >
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name or tag, then press Enter"
+          className="flex-1 rounded-md bg-black/30 border border-white/10 px-2.5 py-1.5 text-[11px] text-white placeholder:text-white/30 focus:outline-none focus:border-cyan-400/50"
+        />
+        <select
+          value={mediaType}
+          onChange={(e) => { setPage(0); setMediaType(e.target.value as "all" | "video" | "image"); }}
+          className="rounded-md bg-black/30 border border-white/10 px-2 py-1.5 text-[11px] text-white"
+        >
+          <option value="all" className="bg-slate-900">Video &amp; images</option>
+          <option value="video" className="bg-slate-900">Video only</option>
+          <option value="image" className="bg-slate-900">Images only</option>
+        </select>
+      </form>
+      {query.isLoading && <p className="text-[11px] text-white/50">Loading the archive…</p>}
+      {query.error && <p className="text-[11px] text-red-300">{query.error.message}</p>}
+      {query.data && query.data.items.length === 0 && (
+        <p className="text-[11px] text-white/60">Nothing in the archive matches.</p>
+      )}
+      {query.data && query.data.items.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 max-h-80 overflow-y-auto pr-1">
+          {query.data.items.map((a) => (
+            <div key={a.archiveAssetId} className="rounded-md border border-white/10 bg-black/25 overflow-hidden flex flex-col">
+              {previewing === a.archiveAssetId ? (
+                a.mediaType === "video" ? (
+                  <video src={a.previewUrl} className="w-full aspect-video object-cover bg-black" autoPlay muted loop playsInline />
+                ) : (
+                  <img src={a.previewUrl} alt="" className="w-full aspect-video object-cover bg-black" />
+                )
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setPreviewing(a.archiveAssetId)}
+                  className="relative w-full aspect-video bg-black/50 flex items-center justify-center group"
+                >
+                  {a.mediaType === "image" ? (
+                    <img src={a.previewUrl} alt="" className="w-full h-full object-cover opacity-80" />
+                  ) : null}
+                  <Play className="absolute w-6 h-6 text-white/70 group-hover:text-white transition" />
+                </button>
+              )}
+              <div className="p-2 space-y-1 flex-1 flex flex-col">
+                <p className="text-[11px] text-white font-medium leading-tight line-clamp-2">{a.title || "Untitled"}</p>
+                <p className="text-[10px] text-white/45">
+                  {a.archive}
+                  {a.durationSec != null && a.mediaType === "video" && ` · ${a.durationSec.toFixed(1)}s`}
+                  {a.mediaType === "image" && " · still"}
+                  {a.hasTextInPicture && " · text in picture"}
+                </p>
+                {a.tags.length > 0 && <p className="text-[10px] text-white/35 leading-tight flex-1">{a.tags.join(", ")}</p>}
+                <button
+                  type="button"
+                  disabled={choosing !== null}
+                  onClick={async () => { setChoosing(a.archiveAssetId); try { await onChoose(a.archiveAssetId); } finally { setChoosing(null); } }}
+                  className="w-full rounded bg-cyan-500/80 hover:bg-cyan-400 disabled:opacity-40 px-2 py-1 text-[11px] font-semibold text-black transition"
+                >
+                  {choosing === a.archiveAssetId ? "Adding…" : "Add this shot"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {total > PAGE && (
+        <div className="flex items-center justify-between text-[11px] text-white/60">
+          <button type="button" disabled={page === 0} onClick={() => setPage((p) => p - 1)} className="disabled:opacity-30">← Previous</button>
+          <span>{page * PAGE + 1}–{Math.min(total, (page + 1) * PAGE)} of {total}</span>
+          <button type="button" disabled={(page + 1) * PAGE >= total} onClick={() => setPage((p) => p + 1)} className="disabled:opacity-30">Next →</button>
+        </div>
+      )}
     </div>
   );
 }

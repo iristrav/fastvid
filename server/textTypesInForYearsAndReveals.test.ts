@@ -146,9 +146,13 @@ describe("the wiring", () => {
   const PIPE = readFileSync(join(__dirname, "cinematicPipeline.ts"), "utf8");
   const GFX = readFileSync(join(__dirname, "remotion/components/Graphics.tsx"), "utf8");
   const TXT = readFileSync(join(__dirname, "remotion/components/Text.tsx"), "utf8");
-  it("the pipeline passes the curve to the director and lays the key sound on the SFX track", () => {
+  /**
+   * VIDEO 619 — the made video carries no text, so no key sound is laid either. The director still
+   * decides what WOULD type, so a year the person switches on in the editor types as planned.
+   */
+  it("the pipeline passes the curve to the director and lays no key sound for text that is off", () => {
     expect(PIPE).toContain("intensityAtFrom(videoForIntensity.clips, params.emotionalCurve)");
-    expect(PIPE).toContain("sfxForTyping.clips.push(...typewriterSfxClips(textDirection.typewriter))");
+    expect(PIPE).not.toContain("typewriterSfxClips(");
   });
   it("the date card and plain text type at the shared pace", () => {
     expect(GFX).toContain("typedCount(primary, frame / fps)");

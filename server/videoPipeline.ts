@@ -33559,8 +33559,11 @@ async function _runVideoPipelineInner(
          */
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
-          /** RONDE 649 — the video's own subtitle setting; off unless the user switched it on. */
-          includeSubtitles: enableSubtitles,
+          /**
+           * VIDEO 619 — subtitles are always PLANNED, and like every other text they arrive switched
+           * off (`leaveOnScreenTextToTheEditor`): the editor turns them on in one click.
+           */
+          includeSubtitles: true,
           /** The render's own id, so an adapter refusal names the run that produced it. */
           renderId: lineage.renderId,
           scenes: scenes.map((scene, i) => {

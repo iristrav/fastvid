@@ -223,15 +223,15 @@ describe("RONDE 113 — every drawtext module is accounted for", () => {
 /* ═══════════ what stays ═══════════ */
 
 describe("RONDE 113 — what this deliberately does not touch", () => {
-  it("subtitles remain the operator's own per-video switch", () => {
-    /**
-     * `enableSubtitles` defaults to false and is ticked in the dashboard. Silencing it here would
-     * override an explicit choice rather than remove an unrequested one — a different decision,
-     * and not this one's to make.
-     */
+  /**
+   * VIDEO 619 — subtitles are no longer a per-video switch in the dashboard. Every text, subtitles
+   * included, arrives switched off and is turned on in the editor (`leaveOnScreenTextToTheEditor`),
+   * so there is no request field left for this policy to override.
+   */
+  it("subtitles are turned on in the editor, not by a per-video switch", () => {
     const routers = fs.readFileSync(path.join(__dirname, "routers.ts"), "utf8");
-    expect(routers).toContain("enableSubtitles: z.boolean().default(false)");
-    expect(POLICY).toContain("Subtitles are also not covered, deliberately.");
+    expect(routers).not.toContain("enableSubtitles: z.boolean()");
+    expect(routers).toContain("enableSubtitles: 0,");
   });
 
   it("footage that ALREADY contains text is still refused at adoption", () => {

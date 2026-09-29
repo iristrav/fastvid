@@ -20,7 +20,7 @@ import {
   Play, Sparkles, CheckCircle2, XCircle, Loader2,
   FileText, Video, ChevronRight, RefreshCw,
   Copy, Download, Eye, CreditCard, Volume2,
-  Trash2, Pencil, Check, X as XIcon, Mic, Upload,
+  Trash2, Pencil, Check, X as XIcon,
   AlertCircle, ChevronDown,
 } from "lucide-react";
 import { NicheRequestsDashboardCard } from "@/components/niche/DashboardNicheRequests";
@@ -30,7 +30,6 @@ import { FootageRightsNotice } from "@/components/FootageRightsNotice";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
-import { Switch } from "@/components/ui/switch";
 import { FASTVID_PRO_PRICE_LABEL } from "@shared/billing";
 import { blockedExportForVideo } from "@shared/exportBlocked";
 import { formatGenerationDuration } from "@shared/pipelineProgress";
@@ -780,76 +779,6 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
   );
 }
 
-// ─── Custom Voiceover Upload ──────────────────────────────────────────────────
-function CustomVoiceoverUpload({ onUpload, onClear, uploadedUrl }: {
-  onUpload: (url: string) => void;
-  onClear: () => void;
-  uploadedUrl: string | null;
-}) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const uploadMutation = trpc.voice.uploadCustom.useMutation({
-    onSuccess: (data) => {
-      onUpload(data.url);
-      toast.success("Voiceover uploaded!", { description: "Your audio will be used instead of TTS." });
-    },
-    onError: (err) => toast.error("Upload failed", { description: toastErrorMessage(err) }),
-  });
-
-  const handleFile = async (file: File) => {
-    if (!file) return;
-    const maxMb = 50;
-    if (file.size > maxMb * 1024 * 1024) {
-      toast.error(`File too large (max ${maxMb}MB)`);
-      return;
-    }
-    if (!["audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4", "audio/webm"].includes(file.type)) {
-      toast.error("Unsupported format. Use MP3, WAV, OGG, or M4A.");
-      return;
-    }
-    const arrayBuf = await file.arrayBuffer();
-    const base64 = btoa(String.fromCharCode(...Array.from(new Uint8Array(arrayBuf))));
-    uploadMutation.mutate({ base64, mimeType: file.type, filename: file.name });
-  };
-
-  if (uploadedUrl) {
-    return (
-      <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-green-500/30 bg-green-500/10">
-        <Mic className="w-4 h-4 text-green-400 shrink-0" />
-        <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold text-green-300">Custom voiceover uploaded</p>
-          <p className="text-[10px] text-green-400/70 truncate">Your audio will be used instead of TTS</p>
-        </div>
-        <button onClick={onClear} className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-colors">
-          <XIcon className="w-3.5 h-3.5" />
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <input
-        ref={fileRef}
-        type="file"
-        accept="audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/webm,.mp3,.wav,.ogg,.m4a"
-        className="hidden"
-        onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
-      />
-      <button
-        onClick={() => fileRef.current?.click()}
-        disabled={uploadMutation.isPending}
-        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-white/20 text-xs text-slate-400 hover:text-slate-200 hover:border-white/30 transition-colors disabled:opacity-50"
-      >
-        {uploadMutation.isPending ? (
-          <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Uploading...</>
-        ) : (
-          <><Upload className="w-3.5 h-3.5" /> Upload your own voiceover (MP3, WAV — max 50MB)</>
-        )}
-      </button>
-    </div>
-  );
-}
-
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function Dashboard() {
   const { user, loading, isAuthenticated } = useAuth({ redirectOnUnauthenticated: true });
@@ -857,9 +786,6 @@ export default function Dashboard() {
   const [prompt, setPrompt] = useState("");
   const [selectedLength, setSelectedLength] = useState<VideoLength>("8-10");
   const [selectedVoice, setSelectedVoice] = useState("pNInz6obpgDQGcFmaJgB"); // ElevenLabs Michael voice ID
-  const [useCustomVoice, setUseCustomVoice] = useState(false);
-  const [customVoiceoverUrl, setCustomVoiceoverUrl] = useState<string | null>(null);
-  const [enableSubtitles, setEnableSubtitles] = useState(false);
   const [viewingVideoId, setViewingVideoId] = useState<number | null>(null);
   /** RONDE 148 — which video the editor is open on. Separate from viewing: only one is up at a time. */
   const [editingVideoId, setEditingVideoId] = useState<number | null>(null);
@@ -978,7 +904,7 @@ export default function Dashboard() {
       toast.error("Please enter a prompt of at least 10 characters");
       return;
     }
-    if (!useCustomVoice && !selectedVoice) {
+    if (!selectedVoice) {
       toast.error("Select a voice", { description: "Choose an ElevenLabs voice before generating." });
       return;
     }
@@ -986,9 +912,7 @@ export default function Dashboard() {
       prompt: prompt.trim(),
       videoLength: selectedLength,
       videoType: "documentary",
-      voiceId: useCustomVoice ? undefined : selectedVoice,
-      customVoiceoverUrl: useCustomVoice ? (customVoiceoverUrl ?? undefined) : undefined,
-      enableSubtitles,
+      voiceId: selectedVoice,
     });
   };
 
@@ -1082,32 +1006,8 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Voice / Custom voiceover */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">Voiceover</p>
-                <button
-                  onClick={() => { setUseCustomVoice(!useCustomVoice); setCustomVoiceoverUrl(null); }}
-                  className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-colors ${
-                    useCustomVoice
-                      ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/30"
-                      : "bg-white/5 text-slate-400 hover:text-white border-white/10"
-                  }`}
-                >
-                  <Mic className="w-3 h-3" />
-                  {useCustomVoice ? "Using custom voice" : "Use my own voice"}
-                </button>
-              </div>
-              {useCustomVoice ? (
-                <CustomVoiceoverUpload
-                  uploadedUrl={customVoiceoverUrl}
-                  onUpload={setCustomVoiceoverUrl}
-                  onClear={() => setCustomVoiceoverUrl(null)}
-                />
-              ) : (
-                <VoiceSelector selectedVoice={selectedVoice} onSelect={setSelectedVoice} />
-              )}
-            </div>
+            {/* Voice */}
+            <VoiceSelector selectedVoice={selectedVoice} onSelect={setSelectedVoice} />
 
             {/* Prompt input */}
             <div>
@@ -1130,17 +1030,7 @@ export default function Dashboard() {
               </p>
             </div>
 
-            {/* Ondertiteling */}
-            <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-white/5 border border-white/10">
-              <div>
-                <p className="text-sm font-medium text-white">Ondertiteling</p>
-                <p className="text-xs text-slate-500">Tekst onderin de video tonen</p>
-              </div>
-              <Switch
-                checked={enableSubtitles}
-                onCheckedChange={setEnableSubtitles}
-              />
-            </div>
+            {/* Text on screen is added in the editor after the video is made — see VideoEditor. */}
             <button
               onClick={handleGenerate}
               disabled={!hasActiveSubscription || generateMutation.isPending || prompt.length < 10}

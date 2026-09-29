@@ -578,6 +578,84 @@ export const timelineRouter = router({
     }),
 
   /**
+   * VIDEO 619 — the whole archive, for a person choosing shots by hand.
+   *
+   * Unlike `replacementCandidates` nothing is ranked for a slot or filtered away: every active
+   * asset of every archive can be used, newest first, narrowed only by the words and kind the
+   * person asks for. What an asset is (a still, a clip with text in it, a short clip) is SAID on
+   * the card rather than used to hide it.
+   */
+  archiveBrowse: protectedProcedure
+    .input(
+      z.object({
+        videoId: z.number().int().positive(),
+        search: z.string().max(200).optional(),
+        mediaType: z.enum(["video", "image"]).optional(),
+        limit: z.number().int().min(1).max(60).default(30),
+        offset: z.number().int().min(0).default(0),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+      const { browseMediaArchiveAssets, getAllMediaArchives } = await import("./db");
+      const { editorArchiveMediaUrl } = await import("./archiveMediaStream");
+      const archives = await getAllMediaArchives();
+      const nameById = new Map<number, string>(archives.map((a) => [a.id, a.name ?? a.slug ?? "archive"]));
+      const page = await browseMediaArchiveAssets({
+        limit: input.limit,
+        offset: input.offset,
+        ...(input.search?.trim() ? { search: input.search.trim() } : {}),
+        ...(input.mediaType ? { mediaType: input.mediaType } : {}),
+      });
+      return {
+        total: page.total,
+        items: page.items.map((a) => ({
+          archiveAssetId: a.id,
+          archive: nameById.get(a.archiveId) ?? "archive",
+          title: a.title ?? null,
+          mediaType: a.mediaType,
+          durationSec: a.durationSec ?? null,
+          tags: Array.isArray(a.tags) ? (a.tags as string[]).slice(0, 4) : [],
+          hasTextInPicture: a.hasBakedEditText === 1,
+          previewUrl: editorArchiveMediaUrl(a.id, { storageUrl: a.storageUrl }),
+        })),
+      };
+    }),
+
+  /**
+   * VIDEO 619 — an archive asset as a shot, ready to be placed on the draft.
+   *
+   * The identity comes from the ARCHIVE ROW, the same rule `replaceClip` keeps: the client names
+   * an asset id and nothing else, so it cannot write its own provider into a timeline. The shot is
+   * returned rather than saved, because adding it is part of the person's unsaved draft — saving
+   * here would throw away every other change they have not saved yet.
+   */
+  clipFromArchive: protectedProcedure
+    .input(
+      z.object({
+        videoId: z.number().int().positive(),
+        archiveAssetId: z.number().int().positive(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+      const { getMediaArchiveAssetById, getMediaArchiveById } = await import("./db");
+      const asset = await getMediaArchiveAssetById(input.archiveAssetId);
+      if (!asset || asset.isActive === 0) {
+        throw editorError("ASSET_NOT_REHYDRATABLE", "that archive asset does not exist", "NOT_FOUND");
+      }
+      const archive = await getMediaArchiveById(asset.archiveId);
+      const { editorArchiveMediaUrl } = await import("./archiveMediaStream");
+      const { archiveAssetAsShot } = await import("./editorArchiveShot");
+      return archiveAssetAsShot({
+        asset,
+        provider: archive?.slug?.trim() || "archive",
+        canonicalUrl: editorArchiveMediaUrl(asset.id, { storageUrl: asset.storageUrl }),
+        idSeed: `${input.videoId}:${asset.id}:${Date.now()}`,
+      });
+    }),
+
+  /**
    * §17 — replace the source of one shot, keeping its slot.
    *
    * The identity comes from the ARCHIVE ROW, never from the request. That is the same rule

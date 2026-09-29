@@ -86,8 +86,20 @@ export function useVoicePreview({ generate, onError }: UseVoicePreviewOptions): 
   useEffect(() => stop, [stop]);
 
   const play = useCallback(
-    async (url: string, voice: VoicePreviewTarget, requestId: number) => {
+    /**
+     * VIDEO 619 — `onLoadFailed`: a stored sample that does not load (a file the storage no longer
+     * holds) is not the end of the preview. The caller passes a way to make a fresh one, and the
+     * server writes that one back to the voice, so the next click plays at once.
+     */
+    async (url: string, voice: VoicePreviewTarget, requestId: number, onLoadFailed?: () => void) => {
       if (requestRef.current !== requestId) return;
+      /** `onerror` and a rejected `play()` can both report the same failed load — fall back once. */
+      let fellBack = false;
+      const fallBack = () => {
+        if (fellBack) return;
+        fellBack = true;
+        onLoadFailed?.();
+      };
       const audio = new Audio(url);
       audioRef.current = audio;
       audio.onended = () => {
@@ -99,6 +111,10 @@ export function useVoicePreview({ generate, onError }: UseVoicePreviewOptions): 
         if (requestRef.current !== requestId) return;
         audioRef.current = null;
         setPlayingId(null);
+        if (onLoadFailed) {
+          fallBack();
+          return;
+        }
         setLoadingId(null);
         onError?.("This preview could not be loaded", voice);
       };
@@ -112,8 +128,14 @@ export function useVoicePreview({ generate, onError }: UseVoicePreviewOptions): 
         }
         setPlayingId(voice.id);
         setLoadingId(null);
-      } catch {
+      } catch (err) {
         if (requestRef.current !== requestId) return;
+        /** A source that cannot be decoded rejects here too; that is a load failure, not autoplay. */
+        if (onLoadFailed && (err as DOMException)?.name === "NotSupportedError") {
+          audioRef.current = null;
+          fallBack();
+          return;
+        }
         audioRef.current = null;
         setPlayingId(null);
         setLoadingId(null);
@@ -132,25 +154,29 @@ export function useVoicePreview({ generate, onError }: UseVoicePreviewOptions): 
       stop();
       const requestId = requestRef.current;
 
+      const generateAndPlay = () => {
+        setLoadingId(voice.id);
+        void (async () => {
+          try {
+            const url = await generate(voice);
+            if (requestRef.current !== requestId) return;
+            await play(url, voice, requestId);
+          } catch (err) {
+            if (requestRef.current !== requestId) return;
+            setLoadingId(null);
+            setPlayingId(null);
+            onError?.((err as Error)?.message || "Could not generate this preview", voice);
+          }
+        })();
+      };
+
       if (voice.exampleAudioUrl) {
-        // A stored sample plays straight away — no generation, no spend, no wait.
-        void play(voice.exampleAudioUrl, voice, requestId);
+        // A stored sample plays straight away — no generation, no spend, no wait. If it does not
+        // load, a fresh one is made instead of leaving the button silent.
+        void play(voice.exampleAudioUrl, voice, requestId, generateAndPlay);
         return;
       }
-
-      setLoadingId(voice.id);
-      void (async () => {
-        try {
-          const url = await generate(voice);
-          if (requestRef.current !== requestId) return;
-          await play(url, voice, requestId);
-        } catch (err) {
-          if (requestRef.current !== requestId) return;
-          setLoadingId(null);
-          setPlayingId(null);
-          onError?.((err as Error)?.message || "Could not generate this preview", voice);
-        }
-      })();
+      generateAndPlay();
     },
     [generate, onError, play, playingId, stop]
   );
