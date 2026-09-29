@@ -135,17 +135,19 @@ describe("the order on the route the 1-minute Railway profile takes", () => {
   const body = SRC.slice(start, SRC.indexOf("\n}\n", start));
 
   it("YouTube is asked before the stills, and the stills come after the archive", () => {
-    // In YouTube-first mode the stills-first opening is skipped...
-    expect(body).toContain("if (!youtubeFirst) {\n    clip = await fetchBeatInternetStillsFirst(");
+    // VIDEO 619: there is no stills-first opening on any setting any more...
+    expect(body).not.toContain("if (!youtubeFirst) {\n    clip = await fetchBeatInternetStillsFirst(");
     // ...so the first provider work is beatPrimaryFetch, which opens with the YouTube-first slice...
     const primary = body.indexOf("() => beatPrimaryFetch(");
     const stillsAfter = body.indexOf("const stills = await fetchBeatInternetStillsFirst(");
     expect(primary).toBeGreaterThan(-1);
     expect(stillsAfter).toBeGreaterThan(primary);
+    // ...where YouTube and the own archive start together, and YouTube's answer is taken first.
     const archival = SRC.slice(SRC.indexOf("export async function fetchBeatArchivalThenPexels("));
-    const slice = archival.indexOf("const ytFirstClip = await youtubeFirstBeatSlice(");
-    const ownArchive = archival.indexOf("fetchCuratedArchiveBeatClipWithLineage(");
+    const slice = archival.indexOf("youtubeFirstBeatSlice(");
+    const ownArchive = archival.indexOf("ownArchiveBeatClip(");
     expect(slice).toBeGreaterThan(-1);
     expect(ownArchive).toBeGreaterThan(slice);
+    expect(archival.indexOf("await ownArchive;")).toBeGreaterThan(archival.indexOf("await youtube;"));
   });
 });

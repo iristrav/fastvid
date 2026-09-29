@@ -254,7 +254,7 @@ describe("Test 10 — candidate-specific sourceQuery is preserved", () => {
   it("fetchBeatAuthenticStills and fetchHistoricalBeatVideo record the real per-candidate query into clipAnnotationMeta.sourceQuery, not a shared placeholder", () => {
     const stillsSrc = extractFunctionSource("fetchBeatAuthenticStills");
     expect(stillsSrc).toMatch(/sourceQuery:\s*(serpQ|q|ovQ)/);
-    const historicalSrc = extractFunctionSource("fetchHistoricalBeatVideo");
+    const historicalSrc = extractFunctionSource("gatherHistoricalBeatVideoPoolInner");
     expect(historicalSrc).toMatch(/sourceQuery:\s*q/);
     // Both still use beat.text as the shared adoptClip sourceQuery for gate evaluation — the
     // per-candidate field above is informational only, so the Round 7 sourceQuery-scoping bug

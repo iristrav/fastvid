@@ -3069,7 +3069,40 @@ async function youtubeFirstBeatSlice(
   return null;
 }
 
-/** Archive + Wikimedia video first, then Pexels/Pixabay, then AI. */
+/**
+ * VIDEO 619 — THE BEAT'S VIDEO SOURCES ARE ASKED AT ONCE, AND VIDEO ALWAYS COMES BEFORE A PICTURE.
+ *
+ * ── What it was ──────────────────────────────────────────────────────────────────────────────
+ *
+ * One after another: the YouTube turn (up to two minutes), then the own archive, then — on a
+ * historical topic — a search for STILL IMAGES, and only after that the Internet Archive and
+ * Wikimedia video cascade. A beat waited for the sum of all of them, and a historical beat could
+ * take a photograph while a film clip was one step further down.
+ *
+ * ── What it is ───────────────────────────────────────────────────────────────────────────────
+ *
+ * YouTube, the own archive and the Internet Archive/Wikimedia video cascade start together. The
+ * cascade only GATHERS (searches and downloads, adopts nothing), so starting it early can never
+ * put a second clip on the beat. When they are done the beat takes the first video in the same
+ * order as before — YouTube, own archive, Internet Archive/Wikimedia — so nothing about WHICH
+ * source wins changes; only the waiting does. Still images are asked only when no source had a
+ * video, for every topic.
+ *
+ * ── The ladder ───────────────────────────────────────────────────────────────────────────────
+ *
+ * The sourcing ladder refuses a tier while a higher one is neither attempted nor declined. The
+ * YouTube turn is attempting tier 1 from the moment it starts, so tier 1 is recorded as attempted
+ * right then — which is true — instead of whenever its first search happens to reach the gate.
+ * Without that, the archive cascade started beside it would be refused for skipping a tier that is
+ * running. Stock (tier 4) still waits for everything above it.
+ *
+ * ── The price ────────────────────────────────────────────────────────────────────────────────
+ *
+ * When YouTube or the own archive wins, the cascade's searches and downloads for this beat were
+ * spent for nothing, and finish in the background inside the scene's own deadline. Its per-beat
+ * limits (three queries, early stop at three candidates) keep that bounded, well inside the
+ * beat's retrieval budget, so it cannot starve the YouTube turn of downloads.
+ */
 export async function fetchBeatArchivalThenPexels(
   beat: SceneBeat,
   scene: Scene,
@@ -3084,56 +3117,6 @@ export async function fetchBeatArchivalThenPexels(
   tag: string,
   stockReason: string
 ): Promise<string | null> {
-  const ytFirstClip = await youtubeFirstBeatSlice(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, tag
-  );
-  if (ytFirstClip) return ytFirstClip;
-
-  // User's own curated media archive is checked first for every beat, on every topic —
-  // not just when curatedArchiveOnlyVisuals() mode is on. That flag still controls the
-  // rest of this function's archive-only behavior (Wikimedia-first, Pexels gating below).
-  // assetsCache makes this a single DB scan per video instead of one per beat — that
-  // per-beat re-scan, not the archive check itself, was blowing the compose timeout.
-  // Still, a single slow lookup (e.g. a large interview transcode) shouldn't eat the whole
-  // sequential compose-stage budget — bound each beat's attempt and fall through on timeout.
-  let ownArchiveClip: string | null = null;
-  try {
-    ownArchiveClip = await withSceneFetchTimeout(
-      () =>
-        fetchCuratedArchiveBeatClipWithLineage(dedup, sceneIndex, beat.index, (pickedOut) =>
-          fetchCuratedArchiveBeatClip(
-            beat,
-            scene,
-            workDir,
-            sceneIndex,
-            beat.holdSec,
-            dedup.usedCuratedAssetIds,
-            dedup.usedCuratedStorageUrls,
-            videoTitle,
-            curatedInterviewBudget(dedup),
-            curatedImageBudget(dedup),
-            undefined,
-            {
-              varietySeed: dedup.varietySeed,
-              crossVideoExcludeIds: dedup.crossVideoExcludeIds,
-              assetsCache: dedup.archiveAssetsCache,
-              usedArchiveNames: dedup.usedArchiveNames,
-              pickedOut,
-            }
-          )
-        ),
-      archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.()),
-      `archive s${sceneIndex} b${beat.index}`
-    );
-  } catch (err) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: archive beat budget exceeded —`,
-      (err as Error).message?.slice(0, 80)
-    );
-  }
-  if (ownArchiveClip !== null) return ownArchiveClip;
-
-  
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
   const intent = buildMediaSearchIntent({
@@ -3150,32 +3133,47 @@ export async function fetchBeatArchivalThenPexels(
   });
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
 
-  if (historicalDoc) {
-    const internet = await fetchBeatInternetStillsFirst(
-      beat,
-      scene,
-      workDir,
-      sceneIndex,
-      clipFetchDur,
-      dedup,
-      scenePersons,
-      videoTitle,
-      adoptOpts,
-      `${tag}_inet`
-    );
-    if (internet && isRealVideoClip(internet)) {
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: internet still (historical)`);
-      return internet;
-    }
-  }
-
-  // F3-28: YouTube CC is now part of the source cascade here (HISTORICAL_SOURCE_TIER_ORDER
-  // places it after Internet Archive, before Wikimedia) — no longer force-skipped on this,
-  // the live default beat-resolution path.
-  const hist = await fetchHistoricalBeatVideo(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, loose, tag
+  /** The YouTube turn runs beside the cascade, so the cascade does not ask YouTube a second time. */
+  const youtubeTurnRuns = youtubeFirstEnabled() && !youtubeOnlySourcingEnabled();
+  if (youtubeTurnRuns) noteTierAttempted("YOUTUBE", "youtube_first_turn");
+  console.log(
+    `[BeatTogether] s${sceneIndex}b${beat.index} asking at once: ` +
+      `${youtubeTurnRuns ? "youtube, " : ""}own archive, ${HISTORICAL_SOURCE_TIER_ORDER.filter((t) => t !== "youtube_cc" || !youtubeTurnRuns).join("/")}`
   );
-  if (isAuthenticVideoClip(hist ?? "")) return hist;
+  const settle = <T>(p: Promise<T>, label: string): Promise<T | null> =>
+    p.catch((err) => {
+      console.warn(
+        `[BeatTogether] s${sceneIndex}b${beat.index} ${label} ended without a clip:`,
+        (err as Error)?.message?.slice(0, 120)
+      );
+      return null;
+    });
+  const youtube = settle(
+    youtubeFirstBeatSlice(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, tag),
+    "youtube"
+  );
+  const ownArchive = settle(
+    ownArchiveBeatClip(beat, scene, workDir, sceneIndex, dedup, videoTitle),
+    "own archive"
+  );
+  const archivePool = settle(
+    gatherHistoricalBeatVideoPool(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, loose, tag, {
+      skipYoutube: youtubeTurnRuns,
+    }),
+    "archive video"
+  );
+
+  const ytClip = await youtube;
+  if (ytClip) return ytClip;
+  const ownArchiveClip = await ownArchive;
+  /** The own archive holds photographs too; one of those waits until no source had a video. */
+  const ownArchiveStill = ownArchiveClip !== null && isCuratedPreparedStillClip(ownArchiveClip);
+  if (ownArchiveClip !== null && !ownArchiveStill) return ownArchiveClip;
+  const pool = await archivePool;
+  if (pool) {
+    const hist = await adoptHistoricalBeatVideoPool(pool, beat, workDir, sceneIndex, dedup, loose);
+    if (isAuthenticVideoClip(hist ?? "")) return hist;
+  }
 
   // VIDEO 619 — Europeana and Openverse ("web-wide") removed: see REMOVED_PROVIDERS.
 
@@ -3202,6 +3200,34 @@ export async function fetchBeatArchivalThenPexels(
       { ...loose, personTopic: true, primaryPerson: personName }
     );
     if (isAuthenticVideoClip(celeb ?? "")) return celeb;
+  }
+
+  /** Pictures only from here on: every video source above has had its turn. */
+  if (ownArchiveStill) {
+    console.log(
+      `[BeatTogether] s${sceneIndex}b${beat.index} no source had a video — the own archive's ` +
+        `photograph is used (${path.basename(ownArchiveClip!)})`
+    );
+    return ownArchiveClip;
+  }
+
+  if (historicalDoc) {
+    const internet = await fetchBeatInternetStillsFirst(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      scenePersons,
+      videoTitle,
+      adoptOpts,
+      `${tag}_inet`
+    );
+    if (internet && isRealVideoClip(internet)) {
+      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: internet still (historical, no video found)`);
+      return internet;
+    }
   }
 
   const still = await fetchBeatAuthenticStills(
@@ -3241,6 +3267,57 @@ export async function fetchBeatArchivalThenPexels(
     return stock;
   }
   return null;
+}
+
+/** The own archive's clip for a beat, bounded by the archive's own per-beat budget. */
+async function ownArchiveBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  dedup: VisualDedupState,
+  videoTitle: string | undefined
+): Promise<string | null> {
+  // User's own curated media archive is checked for every beat, on every topic.
+  // assetsCache makes this a single DB scan per video instead of one per beat — that
+  // per-beat re-scan, not the archive check itself, was blowing the compose timeout.
+  // Still, a single slow lookup (e.g. a large interview transcode) shouldn't eat the whole
+  // compose-stage budget — bound each beat's attempt and fall through on timeout.
+  try {
+    return await withSceneFetchTimeout(
+      () =>
+        fetchCuratedArchiveBeatClipWithLineage(dedup, sceneIndex, beat.index, (pickedOut) =>
+          fetchCuratedArchiveBeatClip(
+            beat,
+            scene,
+            workDir,
+            sceneIndex,
+            beat.holdSec,
+            dedup.usedCuratedAssetIds,
+            dedup.usedCuratedStorageUrls,
+            videoTitle,
+            curatedInterviewBudget(dedup),
+            curatedImageBudget(dedup),
+            undefined,
+            {
+              varietySeed: dedup.varietySeed,
+              crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+              assetsCache: dedup.archiveAssetsCache,
+              usedArchiveNames: dedup.usedArchiveNames,
+              pickedOut,
+            }
+          )
+        ),
+      archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.()),
+      `archive s${sceneIndex} b${beat.index}`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: archive beat budget exceeded —`,
+      (err as Error).message?.slice(0, 80)
+    );
+    return null;
+  }
 }
 
 /**
@@ -23517,6 +23594,75 @@ async function fetchHistoricalBeatVideoInner(
   tag: string,
   opts: HistoricalBeatVideoOpts = {}
 ): Promise<string | null> {
+  const pool = await gatherHistoricalBeatVideoPoolInner(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, adoptOpts, tag, opts
+  );
+  return pool ? adoptHistoricalBeatVideoPool(pool, beat, workDir, sceneIndex, dedup, adoptOpts) : null;
+}
+
+/**
+ * VIDEO 619 — the cascade's two halves, apart: GATHER the candidates, then CHOOSE one.
+ *
+ * Gathering is the slow half (provider searches and downloads) and adopts nothing, so it can run
+ * while another source is still answering for the same beat. Choosing is `adoptClip` over the
+ * gathered pool, and runs only once the caller has decided this pool is the one to choose from.
+ * `fetchHistoricalBeatVideo` does both in a row, exactly as before.
+ */
+export async function gatherHistoricalBeatVideoPool(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  intent: ReturnType<typeof buildMediaSearchIntent>,
+  adoptOpts: VisualAdoptOptions,
+  tag: string,
+  opts: HistoricalBeatVideoOpts = {}
+): Promise<string[] | null> {
+  return withSearchProvenance(beatSearchProvenance(beat, scene), () =>
+    gatherHistoricalBeatVideoPoolInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, adoptOpts, tag, opts)
+  );
+}
+
+export async function adoptHistoricalBeatVideoPool(
+  boundedPool: string[],
+  beat: SceneBeat,
+  workDir: string,
+  sceneIndex: number,
+  dedup: VisualDedupState,
+  adoptOpts: VisualAdoptOptions
+): Promise<string | null> {
+  const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
+  // Point: the pool spans candidates fetched under several different generated query strings
+  // (buildHistoricalArchivalQueries's own variants, e.g. "${anchor} archival footage") — passing
+  // any one of those specific strings as adoptClip's single sourceQuery for the WHOLE merged pool
+  // would score every other candidate against a query it was never actually found under. beat.text
+  // is the one description that's true for the whole pool regardless of which query/tier found
+  // which candidate, so it's the only safe choice here — unlike the single-query case elsewhere
+  // in this file, where sourceQuery and beatText intentionally differ.
+  const clip = await adoptClip(boundedPool, dedup, sceneIndex, beat.index, beat.text, workDir, beat.text, loose);
+  if (isRealVideoClip(clip)) {
+    console.log(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical video from pool of ${boundedPool.length} (${HISTORICAL_SOURCE_TIER_ORDER.join("/")})`
+    );
+    return clip;
+  }
+  return null;
+}
+
+async function gatherHistoricalBeatVideoPoolInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  intent: ReturnType<typeof buildMediaSearchIntent>,
+  adoptOpts: VisualAdoptOptions,
+  tag: string,
+  opts: HistoricalBeatVideoOpts = {}
+): Promise<string[] | null> {
   // F3-49: skip the whole cascade outright if it already ran (and missed) for this exact beat
   // earlier this render — see historicalCascadeAttemptedBeats' doc comment on VisualDedupState.
   //
@@ -23527,7 +23673,6 @@ async function fetchHistoricalBeatVideoInner(
     return null;
   }
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
-  const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
   const queries = buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text), action: extractActionCue(beat.text) });
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, adoptOpts.videoTitle);
   // Credit optimization: cap applies per tier (each of the 9 tiers below tries the same
@@ -23691,23 +23836,7 @@ async function fetchHistoricalBeatVideoInner(
   }
 
   if (!pool.length) return null;
-  const boundedPool = [...new Set(pool)].slice(0, POOL_MAX);
-  // Point: the pool spans candidates fetched under several different generated query strings
-  // (buildHistoricalArchivalQueries's own variants, e.g. "${anchor} archival footage") — passing
-  // any one of those specific strings as adoptClip's single sourceQuery for the WHOLE merged pool
-  // would score every other candidate against a query it was never actually found under. beat.text
-  // is the one description that's true for the whole pool regardless of which query/tier found
-  // which candidate, so it's the only safe choice here — unlike the single-query case elsewhere
-  // in this file, where sourceQuery and beatText intentionally differ.
-  const clip = await adoptClip(boundedPool, dedup, sceneIndex, beat.index, beat.text, workDir, beat.text, loose);
-  if (isRealVideoClip(clip)) {
-    console.log(
-      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical video from pool of ${boundedPool.length} (${HISTORICAL_SOURCE_TIER_ORDER.join("/")})`
-    );
-    return clip;
-  }
-
-  return null;
+  return [...new Set(pool)].slice(0, POOL_MAX);
 }
 
 /**
@@ -25458,24 +25587,11 @@ async function resolveBeatClipFastTurbo(
    * sources — and reached YouTube only inside `beatPrimaryFetch` after it. In YouTube-first mode the
    * stills wait: `beatPrimaryFetch` opens with the YouTube-first slice and then the archive, and the
    * stills come after both, where the operator placed the open sources.
+   *
+   * VIDEO 619 — and with YouTube-first off as well: a video always comes before a picture, so the
+   * stills-first opening is gone on every setting.
    */
-  const youtubeFirst = youtubeFirstPerBeatEnabled();
   let clip: string | null = null;
-  if (!youtubeFirst) {
-    clip = await fetchBeatInternetStillsFirst(
-      beat,
-      scene,
-      workDir,
-      sceneIndex,
-      clipFetchDur,
-      dedup,
-      scenePersons,
-      videoTitle,
-      beatAdoptOpts,
-      `${tag}_inet`
-    );
-    if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
-  }
 
   /**
    * RONDE 622 — THE WALL THAT COULD NEVER PAY, MEASURED IN PRODUCTION.
@@ -25543,8 +25659,8 @@ async function resolveBeatClipFastTurbo(
   }
   if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
 
-  /** RONDE 648 — the open sources' stills, after YouTube and the archive, in YouTube-first mode. */
-  if (youtubeFirst) {
+  /** RONDE 648 / VIDEO 619 — the open sources' stills, after every video source, on every setting. */
+  {
     const stills = await fetchBeatInternetStillsFirst(
       beat,
       scene,

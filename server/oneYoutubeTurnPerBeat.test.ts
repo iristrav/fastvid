@@ -331,7 +331,7 @@ describe("§18 — the static audit: no route reaches YouTube on its own", () =>
      */
     for (const route of [
       "fetchBeatYoutubeOnly",
-      "fetchHistoricalBeatVideoInner",
+      "gatherHistoricalBeatVideoPoolInner", // VIDEO 619: the cascade's gather half
       "researchBeatClipUnifiedInner",
       "fetchBeatClipInner",
     ]) {

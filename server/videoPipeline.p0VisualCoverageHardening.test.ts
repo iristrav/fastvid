@@ -83,7 +83,7 @@ describe("Test 3/4/5/6 — a rejected/failed candidate only eliminates that cand
     // Each provider's `if (paths.length === 0) continue;` / early-exit-only-on-strength shape
     // means one empty provider result does not itself end the pool.
     expect(stillsSrc).toMatch(/if\s*\(!pool\.some\(strongEnoughToStopPooling\)\)/);
-    const historicalSrc = extractFunctionSource("fetchHistoricalBeatVideo");
+    const historicalSrc = extractFunctionSource("gatherHistoricalBeatVideoPoolInner");
     expect(historicalSrc).toMatch(/if\s*\(paths\.length === 0\)\s*continue;/);
   });
 

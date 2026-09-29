@@ -183,7 +183,7 @@ describe("Test 10 — the same asset via different queries is deduplicated", () 
 
 describe("Test 11 — the pool stays bounded to a maximum of 5", () => {
   it("fetchHistoricalBeatVideo caps the merged pool at POOL_MAX=5", () => {
-    const src = extractFunctionSource("fetchHistoricalBeatVideo");
+    const src = extractFunctionSource("gatherHistoricalBeatVideoPoolInner");
     expect(src).toContain("POOL_MAX = 5");
     expect(src).toMatch(/\.slice\(0,\s*POOL_MAX\)/);
   });
@@ -191,7 +191,7 @@ describe("Test 11 — the pool stays bounded to a maximum of 5", () => {
 
 describe("Test 12 — existing provider gates stay active", () => {
   it("fetchHistoricalBeatVideo still gates archival/youtube behind the same conditions as before pooling", () => {
-    const src = extractFunctionSource("fetchHistoricalBeatVideo");
+    const src = extractFunctionSource("gatherHistoricalBeatVideoPoolInner");
     expect(src).toContain("dedup.perf.enableArchival");
     expect(src).toContain("youtubeReady");
   });
@@ -211,7 +211,7 @@ describe("Test 13 — AssetDirector stays active", () => {
 
 describe("Test 14 — early exit avoids unnecessary provider calls", () => {
   it("fetchHistoricalBeatVideo's pooling loop reuses candidatePoolEarlyExitReady (not a new/duplicate early-exit mechanism) and stops on either a strong match or the raw-candidate target", () => {
-    const src = extractFunctionSource("fetchHistoricalBeatVideo");
+    const src = extractFunctionSource("gatherHistoricalBeatVideoPoolInner");
     expect(src).toContain("candidatePoolEarlyExitReady(");
     expect(src).toContain("POOL_RAW_CANDIDATE_TARGET");
     expect(src).toContain("stopPooling = true");
@@ -266,7 +266,7 @@ describe("Test 17 — existing quality gates keep working", () => {
 
 describe("Test 18 — no change to TTS/script generation/FFmpeg", () => {
   it("fetchHistoricalBeatVideo's own source contains no TTS/script-generation/ffmpeg-concurrency identifiers — this patch only touches candidate collection/ranking", () => {
-    const src = extractFunctionSource("fetchHistoricalBeatVideo");
+    const src = extractFunctionSource("gatherHistoricalBeatVideoPoolInner");
     for (const forbidden of ["ffmpegSemaphore", "generateVoiceover", "generateScript", "elevenlabs", "maxBytes", "CLIP_VISION"]) {
       expect(src.toLowerCase()).not.toContain(forbidden.toLowerCase());
     }
