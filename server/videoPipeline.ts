@@ -2978,7 +2978,8 @@ async function fetchBeatYoutubeOnly(
   adoptOpts: VisualAdoptOptions,
   personName: string,
   videoTitle: string | undefined,
-  label: string
+  label: string,
+  adoption?: YoutubeAdoptionHandle
 ): Promise<string | null> {
   const queries = buildBeatYoutubeQueries(beat, scene, videoTitle, personName);
 
@@ -3017,7 +3018,7 @@ async function fetchBeatYoutubeOnly(
     requireBeatMatch: false,
     scriptAnchored: false,
   };
-  const clip = await adoptClip(
+  const adopt = () => adoptClip(
     turn.candidatePaths,
     dedup,
     sceneIndex,
@@ -3027,7 +3028,61 @@ async function fetchBeatYoutubeOnly(
     queries[0],
     loose
   );
+  const clip = adoption
+    ? await (adoption.running = runYoutubeAdoptionWindow(adoption, adopt, sceneIndex, beat.index))
+    : await adopt();
   return isAuthenticVideoClip(clip ?? "") ? clip : null;
+}
+
+/**
+ * VIDEO 618 — A PICTURE IN HAND IS JUDGED TO THE END.
+ *
+ * `youtubeFirstBeatSlice` bounds the whole YouTube turn — search, downloads AND the judging of what
+ * was downloaded — with one timer. On render 618 the downloads took 119 of s1b0's 120 s, the
+ * candidate `NSs7IEpwpqU` was in the picture editor when the timer fired, the beat moved on to the
+ * archive, and the editor approved the clip three seconds later: adopted, transformed, and never
+ * pushed. Its last checks could not even start — "SCOPE_EXPIRED … opened 3s after the enclosing
+ * budget had already ended".
+ *
+ * Once the turn has downloaded candidates, judging them now runs in its own window, opened in the
+ * BEAT's scope rather than the slice's, so the slice's timer can no longer cut it off halfway. When
+ * the slice ends first, the slice waits for that judgement and keeps what it approves. Nothing about
+ * the judgement changes: the same `adoptClip`, the same gates, the same editor. The window is
+ * bounded and clamped to the beat, like every other scope.
+ */
+export type YoutubeAdoptionHandle = {
+  /** The scope the slice was opened in — the beat's. The judging window is its child. */
+  outerScope: SceneFetchScope | undefined;
+  /** Set once the turn has candidates and their judging has started. */
+  running?: Promise<string | null>;
+};
+
+export const YOUTUBE_ADOPTION_WINDOW_MS = 45_000;
+
+/** Opened by the slice's caller, in the beat's scope, before the slice's own scope exists. */
+export function openYoutubeAdoptionHandle(): YoutubeAdoptionHandle {
+  return { outerScope: sceneFetchScopeStorage.getStore() };
+}
+
+export function runYoutubeAdoptionWindow(
+  adoption: YoutubeAdoptionHandle,
+  adopt: () => Promise<string | null>,
+  sceneIndex: number,
+  beatIndex: number
+): Promise<string | null> {
+  return sceneFetchScopeStorage.run(adoption.outerScope as SceneFetchScope, () =>
+    withSceneFetchTimeout(adopt, YOUTUBE_ADOPTION_WINDOW_MS, `youtube adoption s${sceneIndex} b${beatIndex}`)
+  );
+}
+
+/** The judgement a slice started and did not see finish, or null when there was none. */
+export async function finishStartedYoutubeAdoption(
+  adoption: YoutubeAdoptionHandle
+): Promise<string | null> {
+  if (!adoption.running) return null;
+  const clip = await adoption.running.catch(() => null);
+  /** The same test `fetchBeatYoutubeOnly` applies to what it returns. */
+  return clip && isAuthenticVideoClip(clip) ? clip : null;
 }
 
 async function fetchBeatYoutubeThenPexels(
@@ -3176,6 +3231,8 @@ async function youtubeFirstBeatSlice(
    * reporting the request and spending the grant. Printed here as the grant.
    */
   const sliceMs = Math.min(ytBudget, remainingScopeMs());
+  /** VIDEO 618 — see `YoutubeAdoptionHandle`. */
+  const adoption = openYoutubeAdoptionHandle();
   try {
     const ytFirst = await withSceneFetchTimeout(
       () => fetchBeatYoutubeOnly(
@@ -3188,7 +3245,8 @@ async function youtubeFirstBeatSlice(
         adoptOpts,
         personName,
         videoTitle,
-        `${tag}yt-first`
+        `${tag}yt-first`,
+        adoption
       ),
       ytBudget,
       `youtube-first s${sceneIndex} b${beat.index}`
@@ -3202,6 +3260,16 @@ async function youtubeFirstBeatSlice(
       return ytFirst;
     }
   } catch (err) {
+    /** VIDEO 618 — a candidate already being judged is judged to the end, and kept if approved. */
+    const late = await finishStartedYoutubeAdoption(adoption);
+    if (late) {
+      console.log(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube-first slice ended while a ` +
+          `downloaded candidate was being judged — it was approved afterwards and is kept ` +
+          `(${path.basename(late)})`
+      );
+      return late;
+    }
     /**
      * A slice that ran out is not a failure, it is the bound doing its job — and it must not cost
      * the beat its remaining sources. Reported so a render where YouTube eats its slice on every
@@ -20013,6 +20081,8 @@ export interface VisualDedupState {
   youtubeTurnByBeat: Map<string, YoutubeTurnRecord>;
   /** RONDE 648 — each beat's YouTube work, started when its scene starts. See `youtubeLookahead`. */
   youtubeLookahead?: LookaheadRegistry;
+  /** VIDEO 618 — content key → "scene:beat" `adoptClip` approved it for. See `claimAdoptedForBeat`. */
+  adoptedAwaitingPush?: Map<string, string>;
   /** F3-49: "s{sceneIndex}b{beatIndex}" keys for which fetchHistoricalBeatVideo's full
    *  HISTORICAL_SOURCE_TIER_ORDER cascade (Internet Archive, YouTube CC, Wikimedia, NARA,
    *  Flickr, SepiaSearch, Vimeo, media.ccc, NASA — up to 27 external search/metadata/
@@ -24628,6 +24698,8 @@ async function adoptClip(
       // so this stays the single acceptance point that marks the asset as used.
       dedup.usedPaths.add(p);
       dedup.usedContentKeys.add(contentKey);
+      /** VIDEO 618 — and for which beat, so that beat's own push is not refused on this mark. */
+      noteAdoptedForBeat(dedup, contentKey, sceneIndex, beatIndex);
       /**
        * RONDE 88A — ONE DECISION, BOTH REGISTRIES.
        *
@@ -29228,6 +29300,42 @@ export function formatSuspendedVisionAdoptions(byRoute: ReadonlyMap<string, numb
   );
 }
 
+/**
+ * VIDEO 618 — A PICTURE IS NOT A DUPLICATE OF ITS OWN APPROVAL.
+ *
+ * `adoptClip` marks a picture as used in this video the moment it approves it, so no other beat
+ * running in parallel can take the same footage. The beat then hands that same picture to
+ * `pushSceneClip`, whose once-per-video check found the mark `adoptClip` had just written and
+ * refused it: `[Pipeline] Scene 0 beat 0: skipping duplicate clip …ofqkKDH_LKM… (once per video)`,
+ * the only push that file ever had. Every route through `adoptClip` — YouTube, stock, Wikimedia —
+ * lost its approved picture that way; the curated archive does not go through `adoptClip`, which is
+ * why render 618 was all archive.
+ *
+ * So `adoptClip` also notes WHICH beat it approved the picture for, and the push of that picture for
+ * that beat may pass the mark once. Any other beat, or a second push, is still refused as before.
+ */
+export function noteAdoptedForBeat(
+  dedup: Pick<VisualDedupState, "adoptedAwaitingPush">,
+  contentKey: string,
+  sceneIndex: number,
+  beatIndex: number
+): void {
+  (dedup.adoptedAwaitingPush ??= new Map()).set(contentKey, `${sceneIndex}:${beatIndex}`);
+}
+
+/** True — once — when this push is the beat `adoptClip` approved this picture for. */
+export function claimAdoptedForBeat(
+  dedup: Pick<VisualDedupState, "adoptedAwaitingPush">,
+  contentKey: string,
+  sceneIndex: number,
+  beatIndex: number | undefined
+): boolean {
+  if (beatIndex == null) return false;
+  if (dedup.adoptedAwaitingPush?.get(contentKey) !== `${sceneIndex}:${beatIndex}`) return false;
+  dedup.adoptedAwaitingPush.delete(contentKey);
+  return true;
+}
+
 function noteDuplicateClipRefused(
   dedup: VisualDedupState,
   clipPath: string,
@@ -30334,12 +30442,15 @@ async function fetchSceneVisualsInner(
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
+    /** VIDEO 618 — the mark `adoptClip` wrote for THIS beat is not a previous use. */
     if (dedup.usedContentKeys.has(key)) {
-      console.warn(
-        `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping duplicate clip ${path.basename(clipPath)} (once per video)`
-      );
-      noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
-      return false;
+      if (!claimAdoptedForBeat(dedup, key, scene.index, beatIndex)) {
+        console.warn(
+          `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping duplicate clip ${path.basename(clipPath)} (once per video)`
+        );
+        noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
+        return false;
+      }
     }
     let actualHold = holdSec;
     if (fs.existsSync(clipPath)) {
