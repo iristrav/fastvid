@@ -1,7 +1,8 @@
 """Run with the service requirements installed:  python check_retry.py
 
 Video 614 — a cut that failed for the moment (ffmpeg dropped the stream, a bot check) is asked
-again once; one that failed for the video (unavailable, country block) is not. yt-dlp is replaced
+again once; one that failed for the video (unavailable, country block, googlevideo's HTTP error
+`code 8`) is not. yt-dlp is replaced
 by a stand-in; nothing touches YouTube.
 """
 import os, sys, tempfile
@@ -46,10 +47,22 @@ assert ask("aaaaaaaaab2", ["ERROR: [youtube] x: Sign in to confirm you're not a 
 # 3. the video itself is gone: asked once, 502
 assert ask("aaaaaaaaab3", ["ERROR: [youtube] x: This video is not available"]) == (502, 1)
 # 4. two dropped streams: two attempts, then 502 with the message
-status, n = ask("aaaaaaaaab4", ["ERROR: ffmpeg exited with code 8", "ERROR: ffmpeg exited with code 8"])
+status, n = ask("aaaaaaaaab4", ["ERROR: ffmpeg exited with code 251", "ERROR: ffmpeg exited with code 251"])
 assert (status, n) == (502, 2)
 # 5. every attempt tells ffmpeg to reconnect
 assert all(o["external_downloader_args"]["ffmpeg_i"][:2] == ["-reconnect", "1"] for o in calls)
+# 5b. VIDEO 617 (A) — and to give up on a read after 15 s of silence (microseconds)
+for o in calls:
+    args = o["external_downloader_args"]["ffmpeg_i"]
+    assert args[args.index("-rw_timeout") + 1] == "15000000", args
+# 5c. VIDEO 617 (B) — code 8 is googlevideo's HTTP error for this video: asked once, 502 at once
+assert ask("aaaaaaaaab8", ["ERROR: ffmpeg exited with code 8", "ok"]) == (502, 1)
+assert main._retryable("ERROR: ffmpeg exited with code 8") is False
+# other codes that merely start with 8 are not that error; the moment-errors stay retryable
+assert main._retryable("ERROR: ffmpeg exited with code 87") is True
+assert main._retryable("ERROR: ffmpeg exited with code 146") is True
+assert main._retryable("ERROR: ffmpeg exited with code 251") is True
+assert main._retryable("ERROR: [youtube] x: Sign in to confirm you're not a bot.") is True
 # 6. VIDEO 615 — the lookup and the transfer are timed apart, on success and on failure
 seen: list = []
 real_fetch = main._fetch_window
@@ -67,8 +80,33 @@ assert ask("aaaaaaaaab6", ["lookup:ERROR: [youtube] x: This video is not availab
 t = seen[-1]
 assert isinstance(t["extract_ms"], int) and t["download_ms"] is None, t
 # a transfer that drops twice: the numbers are those of the second attempt
-assert ask("aaaaaaaaab7", ["ERROR: ffmpeg exited with code 8", "ERROR: ffmpeg exited with code 8"]) == (502, 2)
+assert ask("aaaaaaaaab7", ["ERROR: ffmpeg exited with code 251", "ERROR: ffmpeg exited with code 251"]) == (502, 2)
 t = seen[-1]
 assert t["attempt"] == 2 and isinstance(t["download_ms"], int), t
 main._fetch_window = real_fetch
+
+# 7. VIDEO 617 (C) — yt-dlp's warnings reach the log, each once, at most five, never a credential
+assert all(o["no_warnings"] is False and isinstance(o["logger"], main._YdlWarnings) for o in calls)
+import logging
+records: list = []
+class Keep(logging.Handler):
+    def emit(self, record): records.append(record.getMessage())
+main.log.addHandler(Keep())
+main.PROXY_URL = "http://proxyuser:proxypass@proxy.example:8080"
+w = main._YdlWarnings("aaaaaaaaab9")
+w.warning("[youtube] aaaaaaaaab9: Some web client https formats have been skipped as they are missing a url")
+w.warning("[youtube] aaaaaaaaab9: Some web client https formats have been skipped as they are missing a url")
+w.warning("could not reach http://proxyuser:proxypass@proxy.example:8080 in time")
+w.warning("retrying via https://someone:s3cret@other.example/path")
+w.debug("[download] 42%"); w.info("[info] noise"); w.error("ERROR: already raised")
+for i in range(10):
+    w.warning(f"warning number {i}")
+assert len(records) == 5, records
+assert records[0] == "yt-dlp warning id=aaaaaaaaab9: [youtube] aaaaaaaaab9: Some web client https formats have been skipped as they are missing a url", records
+assert records[1] == "yt-dlp warning id=aaaaaaaaab9: could not reach <proxy> in time", records
+assert records[2] == "yt-dlp warning id=aaaaaaaaab9: retrying via https://<credentials>@other.example/path", records
+joined = " ".join(records)
+assert "proxypass" not in joined and "proxyuser" not in joined and "s3cret" not in joined, records
+assert "42%" not in joined and "noise" not in joined and "already raised" not in joined, records
+assert all(len(r) < 400 for r in records)
 print("check_retry: ok")

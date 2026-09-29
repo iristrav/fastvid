@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -65,6 +66,8 @@ MAX_HEIGHT = int(os.environ.get("MAX_FORMAT_HEIGHT", "720"))
 
 SERVICE_TOKEN = os.environ.get("SERVICE_TOKEN", "").strip()
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
+# VIDEO 617 (A) — seconds without a byte before ffmpeg gives up on a read. See `_ydl_options`.
+FFMPEG_IO_TIMEOUT_S = int(os.environ.get("FFMPEG_IO_TIMEOUT_S", "15"))
 # A cookies.txt from a signed-in browser. Optional, and a second answer to the same IP-reputation
 # problem PROXY_URL addresses — see the README on which to reach for.
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "").strip()
@@ -217,8 +220,16 @@ def _ydl_options(out_path: Path, start: float, end: float) -> dict:
         # dropped connection ended the cut: `ffmpeg exited with code 251` (and 8, 187) on about half
         # of render 614's fresh downloads, the same ids succeeding a minute later. Told to reconnect,
         # ffmpeg resumes the stream instead of giving up on the first reset.
+        #
+        # VIDEO 617 (A) — and a stream that goes SILENT ends. ffmpeg's I/O timeout defaults to 0,
+        # "never": cuts sat on a dead connection for 104–190 s before `code 251`, one for 30 minutes,
+        # while FastVid's window for the beat ran out. After FFMPEG_IO_TIMEOUT_S without a byte the
+        # read fails and the reconnect above takes over; a stream that stays dead fails in seconds.
         "external_downloader_args": {
-            "ffmpeg_i": ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4"],
+            "ffmpeg_i": [
+                "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4",
+                "-rw_timeout", str(FFMPEG_IO_TIMEOUT_S * 1_000_000),
+            ],
         },
     }
     if PROXY_URL:
@@ -669,10 +680,58 @@ def download(
 _RETRYABLE = ("ffmpeg exited with code", "confirm you", "not a bot", "timed out", "connection reset")
 _ATTEMPTS = 2
 
+# VIDEO 617 (B) — ffmpeg's exit status is its error code's low byte, and every HTTP error status
+# (AVERROR_HTTP_*, 4xx or 5xx) ends in 0xF8, so `code 8` means googlevideo answered the stream with
+# an HTTP error. It is not the moment: `lq12NIRM7Ug` failed with it 8 times and `eCpP1uSwU-8` 7
+# times across four hours and three start points, while RapidAPI fetched `lq12` fine. Asking again
+# only spends the beat's window before FastVid's own fallback gets it.
+_NOT_RETRYABLE = re.compile(r"ffmpeg exited with code 8\b")
+
 
 def _retryable(message: str) -> bool:
     text = message.lower()
+    if _NOT_RETRYABLE.search(text):
+        return False
     return any(marker in text for marker in _RETRYABLE)
+
+
+class _YdlWarnings:
+    """VIDEO 617 (C) — yt-dlp's own warnings, logged, where `no_warnings` used to drop them.
+
+    Why googlevideo answers `code 8` for some videos (a PO token a client needs, a format it
+    withheld) is something yt-dlp says in a warning, and this service switched warnings off. They are
+    logged once each per request, at most `_MAX` of them, with any credential removed. Progress and
+    debug output stay silent; errors already reach the log through the `DownloadError` they raise.
+    """
+
+    _MAX = 5
+
+    def __init__(self, video_id: str):
+        self.video_id = video_id
+        self.seen: list[str] = []
+
+    def debug(self, msg: str) -> None:
+        pass
+
+    def info(self, msg: str) -> None:
+        pass
+
+    def error(self, msg: str) -> None:
+        pass
+
+    def warning(self, msg: str) -> None:
+        text = _redact(str(msg)).strip().replace("\n", " ")[:300]
+        if not text or text in self.seen or len(self.seen) >= self._MAX:
+            return
+        self.seen.append(text)
+        log.warning("yt-dlp warning id=%s: %s", self.video_id, text)
+
+
+def _redact(text: str) -> str:
+    """No proxy address and no user:password in a URL ever reaches the log."""
+    if PROXY_URL:
+        text = text.replace(PROXY_URL, "<proxy>")
+    return re.sub(r"(//)[^/\s:@]+:[^/\s@]+@", r"\1<credentials>@", text)
 
 
 def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dict | None = None) -> None:
@@ -702,7 +761,10 @@ def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dic
             timing["download_ms"] = int((ended - split) * 1000) if lookup_done else None
 
         try:
-            with yt_dlp.YoutubeDL(_ydl_options(out_path, start, end)) as ydl:
+            opts = _ydl_options(out_path, start, end)
+            opts["no_warnings"] = False
+            opts["logger"] = _YdlWarnings(id)
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 # A measurement, never a condition: without the hook the cut runs exactly as before.
                 process_info = getattr(ydl, "process_info", None)
                 if callable(process_info):
