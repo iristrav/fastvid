@@ -15,7 +15,9 @@ import fs from "fs";
 import path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { ffmpegStderrSummary } from "./timelineRenderer";
+import os from "os";
+import { execFileSync } from "child_process";
+import { ffmpegStderrSummary, oddSegmentsOut, probeSegmentShape } from "./timelineRenderer";
 import { withSceneFetchTimeout, youtubeRowsWithoutNonFootage, type YoutubeSearchRow } from "./videoPipeline";
 
 const RENDERER = fs.readFileSync(path.join(__dirname, "timelineRenderer.ts"), "utf8");
@@ -70,6 +72,53 @@ describe("Video 618 (3) — every line ffmpeg said, not only the first", () => {
     expect(ladder).toContain("[TransitionLadder] ${step} ffmpeg said: ${said}");
     /** A diagnosed failure still fails, and still walks down the ladder. */
     expect(ladder).toContain("throw firstFailure;");
+  });
+});
+
+describe("Video 618 (3) — the segment check also measures colour and the first decoded frame", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v618-shape-"));
+  const make = (name: string, extra: string[]) => {
+    const out = path.join(dir, name);
+    execFileSync("ffmpeg", [
+      "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=1",
+      ...extra, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+      "-video_track_timescale", "15360", out,
+    ]);
+    return out;
+  };
+
+  it("a normal segment reports its header, its colour tags and its first frame", async () => {
+    const a = make("a.mp4", ["-colorspace", "bt709", "-color_range", "tv"]);
+    const shape = (await probeSegmentShape(a))!;
+    expect(shape).toContain("width=320 height=180");
+    expect(shape).toContain("color_range=tv");
+    expect(shape).toContain("color_space=bt709");
+    expect(shape).toContain("first_frame_width=320");
+    expect(shape).toContain("first_frame_pix_fmt=yuv420p");
+  });
+
+  it("a segment that matches in size but not in colour is named as the odd one", async () => {
+    const same = [0, 1, 2].map((i) => make(`s${i}.mp4`, ["-colorspace", "bt709", "-color_range", "tv"]));
+    const fullRange = make("full.mp4", ["-vf", "scale=out_range=pc", "-colorspace", "bt709", "-color_range", "pc"]);
+    const bt601 = make("bt601.mp4", ["-colorspace", "smpte170m", "-color_range", "tv"]);
+    const shapes = await Promise.all(
+      [...same, fullRange, bt601].map(async (f) => ({ name: path.basename(f), shape: await probeSegmentShape(f) }))
+    );
+    const { odd } = oddSegmentsOut(shapes);
+    expect(odd.map((o) => o.name).sort()).toEqual(["bt601.mp4", "full.mp4"]);
+    /** Before this round these two measured identical to the rest. */
+    const header = (s: string | null) => s!.split(" ").filter((kv) => /^(width|height|sample_aspect_ratio|time_base|r_frame_rate)=/.test(kv)).join(" ");
+    expect(new Set(shapes.map((s) => header(s.shape))).size).toBe(1);
+  }, 30_000);
+
+  it("a file that cannot be probed is still null, and colour is never a verdict on its own", async () => {
+    expect(await probeSegmentShape(path.join(dir, "missing.mp4"))).toBeNull();
+    const src = fs.readFileSync(path.join(__dirname, "timelineRenderer.ts"), "utf8");
+    const probe = src.slice(src.indexOf("export async function probeSegmentShape("), src.indexOf("export function oddSegmentsOut("));
+    expect(probe).toContain('"-read_intervals", "%+#1"');
+    expect(probe).toContain('["first_frame=NONE"]');
+    expect(probe).not.toContain("scale=");
+    expect(probe).not.toContain("setsar");
   });
 });
 

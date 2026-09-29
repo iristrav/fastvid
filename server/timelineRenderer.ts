@@ -412,6 +412,15 @@ export async function probeDurationSec(file: string): Promise<number | null> {
  * a shape that parses is a shape somebody will be tempted to branch on.
  *
  * Null when the file cannot be probed, which is not evidence of anything and is reported as such.
+ *
+ * VIDEO 618 — AND TWO THINGS THE HEADER DOES NOT SAY.
+ *
+ * Render 618's join failed on the converter ffmpeg puts around every `xfade` (`auto_scale_10`,
+ * "Failed to configure output pad") while all twenty segments measured identical here. That
+ * converter is configured from the FIRST DECODED FRAME, not from the stream header, and it cares
+ * about colour as well as size. So the shape now also carries the stream's colour tags (range,
+ * space, transfer, primaries) and what the first frame actually decodes to — or `first_frame=NONE`
+ * when not one frame decodes. Only ever read on a failed join, as before; nothing is normalised.
  */
 export async function probeSegmentShape(file: string): Promise<string | null> {
   try {
@@ -423,10 +432,49 @@ export async function probeSegmentShape(file: string): Promise<string | null> {
       file,
     ]);
     const shape = stdout.trim().split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
-    return shape || null;
+    if (!shape) return null;
+    return [shape, await probeSegmentColourAndFirstFrame(file)].filter(Boolean).join(" ");
   } catch {
     return null;
   }
+}
+
+/**
+ * The colour tags of the stream and the first decoded frame's own properties, `key=value` joined
+ * like the shape itself. Empty when ffprobe cannot answer, so a probe failure here never turns a
+ * measured segment into an unprobeable one.
+ */
+async function probeSegmentColourAndFirstFrame(file: string): Promise<string> {
+  const lines = (out: string, prefix: string) =>
+    out.trim().split("\n").map((l) => l.trim()).filter(Boolean).map((l) => `${prefix}${l}`);
+  const parts: string[] = [];
+  try {
+    const { stdout } = await execFileAsync(FFPROBE, [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=color_range,color_space,color_transfer,color_primaries",
+      "-of", "default=nw=1",
+      file,
+    ]);
+    parts.push(...lines(stdout, ""));
+  } catch {
+    /* the header part above already answered; colour is extra evidence, never a verdict */
+  }
+  try {
+    const { stdout } = await execFileAsync(FFPROBE, [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-read_intervals", "%+#1",
+      "-show_entries", "frame=width,height,pix_fmt,sample_aspect_ratio,color_range,color_space",
+      "-of", "default=nw=1",
+      file,
+    ]);
+    const frame = lines(stdout, "first_frame_");
+    parts.push(...(frame.length ? frame : ["first_frame=NONE"]));
+  } catch {
+    parts.push("first_frame=UNREADABLE");
+  }
+  return parts.join(" ");
 }
 
 /**
@@ -1265,7 +1313,8 @@ export async function renderTimeline(params: {
         );
       } else if (odd.length === 0) {
         console.error(
-          "[SegmentShape]   every segment has the same size, pixel format, aspect and timebase — " +
+          "[SegmentShape]   every segment has the same size, pixel format, aspect, timebase, colour " +
+            "tags and first decoded frame — " +
             "the join did not fail on geometry"
         );
       }
