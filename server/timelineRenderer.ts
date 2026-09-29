@@ -614,8 +614,35 @@ async function runFfmpeg(args: string[], what: string): Promise<void> {
   } catch (err) {
     const said = ffmpegComplaint(err);
     const original = (err as Error)?.message ?? String(err);
-    throw new Error(said ? `${what}: ${said} — ${original}` : `${what}: ${original}`);
+    /** VIDEO 618 — ffmpeg's own lines travel with the failure; see `ffmpegStderrSummary`. */
+    throw Object.assign(new Error(said ? `${what}: ${said} — ${original}` : `${what}: ${original}`), {
+      stderr: (err as { stderr?: unknown } | null)?.stderr,
+    });
   }
+}
+
+/**
+ * VIDEO 618 — EVERY LINE FFMPEG SAID, NOT ONLY THE FIRST.
+ *
+ * Render 618's transition graph failed with `[auto_scale_10] Failed to configure output pad`. That
+ * is the line `ffmpegComplaint` keeps, and it names where the graph broke, not why: ffmpeg says why
+ * on the lines around it ("Impossible to convert between the formats…", "Error reinitializing
+ * filters!"), and the log cut the message at 200 characters — most of them the command. With every
+ * segment measuring identical, those lines are the only evidence left, so they are kept: each once,
+ * in order, at most `max` of them, the command itself never.
+ */
+export function ffmpegStderrSummary(err: unknown, max = 8): string {
+  const raw = (err as { stderr?: unknown } | null)?.stderr;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of (typeof raw === "string" ? raw : "").split("\n")) {
+    const l = line.trim().replace(/ @ 0x[0-9a-f]+\]/i, "]");
+    if (!l || seen.has(l)) continue;
+    seen.add(l);
+    out.push(l.slice(0, 200));
+    if (out.length >= max) break;
+  }
+  return out.join(" | ");
 }
 
 
@@ -1285,6 +1312,8 @@ export async function renderTimeline(params: {
         console.error(
           `[TransitionLadder] ${step} failed — ${(graphErr as Error).message.slice(0, 200)}`
         );
+        const said = ffmpegStderrSummary(graphErr);
+        if (said) console.error(`[TransitionLadder] ${step} ffmpeg said: ${said}`);
         if (step === TRANSITION_LADDER[TRANSITION_LADDER.length - 1]) throw firstFailure;
       }
     }
