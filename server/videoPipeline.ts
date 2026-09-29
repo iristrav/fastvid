@@ -52,7 +52,7 @@ import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressPro
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
 import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyQueries, sentenceOnlyYoutubeQueries, YOUTUBE_SHORT_MAX_SEC, youtubeResultIsShort, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
-import { loadUnusableYoutubeVideos, recordYoutubeVideoOutcome, withoutUnusableYoutubeVideos, youtubeVideoUnusable } from "./youtubeUnusableVideos";
+import { loadUnusableYoutubeVideos, recordYoutubeVideoOutcome, unreliableChannelsLast, unreliableYoutubeChannels, withoutUnusableYoutubeVideos, youtubeVideoUnusable } from "./youtubeUnusableVideos";
 import { markYoutubeKeySpent, usableYoutubeSearchKeys } from "./youtubeApiKeys";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { sanitizeForDrawtextStrict } from "./ffmpegSanitize";
@@ -15518,6 +15518,8 @@ export type YoutubeSearchRow = {
     snippet?: {
       title?: string;
       description?: string;
+      /** VIDEO 619 — the channel, as search.list returns it; see `unreliableChannelsLast`. */
+      channelTitle?: string;
       thumbnails?: { high?: { url?: string }; medium?: { url?: string } };
     };
   };
@@ -16402,7 +16404,22 @@ export async function fetchYouTubeCCClips(
           sceneIndex
         )
           /** VIDEO 618 — and, off the pool, the pool's own look at what each video shows. */
-          .then((rows) => (poolMode ? rows : youtubeRowsWithoutNonFootage(rows, scriptGuided, sceneIndex)));
+          .then((rows) => (poolMode ? rows : youtubeRowsWithoutNonFootage(rows, scriptGuided, sceneIndex)))
+          /** VIDEO 619 — and a channel YouTube keeps refusing goes last; see `unreliableChannelsLast`. */
+          .then((rows) => {
+            const { rows: byChannel, movedBack } = unreliableChannelsLast(
+              rows,
+              (r) => r.item.id?.videoId,
+              (r) => r.item.snippet?.channelTitle
+            );
+            if (movedBack.length > 0) {
+              console.log(
+                `[YouTubeChannel] scene=${sceneIndex}: asked last — ${movedBack.map((c) => `"${c}"`).join(", ")} ` +
+                  `(more of their videos refused than delivered)`
+              );
+            }
+            return byChannel;
+          });
 
         /**
          * RONDE 640 — WRITTEN DOWN BEFORE THE CLOCK DECIDES WHETHER IT IS FETCHED.
@@ -33019,6 +33036,13 @@ async function _runVideoPipelineInner(
   const writtenOffVideos = await loadUnusableYoutubeVideos();
   if (writtenOffVideos > 0) {
     console.log(`[YouTubeUnusable] ${writtenOffVideos} YouTube video(s) written off earlier are not asked for this render`);
+  }
+  const lastChannels = unreliableYoutubeChannels();
+  if (lastChannels.length > 0) {
+    console.log(
+      `[YouTubeUnusable] ${lastChannels.length} channel(s) asked last this render: ` +
+        lastChannels.map((c) => `"${c.channel}" (${c.refusedVideos} refused, ${c.deliveredVideos} delivered)`).join(", ")
+    );
   }
   getRenderCtx().watchdog = watchdog;
 

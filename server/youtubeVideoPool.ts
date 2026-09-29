@@ -44,6 +44,8 @@ export type PoolCandidate = {
   from: 0 | 1 | 2;
   usable: boolean;
   why: string;
+  /** VIDEO 619 — the channel YouTube's search named; absent in pools stored before it was kept. */
+  channel?: string;
 };
 
 export type VideoYoutubePool = {
@@ -138,6 +140,7 @@ async function judge(
       from,
       usable,
       why,
+      ...(it.channel ? { channel: it.channel } : {}),
     };
   });
 }
@@ -518,7 +521,7 @@ export function beatSentences(pool: Pick<VideoYoutubePool, "sentences">, beatTex
 
 /** The row shape the per-beat fetcher already consumes (`YoutubeSearchRow`). */
 export type PoolRow = {
-  item: { id: { videoId: string }; snippet: { title: string; description: string; thumbnails: { high: { url: string } } } };
+  item: { id: { videoId: string }; snippet: { title: string; description: string; channelTitle?: string; thumbnails: { high: { url: string } } } };
   title: string;
   desc: string;
   thumb: string;
@@ -556,7 +559,7 @@ export function poolRowsForBeat(
     }
     const text = relevanceKeywords.filter((k) => k.length >= 3 && hay.includes(k.toLowerCase())).length;
     rows.push({
-      item: { id: { videoId: c.videoId }, snippet: { title: c.title, description: c.description, thumbnails: { high: { url: c.thumb } } } },
+      item: { id: { videoId: c.videoId }, snippet: { title: c.title, description: c.description, channelTitle: c.channel, thumbnails: { high: { url: c.thumb } } } },
       title: c.title,
       desc: c.description,
       thumb: c.thumb,

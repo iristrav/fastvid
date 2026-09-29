@@ -25,36 +25,11 @@ import {
   type UnusableVideoStore,
   type YoutubeAttemptRecord,
 } from "./youtubeUnusableVideos";
+import { memoryStore } from "./youtubeUnusableVideos.test.support";
 import { decidePrefetchVerdict, prefetchOneVideo, shouldSearchAlternatives, type PrefetchDeps } from "./youtubePrefetch";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const PREFETCH = fs.readFileSync(path.join(__dirname, "youtubePrefetch.ts"), "utf8");
-
-/** The store's contract, kept in memory: counts since the last delivery, written off at the limit. */
-function memoryStore(): UnusableVideoStore & { rows: Map<string, { refusals: number; lastReason: string | null; unusableAt: Date | null }> } {
-  const rows = new Map<string, { refusals: number; lastReason: string | null; unusableAt: Date | null }>();
-  return {
-    rows,
-    async noteRefusal(videoId, reason, limit, now) {
-      const r = rows.get(videoId) ?? { refusals: 0, lastReason: null, unusableAt: null };
-      if (r.unusableAt == null && r.refusals + 1 >= limit) r.unusableAt = now;
-      r.refusals += 1;
-      r.lastReason = reason;
-      rows.set(videoId, r);
-      return { refusals: r.refusals, unusable: r.unusableAt != null };
-    },
-    async noteDelivered(videoId) {
-      const r = rows.get(videoId);
-      if (r && r.refusals > 0) {
-        r.refusals = 0;
-        r.lastReason = null;
-      }
-    },
-    async loadUnusable() {
-      return [...rows].filter(([, r]) => r.unusableAt != null).map(([videoId, r]) => ({ videoId, lastReason: r.lastReason }));
-    },
-  };
-}
 
 const code8: YoutubeAttemptRecord[] = [
   { route: "cloud", status: "DOWNLOAD_FAILED", detail: youtubeServiceRefusalReason(502, '{"detail":"ERROR: ffmpeg exited with code 8"}') },
@@ -161,6 +136,7 @@ describe("Video 618 — the day's own sequence", () => {
       noteRefusal: async () => { throw new Error("db down"); },
       noteDelivered: async () => { throw new Error("db down"); },
       loadUnusable: async () => { throw new Error("db down"); },
+      loadChannels: async () => { throw new Error("db down"); },
     });
     await expect(loadUnusableYoutubeVideos()).resolves.toBe(0);
     await expect(recordYoutubeVideoOutcome("ddddddddd01", false, code8)).resolves.toBeUndefined();
@@ -255,11 +231,11 @@ describe("Video 618 — wiring", () => {
     const [count, verdict] = refusalStatements(drizzle.mock(), "5GZpQahYhPk", "http_502:stream_refused", 3, now);
     const c = count.toSQL();
     expect(c.sql).toBe(
-      "insert into `youtube_unusable_videos` (`id`, `videoId`, `refusals`, `lastReason`, `unusableAt`, `createdAt`, `updatedAt`) " +
-        "values (default, ?, ?, ?, default, default, default) on duplicate key update " +
-        "`refusals` = `youtube_unusable_videos`.`refusals` + 1, `lastReason` = ?"
+      "insert into `youtube_unusable_videos` (`id`, `videoId`, `refusals`, `lastReason`, `unusableAt`, `channel`, `refusedEver`, `deliveries`, `createdAt`, `updatedAt`) " +
+        "values (default, ?, ?, ?, default, default, ?, default, default, default) on duplicate key update " +
+        "`refusals` = `youtube_unusable_videos`.`refusals` + 1, `lastReason` = ?, `refusedEver` = ?"
     );
-    expect(c.params).toEqual(["5GZpQahYhPk", 1, "http_502:stream_refused", "http_502:stream_refused"]);
+    expect(c.params).toEqual(["5GZpQahYhPk", 1, "http_502:stream_refused", 1, "http_502:stream_refused", 1]);
     const v = verdict.toSQL();
     expect(v.sql).toBe(
       "update `youtube_unusable_videos` set `unusableAt` = ? where (`youtube_unusable_videos`.`videoId` = ? " +
@@ -277,6 +253,6 @@ describe("Video 618 — wiring", () => {
     }
     expect(sqlText).toContain("UNIQUE(`videoId`)");
     const journal = JSON.parse(fs.readFileSync(path.join(__dirname, "../drizzle/meta/_journal.json"), "utf8"));
-    expect(journal.entries.at(-1).tag).toBe("0061_video618_youtube_unusable_videos");
+    expect(journal.entries.map((e: { tag: string }) => e.tag)).toContain("0061_video618_youtube_unusable_videos");
   });
 });

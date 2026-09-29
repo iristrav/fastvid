@@ -1086,6 +1086,14 @@ export const youtubeUnusableVideos = mysqlTable("youtube_unusable_videos", {
   /** The last refusal's classified reason, e.g. `http_502:stream_refused`. Never a URL. */
   lastReason: varchar("lastReason", { length: 128 }),
   unusableAt: timestamp("unusableAt"),
+  /**
+   * VIDEO 619 — the channel, as YouTube's search names it, so refusals add up per channel: all three
+   * "Keeping Up With The Kardashians" videos failed while small channels delivered. `refusedEver`
+   * survives a delivery (unlike `refusals`); `deliveries` counts what the video did deliver.
+   */
+  channel: varchar("channel", { length: 128 }),
+  refusedEver: int("refusedEver").default(0).notNull(),
+  deliveries: int("deliveries").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
