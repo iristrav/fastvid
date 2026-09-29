@@ -86,7 +86,7 @@ describe("nobody else's text in the picture either", () => {
    */
   it("the archive never offers a clip with text, and no caller can wave it through", () => {
     const INGEST = readFileSync(join(__dirname, "archiveIngestion.ts"), "utf8");
-    expect(INGEST).toContain('if (overlay.verdict === "has_text" && !cutForCleanPieces) {');
+    expect(INGEST).toContain('if (overlay.verdict === "has_text" && !cutForCleanPieces && !articleScreenshot) {');
     expect(INGEST).toContain("...(cutForCleanPieces ? { isActive: 0 } : {}),");
     expect(INGEST).not.toContain("approvedForBeat");
   });

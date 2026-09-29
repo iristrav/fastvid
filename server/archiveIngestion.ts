@@ -24,6 +24,7 @@ import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
 import { cachedClipBakedEditTextVerdict } from "./archiveClipFilter";
 import { ARCHIVE_PIECE_MIN_SEC, queueArchiveShotSplit } from "./archiveShotPieces";
+import { isArticleScreenshotFile } from "./articleScreenshot";
 import { beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import { recordVisualSearchMemory, type ClassifiedEntity } from "./visualSearchMemory";
 import { Semaphore } from "./_core/semaphore";
@@ -317,12 +318,14 @@ async function ingestExternalClipToArchiveInner(
     // case: the beat gate (RONDE 23) has usually already judged this exact clip, and the shared
     // memo in archiveClipFilter returns that verdict instead of re-running the vision call.
     const overlayKey = metadata.sourceUrl || `${metadata.sourceNote}:${path.basename(localPath)}`;
-    const overlay = await cachedClipBakedEditTextVerdict(
-      localPath,
-      metadata.mimeType,
-      overlayKey,
-      beatClipTextFilterMaxChecks()
-    );
+    /**
+     * VIDEO 619 — an article screenshot IS text; that is what it was taken for. It is stored marked
+     * as having text (never offered as ordinary footage) instead of being refused for it.
+     */
+    const articleScreenshot = isArticleScreenshotFile(localPath);
+    const overlay: Awaited<ReturnType<typeof cachedClipBakedEditTextVerdict>> = articleScreenshot
+      ? { verdict: "has_text", reason: "a screenshot of a news article" }
+      : await cachedClipBakedEditTextVerdict(localPath, metadata.mimeType, overlayKey, beatClipTextFilterMaxChecks());
     /**
      * VIDEO 619 — a VIDEO with text somewhere in it is not thrown away whole any more.
      *
@@ -336,7 +339,7 @@ async function ingestExternalClipToArchiveInner(
       metadata.mediaType === "video" &&
       (metadata.durationSec ?? 0) >= 2 * ARCHIVE_PIECE_MIN_SEC &&
       stockArchiveId == null;
-    if (overlay.verdict === "has_text" && !cutForCleanPieces) {
+    if (overlay.verdict === "has_text" && !cutForCleanPieces && !articleScreenshot) {
       console.log(
         `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
       );

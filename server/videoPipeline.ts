@@ -488,6 +488,7 @@ import {
 } from "./beatVisualStatus";
 import { beatClipIsPlaceholder, clipPathIsFallbackFile } from "./placeholderIdentity";
 import { describeOnScreenTextPolicy } from "./onScreenTextPolicy";
+import { ARTICLE_FILE_MARKER, ARTICLE_SCREENSHOTS_PER_VIDEO, chooseArticle, newsResultsFrom, takeArticleScreenshot, type NewsResult } from "./articleScreenshot";
 import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
 import { isNameParticleToken } from "./searchQueryContract";
 import { sceneSearchBudgetMs } from "./sceneSearchBudget";
@@ -3229,6 +3230,12 @@ export async function fetchBeatArchivalThenPexels(
       return internet;
     }
   }
+
+  /** VIDEO 619 — a screenshot of a news article about the beat, at most two per film. */
+  const article = await fetchBeatArticleScreenshot(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, videoTitle, adoptOpts, tag
+  );
+  if (article) return article;
 
   const still = await fetchBeatAuthenticStills(
     beat,
@@ -10022,6 +10029,105 @@ async function fetchSerpAPIImages(
 }
 
 /**
+ * VIDEO 619 — a screenshot of a news article about the beat, as one of the beat's PICTURES.
+ *
+ * See `articleScreenshot.ts` for the rule. The search is SerpAPI's Google News through the same
+ * gate every provider passes; the page is photographed by the headless browser the server carries
+ * for Remotion; the picture is adopted through `adoptClip` like any other still, so the picture
+ * editor still has its say. At most `ARTICLE_SCREENSHOTS_PER_VIDEO` per film.
+ */
+const articleScreenshotsByRender = new WeakMap<VisualDedupState, number>();
+
+async function fetchBeatArticleScreenshot(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  tag: string
+): Promise<string | null> {
+  if (!SERPAPI_KEY || isSerpApiInCooldown()) return null;
+  const taken = articleScreenshotsByRender.get(dedup) ?? 0;
+  if (taken >= ARTICLE_SCREENSHOTS_PER_VIDEO) return null;
+  return withBeatProvenance(beat, scene, async () => {
+    const query = beatMediaSearchQueries(beat, videoTitle).find((q) => q.trim().length > 3);
+    if (!query || admitProviderQuery("serpapi", query, "fetchBeatArticleScreenshot") === null) return null;
+    let results: NewsResult[] = [];
+    try {
+      const url = new URL("https://serpapi.com/search.json");
+      url.searchParams.set("engine", "google_news");
+      url.searchParams.set("q", query);
+      url.searchParams.set("api_key", SERPAPI_KEY);
+      const resp = await providerLimiter("serpapi").run(() =>
+        fetchWithTimeout(url.toString(), 15_000, `SerpAPI news scene ${sceneIndex}`)
+      );
+      if (!resp.ok) {
+        markSerpApiSearchResult(false);
+        return null;
+      }
+      markSerpApiSearchResult(true);
+      results = newsResultsFrom(await resp.json());
+    } catch (err) {
+      console.warn(`[ArticleScreenshot] s${sceneIndex}b${beat.index} news search failed:`, (err as Error)?.message?.slice(0, 100));
+      return null;
+    }
+    const usedLinks = new Set(results.map((r) => r.link).filter((l) => dedup.usedImageUrls.has(normalizeImageSourceUrl(l))));
+    const beatWords = [...(adoptOpts.keywords ?? beat.keywords ?? []), ...beat.text.split(/[^\p{L}\p{N}]+/u)];
+    const article = chooseArticle(results, beatWords, usedLinks);
+    if (!article) {
+      console.log(`[ArticleScreenshot] s${sceneIndex}b${beat.index} no headline among ${results.length} shares a word with the beat`);
+      return null;
+    }
+    if (!openWebSourceDecision({ url: article.link }).allowed) return null;
+
+    fs.mkdirSync(workDir, { recursive: true });
+    const base = `scene_${sceneIndex}_${tag}${ARTICLE_FILE_MARKER}${beat.index}`;
+    const png = path.join(workDir, `${base}.png`);
+    const outPath = tagPathWithProviderAsset(path.join(workDir, `${base}.mp4`), "serpapi", article.link, dedup.sourcingCache, {
+      sceneIndex,
+      beatIndex: beat.index,
+      sourceUrl: article.link,
+      title: article.title,
+      mediaType: "image",
+      query,
+      searchRoute: "fetchBeatArticleScreenshot",
+    });
+    const { resolveRemotionBrowser } = await import("./remotionRenderer");
+    const shot = await takeArticleScreenshot(article.link, png, { browser: resolveRemotionBrowser() });
+    if (!shot) {
+      recordProviderDownloadOutcome(dedup.sourcingCache, outPath, false, "the page did not paint (blank or blocked)");
+      console.log(`[ArticleScreenshot] s${sceneIndex}b${beat.index} ${article.source}: the page did not paint — not used`);
+      return null;
+    }
+    await stillImageToVideo(png, outPath, clipFetchDur, `article screenshot scene ${sceneIndex}`, false, sceneIndex, beat.index);
+    try { fs.unlinkSync(png); } catch { /* already gone */ }
+    if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 1_000) return null;
+    recordProviderDownloadOutcome(dedup.sourcingCache, outPath, true);
+    dedup.clipAnnotationMeta.set(outPath, {
+      ...(dedup.clipAnnotationMeta.get(outPath) ?? {}),
+      providerText: { title: article.title },
+    });
+    const candidates = [outPath];
+    const clip = await adoptClip(candidates, dedup, sceneIndex, beat.index, beat.text, workDir, query, {
+      ...adoptOpts,
+      requireBeatMatch: false,
+      scriptAnchored: false,
+    });
+    if (!clip || !isRealVideoClip(clip)) return null;
+    dedup.usedImageUrls.add(normalizeImageSourceUrl(article.link));
+    articleScreenshotsByRender.set(dedup, taken + 1);
+    console.log(
+      `[ArticleScreenshot] s${sceneIndex}b${beat.index} used: "${article.title.slice(0, 80)}" (${article.source}) ` +
+        `${taken + 1}/${ARTICLE_SCREENSHOTS_PER_VIDEO} this film`
+    );
+    return clip;
+  });
+}
+
+/**
  * RONDE 50: which rung of the guaranteed ladder actually answered.
  *
  * The first two return real media — curated archive footage and a Commons file. The last two are
@@ -15624,7 +15730,7 @@ function isStillPhotoClip(filePath: string): boolean {
   const base = path.basename(filePath);
   // AI / generated motion clips count as video, not stills
   if (/_ai\.mp4$|_runway_|_kling_|_luma_|_pika_|_veo_|_grok_|_forge_/i.test(base)) return false;
-  return /_serp_|_wiki_|_openverse_|_unsplash_|_p0_|_p2_|_yt_\d/i.test(base);
+  return /_serp_|_wiki_|_openverse_|_unsplash_|_p0_|_p2_|_yt_\d|_article_/i.test(base);
 }
 
 /** Standalone motion-graphic beat clip (text/map card) — not B-roll. */
