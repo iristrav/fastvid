@@ -3159,13 +3159,20 @@ export async function fetchCuratedArchiveBeatClip(
   const parallelTries = visualFootageFocusEnabled()
     ? Math.min(4, eligible.length)
     : Math.min(2, eligible.length);
-  const parallelLimit = pLimit(parallelTries);
-  const prepared = await Promise.all(
-    eligible.map((picked) => parallelLimit(() => tryPrepare(picked)))
-  );
-  const successes = eligible
-    .map((picked, i) => ({ picked, clipPath: prepared[i] }))
-    .filter((r): r is { picked: CuratedCandidatePick; clipPath: string } => !!r.clipPath);
+  /**
+   * VIDEO 618 — PREPARE IN SCORE ORDER, AND STOP AT THE FIRST GROUP THAT YIELDS A CLIP.
+   *
+   * Every eligible candidate used to be prepared — downloaded, trimmed, transcoded — and all but
+   * the best-scoring success were deleted again without anyone looking at them. Render 618 did that
+   * for 22 archive clips (`DOWNLOADED_ASSET_NEVER_JUDGED`), six to eight per beat, inside beat
+   * budgets that then ran out before later beats could start.
+   *
+   * The winner is unchanged: it is still the best-scoring candidate that prepares. Groups are taken
+   * in score order, so every candidate scoring higher than any success of a later group was already
+   * tried in an earlier one; the first group with a success therefore holds the overall best. Only
+   * the preparations whose result could never have been used are skipped.
+   */
+  const successes = await prepareInScoreOrder(eligible, parallelTries, tryPrepare);
 
   if (successes.length === 0) return null;
 
@@ -3179,6 +3186,30 @@ export async function fetchCuratedArchiveBeatClip(
     }
   }
   return recordPicked(winner.picked, winner.clipPath);
+}
+
+/**
+ * VIDEO 618 — the candidates, prepared best-first in groups of `parallel`, stopping after the
+ * first group that yields any clip. Returns that group's successes; see the note at the call site.
+ */
+export async function prepareInScoreOrder<T extends { score: number }>(
+  eligible: readonly T[],
+  parallel: number,
+  tryPrepare: (picked: T) => Promise<string | null>
+): Promise<Array<{ picked: T; clipPath: string }>> {
+  const byScore = [...eligible].sort((a, b) => b.score - a.score);
+  const size = Math.max(1, parallel);
+  const parallelLimit = pLimit(size);
+  const successes: Array<{ picked: T; clipPath: string }> = [];
+  for (let from = 0; from < byScore.length && successes.length === 0; from += size) {
+    const group = byScore.slice(from, from + size);
+    const prepared = await Promise.all(group.map((picked) => parallelLimit(() => tryPrepare(picked))));
+    group.forEach((picked, i) => {
+      const clipPath = prepared[i];
+      if (clipPath) successes.push({ picked, clipPath });
+    });
+  }
+  return successes;
 }
 
 /** Mark a curated asset as used after it is adopted into the montage. */
