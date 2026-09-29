@@ -229,10 +229,10 @@ describe("R235 §4 — 'a route is configured' is not 'the route is configured'"
     expect(primary.requires).not.toContain("RAPIDAPI_KEY");
   });
 
-  it("THE ORIGINAL CAPABILITY IS UNCHANGED — nothing about routing moved", () => {
+  it("THE ORIGINAL CAPABILITY NOW NAMES THE SERVICE ONLY — RapidAPI is switched off (video 619)", () => {
     const either = byId("youtube_download");
     expect(either).toBeDefined();
-    expect(either!.requiresAny).toEqual(["YOUTUBE_CC_DL_SERVICE", "RAPIDAPI_KEY"]);
+    expect(either!.requiresAny).toEqual(["YOUTUBE_CC_DL_SERVICE"]);
     expect(either!.fatal).toBe(false);
   });
 
@@ -241,10 +241,10 @@ describe("R235 §4 — 'a route is configured' is not 'the route is configured'"
     expect(byId("youtube_download_primary")!.fatal).toBe(false);
   });
 
-  it("the description says what the fallback actually costs, in the log's own words", () => {
+  it("the description says there is no fallback any more (RapidAPI switched off, video 619)", () => {
     const d = byId("youtube_download_primary")!.describes;
-    expect(d).toContain("whole-video");
-    expect(d).toContain("scene budget");
+    expect(d).toContain("no YouTube clip can be fetched");
+    expect(d).toContain("switched off");
   });
 
   it("every capability id is still unique", () => {

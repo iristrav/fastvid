@@ -12,7 +12,7 @@
  * next attempt is one call. It answers three questions the prose could not:
  *
  *   · which CAPABILITY is blocked, not just which variable is unset — an operator does not care
- *     that `NARA_API_KEY` is missing, they care that the archival sources are down to four;
+ *     that `PEXELS_API_KEY` is missing, they care that stock footage is down to one provider;
  *   · what is REACHABLE, not merely configured — a DATABASE_URL that points nowhere is worse than
  *     no DATABASE_URL, because it looks like readiness;
  *   · what would actually run, given the flags that are set right now.
@@ -159,13 +159,6 @@ export const CAPABILITIES: readonly Capability[] = [
     fatal: false,
   },
   {
-    id: "archival_sources",
-    describes: "Europeana and NARA. Wikimedia, Internet Archive, LoC and NASA need no key",
-    requires: [],
-    requiresAny: ["EUROPEANA_API_KEY", "NARA_API_KEY"],
-    fatal: false,
-  },
-  {
     id: "youtube_search",
     describes: "finding YouTube candidates at all",
     requires: ["YOUTUBE_API_KEY"],
@@ -175,7 +168,8 @@ export const CAPABILITIES: readonly Capability[] = [
     id: "youtube_download",
     describes: "fetching a YouTube winner. Without it a YouTube clip can be ranked and never used",
     requires: [],
-    requiresAny: ["YOUTUBE_CC_DL_SERVICE", "RAPIDAPI_KEY"],
+    /** VIDEO 619 — RapidAPI is switched off in code (`RAPIDAPI_SWITCHED_OFF`): only the service counts. */
+    requiresAny: ["YOUTUBE_CC_DL_SERVICE"],
     fatal: false,
   },
   {
@@ -201,24 +195,9 @@ export const CAPABILITIES: readonly Capability[] = [
      */
     id: "youtube_download_primary",
     describes:
-      "the yt-dlp cloud service, which fetches only the seconds a beat needs. Without it every " +
-      "YouTube fetch falls to the whole-video RapidAPI route, which stands aside on a short scene budget",
+      "the yt-dlp cloud service, which fetches only the seconds a beat needs. Without it no YouTube " +
+      "clip can be fetched: the RapidAPI fallback is switched off since video 619",
     requires: ["YOUTUBE_CC_DL_SERVICE"],
-    fatal: false,
-  },
-  {
-    /**
-     * The fallback, named as a fallback.
-     *
-     * Split out from `youtube_download` so the report can answer three separate questions —
-     * is the primary route there, is the fallback there, can YouTube be fetched at all — instead
-     * of one question whose "yes" hid render 576's actual state.
-     */
-    id: "youtube_fallback_download",
-    describes:
-      "the RapidAPI fallback, which downloads the whole source film and trims afterwards. Usable, " +
-      "but it stands aside whenever fewer than 12s of scene budget remain",
-    requires: ["RAPIDAPI_KEY"],
     fatal: false,
   },
   {

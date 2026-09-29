@@ -52,13 +52,11 @@ import { callSitesOf, lineOf, stripComments } from "./sourceScan.test.support";
 const RAW = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const CODE = stripComments(RAW);
 
-/** The eight fetchers that can feed an adoption directly. */
+/** The fetchers that can feed an adoption directly (Openverse and NASA were removed in VIDEO 619). */
 const FETCHERS = [
   "fetchWikimediaVideos",
   "fetchWikimediaImages",
-  "fetchOpenverseImages",
   "fetchSerpAPIImages",
-  "fetchNasaVideoClips",
   "fetchInternetArchiveClips",
   "fetchPexelsClips",
   "fetchPixabayClips",
@@ -137,12 +135,13 @@ describe("2. every route that adopts what it fetched asks for a choice", () => {
    * diff to what actually changed. Counted so that an eighteenth added later without a choice is a
    * failure rather than a silence.
    */
-  it("and there are seventeen of them, fifteen of which needed the constant", () => {
-    expect(directAdoptionSites()).toHaveLength(17);
+  /** VIDEO 619: four of the seventeen were Openverse and NASA routes, removed with those providers. */
+  it("and there are thirteen of them, eleven of which needed the constant", () => {
+    expect(directAdoptionSites()).toHaveLength(13);
     expect(
       [...CODE.matchAll(/MULTI_CANDIDATE_FETCH_COUNT/g)],
-      "one declaration plus fifteen uses"
-    ).toHaveLength(16);
+      "one declaration plus eleven uses"
+    ).toHaveLength(12);
   });
 
   it("the other two already asked for more than one, and still do", () => {
@@ -169,7 +168,8 @@ describe("3. the routes that pool were deliberately left alone", () => {
         pooled += 1;
       }
     }
-    expect(pooled, "a mass replacement would have taken these too").toBeGreaterThanOrEqual(20);
+    /** Twenty before VIDEO 619; the Openverse and NASA pool calls left with those providers. */
+    expect(pooled, "a mass replacement would have taken these too").toBeGreaterThanOrEqual(15);
   });
 
   it("and the pools they fill are still bounded where they were", () => {
@@ -179,20 +179,13 @@ describe("3. the routes that pool were deliberately left alone", () => {
   });
 });
 
-describe("4. the intentional single-winner routes are untouched", () => {
-  it("both still ask for one and still take the first", () => {
-    const adoptions = [...CODE.matchAll(/adoptClip\(\s*\[winner\.path\]/g)];
-    expect(adoptions).toHaveLength(2);
-    for (const m of adoptions) {
-      const before = CODE.slice(Math.max(0, m.index! - 700), m.index!);
-      const fetcher = [...before.matchAll(/(fetchEuropeanaVideos|searchWebWideVideoClips)\(/g)].pop();
-      expect(fetcher, "a single-winner adoption with no fetch above it").toBeTruthy();
-      expect(before.slice(fetcher!.index!), `${fetcher![1]} asks for one`).toMatch(
-        /sceneIndex,\s*1\s*[,)]/
-      );
-    }
-    expect(CODE).toContain("const winner = euroHits[0]!;");
-    expect(CODE).toContain("const winner = webWideCandidates[0]!;");
+/**
+ * The two single-winner routes (Europeana, web-wide) left with those providers in VIDEO 619: none
+ * of them delivered a clip to a film in renders 597–619.
+ */
+describe("4. the single-winner routes are gone with their providers", () => {
+  it("no adoption of a lone winner remains", () => {
+    expect([...CODE.matchAll(/adoptClip\(\s*\[winner\.path\]/g)]).toHaveLength(0);
   });
 });
 

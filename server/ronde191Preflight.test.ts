@@ -144,15 +144,15 @@ describe("R191 — the verdict says what is blocked and why", () => {
    */
   it("a missing optional provider degrades the render rather than blocking it", async () => {
     const env = fullyConfigured("value");
-    delete env.EUROPEANA_API_KEY;
-    delete env.NARA_API_KEY;
+    delete env.PEXELS_API_KEY;
+    delete env.PIXABAY_API_KEY;
     const report = await productionPreflight(ALL_GOOD, env);
     /**
      * RONDE 205 — DEGRADED, which is a third verdict rather than a nicer word for BLOCKED.
-     * The render runs; it runs with four archival sources instead of six.
+     * The render runs; it runs without stock footage.
      */
     expect(report.verdict).toBe("PRODUCTION_RENDER_DEGRADED");
-    const archival = report.capabilities.find((c) => c.id === "archival_sources")!;
+    const archival = report.capabilities.find((c) => c.id === "stock_footage")!;
     expect(archival.available).toBe(false);
     expect(archival.state).toBe("degraded");
     expect(archival.fatal).toBe(false);

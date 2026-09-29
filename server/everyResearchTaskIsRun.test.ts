@@ -102,10 +102,8 @@ describe("the research round runs every task it builds", () => {
     const snapshot = code.indexOf(SNAPSHOT);
     const head = code.slice(0, snapshot);
     for (const fetcher of [
-      "fetchEuropeanaVideos",
-      "fetchNasaVideoClips",
+      // fetchEuropeanaVideos, fetchNasaVideoClips and fetchOpenverseImages: removed in VIDEO 619.
       "fetchWikimediaImages",
-      "fetchOpenverseImages",
       "fetchUnsplashImages",
       "fetchSerpAPIImages",
       "fetchPexelsClips",

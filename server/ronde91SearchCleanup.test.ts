@@ -186,10 +186,7 @@ describe("RONDE 91 §4 — no provider search has an alternative route", () => {
       "searchPixabayCandidates",
       "searchWikimediaCandidates",
       "searchInternetArchiveCandidates",
-      "searchEuropeanaCandidates",
-      "searchOpenverseCandidates",
-      "searchNasaCandidates",
-      "searchNaraCandidates",
+      // Europeana, Openverse, NASA and NARA: removed in VIDEO 619.
     ]) {
       const idx = POOL_SRC.indexOf(`function ${fn}(`);
       expect(idx, `${fn} missing`).toBeGreaterThan(-1);

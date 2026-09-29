@@ -1487,6 +1487,22 @@ export type YoutubeSourcingReadiness = {
   warnings: string[];
 };
 
+/**
+ * VIDEO 619 — RAPIDAPI IS SWITCHED OFF.
+ *
+ * Its download links are signed for RapidAPI's own address (`http_403:ip_locked`, render 615), and
+ * in renders 617, 618 and 619 it was locked for the whole render: one delivery in a day of tries.
+ * Every reader of the key goes through this function, so the download fallback, the search, the
+ * background fetch and the readiness checks all see "no RapidAPI" at once. The environment
+ * variable is left as it is; this is the one place to change should a plan without address-locked
+ * links ever be bought.
+ */
+export const RAPIDAPI_SWITCHED_OFF = true;
+
+export function rapidApiKey(env: NodeJS.ProcessEnv = process.env): string {
+  return RAPIDAPI_SWITCHED_OFF ? "" : (env.RAPIDAPI_KEY?.trim() ?? "");
+}
+
 export function youtubeSourcingReadiness(): YoutubeSourcingReadiness {
   const missing: string[] = [];
   const warnings: string[] = [];
@@ -1494,9 +1510,9 @@ export function youtubeSourcingReadiness(): YoutubeSourcingReadiness {
   if (!process.env.YOUTUBE_API_KEY?.trim()) missing.push("YOUTUBE_API_KEY");
 
   const cloud = Boolean(process.env.YOUTUBE_CC_DL_SERVICE?.trim());
-  const rapid = Boolean(process.env.RAPIDAPI_KEY?.trim());
+  const rapid = Boolean(rapidApiKey());
   /** Either download route satisfies this — only their absence together blocks a download. */
-  if (!cloud && !rapid) missing.push("RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE");
+  if (!cloud && !rapid) missing.push(RAPIDAPI_SWITCHED_OFF ? "YOUTUBE_CC_DL_SERVICE" : "RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE");
 
   /**
    * The cloud yt-dlp service authenticates with `Authorization: Bearer <YOUTUBE_CC_DL_TOKEN>` and

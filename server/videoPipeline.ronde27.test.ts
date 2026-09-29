@@ -2,7 +2,6 @@ import { readFileSync } from "fs";
 import path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { youtubeDownloadTimeoutMs, youtubeMinFormatHeight } from "./sourcingPolicy";
-import { locPoolBudgetMs } from "./scenePool";
 import { looksLikeSentenceFragment } from "./mediaResearchEngine";
 import { mergeCandidates } from "./retrievalFunnel";
 import type { PoolCandidate } from "./scenePool";
@@ -80,48 +79,8 @@ describe("RONDE 27a — the format picker optimises for download time", () => {
   });
 });
 
-describe("RONDE 27b — Library of Congress cannot run out the pool clock", () => {
-  afterEach(() => {
-    delete process.env.LOC_POOL_BUDGET_MS;
-  });
-
-  it("has a budget well under the 60s pool window it used to consume whole", () => {
-    expect(locPoolBudgetMs()).toBeLessThan(60_000);
-    expect(locPoolBudgetMs()).toBeGreaterThanOrEqual(10_000);
-  });
-
-  it("is tunable within sane bounds", () => {
-    process.env.LOC_POOL_BUDGET_MS = "30000";
-    expect(locPoolBudgetMs()).toBe(30_000);
-    process.env.LOC_POOL_BUDGET_MS = "999999";
-    expect(locPoolBudgetMs()).toBe(20_000);
-  });
-});
-
-const poolSrc = readFileSync(path.join(__dirname, "scenePool.ts"), "utf8");
-
-describe("RONDE 27b — the budget is enforced where the time is spent", () => {
-  const fn = poolSrc.slice(
-    poolSrc.indexOf("export async function searchLibraryOfCongressCandidates("),
-    poolSrc.indexOf("export async function searchLibraryOfCongressCandidates(") + 4000,
-  );
-
-  it("stops starting new queries once spent", () => {
-    expect(fn).toContain("outOfTime()");
-    expect(fn).toContain("skipping remaining queries");
-  });
-
-  it("also stops between detail-fetch batches — that is what burns the clock", () => {
-    // One item request per search hit, five at a time, 8s each: the search calls are cheap and
-    // the detail calls are not, so a query-level check alone would not have bounded anything.
-    const batchLoop = fn.slice(fn.indexOf("for (let i = 0; i < results.length"));
-    expect(batchLoop).toContain("if (outOfTime()) break;");
-  });
-
-  it("returns what it found rather than throwing it away", () => {
-    expect(fn).toContain("keeping ${candidates.length} candidate(s)");
-  });
-});
+// RONDE 27b (the Library of Congress pool budget) left with Library of Congress itself: VIDEO 619
+// removed the sources that delivered nothing to any film across renders 597–619.
 
 const funnelSrc = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
 

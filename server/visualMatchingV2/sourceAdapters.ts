@@ -7,7 +7,6 @@
  *  visualMatchingV2SourceAdaptersEnabled() in sourcingPolicy.ts. */
 
 import {
-  fetchEuropeanaVideos,
   fetchInternetArchiveClips,
   fetchPexelsClips,
   fetchPixabayClips,
@@ -238,29 +237,6 @@ export const youtubeCcAdapter: SourceAdapter = {
   },
 };
 
-export const europeanaAdapter: SourceAdapter = {
-  name: "europeana",
-  supportsPreEmbedding: false,
-  async search(intent, ctx) {
-    return withAdapterLogging("europeana", intent, async () => {
-      const queries = await rankedQueryStrings(intent, 5, ctx);
-      const candidates = await fetchEuropeanaVideos(queries, 5, ctx.workDir, ctx.sceneIndex, ctx.count ?? 5);
-      return candidates.map((c): CandidateAsset =>
-        normalizeCandidate(
-          {
-            candidateId: `europeana:${JSON.stringify(c).slice(0, 64)}`,
-            source: "europeana",
-            assetType: "video",
-            localPath: c.path ?? null,
-            remoteUrl: null,
-            metadata: c,
-          },
-          queries[0]!
-        )
-      );
-    });
-  },
-};
 
 export const ALL_SOURCE_ADAPTERS: SourceAdapter[] = [
   ownArchiveAdapter,
@@ -269,7 +245,7 @@ export const ALL_SOURCE_ADAPTERS: SourceAdapter[] = [
   pixabayAdapter,
   internetArchiveAdapter,
   youtubeCcAdapter,
-  europeanaAdapter,
+  /** VIDEO 619 — Europeana removed: see REMOVED_PROVIDERS. */
 ];
 
 /** Runs every adapter in parallel for one beat. Not yet called by the active pipeline. */

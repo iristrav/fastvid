@@ -38,6 +38,7 @@
  */
 import { youtubeResultIsShort } from "./youtubeNonFootage";
 import { youtubeVideoPoolEnabled } from "./youtubeVideoPool";
+import { rapidApiKey } from "./sourcingPolicy";
 import fs from "fs";
 import path from "path";
 import { createHash } from "crypto";
@@ -831,7 +832,8 @@ async function productionAlternativeDeps(sourceVideoId: number | null): Promise<
  */
 export function prefetchRouteOrder(env: NodeJS.ProcessEnv = process.env): Array<"cloud" | "rapidapi"> {
   const cloud = Boolean(env.YOUTUBE_CC_DL_SERVICE?.trim());
-  const rapid = Boolean(env.RAPIDAPI_KEY?.trim());
+  /** VIDEO 619 — RapidAPI is switched off; see `RAPIDAPI_SWITCHED_OFF`. */
+  const rapid = Boolean(rapidApiKey(env));
   const order: Array<"cloud" | "rapidapi"> =
     env.YOUTUBE_PREFETCH_ROUTE_ORDER?.trim() === "rapidapi_first" ? ["rapidapi", "cloud"] : ["cloud", "rapidapi"];
   return order.filter((r) => (r === "cloud" ? cloud : rapid));
@@ -913,8 +915,8 @@ export async function prefetchDisabledReason(): Promise<string | null> {
   const { youtubeSourcingEnabled, externalAssetIngestionEnabled } = await import("./sourcingPolicy");
   if (!youtubeSourcingEnabled()) return "ENABLE_YOUTUBE_SOURCING is not true";
   if (!externalAssetIngestionEnabled()) return "ENABLE_EXTERNAL_ASSET_INGESTION=false";
-  if (!process.env.RAPIDAPI_KEY && !process.env.YOUTUBE_CC_DL_SERVICE) {
-    return "no YouTube download route (RAPIDAPI_KEY and YOUTUBE_CC_DL_SERVICE both MISSING)";
+  if (!rapidApiKey() && !process.env.YOUTUBE_CC_DL_SERVICE) {
+    return "no YouTube download route (YOUTUBE_CC_DL_SERVICE MISSING; RapidAPI is switched off)";
   }
   return null;
 }

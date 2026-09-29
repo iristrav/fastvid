@@ -703,13 +703,9 @@ describe("H. video 613 — failed stays failed; a failed run stops; Openverse cl
     expect(isVideoGenerationCancelRequested(613)).toBe(false);
   });
 
-  it("C. the Openverse web-wide route opens a lineage record and records the outcome", () => {
-    const start = PIPE.indexOf("export async function searchWebWideVideoClips(");
-    const body = PIPE.slice(start, start + 9000);
-    expect(body).toContain('"openverse",');
-    expect(body).toContain("tagPathWithProviderAsset(");
-    expect(body).toContain('searchRoute: "searchWebWideVideoClips"');
-    expect(body).toContain("recordProviderDownloadOutcome(sourcingCache, outPath, madeClip");
+  /** VIDEO 619 removed the Openverse web-wide route, so no clip can arrive by it without lineage. */
+  it("C. the Openverse web-wide route is gone", () => {
+    expect(PIPE).not.toContain("async function searchWebWideVideoClips(");
   });
 });
 

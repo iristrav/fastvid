@@ -153,7 +153,8 @@ describe("§22 — every provider the code searches has a tier", () => {
   };
 
   it("the scan finds providers — it has not gone blind", () => {
-    expect(gatedProviders().length).toBeGreaterThanOrEqual(12);
+    /** Twelve before VIDEO 619 removed the providers that never delivered to a film. */
+    expect(gatedProviders().length).toBeGreaterThanOrEqual(6);
   });
 
   it("every provider that reaches the search gate is on the ladder", () => {

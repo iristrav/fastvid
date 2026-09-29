@@ -34,7 +34,8 @@
  */
 vi.hoisted(() => {
   process.env.YOUTUBE_API_KEY = "r134-test-key-not-a-credential";
-  process.env.RAPIDAPI_KEY = "r134-test-key-not-a-credential";
+  /** Video 619: RapidAPI is switched off, so the download route that makes YouTube searchable is the service. */
+  process.env.YOUTUBE_CC_DL_SERVICE = "http://ytdl.test.invalid";
   // The YouTube tier is opt-in by flag (sourcingPolicy.youtubeSourcingEnabled). Production has
   // it on — video 546 retrieved 25 YouTube candidates — so the wiring test runs with it on too.
   process.env.ENABLE_YOUTUBE_SOURCING = "true";
@@ -443,7 +444,7 @@ describe("RONDE 134 — the corrected query causes a real provider request", () 
     /** RONDE 653 — each case must reach the provider itself, not a previous case's cached answer. */
     resetYoutubeSearchQuotaState();
     process.env.YOUTUBE_API_KEY = "test-key-not-a-real-credential";
-    process.env.RAPIDAPI_KEY = "test-key-not-a-real-credential";
+    process.env.YOUTUBE_CC_DL_SERVICE = "http://ytdl.test.invalid";
   });
 
   /** Every URL the process tried to fetch during a call. */

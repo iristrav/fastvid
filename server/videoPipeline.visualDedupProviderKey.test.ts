@@ -179,73 +179,8 @@ describe("Visual dedup — (B) pre-download skip (fetchInternetArchiveClips)", (
   });
 });
 
-describe("Visual dedup — (B) pre-download skip (fetchNasaVideoClips, fetchNaraClips)", () => {
-  const ORIGINAL_ENV = { ...process.env };
-
-  beforeEach(() => {
-    nodeFetchMock.mockReset();
-    process.env = { ...ORIGINAL_ENV };
-  });
-  afterEach(() => {
-    process.env = { ...ORIGINAL_ENV };
-  });
-
-  it("fetchNasaVideoClips skips an already-used nasa_id before the asset-manifest call", async () => {
-    const { fetchNasaVideoClips, providerAssetKey } = await freshPipeline();
-    nodeFetchMock.mockImplementation((url: string) => {
-      const u = String(url);
-      if (u.includes("images-api.nasa.gov/search")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ collection: { items: [{ data: [{ nasa_id: "NASA-1969-APOLLO", title: "Apollo footage" }] }] } }),
-        });
-      }
-      return Promise.resolve({ ok: false, status: 500 });
-    });
-
-    const alreadyUsed = new Set([providerAssetKey("nasa", "NASA-1969-APOLLO")]);
-    const result = await fetchNasaVideoClips("apollo launch", 6, "/tmp", 0, 2, alreadyUsed);
-    expect(result).toEqual([]);
-    const assetCalls = nodeFetchMock.mock.calls.filter(([u]) => String(u).includes("/asset/NASA-1969-APOLLO"));
-    expect(assetCalls).toHaveLength(0); // pre-download skip fired — asset manifest never attempted
-  });
-
-  it("fetchNaraClips (canonical-URL fallback, Test 8) skips an already-used objectUrl before the download call", async () => {
-    process.env.NARA_API_KEY = "test-key";
-    const { fetchNaraClips, providerAssetKey } = await freshPipeline();
-    nodeFetchMock.mockImplementation((url: string) => {
-      const u = String(url);
-      if (u.includes("catalog.archives.gov")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            body: {
-              hits: {
-                hits: [
-                  {
-                    _source: {
-                      record: {
-                        title: "National Archives reel",
-                        digitalObjects: [{ objectUrl: "https://catalog.archives.gov/media/reel-42.mp4", objectType: "video" }],
-                      },
-                    },
-                  },
-                ],
-              },
-            },
-          }),
-        });
-      }
-      return Promise.resolve({ ok: false, status: 500 });
-    });
-
-    const alreadyUsed = new Set([providerAssetKey("nara", "https://catalog.archives.gov/media/reel-42.mp4")]);
-    const result = await fetchNaraClips("national archives", 6, "/tmp", 0, 1, alreadyUsed);
-    expect(result).toEqual([]);
-    const downloadCalls = nodeFetchMock.mock.calls.filter(([u]) => String(u).includes("reel-42.mp4"));
-    expect(downloadCalls).toHaveLength(0); // pre-download skip fired — download never attempted
-  });
-});
+// The NASA and NARA pre-download skips left with those providers (VIDEO 619). The same skip is
+// pinned on Internet Archive in "(B) pre-download skip (fetchInternetArchiveClips)" above.
 
 describe("Visual dedup — cross-cascade wiring in fetchHistoricalBeatVideo (Test 4/5/7, production call site)", () => {
   beforeEach(() => nodeFetchMock.mockReset());

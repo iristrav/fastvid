@@ -126,8 +126,8 @@ describe("an empty query falls through instead of being sent", () => {
     expect(region).not.toContain("unique[qi] ?? beat.searchQuery");
   });
 
-  it("the Openverse route uses it too", () => {
-    expect(PIPE).toContain('unique[0] || beat.searchQuery || ""');
+  /** The Openverse route that also used it was removed in VIDEO 619; the `??` form stays gone. */
+  it("no route falls back with ?? any more", () => {
     expect(PIPE).not.toContain("(unique[0] ?? beat.searchQuery)");
   });
 });

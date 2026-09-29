@@ -240,18 +240,17 @@ describe("Test 13/17 — candidate pool stays bounded, no new unbounded download
     expect(src).toMatch(/\.slice\(0,\s*5\)/);
     const serpCount = src.match(/fetchSerpAPIImages\(\s*\n?[^)]*?,\s*\n?\s*1,/s);
     const wikiCount = src.match(/fetchWikimediaImages\(\s*\n?[^)]*?,\s*\n?\s*1,/s);
-    const ovCount = src.match(/fetchOpenverseImages\(\s*\n?[^)]*?,\s*\n?\s*1,/s);
     expect(serpCount).not.toBeNull();
     expect(wikiCount).not.toBeNull();
-    expect(ovCount).not.toBeNull();
+    /** Openverse was the third provider here; VIDEO 619 removed it. */
+    expect(src).not.toContain("fetchOpenverseImages(");
   });
 });
 
 describe("Test 14 — existing provider gating stays active", () => {
-  it("fetchBeatAuthenticStills still gates SerpAPI/Openverse behind the same SERPAPI_KEY/historicalDoc/fastStockMode conditions as before", () => {
+  it("fetchBeatAuthenticStills still gates SerpAPI behind the same SERPAPI_KEY/historicalDoc/fastStockMode conditions as before", () => {
     const src = extractFunctionSource("fetchBeatAuthenticStills");
     expect(src).toContain("SERPAPI_KEY && (historicalDoc || !dedup.perf.fastStockMode)");
-    expect(src).toContain("(historicalDoc || !dedup.perf.fastStockMode) && ovQ.length > 3");
   });
 });
 

@@ -190,24 +190,22 @@ describe("YT-REPAIR §2 — wired into the route that lost the downloads", () =>
 describe("YT-REPAIR §3 — primary, fallback and rights are separate answers", () => {
   const byId = (id: string) => CAPABILITIES.find((c) => c.id === id);
 
-  it("ALL THREE CAPABILITIES EXIST", () => {
-    for (const id of ["youtube_download_primary", "youtube_fallback_download", "youtube_cc_evidence"]) {
+  it("THE PRIMARY AND RIGHTS CAPABILITIES EXIST; the RapidAPI fallback is gone (switched off, video 619)", () => {
+    expect(byId("youtube_fallback_download")).toBeUndefined();
+    for (const id of ["youtube_download_primary", "youtube_cc_evidence"]) {
       expect(byId(id), `${id} is missing`).toBeDefined();
     }
   });
 
-  it("THE PRIMARY IS THE CLOUD SERVICE, THE FALLBACK IS RAPIDAPI, and neither borrows the other", () => {
+  it("THE PRIMARY IS THE CLOUD SERVICE and borrows nothing", () => {
     expect(byId("youtube_download_primary")!.requires).toEqual(["YOUTUBE_CC_DL_SERVICE"]);
-    expect(byId("youtube_fallback_download")!.requires).toEqual(["RAPIDAPI_KEY"]);
     expect(byId("youtube_download_primary")!.requiresAny ?? []).toEqual([]);
-    expect(byId("youtube_fallback_download")!.requiresAny ?? []).toEqual([]);
   });
 
-  it("RENDER 576's EXACT DEPLOYMENT IS NOW LEGIBLE — primary MISSING, fallback AVAILABLE", () => {
+  it("RENDER 576's EXACT DEPLOYMENT IS NOW LEGIBLE — a RapidAPI key alone is no download route", () => {
     const env = { RAPIDAPI_KEY: "present" } as NodeJS.ProcessEnv;
     const has = (c: { requires: readonly string[] }) => c.requires.every((k) => Boolean(env[k]));
     expect(has(byId("youtube_download_primary")!), "the missing primary reads as present again").toBe(false);
-    expect(has(byId("youtube_fallback_download")!)).toBe(true);
   });
 
   it("THE RIGHTS QUESTION MIRRORS PRODUCTION'S OWN RULES, defaults included", () => {
@@ -244,7 +242,6 @@ describe("YT-REPAIR §3 — primary, fallback and rights are separate answers", 
       "youtube_search",
       "youtube_download",
       "youtube_download_primary",
-      "youtube_fallback_download",
       "youtube_cc_evidence",
     ]) {
       expect(byId(id)!.fatal, `${id} would block a render`).toBe(false);

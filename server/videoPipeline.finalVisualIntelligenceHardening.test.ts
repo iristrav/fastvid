@@ -450,18 +450,9 @@ describe("Test 22 — generic 'documentary' fallback only used when context is t
 });
 
 describe("Test 23 — existing F3 tests stay green (structural sanity check)", () => {
-  it("HISTORICAL_SOURCE_TIER_ORDER (F3/Round 7 infra) still contains all 9 tiers, unmodified by this round's wiring", async () => {
+  /** Nine tiers before VIDEO 619 removed the six that never delivered to a film. */
+  it("HISTORICAL_SOURCE_TIER_ORDER (F3/Round 7 infra) contains its three tiers, unmodified by this round's wiring", async () => {
     const { HISTORICAL_SOURCE_TIER_ORDER } = await freshPipeline();
-    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual([
-      "internet_archive",
-      "youtube_cc",
-      "wikimedia",
-      "nara",
-      "flickr",
-      "sepiasearch",
-      "vimeo",
-      "media_ccc",
-      "nasa",
-    ]);
+    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual(["internet_archive", "youtube_cc", "wikimedia"]);
   });
 });

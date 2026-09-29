@@ -2,69 +2,9 @@ import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
-function extractFunctionSource(fnName: string): string {
-  const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-  const candidates = [
-    `export async function ${fnName}(`,
-    `async function ${fnName}(`,
-    `export function ${fnName}(`,
-    `function ${fnName}(`,
-  ];
-  const marker = candidates.find((m) => src.includes(m));
-  const startIdx = marker ? src.indexOf(marker) : -1;
-  if (startIdx === -1) throw new Error(`function ${fnName} not found in videoPipeline.ts`);
-  const parenStart = src.indexOf("(", startIdx);
-  let parenDepth = 0;
-  let j = parenStart;
-  for (; j < src.length; j++) {
-    if (src[j] === "(") parenDepth++;
-    else if (src[j] === ")") {
-      parenDepth--;
-      if (parenDepth === 0) break;
-    }
-  }
-  const bodyStart = src.indexOf("{", j);
-  let depth = 0;
-  let i = bodyStart;
-  for (; i < src.length; i++) {
-    if (src[i] === "{") depth++;
-    else if (src[i] === "}") {
-      depth--;
-      if (depth === 0) break;
-    }
-  }
-  return src.slice(startIdx, i + 1);
-}
-
 const fullSource = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-describe("Vision Gate root-cause fix — Test A: fetchOpenverseImages path collision", () => {
-  const src = extractFunctionSource("fetchOpenverseImages");
-
-  it("no longer keys the output filename on the loop-local index alone", () => {
-    // The old, buggy construction: `openverse_${i}` with nothing else. Assert it's gone.
-    expect(src).not.toMatch(/openverse_\$\{i\}\.jpg/);
-    expect(src).not.toMatch(/openverse_\$\{i\}\.mp4/);
-  });
-
-  it("derives the filename from the asset's own id (or the image URL) so different assets can never collide on the same path", () => {
-    expect(src).toContain("images[i]?.id?.trim() || imgUrl");
-    expect(src).toContain("assetTag");
-    expect(src).toContain("openverse_${assetTag}.jpg");
-    expect(src).toContain("openverse_${assetTag}.mp4");
-  });
-
-  it("still falls back to a still-unique value when both id and URL are unexpectedly empty (never reintroduces `i` alone as the sole disambiguator for that edge case)", () => {
-    const idx = src.indexOf("const assetTag");
-    expect(idx).toBeGreaterThan(-1);
-    // Scoped to the statement, not to a byte count — a comment added above the fallback expression
-    // used to push it out of a snug window and report the fallback as gone.
-    const end = src.indexOf(";", idx);
-    expect(end).toBeGreaterThan(idx);
-    const scoped = src.slice(idx, end);
-    expect(scoped).toContain("String(i)");
-  });
-});
+// Test A (the Openverse path collision) left with Openverse itself (VIDEO 619).
 
 describe("Vision Gate root-cause fix round 2 — Test 9: off_topic_visual verdicts are individually logged", () => {
   /**

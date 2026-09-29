@@ -129,31 +129,31 @@ describe("Phase 5 — render-scoped query cache", () => {
     expect(searchCalls()).toHaveLength(1);
   });
 
+  /** VIDEO 619: NASA was the second provider here; it was removed, so Wikimedia stands in. */
   it("the same query text against a DIFFERENT provider is a separate cache entry (both search)", async () => {
-    const { fetchInternetArchiveClips, fetchNasaVideoClips, createSourcingCache, providerQueryCacheKey } =
+    const { fetchInternetArchiveClips, cachedProviderSearch, createSourcingCache, providerQueryCacheKey } =
       await freshPipeline();
     expect(providerQueryCacheKey("internet_archive", "apollo 11")).not.toBe(
-      providerQueryCacheKey("nasa", "apollo 11")
+      providerQueryCacheKey("wikimedia", "apollo 11")
     );
 
     nodeFetchMock.mockImplementation((url: string) => {
       const u = String(url);
       if (u.includes("advancedsearch.php")) return Promise.resolve(iaSearchPayload("abc123"));
       if (u.includes("/metadata/abc123")) return Promise.resolve(iaUnlicensedMetadata());
-      if (u.includes("images-api.nasa.gov/search")) {
-        return Promise.resolve({ ok: true, json: async () => ({ collection: { items: [] } }) });
-      }
       return Promise.resolve({ ok: false, status: 500 });
     });
 
     const cache = createSourcingCache();
     await fetchInternetArchiveClips("apollo 11", 6, "/tmp", 0, 1, "", "", [], new Set(), cache);
-    await fetchNasaVideoClips("apollo 11", 6, "/tmp", 0, 1, new Set(), cache);
+    let wikimediaSearches = 0;
+    await cachedProviderSearch(cache, "wikimedia", "apollo 11", async () => {
+      wikimediaSearches += 1;
+      return [];
+    });
 
     expect(searchCalls()).toHaveLength(1);
-    expect(
-      nodeFetchMock.mock.calls.filter(([u]) => String(u).includes("images-api.nasa.gov/search"))
-    ).toHaveLength(1);
+    expect(wikimediaSearches).toBe(1);
     // Two providers, two entries — never collapsed into one.
     expect(cache.queries.size).toBe(2);
   });
@@ -284,84 +284,8 @@ describe("Phase 20 — sourcing metrics", () => {
   });
 });
 
-describe("Phase 6 — Europeana asset/license cache (second real license-gate provider)", () => {
-  const ORIGINAL_ENV = { ...process.env };
-  beforeEach(() => {
-    nodeFetchMock.mockReset();
-    process.env = { ...ORIGINAL_ENV, EUROPEANA_API_KEY: "test-key", ENABLE_EUROPEANA: "true" };
-  });
-  afterEach(() => {
-    process.env = { ...ORIGINAL_ENV };
-  });
-
-  it("the same recordId surfaced by two DIFFERENT queries fetches the record (metadata+license) ONCE, and a rejection is cached", async () => {
-    const { fetchEuropeanaVideos, createSourcingCache, providerAssetKey } = await freshPipeline();
-    nodeFetchMock.mockImplementation((url: string) => {
-      const u = String(url);
-      if (u.includes("api.europeana.eu/record/v2/search.json")) {
-        return Promise.resolve({ ok: true, json: async () => ({ items: [{ id: "/1/shared", title: ["Shared"] }] }) });
-      }
-      if (u.includes("api.europeana.eu/record/v2/1/shared.json")) {
-        // No edmRights → license gate rejects, so this test never reaches a download while
-        // still proving the record call happens exactly once across two different queries.
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ object: { aggregations: [{ edmIsShownBy: "https://example.com/a.mp4" }] } }),
-        });
-      }
-      return Promise.resolve({ ok: false, status: 404 });
-    });
-
-    const cache = createSourcingCache();
-    await fetchEuropeanaVideos("berlin footage", 6, "/tmp", 0, 1, "", "", [], new Set(), cache);
-    await fetchEuropeanaVideos("fall of berlin newsreel", 6, "/tmp", 0, 1, "", "", [], new Set(), cache);
-
-    const recordCalls = nodeFetchMock.mock.calls.filter(([u]) => String(u).includes("1/shared.json"));
-    expect(recordCalls).toHaveLength(1); // metadata+license paid for exactly once
-    const entry = cache.assets.get(providerAssetKey("europeana", "/1/shared"));
-    expect(entry?.licenseAllowed).toBe(false);
-    const m = cache.metrics.get("europeana")!;
-    expect(m.licenseCalls).toBe(1); // one real network call that determined the license
-    expect(m.licenseRejectedCacheHits).toBe(1); // the second sighting hit the cached rejection
-  });
-
-  it("a LICENSED asset's record is reused (not re-fetched) on a second sighting via a different query", async () => {
-    const { fetchEuropeanaVideos, createSourcingCache, providerAssetKey } = await freshPipeline();
-    nodeFetchMock.mockImplementation((url: string) => {
-      const u = String(url);
-      if (u.includes("api.europeana.eu/record/v2/search.json")) {
-        return Promise.resolve({ ok: true, json: async () => ({ items: [{ id: "/1/licensed", title: ["Licensed"] }] }) });
-      }
-      if (u.includes("api.europeana.eu/record/v2/1/licensed.json")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            object: {
-              aggregations: [{
-                edmIsShownBy: "https://example.com/licensed.mp4",
-                edmRights: "http://creativecommons.org/publicdomain/mark/1.0/",
-              }],
-            },
-          }),
-        });
-      }
-      // Download deliberately fails — this test only needs to prove the record was reused.
-      return Promise.resolve({ ok: false, status: 404 });
-    });
-
-    const cache = createSourcingCache();
-    await fetchEuropeanaVideos("q one", 6, "/tmp", 0, 1, "", "", [], new Set(), cache);
-    await fetchEuropeanaVideos("q two", 6, "/tmp", 0, 1, "", "", [], new Set(), cache);
-
-    const recordCalls = nodeFetchMock.mock.calls.filter(([u]) => String(u).includes("1/licensed.json"));
-    expect(recordCalls).toHaveLength(1);
-    const m = cache.metrics.get("europeana")!;
-    expect(m.licenseCalls).toBe(1);
-    expect(m.licenseCacheHits).toBe(1); // second sighting reused the cached ALLOWED verdict
-    const entry = cache.assets.get(providerAssetKey("europeana", "/1/licensed"));
-    expect(entry?.licenseAllowed).toBe(true);
-  });
-});
+// The Europeana asset/license cache tests left with Europeana (VIDEO 619). The same cache is
+// still pinned on Internet Archive in "Phase 6 — render-scoped provider asset cache" above.
 
 describe("Phase 20 — query/asset cache miss counters", () => {
   beforeEach(() => nodeFetchMock.mockReset());

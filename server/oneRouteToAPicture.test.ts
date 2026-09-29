@@ -50,6 +50,7 @@ import {
   BUDGET_EXHAUSTED,
 } from "./centralVisualSourcing";
 import { PROVIDER_TIER, providerTier, tierNumber } from "./sourcingTiers";
+import { searchGateDecision } from "./searchQueryContract";
 import { poolTier } from "./scenePool";
 import { tierTasksByNeed } from "./providerCapability";
 
@@ -274,20 +275,19 @@ describe("an unplaced provider cannot slip past the ladder", () => {
         names.add(m[1]!);
       }
     }
-    expect(names.size, "no gate call-sites found — the helpers were renamed").toBeGreaterThan(10);
+    /** More than ten before VIDEO 619 removed the providers that never delivered to a film. */
+    expect(names.size, "no gate call-sites found — the helpers were renamed").toBeGreaterThan(5);
     for (const name of names) {
       expect(providerTier(name), `${name} reaches a provider gate with no tier`).not.toBeNull();
     }
   });
 
-  /** The provider that had no gate at all until the audit counted call-sites against the table. */
-  it("the Library of Congress passes the search gate like every other provider", () => {
-    const at = POOL.indexOf("export async function searchLibraryOfCongressCandidates(");
-    expect(at).toBeGreaterThan(-1);
-    const body = POOL.slice(at, POOL.indexOf("\n}\n", at));
-    expect(body).toContain('searchGateDecision("loc"');
-    /** Before the request, or the gate would be refusing a query already sent. */
-    expect(body.indexOf('searchGateDecision("loc"')).toBeLessThan(body.indexOf("const searchUrl ="));
+  /**
+   * The Library of Congress, which had no gate until the audit counted call-sites, was removed in
+   * VIDEO 619 — and a removed provider is refused at the gate whatever the query.
+   */
+  it("a removed provider is refused at the search gate", () => {
+    expect(searchGateDecision("loc", "Berlin 1945", "scenePool:loc").admitted).toBe(false);
   });
 });
 
@@ -460,7 +460,8 @@ describe("nothing but the ladder decides the order", () => {
     expect(at, "the historical cascade moved").toBeGreaterThan(-1);
     const members = [...PIPELINE.slice(at, PIPELINE.indexOf("] as const;", at)).matchAll(/"([a-z_]+)"/g)]
       .map((m) => m[1]!);
-    expect(members.length, "a source was dropped from the cascade").toBe(9);
+    /** Nine before VIDEO 619; the six that never delivered to a film were removed. */
+    expect(members.length, "a source was dropped from the cascade").toBe(3);
     for (const m of members) expect(providerTier(m), `${m} is unplaced`).not.toBeNull();
 
     /**

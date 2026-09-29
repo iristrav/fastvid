@@ -177,17 +177,12 @@ describe("4. the two loops offer their list instead of walking it", () => {
 
 describe("5. intentional single-winner routes are left alone", () => {
   /**
-   * Not every call site is a pool. Two routes fetch with `count=1` and take `[0]`: the provider
-   * was asked for one candidate, so there is no list to offer and forcing one would be a fiction.
-   * The fix must not have swept them up.
+   * There used to be two exceptions: web-wide routes that fetched with `count=1` and took `[0]`.
+   * VIDEO 619 removed them with their providers, so every adoption now offers a pool.
    */
-  it("the two count=1 web-wide routes still hand over one path", () => {
-    const singles = [...PIPE.matchAll(/adoptClip\(\s*\[winner\.path\]/g)];
-    expect(singles.length, "both intentional single-winner routes survive").toBe(2);
-  });
-
-  it("and they are single because the fetch asked for one", () => {
-    expect(PIPE).toMatch(/searchWebWideVideoClips\([\s\S]{0,120}?,\s*1\s*\)/);
+  it("no single-winner route is left", () => {
+    expect([...PIPE.matchAll(/adoptClip\(\s*\[winner\.path\]/g)]).toHaveLength(0);
+    expect(PIPE).not.toContain("searchWebWideVideoClips(");
   });
 });
 

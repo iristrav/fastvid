@@ -45,8 +45,9 @@ const arrayLiteralCalls = (): string[] =>
   [...CODE.matchAll(/adoptClip\(\s*\[([^\]]{0,80})\]/g)].map((m) => m[1]!.trim());
 
 describe("1. no route hands the picture editor a choice of one", () => {
-  it("exactly two call sites pass an array literal, and both are the single-winner routes", () => {
-    expect(arrayLiteralCalls()).toEqual(["winner.path", "winner.path"]);
+  /** VIDEO 619: the two single-winner routes (Europeana, web-wide) left with those providers. */
+  it("no call site passes an array literal any more", () => {
+    expect(arrayLiteralCalls()).toEqual([]);
   });
 
   /**
@@ -60,42 +61,13 @@ describe("1. no route hands the picture editor a choice of one", () => {
   });
 
   /**
-   * The general form, so a new variable name cannot reintroduce it. `[winner.path]` is allowed by
-   * the count=1 rule below; anything else of the shape `[<ident>.path]` is the defect.
+   * The general form, so a new variable name cannot reintroduce it: anything of the shape
+   * `[<ident>.path]` is the defect.
    */
   it("and no new variable name can reintroduce the shape", () => {
     const offenders = [...CODE.matchAll(/adoptClip\(\s*\[\s*([a-zA-Z_$][\w$]*)\.path\s*\]/g)]
-      .map((m) => m[1]!)
-      .filter((name) => name !== "winner");
+      .map((m) => m[1]!);
     expect(offenders, `single-candidate adoptClip via: ${offenders.join(", ")}`).toEqual([]);
-  });
-});
-
-describe("2. the two exceptions are exceptions for a stated reason", () => {
-  /**
-   * Read BACKWARD from each exception, because forward from the fetcher's NAME lands on its
-   * definition rather than on the call — which is what the first version of this test did.
-   */
-  it("each single-winner call sits with a fetch that asked for one candidate", () => {
-    const adoptions = [...CODE.matchAll(/adoptClip\(\s*\[winner\.path\]/g)];
-    expect(adoptions).toHaveLength(2);
-    const asked: string[] = [];
-    for (const m of adoptions) {
-      const before = CODE.slice(Math.max(0, m.index! - 700), m.index!);
-      const fetcher = [...before.matchAll(/(fetchEuropeanaVideos|searchWebWideVideoClips)\(/g)].pop();
-      expect(fetcher, "a single-winner adoption with no fetch above it").toBeTruthy();
-      asked.push(fetcher![1]!);
-      const call = before.slice(fetcher!.index!);
-      expect(call, `${fetcher![1]} must ask for one candidate`).toMatch(
-        /sceneIndex,\s*1\s*[,)]/
-      );
-    }
-    expect(new Set(asked).size, "two distinct routes, not one counted twice").toBe(2);
-  });
-
-  it("and takes the first result rather than ranking a list it never asked for", () => {
-    expect(CODE).toContain("const winner = euroHits[0]!;");
-    expect(CODE).toContain("const winner = webWideCandidates[0]!;");
   });
 });
 

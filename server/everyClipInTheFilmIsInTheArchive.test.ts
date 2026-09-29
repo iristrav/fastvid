@@ -205,61 +205,14 @@ describe("Test 4 — RONDE 9's exception is intact", () => {
   });
 });
 
-describe("Test 5a — the rescue routes are in the film, so they are archived too", () => {
-  /**
-   * The audit found `ingestExternalClipToArchive` at three sites with the assetId discarded. Two
-   * of them — Europeana web-wide and the Openverse still-to-video fallback — `return` the clip on
-   * the very next line, so that clip IS the beat's picture. The comment above one of them read
-   * "never blocks the current video, which already has its clip", which is the right reasoning for
-   * a runner-up and the wrong one here.
-   */
-  const RESCUE = (() => {
-    const at = PIPELINE.indexOf("const euroHits = await fetchEuropeanaVideos(");
-    expect(at, "the Europeana rescue route is gone").toBeGreaterThan(0);
-    const end = PIPELINE.indexOf("if (coercePersonName(personName) && !historicalDoc) {", at);
-    expect(end).toBeGreaterThan(at);
-    return PIPELINE.slice(at, end);
-  })();
-
-  it("both rescue winners go through the shared store, awaited", () => {
-    const calls = RESCUE.split("await storeExternalClipForTimeline({").length - 1;
-    expect(calls, "a rescue winner is still archived fire-and-forget").toBe(2);
-    expect(RESCUE).toContain('route: "rescue",');
-  });
-
-  it("NEITHER DISCARDS THE HANDLE ANY MORE", () => {
-    expect(stripComments(RESCUE)).not.toContain("void ingestExternalClipToArchive(");
-    /** And the comment still records what it was, so the next reader is not left guessing. */
-    expect(RESCUE).toContain("It was `void ingestExternalClipToArchive(...)`");
-  });
-
-  it("each one is the clip that is returned, which is why it needed a handle", () => {
-    const euroStore = RESCUE.indexOf("clipPath: euroClip!,");
-    const euroReturn = RESCUE.indexOf("return euroClip;");
-    expect(euroStore).toBeGreaterThan(0);
-    expect(euroReturn).toBeGreaterThan(euroStore);
-    const webStore = RESCUE.indexOf("clipPath: webWideClip!,");
-    const webReturn = RESCUE.indexOf("return webWideClip;");
-    expect(webStore).toBeGreaterThan(0);
-    expect(webReturn).toBeGreaterThan(webStore);
-  });
-
-  it("THEIR PROVENANCE IS UNCHANGED — only the discarding stopped", () => {
-    /**
-     * These two routes keep their own metadata literal, passed straight through. Re-routing them
-     * onto the shared builder would have silently rewritten `sourceNote` and `tags` for material
-     * already in the archive, which is a different change than the one this round is making.
-     */
-    /** Counted, not merely present: both routes carry it, so `toContain` passes on either one. */
-    const noteCount = RESCUE.split("sourceNote: `webwide:${winner.sourcePlatform}`").length - 1;
-    expect(noteCount, "a rescue route's sourceNote was rewritten").toBe(2);
-    expect(RESCUE).toContain("matchedQuery: winner.query,");
-    expect(RESCUE).toContain("matchedQuery: winner.matchedQuery,");
-  });
-
-  it("a route with no provider asset id says so rather than inventing one", () => {
-    expect(RESCUE).toContain("providerAssetId: null,");
-    expect(RESCUE).not.toContain('providerAssetId: "unknown"');
+/**
+ * Test 5a covered the two rescue routes (Europeana web-wide and the Openverse still-to-video
+ * fallback). VIDEO 619 removed both with their providers; no rescue store is left to archive.
+ */
+describe("Test 5a — the rescue routes left with their providers", () => {
+  it("no rescue store remains", () => {
+    expect(PIPELINE).not.toContain('route: "rescue",');
+    expect(PIPELINE).not.toContain("await fetchEuropeanaVideos(");
   });
 });
 

@@ -77,11 +77,10 @@ function extractFunctionSource(fnName: string): string {
 }
 
 describe("Test 1 — multiple video providers can supply candidates for the same beat", () => {
-  it("fetchHistoricalBeatVideo's tier loop still iterates HISTORICAL_SOURCE_TIER_ORDER (internet_archive, youtube_cc, wikimedia, nara, flickr, sepiasearch, vimeo, media_ccc, nasa) unchanged", async () => {
+  /** VIDEO 619 removed nara, flickr, sepiasearch, vimeo, media_ccc and nasa: none delivered to a film. */
+  it("fetchHistoricalBeatVideo's tier loop iterates HISTORICAL_SOURCE_TIER_ORDER (internet_archive, youtube_cc, wikimedia)", async () => {
     const { HISTORICAL_SOURCE_TIER_ORDER } = await freshPipeline();
-    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual([
-      "internet_archive", "youtube_cc", "wikimedia", "nara", "flickr", "sepiasearch", "vimeo", "media_ccc", "nasa",
-    ]);
+    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual(["internet_archive", "youtube_cc", "wikimedia"]);
   }, 30_000); // first freshPipeline() import of the whole videoPipeline.ts module is slow (cold ffmpeg-binary detection etc.) when this file runs in isolation
 });
 
@@ -191,10 +190,8 @@ describe("Test 11 — the pool stays bounded to a maximum of 5", () => {
 });
 
 describe("Test 12 — existing provider gates stay active", () => {
-  it("fetchHistoricalBeatVideo still gates media_ccc/nasa/archival/youtube behind the same conditions as before pooling", () => {
+  it("fetchHistoricalBeatVideo still gates archival/youtube behind the same conditions as before pooling", () => {
     const src = extractFunctionSource("fetchHistoricalBeatVideo");
-    expect(src).toContain("personMatchesTechCccTopic(intent.primaryPerson ?? \"\", beat.text)");
-    expect(src).toContain("isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, beat.text, scene.text, adoptOpts.videoTitle ?? \"\")");
     expect(src).toContain("dedup.perf.enableArchival");
     expect(src).toContain("youtubeReady");
   });

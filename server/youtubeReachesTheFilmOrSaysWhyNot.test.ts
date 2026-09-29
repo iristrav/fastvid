@@ -188,16 +188,14 @@ describe("§3 — a requirement only when a deployment sets one", () => {
 /* ═══════════ §4 ═══════════ */
 
 describe("§4 — the background asks the route that measured delivering first", () => {
-  it("CLOUD FIRST — RapidAPI's link was measured ip_locked on an HD video; it stays as fallback", () => {
-    expect(prefetchRouteOrder({ RAPIDAPI_KEY: "k", YOUTUBE_CC_DL_SERVICE: "s" } as never)).toEqual(["cloud", "rapidapi"]);
-    expect(prefetchRouteOrder({ RAPIDAPI_KEY: "k" } as never)).toEqual(["rapidapi"]);
+  /** VIDEO 619 — RapidAPI is switched off: the background fetch has the cloud route only. */
+  it("CLOUD ONLY — RapidAPI is switched off, whatever key or order the environment holds", () => {
+    expect(prefetchRouteOrder({ RAPIDAPI_KEY: "k", YOUTUBE_CC_DL_SERVICE: "s" } as never)).toEqual(["cloud"]);
+    expect(prefetchRouteOrder({ RAPIDAPI_KEY: "k" } as never)).toEqual([]);
     expect(prefetchRouteOrder({} as never)).toEqual([]);
-  });
-
-  it("an operator with an unlocked RapidAPI plan can swap them", () => {
     expect(
       prefetchRouteOrder({ RAPIDAPI_KEY: "k", YOUTUBE_CC_DL_SERVICE: "s", YOUTUBE_PREFETCH_ROUTE_ORDER: "rapidapi_first" } as never)
-    ).toEqual(["rapidapi", "cloud"]);
+    ).toEqual(["cloud"]);
   });
 
   it("the render's download call passes no route, so both run in their order as before", () => {

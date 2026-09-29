@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { admitProviderForTier } from "./centralVisualSourcing";
+import { providerRemoved } from "./sourcingTiers";
 
 import { foldSearchText } from "./searchTextNormalize";
 
@@ -2339,6 +2340,10 @@ export function searchGateDecision(
   query: string | VerifiedSearchQuery,
   route: string
 ): { admitted: boolean; text: string } {
+  /** VIDEO 619 — a removed source is never asked, whatever the query; see `REMOVED_PROVIDERS`. */
+  if (providerRemoved(provider)) {
+    return { admitted: false, text: String(isVerifiedSearchQuery(query) ? query.query : (query ?? "")) };
+  }
   const ambient = getSearchProvenance();
   const preVerified = isVerifiedSearchQuery(query) ? query : undefined;
   const text = String(preVerified ? preVerified.query : (query ?? ""));

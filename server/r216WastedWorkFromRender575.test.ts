@@ -51,32 +51,11 @@ const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
 /* ═══════════ 1. the empty GDELT query ═══════════ */
 
+/**
+ * The GDELT query builder this section pinned left with GDELT (VIDEO 619: no GDELT clip reached a
+ * film in renders 597–619). What stays true for every provider is the gate's own refusal.
+ */
 describe("R216 §1 — a search that names nobody is not built", () => {
-  const builder = PIPE.slice(
-    PIPE.indexOf("function buildGdeltTvQueries("),
-    PIPE.indexOf("function parseGdeltArchivePreviewUrl(")
-  );
-
-  it("THE 48 EMPTY QUERIES: no person means no queries", () => {
-    expect(builder).toContain('const person = (personName ?? "").trim();');
-    expect(builder).toContain("if (!person) return [];");
-  });
-
-  it("and the guard stands before the quoting, not after it", () => {
-    const guard = builder.indexOf("if (!person) return [];");
-    const quote = builder.indexOf("const quoted =");
-    expect(guard).toBeGreaterThan(0);
-    expect(quote).toBeGreaterThan(0);
-    expect(guard, "the empty string is quoted before anything checks it").toBeLessThan(quote);
-  });
-
-  it("the whole builder now works from the trimmed name, so a blank cannot leak past", () => {
-    expect(builder, "an untrimmed personName is still interpolated").not.toContain(
-      "`\"${personName}\"`"
-    );
-    expect(builder).toContain("scriptEventSearchQueries(clean, [person])");
-  });
-
   it("THE GATE ALREADY REFUSED A BARE EMPTY QUERY — this stops it being built", () => {
     // Proof the fix belongs in the builder: the validator's answer was never the problem.
     expect((validateSearchQuery("") as any).reason).toBe("EMPTY_QUERY");

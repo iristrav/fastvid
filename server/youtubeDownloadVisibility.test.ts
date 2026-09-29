@@ -148,9 +148,8 @@ describe("YOUTUBE — search and download are separate capabilities", () => {
     expect(search, "youtube_search capability is gone").toBeTruthy();
     expect(download, "youtube_download capability is gone").toBeTruthy();
     expect(search!.requires).toContain("YOUTUBE_API_KEY");
-    expect(download!.requiresAny).toEqual(
-      expect.arrayContaining(["YOUTUBE_CC_DL_SERVICE", "RAPIDAPI_KEY"])
-    );
+    /** VIDEO 619 — RapidAPI is switched off: the service is the only download route. */
+    expect(download!.requiresAny).toEqual(["YOUTUBE_CC_DL_SERVICE"]);
   });
 
   /** Neither may be fatal: a render without YouTube is a valid render of the other sources. */

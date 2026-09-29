@@ -448,7 +448,8 @@ describe("render 592-B — a tier no route can serve must not block the ones bel
     const at2 = PIPELINE.indexOf("export const HISTORICAL_SOURCE_TIER_ORDER = [");
     const members = [...PIPELINE.slice(at2, PIPELINE.indexOf("] as const;", at2)).matchAll(/"([a-z_]+)"/g)]
       .map((m) => m[1]!);
-    expect(members.length).toBe(9);
+    /** Nine before VIDEO 619 removed the six that never delivered to a film. */
+    expect(members.length).toBe(3);
     expect(members.some((m) => providerTier(m) === "OWN_ARCHIVE"), "add an archive member and this test should be revisited").toBe(false);
     expect(members.some((m) => providerTier(m) === "OPEN_SOURCES")).toBe(true);
   });
@@ -540,10 +541,8 @@ describe("there is still exactly one sourcing authority", () => {
      * A test that proves an absence by failing to look is worse than no test, so this one finds
      * them and classifies each instead.
      *
-     * There are three in the pipeline, and all three are DETAIL fetches: `fetchFlickrCCVideos`
-     * resolves the sizes of a photo its gated search already returned, and `fetchNasaVideoClips`
-     * reads the asset manifest of an item its gated search already returned. Neither introduces a
-     * new query, so neither is a new sourcing decision — the tier was spent on the search.
+     * There were three, all DETAIL fetches in `fetchFlickrCCVideos` and `fetchNasaVideoClips`.
+     * VIDEO 619 removed both providers, so there are none — and a new one must be classified.
      */
     const raw = [...PIPELINE.matchAll(/fetch\(\s*`?(https?:\/\/[^`"')\s]+)/g)]
       .map((m) => ({ url: m[1]!, line: PIPELINE.slice(0, m.index).split("\n").length }))
@@ -552,7 +551,7 @@ describe("there is still exactly one sourcing authority", () => {
           f.url
         )
       );
-    expect(raw.length, "a new direct provider fetch appeared — classify it").toBe(3);
+    expect(raw.length, "a new direct provider fetch appeared — classify it").toBe(0);
     for (const f of raw) {
       /** The enclosing function, and the gate its search passes. */
       const before = PIPELINE.slice(0, PIPELINE.indexOf(f.url));
@@ -593,7 +592,8 @@ describe("there is still exactly one sourcing authority", () => {
     for (const m of PIPELINE.matchAll(/cachedProviderSearch\(\s*\w+,\s*"([a-z_0-9]+)"/g)) {
       names.add(m[1]!);
     }
-    expect(names.size, "no provider names found — the gate helpers were renamed").toBeGreaterThan(14);
+    /** More than fourteen before VIDEO 619 removed the providers that never delivered to a film. */
+    expect(names.size, "no provider names found — the gate helpers were renamed").toBeGreaterThan(5);
     for (const n of names) expect(providerTier(n), `${n} has no tier`).not.toBeNull();
   });
 

@@ -60,40 +60,5 @@ describe("RONDE 20B — a watchdog kill actually ends the render", () => {
   });
 });
 
-describe("RONDE 20D — download-tier breakers (the RONDE 19 gap)", () => {
-  it("GDELT counts clip-download failures on their own streak", () => {
-    expect(pipelineSrc).toContain("function markGdeltDownloadResult(success: boolean)");
-    expect(pipelineSrc).toContain("function isGdeltDownloadInCooldown()");
-    expect(pipelineSrc).toContain("markGdeltDownloadResult(false)");
-    expect(pipelineSrc).toContain("markGdeltDownloadResult(true)");
-  });
-
-  it("SepiaSearch counts download failures on their own streak", () => {
-    expect(pipelineSrc).toContain("function markSepiaDownloadResult(success: boolean)");
-    expect(pipelineSrc).toContain("function isSepiaDownloadInCooldown()");
-    expect(pipelineSrc).toContain("markSepiaDownloadResult(false)");
-    expect(pipelineSrc).toContain("markSepiaDownloadResult(true)");
-  });
-
-  it("both tiers skip while their download breaker is open", () => {
-    expect(pipelineSrc).toContain("isGdeltInCooldown() || isGdeltDownloadInCooldown()");
-    expect(pipelineSrc).toContain("isSepiaSearchInCooldown() || isSepiaDownloadInCooldown()");
-  });
-
-  it("reuses the shared 3-failure trip from RONDE 19", () => {
-    const gdelt = pipelineSrc.slice(
-      pipelineSrc.indexOf("function markGdeltDownloadResult"),
-      pipelineSrc.indexOf("const sepiaDownloadCooldownMs"),
-    );
-    expect(gdelt).toContain("VISUAL_PROVIDER_FAILURE_STREAK_TRIP");
-  });
-
-  it("the test-reset helper clears the new download breakers too", () => {
-    const reset = pipelineSrc.slice(
-      pipelineSrc.indexOf("export function __resetProviderCircuitBreakersForTest"),
-      pipelineSrc.indexOf("export function __resetProviderCircuitBreakersForTest") + 1800,
-    );
-    expect(reset).toContain("gdeltDownloadFailureStreak = 0");
-    expect(reset).toContain("sepiaDownloadFailureStreak = 0");
-  });
-});
+// RONDE 20D (download breakers for GDELT and SepiaSearch) left with those providers: VIDEO 619
+// removed the sources that delivered nothing to any film across renders 597–619.

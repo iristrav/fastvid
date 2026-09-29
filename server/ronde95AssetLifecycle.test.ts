@@ -164,15 +164,8 @@ describe("RONDE 95 §2 — provider and route travel together", () => {
 
   it("TEST 12 — every provider downloader passes its own route, not a default", () => {
     for (const [fn, route] of [
+      // VIDEO 619 removed Flickr, SepiaSearch, GDELT, Europeana, Vimeo, media.ccc, NASA and NARA.
       ["fetchWikimediaVideos", "fetchWikimediaVideos"],
-      ["fetchFlickrCCVideos", "fetchFlickrCCVideos"],
-      ["fetchSepiaSearchVideos", "fetchSepiaSearchVideos"],
-      ["fetchGdeltTvNewsClips", "fetchGdeltTvNewsClips"],
-      ["fetchEuropeanaVideos", "fetchEuropeanaVideos"],
-      ["fetchVimeoCCVideos", "fetchVimeoCCVideos"],
-      ["fetchMediaCccVideos", "fetchMediaCccVideos"],
-      ["fetchNasaVideoClips", "fetchNasaVideoClips"],
-      ["fetchNaraClips", "fetchNaraClips"],
       ["fetchInternetArchiveClips", "fetchInternetArchiveClips"],
       ["fetchYouTubeCCClips", "fetchYouTubeCCClips"],
     ] as const) {
@@ -222,7 +215,8 @@ describe("RONDE 95 §2 — provider and route travel together", () => {
 
   it("TEST 14 — nothing falls back to the anonymous provider_search label", () => {
     const routes = PIPELINE_SRC.match(/searchRoute: "[a-zA-Z:_${}.]+"/g) ?? [];
-    expect(routes.length).toBeGreaterThan(10);
+    /** More than ten before VIDEO 619 removed the providers that never delivered to a film. */
+    expect(routes.length).toBeGreaterThan(5);
     for (const route of routes) expect(route).not.toContain("provider_search");
   });
 });

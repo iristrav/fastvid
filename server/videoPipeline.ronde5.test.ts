@@ -197,39 +197,9 @@ describe("FIX 8 — scheduleAuditForAsset yields to active render jobs", () => {
 
 // ─── FIX 9 — SepiaSearch keyword floor without a person anchor ────────────────
 
-describe("FIX 9 — SepiaSearch requires provider-authored relevance without a person anchor", () => {
-  function sepiaMetaBlock(): string {
-    const start = pipelineSrc.indexOf("const metaHay = `${metaTitle} ${meta.description ?? \"\"} ${tagNames} ${hit.query}`;");
-    expect(start).toBeGreaterThan(-1);
-    return pipelineSrc.slice(start, start + 2600);
-  }
-
-  it("the personless floor exists: providerScore < 2 rejects the candidate", () => {
-    const block = codeOnly(sepiaMetaBlock());
-    expect(block).toContain("if (!personName && beatKeywords.length > 0) {");
-    expect(block).toContain("if (providerScore < 2) {");
-    expect(block).toContain("continue;");
-  });
-
-  it("the floor is computed over provider-authored text only — hit.query is excluded", () => {
-    const block = sepiaMetaBlock();
-    const floorIdx = block.indexOf("const providerScore = scoreVisualRelevance(");
-    expect(floorIdx).toBeGreaterThan(-1);
-    const floorExpr = block.slice(floorIdx, block.indexOf(";", floorIdx));
-    expect(floorExpr).toContain("${metaTitle} ${meta.description ?? \"\"} ${tagNames}");
-    expect(floorExpr).not.toContain("hit.query"); // our own query would be circular evidence
-  });
-
-  it("the existing person-anchored guards are byte-identical", () => {
-    const block = codeOnly(sepiaMetaBlock());
-    expect(block).toContain("if (personName && !textMentionsPersonName(metaHay, personName)) continue;");
-    expect(block).toContain("if (beatKeywords.length > 0 && metaScore < 2 && personName) continue;");
-  });
-
-  it("rejections are logged with the title so the next render log shows what was blocked", () => {
-    expect(pipelineSrc).toContain("SepiaSearch candidate rejected (no person anchor,");
-  });
-
+// FIX 9's SepiaSearch floor left with SepiaSearch (removed in VIDEO 619: nothing it found ever
+// reached a film). The keyword count the floor used is still pinned.
+describe("FIX 9 — the keyword count behind the old SepiaSearch floor", () => {
   it("scoreVisualRelevance itself is unchanged (simple keyword count)", () => {
     const fn = pipelineSrc.slice(pipelineSrc.indexOf("function scoreVisualRelevance"));
     const body = fn.slice(0, fn.indexOf("\n}"));

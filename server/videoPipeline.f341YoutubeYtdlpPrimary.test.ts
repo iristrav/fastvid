@@ -67,7 +67,7 @@ afterAll(() => {
 
 const ORIGINAL_ENV = { ...process.env };
 
-describe("downloadYouTubeCCClip — F3-41 (cloud/yt-dlp service primary, RapidAPI fallback)", () => {
+describe("downloadYouTubeCCClip — F3-41 (cloud/yt-dlp service; RapidAPI switched off since video 619)", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
     nodeFetchMock.mockReset();
@@ -104,48 +104,34 @@ describe("downloadYouTubeCCClip — F3-41 (cloud/yt-dlp service primary, RapidAP
     expect(rapidApiCalls).toHaveLength(0);
   });
 
-  it(
-    "Test 2 — cloud/yt-dlp service fails -> RapidAPI fallback is tried and succeeds; pipeline does not crash",
-    async () => {
-      process.env.YOUTUBE_CC_DL_SERVICE = "https://f341-cloud-service.example.com";
-      const outPath = path.join(workDir, "t2_out.mp4");
-      const callOrder: string[] = [];
+  /**
+   * VIDEO 619 — RapidAPI is switched off (`RAPIDAPI_SWITCHED_OFF`). Its key is set in this file,
+   * and still no request goes to it: a failed cloud cut is the end of the download.
+   */
+  it("Test 2 — cloud/yt-dlp service fails -> RapidAPI is NOT tried, even with its key set; no crash", async () => {
+    process.env.YOUTUBE_CC_DL_SERVICE = "https://f341-cloud-service.example.com";
+    const outPath = path.join(workDir, "t2_out.mp4");
+    const callOrder: string[] = [];
 
-      nodeFetchMock.mockImplementation((url: string) => {
-        const u = String(url);
-        if (u.startsWith("https://f341-cloud-service.example.com/download")) {
-          callOrder.push("cloud");
-          return Promise.resolve({ ok: false, status: 502, text: async () => "bad gateway" });
-        }
-        if (u.includes("/dl?id=")) {
-          callOrder.push("rapidapi-meta");
-          return Promise.resolve({
-            ok: true,
-            json: async () => ({
-              formats: [{ url: "https://f341-rapidapi-cdn.example.com/video.mp4", mimeType: "video/mp4", height: 720, contentLength: "1000000" }],
-            }),
-          });
-        }
-        if (u.startsWith("https://f341-rapidapi-cdn.example.com/")) {
-          callOrder.push("rapidapi-download");
-          return Promise.resolve({ ok: true, body: fs.createReadStream(sourceVideoPath) });
-        }
-        return Promise.resolve({ ok: false, status: 404 });
-      });
+    nodeFetchMock.mockImplementation((url: string) => {
+      const u = String(url);
+      if (u.startsWith("https://f341-cloud-service.example.com/download")) {
+        callOrder.push("cloud");
+        return Promise.resolve({ ok: false, status: 502, text: async () => "bad gateway" });
+      }
+      if (u.includes("/dl?id=") || u.includes("rapidapi")) {
+        callOrder.push("rapidapi");
+        return Promise.resolve({ ok: false, status: 500 });
+      }
+      return Promise.resolve({ ok: false, status: 404 });
+    });
 
-      const ok = await downloadYouTubeCCClip("f341video2", 6, 10, outPath, 0, "Test video 2");
+    await expect(downloadYouTubeCCClip("f341video2", 6, 10, outPath, 0, "Test video 2")).resolves.toBe(false);
+    expect(fs.existsSync(outPath)).toBe(false);
+    expect(callOrder).toEqual(["cloud"]);
+  });
 
-      expect(ok).toBe(true);
-      expect(fs.existsSync(outPath)).toBe(true);
-      expect(fs.statSync(outPath).size).toBeGreaterThan(10_000);
-      expect(callOrder[0]).toBe("cloud");
-      expect(callOrder).toContain("rapidapi-meta");
-      expect(callOrder).toContain("rapidapi-download");
-    },
-    FFMPEG_TEST_TIMEOUT_MS
-  );
-
-  it("Test 3 — both download routes fail: both are tried, function returns false, no uncaught exception", async () => {
+  it("Test 3 — a failing cloud route is tried once and nothing after it; function returns false", async () => {
     process.env.YOUTUBE_CC_DL_SERVICE = "https://f341-cloud-service.example.com";
     const outPath = path.join(workDir, "t3_out.mp4");
     const callOrder: string[] = [];
@@ -165,10 +151,10 @@ describe("downloadYouTubeCCClip — F3-41 (cloud/yt-dlp service primary, RapidAP
 
     await expect(downloadYouTubeCCClip("f341video3", 6, 10, outPath, 0, "Test video 3")).resolves.toBe(false);
     expect(fs.existsSync(outPath)).toBe(false);
-    expect(callOrder).toEqual(["cloud", "rapidapi-meta"]);
+    expect(callOrder).toEqual(["cloud"]);
   });
 
-  it("Test 3b — cloud service throws (network error): still falls through to RapidAPI instead of propagating", async () => {
+  it("Test 3b — cloud service throws (network error): the function returns false instead of propagating", async () => {
     process.env.YOUTUBE_CC_DL_SERVICE = "https://f341-cloud-service.example.com";
     const outPath = path.join(workDir, "t3b_out.mp4");
 
@@ -186,7 +172,7 @@ describe("downloadYouTubeCCClip — F3-41 (cloud/yt-dlp service primary, RapidAP
     await expect(downloadYouTubeCCClip("f341video3b", 6, 10, outPath, 0, "Test video 3b")).resolves.toBe(false);
   });
 
-  it("no YOUTUBE_CC_DL_SERVICE configured: goes straight to RapidAPI (readiness doesn't require both)", async () => {
+  it("no YOUTUBE_CC_DL_SERVICE configured: RapidAPI is not asked either — there is no route", async () => {
     delete process.env.YOUTUBE_CC_DL_SERVICE;
     const outPath = path.join(workDir, "t_norapid_out.mp4");
     let rapidApiCalled = false;
@@ -201,7 +187,7 @@ describe("downloadYouTubeCCClip — F3-41 (cloud/yt-dlp service primary, RapidAP
     });
 
     await expect(downloadYouTubeCCClip("f341video4", 6, 10, outPath, 0, "Test video 4")).resolves.toBe(false);
-    expect(rapidApiCalled).toBe(true);
+    expect(rapidApiCalled).toBe(false);
   });
 });
 

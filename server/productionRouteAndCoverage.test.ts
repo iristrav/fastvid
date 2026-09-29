@@ -128,11 +128,13 @@ describe("§14 — every render says which route it takes", () => {
     const blocked = formatProductionRoute(1);
     expect(blocked, "a missing search key reads as enabled").toContain("youtube=BLOCKED");
     expect(blocked).toContain("YOUTUBE_API_KEY");
-    expect(blocked).toContain("RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE");
+    expect(blocked).toContain("missing:YOUTUBE_API_KEY,YOUTUBE_CC_DL_SERVICE");
 
-    /** Either download route satisfies the third requirement. */
+    /** VIDEO 619 — a RapidAPI key is no download route any more; the service is. */
     setFlag("YOUTUBE_API_KEY", "k");
     setFlag("RAPIDAPI_KEY", "k");
+    expect(formatProductionRoute(1)).toContain("youtube=BLOCKED(missing:YOUTUBE_CC_DL_SERVICE)");
+    setFlag("YOUTUBE_CC_DL_SERVICE", "k");
     const ready = formatProductionRoute(1);
     expect(ready).toContain("youtube=ready");
     expect(ready, "a key's VALUE reached the log").not.toContain("k ");

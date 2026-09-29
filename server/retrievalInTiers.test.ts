@@ -210,7 +210,8 @@ describe("4. the pool uses it, on the operator's order", () => {
   it("every source the pool asks is placed in the ladder", () => {
     const src = POOL();
     const asked = [...src.matchAll(/tasks\.push\(\{ tier: poolTier\("([a-z_]+)"\), source: "([a-z_]+)"/g)];
-    expect(asked.length, "no tasks found — the push shape moved").toBeGreaterThan(8);
+    /** More than eight before VIDEO 619 removed five pool providers. */
+    expect(asked.length, "no tasks found — the push shape moved").toBeGreaterThan(5);
     for (const [, tierArg, source] of asked) {
       expect(tierArg, "poolTier asked about a different source than the task names").toBe(source);
       expect(providerTier(source), `${source} has no tier`).not.toBeNull();

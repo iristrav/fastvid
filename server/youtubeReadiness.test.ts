@@ -78,7 +78,7 @@ describe("YouTube needs three things, and says which one is absent", () => {
     expect(ready).toBe(false);
     expect(missing).toContain("ENABLE_YOUTUBE_SOURCING");
     expect(missing).toContain("YOUTUBE_API_KEY");
-    expect(missing).toContain("RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE");
+    expect(missing).toContain("YOUTUBE_CC_DL_SERVICE");
   });
 
   /**
@@ -90,7 +90,7 @@ describe("YouTube needs three things, and says which one is absent", () => {
     const { ready, missing } = youtubeSourcingReadiness();
     expect(ready, "the flag alone was treated as working YouTube sourcing").toBe(false);
     expect(missing).not.toContain("ENABLE_YOUTUBE_SOURCING");
-    expect(missing).toEqual(["YOUTUBE_API_KEY", "RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE"]);
+    expect(missing).toEqual(["YOUTUBE_API_KEY", "YOUTUBE_CC_DL_SERVICE"]);
   });
 
   /** Search without download: finds clips it cannot fetch. */
@@ -100,17 +100,28 @@ describe("YouTube needs three things, and says which one is absent", () => {
     set("YOUTUBE_API_KEY", "k");
     const { ready, missing } = youtubeSourcingReadiness();
     expect(ready, "YouTube serves no media files — a search key cannot download").toBe(false);
-    expect(missing).toEqual(["RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE"]);
+    expect(missing).toEqual(["YOUTUBE_CC_DL_SERVICE"]);
   });
 
-  /** Either download route satisfies the third requirement — they are alternatives. */
-  it.each(["RAPIDAPI_KEY", "YOUTUBE_CC_DL_SERVICE"])("%s alone completes the set", (route) => {
+  /** The service completes the set. */
+  it("YOUTUBE_CC_DL_SERVICE completes the set", () => {
     clearAll();
     set("ENABLE_YOUTUBE_SOURCING", "true");
     set("YOUTUBE_API_KEY", "k");
-    set(route, route === "YOUTUBE_CC_DL_SERVICE" ? "https://dl.example" : "k");
-    if (route === "YOUTUBE_CC_DL_SERVICE") set("YOUTUBE_CC_DL_TOKEN", "t");
+    set("YOUTUBE_CC_DL_SERVICE", "https://dl.example");
+    set("YOUTUBE_CC_DL_TOKEN", "t");
     expect(youtubeSourcingReadiness().ready).toBe(true);
+  });
+
+  /** VIDEO 619 — RapidAPI is switched off: its key alone is no download route any more. */
+  it("RAPIDAPI_KEY alone does not complete the set: RapidAPI is switched off", () => {
+    clearAll();
+    set("ENABLE_YOUTUBE_SOURCING", "true");
+    set("YOUTUBE_API_KEY", "k");
+    set("RAPIDAPI_KEY", "k");
+    const { ready, missing } = youtubeSourcingReadiness();
+    expect(ready).toBe(false);
+    expect(missing).toEqual(["YOUTUBE_CC_DL_SERVICE"]);
   });
 });
 

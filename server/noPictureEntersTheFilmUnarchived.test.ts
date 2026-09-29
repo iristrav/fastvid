@@ -246,7 +246,6 @@ describe("Tests 10–15 — the routes", () => {
   const ROUTES: Array<[string, string]> = [
     ["funnel", 'route: "funnel",'],
     ["scene pool", 'route: "pool",'],
-    ["rescue (both web-wide routes)", 'route: "rescue",'],
     ["historical cascade / everything else", 'route: "push_gate",'],
   ];
 
@@ -256,8 +255,9 @@ describe("Tests 10–15 — the routes", () => {
     });
   }
 
-  it("the rescue marker appears on BOTH web-wide routes", () => {
-    expect(PIPELINE.split('route: "rescue",').length - 1).toBe(2);
+  /** VIDEO 619 removed both web-wide routes (Europeana and Openverse), and with them the rescue store. */
+  it("the rescue marker left with the web-wide routes", () => {
+    expect(PIPELINE.split('route: "rescue",').length - 1).toBe(0);
   });
 
   it("THERE IS STILL EXACTLY ONE storeForProduction CALL SITE", () => {
@@ -267,12 +267,13 @@ describe("Tests 10–15 — the routes", () => {
     expect(call).toBeGreaterThan(wrapper);
   });
 
-  it("the four eager routes remain, because the gate is a backstop and not a replacement", () => {
+  it("the eager routes remain, because the gate is a backstop and not a replacement", () => {
     /**
      * They store earlier and carry their route's own richer provenance; the gate guarantees no
      * route can skip the step. A clip they stored reaches the gate already archived.
      */
-    expect((PIPELINE.match(/await storeExternalClipForTimeline\(\{/g) ?? []).length).toBe(5);
+    /** Five before VIDEO 619; the two web-wide rescue stores left with their providers. */
+    expect((PIPELINE.match(/await storeExternalClipForTimeline\(\{/g) ?? []).length).toBe(3);
   });
 
   /**

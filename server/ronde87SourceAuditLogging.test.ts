@@ -636,10 +636,8 @@ describe("RONDE 88 — the external providers are wired, not just the archive", 
    * It shipped because every RONDE 87 test drove the ledger directly. None of them asked whether
    * the pipeline ever calls it for a provider that is not the curated archive. These do.
    */
-  const PROVIDERS = [
-    "wikimedia", "flickr", "sepiasearch", "gdelt_tv", "europeana", "vimeo",
-    "media_ccc", "nasa", "nara", "internet_archive", "youtube_cc",
-  ];
+  /** VIDEO 619 removed flickr, sepiasearch, gdelt_tv, europeana, vimeo, media_ccc, nasa and nara. */
+  const PROVIDERS = ["wikimedia", "internet_archive", "youtube_cc"];
 
   it("TEST 45 — every download site opens a lineage at the moment it stamps the provider tag", () => {
     // tagPathWithProviderAsset is the one instant provider, asset id and destination path are all
@@ -648,7 +646,8 @@ describe("RONDE 88 — the external providers are wired, not just the archive", 
     const calls = [...PIPELINE_SRC.matchAll(/tagPathWithProviderAsset\(\s*([\s\S]*?)\n\s*\);/g)]
       .map((m) => m[1]!)
       .filter((body) => !body.includes("export function"));
-    expect(calls.length, "expected the twelve download sites").toBeGreaterThanOrEqual(12);
+    /** Twelve before VIDEO 619; the removed providers' download sites left with them. */
+    expect(calls.length, "expected the eleven download sites").toBeGreaterThanOrEqual(11);
     for (const body of calls) {
       expect(body, `a download site records nothing:\n${body}`).toContain("sourcingCache");
     }

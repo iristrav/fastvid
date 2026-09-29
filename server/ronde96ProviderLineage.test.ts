@@ -22,10 +22,9 @@ const PIPELINE_SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "
 /** The ledger module — the curated writer's home since the replay engine had to reach it. */
 const LEDGER_SRC = fs.readFileSync(path.join(__dirname, "visualSourceLineage.ts"), "utf8");
 
-/** The five fetchers this round is about, and the id each one keeps. */
+/** The fetchers this round is about, and the id each one keeps (Openverse was removed in VIDEO 619). */
 const NEW_PROVIDERS = [
   { fn: "fetchPexelsClips", provider: "pexels", idExpr: "String(video.id)" },
-  { fn: "fetchOpenverseImages", provider: "openverse", idExpr: 'images[i]?.id?.trim() || imgUrl' },
   { fn: "fetchUnsplashImages", provider: "unsplash", idExpr: "images[i].id?.trim() || urlKey" },
   { fn: "fetchSerpAPIImages", provider: "serpapi", idExpr: "urlKey" },
 ] as const;
@@ -46,17 +45,14 @@ const NEW_PROVIDERS = [
 /** Every provider that downloads its own assets and must therefore open a record. */
 const ALL_DOWNLOADING_FETCHERS = [
   "fetchWikimediaVideos", "fetchYouTubeCCClips", "fetchInternetArchiveClips",
-  "fetchEuropeanaVideos", "fetchNaraClips", "fetchNasaVideoClips", "fetchGdeltTvNewsClips",
-  "fetchSepiaSearchVideos", "fetchVimeoCCVideos", "fetchMediaCccVideos", "fetchFlickrCCVideos",
-  "fetchPexelsClips", "fetchOpenverseImages", "fetchUnsplashImages", "fetchSerpAPIImages",
+  // VIDEO 619 removed Europeana, NARA, NASA, GDELT, SepiaSearch, Vimeo, media.ccc, Flickr,
+  // Openverse and the web-wide route: none of them delivered a clip to any film in renders 597–619.
+  "fetchPexelsClips", "fetchUnsplashImages", "fetchSerpAPIImages",
   "downloadAndTrimPoolCandidate",
   // RONDE 96's own re-scan found four more the brief had not listed: Pixabay (which §8 does name),
   // Wikimedia IMAGES — a sibling of fetchWikimediaVideos that never opened a record — and the
   // Pexels b-roll path. Leaving them out would have made "every provider is covered" false.
   "fetchPixabayClips", "fetchWikimediaImages", "fetchBrollClips",
-  // Video 613: the web-wide (Openverse) discovery route downloaded outside the ledger, so an
-  // APPROVED "Kris Jenner" was refused as FUNNEL_WITHOUT_EVIDENCE.
-  "searchWebWideVideoClips",
 ] as const;
 
 /**

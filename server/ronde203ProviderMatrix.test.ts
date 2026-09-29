@@ -62,10 +62,10 @@ describe("R203 — the pool's providers, and what happens to their names downstr
    * eleventh provider arrives graded rather than "unknown" — but that was worth being made to
    * verify rather than assume, which is the whole point of pinning the list.
    */
-  it("the pool builds the eleven sources the matrix reports", () => {
+  /** Eleven before VIDEO 619 removed europeana, loc, nara, nasa and openverse. */
+  it("the pool builds the six sources the matrix reports", () => {
     expect(poolSources()).toEqual([
-      "archive", "europeana", "internet_archive", "loc", "nara", "nasa",
-      "openverse", "pexels", "pixabay", "wikimedia", "youtube_cc",
+      "archive", "internet_archive", "pexels", "pixabay", "wikimedia", "youtube_cc",
     ]);
   });
 

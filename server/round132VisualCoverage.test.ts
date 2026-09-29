@@ -449,7 +449,7 @@ describe("RONDE 132 §13 — a provider that was never asked says so", () => {
     const { join } = require("path") as typeof import("path");
     const pool = readFileSync(join(__dirname, "scenePool.ts"), "utf8");
     for (const source of [
-      "pexels", "pixabay", "internet_archive", "europeana", "openverse", "nasa", "nara", "loc",
+      "pexels", "pixabay", "internet_archive", // europeana, openverse, nasa, nara, loc: removed in VIDEO 619
     ]) {
       expect(pool, source).toContain(`noteSkip("${source}"`);
     }

@@ -132,7 +132,8 @@ describe("RONDE 68 TEST 3 — one provider's cancellation cannot trip another's 
   it("each guard names its own provider's marker, so no streak is shared", () => {
     const src = SRC().split("\n");
     const guarded = src.filter((l) => l.includes("isScopeAbortError(err)) mark"));
-    expect(guarded.length).toBeGreaterThanOrEqual(13);
+    /** Thirteen before VIDEO 619 removed the providers that never delivered to a film. */
+    expect(guarded.length).toBeGreaterThanOrEqual(9);
     for (const line of guarded) {
       const m = /if \(!isScopeAbortError\(err\)\) mark(\w+)SearchResult\(false\);/.exec(line.trim());
       expect(m).not.toBeNull();
@@ -150,23 +151,9 @@ describe("RONDE 68 TEST 3 — one provider's cancellation cannot trip another's 
     expect(unguarded).toEqual([]);
   });
 
-  /**
-   * RONDE 251 renamed `gdeltAnyError` to `gdeltFault` when it split GDELT's batch outcome into
-   * SERVED / FAULT / REFUSED — a refusal of a query we malformed used to reset the breaker, so one
-   * fast refusal cancelled three 22-second timeouts standing beside it.
-   *
-   * The property RONDE 68 is here for is untouched and is what this now asserts: whatever the flag
-   * is called, a cancellation FastVid itself caused must not be charged to GDELT. Matched on the
-   * shape rather than on one spelling, so the next rename cannot pass silently or fail spuriously.
-   */
-  it("GDELT's accumulated error flag is classified the same way", () => {
-    const src = SRC();
-    expect(src, "a scope abort must never be counted as a GDELT fault").toMatch(
-      /if \(!isScopeAbortError\(err\)\) gdelt[A-Za-z]* = true;/
-    );
-    expect(src, "and it must not be counted unguarded").not.toMatch(
-      /catch \(err\) \{\s*(?:\/\/[^\n]*\n\s*)*gdelt[A-Za-z]* = true;/
-    );
+  /** GDELT's accumulated error flag left with GDELT (VIDEO 619). */
+  it("no GDELT fault flag is left to classify", () => {
+    expect(SRC()).not.toMatch(/gdelt[A-Za-z]* = true;/);
   });
 });
 

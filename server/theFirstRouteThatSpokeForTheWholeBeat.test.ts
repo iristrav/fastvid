@@ -195,7 +195,8 @@ describe("6. nothing was loosened to achieve this", () => {
   });
 
   /** The two intentional single-winner routes are untouched — they ask for one and take one. */
-  it("the single-winner routes still hand over one path", () => {
-    expect([...PIPE.matchAll(/adoptClip\(\s*\[winner\.path\]/g)]).toHaveLength(2);
+  /** VIDEO 619 removed both single-winner routes (Europeana, web-wide) with their providers. */
+  it("no single-winner route is left", () => {
+    expect([...PIPE.matchAll(/adoptClip\(\s*\[winner\.path\]/g)]).toHaveLength(0);
   });
 });

@@ -98,6 +98,35 @@ export const PROVIDER_TIER: Readonly<Record<string, SourcingTier>> = {
 };
 
 /**
+ * VIDEO 619 — SOURCES THAT NEVER DELIVERED, REMOVED.
+ *
+ * Every finished film from render 597 to 619 was counted by source: the own archive, YouTube,
+ * Internet Archive, Wikimedia, Pexels and FastVid's own stock delivered footage; these eleven
+ * delivered none in any of them, while each cost a search, a timeout and gate refusals on every
+ * beat that reached it. The owner's decision: they are not used again.
+ *
+ * `searchGateDecision` — the one point every provider search passes — refuses them, so no route,
+ * old or new, can reach them; the historical cascade no longer lists them.
+ */
+export const REMOVED_PROVIDERS: ReadonlySet<string> = new Set([
+  "europeana",
+  "nara",
+  "loc",
+  "nasa",
+  "flickr",
+  "sepiasearch",
+  "vimeo",
+  "media_ccc",
+  "openverse",
+  "web_wide",
+  "gdelt_tv",
+]);
+
+export function providerRemoved(provider: string): boolean {
+  return REMOVED_PROVIDERS.has(provider.trim().toLowerCase());
+}
+
+/**
  * Which tier a provider belongs to, or null for a name this table has never heard of.
  *
  * Null rather than a default. A provider silently defaulting to a tier is exactly how `youtube_cc`

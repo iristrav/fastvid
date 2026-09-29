@@ -39,7 +39,6 @@ import {
   minShortSideForSource,
   videoResolutionVerdict,
 } from "./technicalMediaGate";
-import { isDecodableMediaMime } from "./scenePool";
 import { WIKIMEDIA_IMAGEINFO_BATCH_SIZE } from "./videoPipeline";
 
 const read = (rel: string) => {
@@ -112,44 +111,7 @@ describe("RONDE 136 §2 — Wikimedia asks once, not once per title", () => {
   });
 });
 
-/* ═══════════════════════ 2. LOC ═══════════════════════ */
-
-describe("RONDE 136 §3 — LOC only offers media the pipeline can open", () => {
-  it("JPEG 2000 and TIFF are refused; JPEG and PNG are not", () => {
-    // Chronicling America serves newspaper scans as jp2. They download and then fail on every
-    // downstream step, having cost a request and a shortlist slot.
-    expect(isDecodableMediaMime("image/jp2", "image")).toBe(false);
-    expect(isDecodableMediaMime("image/tiff", "image")).toBe(false);
-    expect(isDecodableMediaMime("image/jpeg", "image")).toBe(true);
-    expect(isDecodableMediaMime("image/png", "image")).toBe(true);
-  });
-
-  it("video types follow the same allow-list", () => {
-    expect(isDecodableMediaMime("video/mp4", "video")).toBe(true);
-    expect(isDecodableMediaMime("video/quicktime", "video")).toBe(true);
-    expect(isDecodableMediaMime("application/pdf", "video")).toBe(false);
-    // An image is not a video and vice versa — the kind is part of the question.
-    expect(isDecodableMediaMime("image/jpeg", "video")).toBe(false);
-    expect(isDecodableMediaMime("video/mp4", "image")).toBe(false);
-  });
-
-  it("a missing or empty mimetype is refused, not assumed usable", () => {
-    expect(isDecodableMediaMime(undefined, "image")).toBe(false);
-    expect(isDecodableMediaMime("", "image")).toBe(false);
-  });
-
-  it("the LOC adapter uses it, and still drops a candidate with no usable file", () => {
-    const code = readCode("server/scenePool.ts");
-    const loc = code.slice(code.indexOf("async function searchLibraryOfCongressCandidates("));
-    expect(loc.length).toBeGreaterThan(500);
-    expect(loc).toContain('isDecodableMediaMime(f.mimetype, "video")');
-    expect(loc).toContain('isDecodableMediaMime(f.mimetype, "image")');
-    // The pre-existing guarantee: no media file, no candidate. A catalogue URL was never offered
-    // as remoteUrl and still is not.
-    expect(loc).toContain("if (!mediaFile?.url) continue;");
-    expect(loc).toContain("remoteUrl: mediaFile.url,");
-  });
-});
+/* LOC (§3) was removed in VIDEO 619 together with Library of Congress itself. */
 
 /* ═══════════════════════ 3. stock resolution ═══════════════════════ */
 

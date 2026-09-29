@@ -123,7 +123,8 @@ describe("RONDE 135 §4 — the used-asset Set is written and read with the same
      * routes calls it while iterating search hits — before any fetch of the asset itself.
      */
     const src = read("server/videoPipeline.ts");
-    for (const provider of ["wikimedia", "flickr", "sepiasearch", "europeana", "vimeo", "media_ccc", "gdelt_tv"]) {
+    // flickr, sepiasearch, europeana, vimeo, media_ccc and gdelt_tv: removed in VIDEO 619.
+    for (const provider of ["wikimedia"]) {
       expect(src, `${provider} lost its pre-download duplicate check`)
         .toContain(`providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "${provider}"`);
     }

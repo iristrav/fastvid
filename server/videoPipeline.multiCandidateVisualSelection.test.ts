@@ -281,12 +281,7 @@ describe("Test 14 — existing quality gates stay active", () => {
   });
 });
 
-describe("Test 15 — candidate pool respects existing budget/candidateTarget (verified, not changed)", () => {
-  it("fetchEuropeanaVideos and searchWebWideVideoClips still default to a count of 1 result per beat — confirms this round did not widen any provider fetch budget to enable pooling", async () => {
-    const { fetchEuropeanaVideos } = await freshPipeline();
-    expect(fetchEuropeanaVideos.length).toBeGreaterThanOrEqual(4); // (queries, duration, workDir, sceneIndex, count=1, ...) — count still defaults, signature unchanged
-  });
-});
+// Test 15 checked the Europeana and web-wide fetch defaults; both routes left with VIDEO 619.
 
 describe("Test 16 — winner's score breakdown is present and explains the win", () => {
   it("the winning candidate's AssetDirector breakdown contains numeric sub-scores an operator can read back as 'why it won'", async () => {

@@ -183,16 +183,7 @@ describe("no fetcher reports one arrival on both channels", () => {
     const bumps = [...code.matchAll(/providerMetrics\(sourcingCache, "([a-z_]+)"\)\.downloadCount\+\+/g)]
       .map((m) => m[1])
       .sort();
-    expect([...new Set(bumps)]).toEqual([
-      "europeana",
-      "flickr",
-      "gdelt_tv",
-      "internet_archive",
-      "media_ccc",
-      "pixabay",
-      "sepiasearch",
-      "vimeo",
-      "wikimedia",
-    ]);
+    /** europeana, flickr, gdelt_tv, media_ccc, sepiasearch and vimeo: removed in VIDEO 619. */
+    expect([...new Set(bumps)]).toEqual(["internet_archive", "pixabay", "wikimedia"]);
   });
 });

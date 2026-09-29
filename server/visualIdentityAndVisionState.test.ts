@@ -207,7 +207,8 @@ describe("F-3 — retrieval metadata reaches the ranking engine", () => {
     const src = fs.readFileSync(path.join(__dirname, "scenePool.ts"), "utf8");
     const constructors = src.match(/^\s*source: "(?:pexels|pixabay|wikimedia|internet_archive|europeana|openverse|nasa|nara|loc)",$/gm) ?? [];
     const carried = src.match(/^\s*searchQuery: query,$/gm) ?? [];
-    expect(constructors.length).toBeGreaterThanOrEqual(9);
-    expect(carried.length).toBe(9);
+    /** Nine before VIDEO 619 removed europeana, openverse, nasa, nara and loc from the pool. */
+    expect(constructors.length).toBeGreaterThanOrEqual(4);
+    expect(carried.length).toBe(4);
   });
 });

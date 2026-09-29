@@ -123,7 +123,7 @@ describe("Test D — the timeout is scoped to the funnel await and nothing else"
     expect(policySrc).toContain("process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim()");
     // The per-provider search/download timeouts named in the render 513 log keep their own
     // literals — none of them routes through funnelAwaitTimeoutMs.
-    for (const label of ["SerpAPI search", "Wikimedia search", "Internet Archive search", "SepiaSearch download"]) {
+    for (const label of ["SerpAPI search", "Wikimedia search", "Internet Archive search"]) {
       const idx = pipelineSrc.indexOf(label);
       expect(idx, `${label} should still exist`).toBeGreaterThan(-1);
       const scoped = pipelineSrc.slice(Math.max(0, idx - 300), idx + 100);

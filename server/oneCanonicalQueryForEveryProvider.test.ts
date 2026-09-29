@@ -121,15 +121,28 @@ describe("§4 — the canonical query, per provider", () => {
   /** Every route that carried a polluted query in render 594. */
   const ROUTES: Array<[string, string]> = [
     ["wikimedia", "fetchWikimediaVideos"],
-    ["europeana", "fetchEuropeanaVideos"],
-    ["sepiasearch", "fetchSepiaSearchVideos"],
     ["internet_archive", "fetchInternetArchiveClips"],
-    ["web_wide", "searchWebWideVideoClips"],
     ["pexels", "fetchPexelsClips"],
     ["pixabay", "fetchPixabayClips"],
     ["youtube_cc", "fetchYouTubeCCClips"],
-    ["openverse", "scenePool:searchOpenverseCandidates"],
   ];
+
+  /**
+   * VIDEO 619 — europeana, sepiasearch, web_wide and openverse carried polluted queries in render
+   * 594 and never delivered a clip to a film in renders 597–619. They are removed, and the gate
+   * refuses them whatever the query, so no route left behind can reach them.
+   */
+  it("a removed provider is refused at the boundary, whatever the query", () => {
+    const ctx = contextFor("Kanye West appeared on stage last night.", { persons: ["Kanye West"] });
+    for (const [provider, route] of [
+      ["europeana", "fetchEuropeanaVideos"],
+      ["sepiasearch", "fetchSepiaSearchVideos"],
+      ["web_wide", "searchWebWideVideoClips"],
+      ["openverse", "scenePool:searchOpenverseCandidates"],
+    ]) {
+      expect(sentTo(provider, route, "Kanye West", ctx), provider).toBeNull();
+    }
+  });
 
   for (const c of CASES) {
     it(`${c.label} — same canonical query at EVERY provider`, () => {
@@ -217,7 +230,7 @@ describe("the queries render 594 sent cannot reach a provider again", () => {
      * never survives and that whatever does is provable from the beat.
      */
     for (const pad of ["documentary", "footage", "news", "archive", "other", "video"]) {
-      const got = sentTo("europeana", "fetchEuropeanaVideos", `Kanye West ${pad}`, KANYE);
+      const got = sentTo("internet_archive", "fetchInternetArchiveClips", `Kanye West ${pad}`, KANYE);
       /** Refused is also an answer — the padding word is simply never sent. */
       if (got === null) continue;
       expect(got.toLowerCase(), `"${pad}" became the concept`).not.toContain(pad);
@@ -319,7 +332,7 @@ describe("the boundary narrows and nothing else", () => {
       persons: ["Kanye West"],
       events: ["hurricane"],
     });
-    const got = sentTo("europeana", "fetchEuropeanaVideos", "Kanye West documentary", ctx);
+    const got = sentTo("internet_archive", "fetchInternetArchiveClips", "Kanye West documentary", ctx);
     expect(got, "a concept the beat never says reached the provider").not.toContain("hurricane");
     /** And the padding still goes: the subject searches alone. */
     expect(got).toBe("Kanye West");

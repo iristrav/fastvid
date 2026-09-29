@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ALL_SOURCE_ADAPTERS, europeanaAdapter, youtubeCcAdapter } from "./sourceAdapters";
+import { ALL_SOURCE_ADAPTERS, youtubeCcAdapter } from "./sourceAdapters";
 import type { VisualIntent } from "./types";
 
 vi.mock("../videoPipeline", () => ({
@@ -9,7 +9,6 @@ vi.mock("../videoPipeline", () => ({
   fetchPixabayClips: vi.fn().mockResolvedValue([]),
   fetchInternetArchiveClips: vi.fn().mockResolvedValue([]),
   fetchYouTubeCCClips: vi.fn().mockResolvedValue(["yt_clip_1.mp4"]),
-  fetchEuropeanaVideos: vi.fn().mockResolvedValue([{ path: "europeana_clip_1.mp4" }]),
 }));
 vi.mock("../curatedMediaSourcing", () => ({
   fetchCuratedArchiveBeatClip: vi.fn().mockResolvedValue(null),
@@ -48,7 +47,8 @@ const intent: VisualIntent = {
 };
 
 describe("Source Adapters — Phase 3 additions", () => {
-  it("registers all 7 source adapters, including the two new ones", () => {
+  /** VIDEO 619 removed the Europeana adapter with Europeana itself. */
+  it("registers all 6 source adapters", () => {
     const names = ALL_SOURCE_ADAPTERS.map((a) => a.name);
     expect(names).toEqual([
       "own_archive",
@@ -57,7 +57,6 @@ describe("Source Adapters — Phase 3 additions", () => {
       "pixabay",
       "internet_archive",
       "youtube_cc",
-      "europeana",
     ]);
   });
 
@@ -73,13 +72,6 @@ describe("Source Adapters — Phase 3 additions", () => {
     expect(Array.isArray(calledQueries)).toBe(true);
     expect(calledQueries.length).toBeGreaterThan(1);
     expect(calledQueries).toContain("Elon Musk keynote");
-  });
-
-  it("europeanaAdapter searches using the top ranked queries and normalizes results", async () => {
-    const results = await europeanaAdapter.search(intent, { workDir: "/tmp", sceneIndex: 0 });
-    expect(results).toHaveLength(1);
-    expect(results[0]!.source).toBe("europeana");
-    expect(results[0]!.localPath).toBe("europeana_clip_1.mp4");
   });
 
   it("adapters never throw — a failing fetch resolves to an empty array", async () => {
