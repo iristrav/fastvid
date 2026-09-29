@@ -191,9 +191,45 @@ export function sentenceOnlyYoutubeQueries(
   sceneText = "",
   knownNames: Iterable<string> = []
 ): string[] {
-  const allowed = new Set(sentenceWords(sentence));
   /** The names the sentence writes (who, where, which brand): see `sentenceNameWords`. */
   const named = sentenceNameWords(sentence, sceneText, knownNames);
+  return wordsTheSentenceSays(queries, new Set(sentenceWords(sentence)), verb, named);
+}
+
+/**
+ * VIDEO 618 — THE SAME RULE FOR PICTURES: ONLY WORDS FROM THE SENTENCE.
+ *
+ * The still and stock builders added words of their own: "Kris Jenner portrait", "Kris Jenner
+ * face portrait photo", "social media marketing phone", "content creator smartphone", the title's
+ * "Reason", the fragment "isnt". The search gate refused every one of them — sixty-odd refusals
+ * in render 618 — and a beat whose every question was refused asked nothing at all
+ * ("STARVED built=4 asked=0"), so it got no picture. The rule the owner set holds here too: a
+ * word the sentence does not say is not sent. Words are only REMOVED.
+ *
+ * Unlike the YouTube version a question need not name someone — "city skyline at night" is a fair
+ * stock question — but the people the scene is about may stand in it, as the gate itself accepts.
+ */
+export function sentenceOnlyQueries(
+  queries: readonly string[],
+  sentence: string,
+  scenePersons: Iterable<string> = []
+): string[] {
+  const allowed = new Set(sentenceWords(sentence));
+  for (const p of scenePersons) for (const w of sentenceWords(p)) allowed.add(w);
+  return wordsTheSentenceSays(queries, allowed, "", null);
+}
+
+/** A contraction ("isn't", "don't", "they're") is grammar, never a subject. */
+function isContraction(w: string): boolean {
+  return /n['’]t$|['’](re|ve|ll|d|m)$/.test(w);
+}
+
+function wordsTheSentenceSays(
+  queries: readonly string[],
+  allowed: Set<string>,
+  verb: string,
+  named: Set<string> | null
+): string[] {
   const verbWord = verb.trim().toLowerCase();
   const out: string[] = [];
   const seen = new Set<string>();
@@ -203,7 +239,7 @@ export function sentenceOnlyYoutubeQueries(
       .filter((raw) => {
         const w = sentenceWords(raw)[0];
         if (!w) return false;
-        if (FILLER_WORDS.has(w) || FUNCTION_WORDS.has(w)) return false;
+        if (FILLER_WORDS.has(w) || FUNCTION_WORDS.has(w) || isContraction(w)) return false;
         if (verbWord && w === verbWord) return false;
         return allowed.has(w);
       });
@@ -215,7 +251,7 @@ export function sentenceOnlyYoutubeQueries(
      * "examining true", "climax uncovers" and "Let" (the first word of "Let's …") name nothing,
      * find nothing and still cost a search. A one-word "Empire" is dropped by the same rule.
      */
-    if (!kept.some((raw) => named.has(sentenceWords(raw)[0] ?? ""))) continue;
+    if (named && !kept.some((raw) => named.has(sentenceWords(raw)[0] ?? ""))) continue;
     const query = kept.join(" ").trim();
     const key = query.toLowerCase();
     if (!query || seen.has(key)) continue;

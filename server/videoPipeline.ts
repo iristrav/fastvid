@@ -51,7 +51,7 @@ import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadR
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
-import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyYoutubeQueries, YOUTUBE_SHORT_MAX_SEC, youtubeResultIsShort, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
+import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyQueries, sentenceOnlyYoutubeQueries, YOUTUBE_SHORT_MAX_SEC, youtubeResultIsShort, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
 import { markYoutubeKeySpent, usableYoutubeSearchKeys } from "./youtubeApiKeys";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { sanitizeForDrawtextStrict } from "./ffmpegSanitize";
@@ -3978,7 +3978,9 @@ async function fetchBeatAuthenticStillsInner(
        */
       const serpQ = personPortrait && coercePersonName(personName)
         ? buildPersonSerpQuery(personName, sceneIndex, beat.index, beat.text)
-        : (unique[qi] || beat.searchQuery || beat.text.slice(0, 60));
+        : (sentenceOnlyQueries([unique[qi] || beat.searchQuery || beat.text.slice(0, 60)], beat.text, [personName])[0] ?? "");
+      /** VIDEO 618 — nothing the sentence says is left to ask: no search rather than an empty one. */
+      if (!serpQ) continue;
       const serpPaths = await fetchSerpAPIImages(
         serpQ,
         clipFetchDur,
@@ -17387,10 +17389,14 @@ function buildPersonSerpQuery(
   beatIndex: number,
   beatText = ""
 ): string {
+  /**
+   * VIDEO 618 — no word is added to what the script says. " face interview" and the portrait
+   * variants below were appended by this builder, the gate refused each of them as a word the
+   * sentence never used ("Kris Jenner portrait"), and a beat whose questions were all refused
+   * asked nothing. The person, and the event the narration names, are what is proven.
+   */
   const scriptQs = beatText
-    ? scriptEventSearchQueries(beatText, [person]).map((q) =>
-        /\b(face|portrait|interview|talking)\b/i.test(q) ? q : `${q} face interview`
-      )
+    ? sentenceOnlyQueries(scriptEventSearchQueries(beatText, [person]), beatText, [person])
     : [];
   if (scriptQs.length) {
     return scriptQs[(sceneIndex + beatIndex) % scriptQs.length];
@@ -17403,8 +17409,7 @@ function buildPersonSerpQuery(
    * gives no reason to search for a gala, and rotating through six guesses does not turn one of
    * them into an answer. What is left asks for the person, which is the only thing proven.
    */
-  const variants = [`${person} face portrait close up`, `${person} portrait`, person];
-  return variants[(sceneIndex * 5 + beatIndex) % variants.length];
+  return person;
 }
 
 /** Script-anchored image queries: person → event → power word → topic. */
@@ -17419,7 +17424,6 @@ function buildBeatImageSearchQueries(
   const out: string[] = [...beatVisualSearchSubjects(beat.text)];
   if (primary) {
     out.push(buildPersonSerpQuery(primary, scene.index, beat.index, beat.text));
-    out.push(`${primary} face portrait photo`);
     for (const eq of scriptEventSearchQueries(beat.text, scenePersons).slice(0, 3)) {
       out.push(eq);
     }
@@ -17437,7 +17441,17 @@ function buildBeatImageSearchQueries(
     const s = toQueryString(q);
     if (s) out.push(s);
   }
-  return [...new Set(out.filter((q) => q.length >= 3 && !isBlockedStockQuery(q)))].slice(0, 6);
+  /**
+   * VIDEO 618 — only words the sentence says, and the people the scene is about. The planner's
+   * own cues ("social media marketing phone", "content creator smartphone") and the fragment
+   * "isnt" reached the gate from here and were refused; see `sentenceOnlyQueries`.
+   */
+  const said = sentenceOnlyQueries(
+    out.filter((q) => q.length >= 3 && !isBlockedStockQuery(q)),
+    beat.text,
+    scenePersons
+  );
+  return [...new Set(said.filter((q) => q.length >= 3))].slice(0, 6);
 }
 
 /**
@@ -18359,9 +18373,16 @@ export function scriptStockSearchQueries(
    * `foldSearchText` is the fix `searchTextNormalize` already carries for exactly this case, and it
    * is what every other keyword builder in the pipeline runs first.
    */
+  /**
+   * VIDEO 618 — and only the title words the narration also says. A word only the title holds
+   * ("Reason", from "The Real Reason Kardashians …") is refused by the gate as TITLE_INFERENCE,
+   * so it was a question that could never be asked.
+   */
+  const spoken = foldSearchText(`${beatText} ${sceneText}`);
   const titleWords = foldSearchText(videoTitle ?? "")
     .split(/[^\p{L}\p{N}]+/u)
-    .filter((w) => w.length >= 4 && !STOP_WORDS.has(w));
+    .filter((w) => w.length >= 4 && !STOP_WORDS.has(w))
+    .filter((w) => new RegExp(`\\b${w}`, "u").test(spoken));
   if (titleWords.length > 0) return [titleWords.slice(0, 3).join(" ")];
   /**
    * RONDE 100B — nothing left, so ask for nothing.
