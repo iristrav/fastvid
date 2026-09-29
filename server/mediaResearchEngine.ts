@@ -587,6 +587,23 @@ const QUERY_ANCHOR_LEAD_STOPWORDS = new Set([
   "brought", "sent", "wrote", "spoke", "asked", "answered", "believed", "thought", "meant",
   "when", "while", "where", "which", "who", "whose", "why", "how", "that", "this", "these",
   "those", "then", "than", "if", "because", "although", "though", "since", "until",
+  /**
+   * VIDEO 619 — the same class, from a render about other people:
+   *
+   *     [QueryAnchor] rejected="here's catch" chosen="Despite Kylie Jenner"
+   *     [QueryAnchor] rejected="celebrity luxury NYC walk" chosen="next david"
+   *
+   * "Despite Kylie Jenner…" opens a sentence and "…the next David Dobrik…" sits inside one; both
+   * were taken as names, sent to five archives and refused there. Clause-opening adverbs, the
+   * prepositions the list above lacked, and pronouns. Left out on purpose: words that often begin
+   * a real name ("Today", "Now", "All", "My").
+   */
+  "despite", "however", "meanwhile", "instead", "next", "also", "once", "soon", "later",
+  "unlike", "like", "about", "against", "among", "between", "behind", "beyond", "toward",
+  "towards", "across", "around", "along", "amid", "via", "thus", "hence", "therefore", "indeed",
+  "perhaps", "maybe", "finally", "eventually", "suddenly", "actually", "really", "never",
+  "always", "only", "not", "it", "its", "he", "she", "they", "their", "his", "her", "we", "you",
+  "there", "theres", "here", "heres", "what", "whats", "whether",
 ]);
 
 /**
