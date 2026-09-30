@@ -81,13 +81,13 @@ describe("nobody else's text in the picture either", () => {
    * detector cannot tell a subtitle from a logo, so there is no approval that lets text through.
    */
   /**
-   * VIDEO 619 — a clip with text is still never OFFERED: a still or short clip is refused, and a
-   * longer video is stored switched off and cut into pieces, of which only the clean ones are kept.
+   * VIDEO 619 — a clip with text is still never OFFERED: a video is cut into single shots before it
+   * is stored, each shot is checked on its own, and a shot with text is refused.
    */
   it("the archive never offers a clip with text, and no caller can wave it through", () => {
     const INGEST = readFileSync(join(__dirname, "archiveIngestion.ts"), "utf8");
-    expect(INGEST).toContain('if (overlay.verdict === "has_text" && !cutForCleanPieces && !articleScreenshot) {');
-    expect(INGEST).toContain("...(cutForCleanPieces ? { isActive: 0 } : {}),");
+    expect(INGEST).toContain('if (overlay.verdict === "has_text" && !articleScreenshot) {');
+    expect(INGEST).toContain("const asShots = await ingestAsSingleShots(localPath, metadata);");
     expect(INGEST).not.toContain("approvedForBeat");
   });
 });

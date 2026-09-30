@@ -539,7 +539,8 @@ export function productionArchiveDeps(params: {
   return {
     ingest: async (localPath, metadata) => {
       const { ingestExternalClipToArchiveWithReason } = await import("./archiveIngestion");
-      const outcome = await ingestExternalClipToArchiveWithReason(localPath, metadata);
+      /** VIDEO 619 — the clip a film is made with: its shots go to the archive, it stays the film's record. */
+      const outcome = await ingestExternalClipToArchiveWithReason(localPath, { ...metadata, usedInFilm: true });
       if (outcome.status !== "ingested") {
         const { status: _s, ...refusal } = outcome;
         return { refusal };

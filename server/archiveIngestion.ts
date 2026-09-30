@@ -23,7 +23,8 @@ import { formatPreviewRefusal, verifyArchivePreview } from "./archivePreviewChec
 import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
 import { cachedClipBakedEditTextVerdict } from "./archiveClipFilter";
-import { ARCHIVE_PIECE_MIN_SEC, queueArchiveShotSplit } from "./archiveShotPieces";
+import { cutLocalVideoIntoShots, productionLocalShotCutter, shotSourceUrl, type LocalShotCutter } from "./archiveShotPieces";
+import * as os from "os";
 import { isArticleScreenshotFile } from "./articleScreenshot";
 import { beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import { recordVisualSearchMemory, type ClassifiedEntity } from "./visualSearchMemory";
@@ -80,6 +81,19 @@ export type IngestMetadata = {
   entities?: ClassifiedEntity[];
   /** General topics, e.g. ["music", "pop culture"]. */
   topics?: string[];
+  /**
+   * VIDEO 619 — this file is already a single shot (cut by the step below): it is stored as it is,
+   * recorded as one shot, and never cut again.
+   */
+  alreadyOneShot?: boolean;
+  /**
+   * VIDEO 619 — this file is a clip a film is being made with (the production store). Its single
+   * shots are stored for later films as usual, and the file itself is ALSO stored, as the film's
+   * own record, switched off: a re-render reads it back by id, no later film is offered it.
+   */
+  usedInFilm?: boolean;
+  /** Set by the intake itself: store this row switched off. */
+  storeSwitchedOff?: boolean;
 };
 
 export type IngestResult = {
@@ -130,6 +144,8 @@ export type IngestRefusalCode =
   | "STORAGE_WRITE_FAILED"
   /** The row could not be created after the bytes were stored. */
   | "RECORD_FAILED"
+  /** VIDEO 619 — every shot in the video is shorter than a usable piece; nothing is one shot long enough. */
+  | "NO_CLEAN_SHOT"
   /** Something else threw. The message is carried in `reasonDetail`. */
   | "UNKNOWN";
 
@@ -272,6 +288,85 @@ export async function ingestExternalClipToArchiveWithReason(
   return ingestionLimiter.run(() => ingestExternalClipToArchiveInner(localPath, metadata));
 }
 
+let shotCutterOverride: LocalShotCutter | null = null;
+/** Tests hand in a cutter; production uses the same detector as the YouTube shot rule. */
+export function setIngestShotCutterForTests(cutter: LocalShotCutter | null): void {
+  shotCutterOverride = cutter;
+}
+
+/**
+ * VIDEO 619 — CUT FIRST, THEN STORE.
+ *
+ * A video (not stock, not an article screenshot, not a shot already cut here) is cut where the
+ * picture changes before anything is stored. Each single shot of at most eleven seconds goes
+ * through this same intake on its own — its own text check, its own duplicate check, its own row —
+ * and the long original is never stored. A file that is already one shot continues as itself.
+ * Returns null when the file continues as it is.
+ */
+async function ingestAsSingleShots(
+  localPath: string,
+  metadata: IngestMetadata
+): Promise<IngestOutcome | null> {
+  const cutter = shotCutterOverride ?? (await productionLocalShotCutter());
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-ingest-shots-"));
+  try {
+    const cut = await cutLocalVideoIntoShots(localPath, workDir, cutter);
+    if (cut.kind === "one_shot") {
+      metadata.alreadyOneShot = true;
+      metadata.durationSec = cut.durationSec;
+      return null;
+    }
+    if (cut.kind === "unmeasured") {
+      console.warn(
+        `[Ingestion] "${metadata.title.slice(0, 60)}" stored whole — the cut scan did not finish ` +
+          `(${cut.reason}); the archive sweep cuts it later`
+      );
+      return null;
+    }
+    if (cut.kind === "no_clean_shot" && metadata.usedInFilm) {
+      metadata.storeSwitchedOff = true;
+      return null;
+    }
+    if (cut.kind === "no_clean_shot") {
+      console.log(
+        `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — ${cut.cuts} cut(s) in ` +
+          `${cut.durationSec.toFixed(1)}s and no single shot long enough to use`
+      );
+      return refuse("NO_CLEAN_SHOT", `${cut.cuts} cuts in ${cut.durationSec.toFixed(1)}s, every shot under the minimum`, {
+        durationSec: cut.durationSec,
+      });
+    }
+    const outcomes: IngestOutcome[] = [];
+    for (let i = 0; i < cut.pieces.length; i++) {
+      const piece = cut.pieces[i]!;
+      outcomes.push(
+        await ingestExternalClipToArchiveInner(piece.path, {
+          ...metadata,
+          title: `${metadata.title.slice(0, 480)} · shot ${i + 1}`,
+          sourceNote: `${metadata.sourceNote.slice(0, 470)}#shot${i + 1}`,
+          sourceUrl: shotSourceUrl(metadata.sourceUrl, metadata.sourceNote, piece),
+          durationSec: Number((piece.endSec - piece.startSec).toFixed(2)),
+          alreadyOneShot: true,
+          usedInFilm: false,
+        })
+      );
+    }
+    const stored = outcomes.filter((o): o is Extract<IngestOutcome, { status: "ingested" }> => o.status === "ingested");
+    console.log(
+      `[Ingestion] "${metadata.title.slice(0, 60)}" cut before storing: ${cut.cuts} cut(s) → ` +
+        `${cut.pieces.length} shot(s), ${stored.length} stored, ${cut.pieces.length - stored.length} refused`
+    );
+    /** The film keeps its own clip as the record it re-renders from; later films get the shots. */
+    if (metadata.usedInFilm) {
+      metadata.storeSwitchedOff = true;
+      return null;
+    }
+    return stored[0] ?? outcomes[outcomes.length - 1] ?? refuse("NO_CLEAN_SHOT", "no shot could be cut out of the file");
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
 async function ingestExternalClipToArchiveInner(
   localPath: string,
   metadata: IngestMetadata
@@ -308,6 +403,22 @@ async function ingestExternalClipToArchiveInner(
     const gate = qualityGateRefusal(localPath, metadata);
     if (gate) return gate;
 
+    if (
+      metadata.mediaType === "video" &&
+      stockArchiveId == null &&
+      !metadata.alreadyOneShot &&
+      !isArticleScreenshotFile(localPath)
+    ) {
+      /** The same download seen again is the rows it already made, not a second cut. */
+      const known = metadata.sourceUrl
+        ? await findMediaArchiveAssetBySourceUrlHash(hashSourceUrl(metadata.sourceUrl))
+        : null;
+      if (!known) {
+        const asShots = await ingestAsSingleShots(localPath, metadata);
+        if (asShots) return asShots;
+      }
+    }
+
     // RONDE 24: never let footage with baked-in on-screen text into the archive.
     //
     // This archive fills itself from what the pipeline finds while searching, so anything admitted
@@ -327,31 +438,16 @@ async function ingestExternalClipToArchiveInner(
       ? { verdict: "has_text", reason: "a screenshot of a news article" }
       : await cachedClipBakedEditTextVerdict(localPath, metadata.mimeType, overlayKey, beatClipTextFilterMaxChecks());
     /**
-     * VIDEO 619 — a VIDEO with text somewhere in it is not thrown away whole any more.
-     *
-     * A 30-second segment with a caption in its first seconds has clean seconds after it. Such a
-     * clip is stored switched OFF (never offered as it is) and cut into single-shot pieces, each
-     * checked for text on its own; the clean pieces become archive assets of their own. A still,
-     * or a video too short to hold a clean shot, is refused as before.
+     * VIDEO 619 — a video reaches this check one shot at a time (cut above), so a shot with text is
+     * refused and the clean shots of the same download are kept.
      */
-    const cutForCleanPieces =
-      overlay.verdict === "has_text" &&
-      metadata.mediaType === "video" &&
-      (metadata.durationSec ?? 0) >= 2 * ARCHIVE_PIECE_MIN_SEC &&
-      stockArchiveId == null;
-    if (overlay.verdict === "has_text" && !cutForCleanPieces && !articleScreenshot) {
+    if (overlay.verdict === "has_text" && !articleScreenshot) {
       console.log(
         `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
       );
       return refuse("BAKED_EDIT_TEXT", overlay.reason ?? "the on-screen-text check said has_text", {
         mimeType: metadata.mimeType,
       });
-    }
-    if (cutForCleanPieces) {
-      console.log(
-        `[Ingestion] "${metadata.title.slice(0, 60)}" has text on screen — stored switched off and ` +
-          `cut into shots, so its clean pieces can be kept`
-      );
     }
     /**
      * RONDE 222 — a clip nobody looked at is not admitted as a clip that was cleared.
@@ -516,7 +612,9 @@ async function ingestExternalClipToArchiveInner(
        * once rather than inherited forever.
        */
       hasBakedEditText: overlay.verdict === "clean" ? 0 : overlay.verdict === "has_text" ? 1 : null,
-      ...(cutForCleanPieces ? { isActive: 0 } : {}),
+      /** VIDEO 619 — a single shot, cut at the door: nothing left to cut, no cut inside it. */
+      ...(metadata.alreadyOneShot ? { shotCutsSec: [], splitIntoShotsAt: new Date() } : {}),
+      ...(metadata.storeSwitchedOff ? { isActive: 0, splitIntoShotsAt: new Date() } : {}),
       // RONDE 118: verified a few lines above, before the bytes were even stored.
       previewCheckedAt: new Date(),
     };
@@ -542,10 +640,6 @@ async function ingestExternalClipToArchiveInner(
     // never blocks or fails the ingestion itself.
     void recordSearchMemoryForIngestion(metadata, assetId, true).catch(() => {});
 
-    /** VIDEO 619 — every video that enters the archive is cut into single shots of at most 11s. */
-    if (metadata.mediaType === "video" && stockArchiveId == null) {
-      queueArchiveShotSplit(assetId, { allowInactive: cutForCleanPieces });
-    }
 
     console.log(
       `[Ingestion] Admitted external clip to archive: assetId=${assetId} source=${metadata.sourceNote} ` +

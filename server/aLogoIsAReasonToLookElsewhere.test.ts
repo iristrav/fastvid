@@ -162,6 +162,6 @@ describe("§4 — wired, and the archive's refusal is untouched", () => {
   });
   /** VIDEO 619 — the gate still refuses a clip with text; only a longer video is cut for its clean pieces. */
   it("the text gate itself is not touched here", () => {
-    expect(readFileSync(join(__dirname, "archiveIngestion.ts"), "utf8")).toContain('if (overlay.verdict === "has_text" && !cutForCleanPieces && !articleScreenshot) {');
+    expect(readFileSync(join(__dirname, "archiveIngestion.ts"), "utf8")).toContain('if (overlay.verdict === "has_text" && !articleScreenshot) {');
   });
 });

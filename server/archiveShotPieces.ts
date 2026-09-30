@@ -109,6 +109,11 @@ export type ShotPieceDeps = {
     piece: PieceRange & { index: number; verdict: TextVerdict }
   ) => Promise<number | null>;
   markParent: (id: number, change: { deactivate: boolean }) => Promise<void>;
+  /**
+   * Take the clip for this process before cutting it. Several worker copies sweep the same archive;
+   * without this two of them cut the same clip and store its shots twice. Absent = always yours.
+   */
+  claim?: (id: number) => Promise<boolean>;
   workDir?: string;
   log?: (line: string) => void;
 };
@@ -139,6 +144,7 @@ export async function splitArchiveAssetIntoShots(
   if (notEligible) return { status: "skipped", reason: notEligible };
   /** A clip an operator switched off stays off: its pieces would bring it back. */
   if (parent!.isActive !== 1 && !opts.allowInactive) return { status: "skipped", reason: "switched off in the archive" };
+  if (deps.claim && !(await deps.claim(assetId))) return { status: "skipped", reason: "another worker is cutting it" };
 
   const dir = fs.mkdtempSync(path.join(deps.workDir ?? os.tmpdir(), `archive-pieces-${assetId}-`));
   try {
@@ -177,8 +183,11 @@ export async function splitArchiveAssetIntoShots(
       say(`[ArchivePieces] asset=${assetId} kept whole — one shot, ${found.durationSec.toFixed(1)}s, no text`);
       return { status: "kept_whole", durationSec: found.durationSec };
     }
-    /** Switched off only when something takes its place, or when all of it carries text. */
-    const deactivate = pieces.length > 0 || withText > 0;
+    /**
+     * Switched off when something takes its place, when it carries text, or when it holds cuts and
+     * no shot long enough to use — a clip with a transition in it is not offered as a shot.
+     */
+    const deactivate = pieces.length > 0 || withText > 0 || ranges.length === 0;
     await deps.markParent(assetId, { deactivate });
     say(
       `[ArchivePieces] asset=${assetId} ${found.durationSec.toFixed(1)}s cut into ${ranges.length} piece(s): ` +
@@ -253,6 +262,7 @@ export async function productionShotPieceDeps(): Promise<ShotPieceDeps> {
         })) ?? null
       );
     },
+    claim: (id) => db.claimArchiveAssetForShotSplit(id),
     markParent: async (id, change) => {
       await db.updateMediaArchiveAsset(id, {
         splitIntoShotsAt: new Date(),
@@ -287,7 +297,7 @@ export function queuedArchiveShotSplits(): number {
 /**
  * The archive that was stored before this rule: a few videos at a time, only while nothing renders.
  */
-export async function sweepArchiveShotSplits(isIdle: () => boolean, batch = 3): Promise<number> {
+export async function sweepArchiveShotSplits(isIdle: () => boolean, batch = 10): Promise<number> {
   if (!isIdle() || queued.size > 0) return 0;
   const { listArchiveAssetsAwaitingShotSplit } = await import("./db");
   const ids = await listArchiveAssetsAwaitingShotSplit(batch);
@@ -296,10 +306,73 @@ export async function sweepArchiveShotSplits(isIdle: () => boolean, batch = 3): 
   return ids.length;
 }
 
-export function startArchiveShotSplitSweep(isIdle: () => boolean, everyMs = 5 * 60_000): NodeJS.Timeout {
+export function startArchiveShotSplitSweep(isIdle: () => boolean, everyMs = 2 * 60_000): NodeJS.Timeout {
   return setInterval(() => {
     void sweepArchiveShotSplits(isIdle).catch((err) =>
       console.warn("[ArchivePieces] sweep failed:", (err as Error)?.message?.slice(0, 160))
     );
   }, everyMs);
+}
+
+/* ═══════════════════════ cut BEFORE the archive: a new download is stored as shots ═══════════════════════ */
+
+/**
+ * VIDEO 619 (follow-up) — THE ARCHIVE NEVER HOLDS THE LONG CLIP ANY MORE.
+ *
+ * Cutting afterwards left every 30-second download in the archive, offered as it was, until a
+ * background sweep came round to it — and the sweep went oldest first. A downloaded file is now cut
+ * where the picture changes before anything is stored; only its single shots go in, each checked
+ * for text on its own, and each usable at once.
+ */
+export type LocalShotCutter = {
+  detect: (filePath: string) => Promise<{ durationSec: number; cutsSec: number[]; incomplete?: string }>;
+  extract: (input: string, output: string, startSec: number, endSec: number) => Promise<void>;
+};
+
+export type LocalShotCut =
+  /** The file is one shot of at most eleven seconds: store it as it is. */
+  | { kind: "one_shot"; durationSec: number }
+  /** The file holds several shots (or one long one): these files are what gets stored. */
+  | { kind: "pieces"; pieces: Array<PieceRange & { path: string }>; cuts: number }
+  /** Every shot is shorter than a usable piece: nothing in it is one shot long enough. */
+  | { kind: "no_clean_shot"; durationSec: number; cuts: number }
+  /** The cut scan did not finish: the file is stored whole and the sweep looks again later. */
+  | { kind: "unmeasured"; reason: string };
+
+export async function cutLocalVideoIntoShots(
+  localPath: string,
+  workDir: string,
+  cutter: LocalShotCutter
+): Promise<LocalShotCut> {
+  const found = await cutter.detect(localPath);
+  if (found.incomplete) return { kind: "unmeasured", reason: found.incomplete };
+  const ranges = shotPieceRanges(found.durationSec, found.cutsSec);
+  if (isAlreadyOnePiece(found.durationSec, ranges)) return { kind: "one_shot", durationSec: found.durationSec };
+  if (ranges.length === 0) return { kind: "no_clean_shot", durationSec: found.durationSec, cuts: found.cutsSec.length };
+  const pieces: Array<PieceRange & { path: string }> = [];
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i]!;
+    const out = path.join(workDir, `shot_${i + 1}.mp4`);
+    await cutter.extract(localPath, out, r.startSec, r.endSec);
+    if (fs.existsSync(out) && fs.statSync(out).size > 0) pieces.push({ ...r, path: out });
+  }
+  return { kind: "pieces", pieces, cuts: found.cutsSec.length };
+}
+
+export async function productionLocalShotCutter(): Promise<LocalShotCutter> {
+  const [{ productionShotCutDeps }, splitter] = await Promise.all([
+    import("./youtubeShotCuts"),
+    import("./archiveVideoSplitter"),
+  ]);
+  const cutDeps = productionShotCutDeps();
+  return {
+    detect: cutDeps.detect,
+    extract: (input, output, startSec, endSec) => splitter.extractVideoSegment(input, output, startSec, endSec),
+  };
+}
+
+/** A shot's own source URL: the download's, plus the seconds it covers. The same shot is found again. */
+export function shotSourceUrl(sourceUrl: string | undefined, sourceNote: string, r: PieceRange): string {
+  const base = sourceUrl?.trim() || `fastvid-source:${sourceNote}`;
+  return `${base}#shot=${r.startSec.toFixed(2)}-${r.endSec.toFixed(2)}`;
 }

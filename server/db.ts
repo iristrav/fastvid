@@ -2111,9 +2111,24 @@ export async function listArchiveAssetsAwaitingShotSplit(limit: number): Promise
         or(isNull(mediaArchiveAssets.mixKind), ne(mediaArchiveAssets.mixKind, "stock"))
       )
     )
-    .orderBy(asc(mediaArchiveAssets.id))
+    /** The longest first: a 30-second download holds the most shots and is the worst offered whole. */
+    .orderBy(desc(mediaArchiveAssets.durationSec), asc(mediaArchiveAssets.id))
     .limit(limit);
   return rows.map((r) => r.id);
+}
+
+/**
+ * VIDEO 619 — take an archive clip for cutting. True only for the one process whose update found
+ * it still uncut; every other worker copy leaves it alone.
+ */
+export async function claimArchiveAssetForShotSplit(id: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await db
+    .update(mediaArchiveAssets)
+    .set({ splitIntoShotsAt: new Date() })
+    .where(and(eq(mediaArchiveAssets.id, id), isNull(mediaArchiveAssets.splitIntoShotsAt)));
+  return (affectedRowCount(result) ?? 0) === 1;
 }
 
 /** F3-26: look up an already-ingested archive asset by its web source URL hash, so a repeat

@@ -106,7 +106,7 @@ describe("Video 619 — the wiring", () => {
     expect(isArticleScreenshotFile("/w/scene_1_b2_serp_3.mp4")).toBe(false);
     const ingest = read("archiveIngestion.ts");
     expect(ingest).toContain("const articleScreenshot = isArticleScreenshotFile(localPath);");
-    expect(ingest).toContain('if (overlay.verdict === "has_text" && !cutForCleanPieces && !articleScreenshot) {');
+    expect(ingest).toContain('if (overlay.verdict === "has_text" && !articleScreenshot) {');
   });
 
   it("it is a picture, asked after every video source, before the other stills, and gated like every search", () => {
