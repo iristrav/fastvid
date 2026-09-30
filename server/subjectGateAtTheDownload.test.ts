@@ -122,7 +122,10 @@ describe("the render's scope", () => {
     const at = CODE.indexOf("subjectGateScope.contextFor = (sceneIndex, beatIndex) =>");
     expect(at, "the resolver is never installed").toBeGreaterThan(-1);
     const body = CODE.slice(at, at + 900);
-    expect(body).toContain("visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)");
+    /** VIDEO 621 — through the one reader both judging scopes share, which reads that record. */
+    expect(body).toContain("judgedBeatText(sceneIndex, beatIndex)");
+    const reader = CODE.slice(CODE.indexOf("const judgedBeatText = "), CODE.indexOf("const judgedBeatText = ") + 300);
+    expect(reader).toContain("visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)");
     expect(body, "the resolver invents a narration when the beat is unknown").toContain(
       "return undefined"
     );

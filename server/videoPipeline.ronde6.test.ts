@@ -90,7 +90,8 @@ describe("RONDE 6 P1-A — the pipeline chain wiring", () => {
   it("the script-name fallback stays last in the chain — and only takes a name the topic names", () => {
     // Video 612: the raw scriptPersonNames[0] fallback locked "Scipio Africanus" on a video about
     // the Roman Empire. The last resort is now the first script name the prompt/title/topic names.
-    const chainStart = pipelineSrc.indexOf("const candidate =\n    extractPrimaryPersonFromText(input.prompt)");
+    /** VIDEO 621 — the chain is a list of candidates, tried in order. */
+    const chainStart = pipelineSrc.indexOf("const candidates = [\n    extractPrimaryPersonFromText(input.prompt),");
     expect(chainStart).toBeGreaterThan(-1);
     const tail = pipelineSrc.slice(chainStart, chainStart + 400);
     expect(tail).toContain("scriptPersonNames.find(namedByTopic)");
