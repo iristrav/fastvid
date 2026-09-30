@@ -5490,6 +5490,22 @@ export function groupScenesIntoChunks(scenes: Scene[], targetChunkSec = 60): Arr
  * of what is left that its scenes are of the scenes left; time a chunk does not use goes to the
  * chunks after it, and the last chunk gets everything that remains.
  */
+/**
+ * VIDEO 621 — THE PICTURE TIME GROWS WITH THE VIDEO.
+ *
+ * The visual deadline was the per-scene retrieval budget times the number of scenes: 165 s for a
+ * one-minute film of three scenes, whether its narration ran 58 s or — render 621 — 85 s. It is now
+ * at least `PICTURE_SEC_PER_VIDEO_SEC` seconds of searching for every second of the video, the rate
+ * a one-minute film already had (165 s for 58 s), so a longer narration brings its own time. It is
+ * never less than before.
+ */
+export const PICTURE_SEC_PER_VIDEO_SEC = 2.85;
+
+export function visualDeadlineForVideoMs(perSceneTotalMs: number, videoSec: number): number {
+  const byLength = Number.isFinite(videoSec) && videoSec > 0 ? Math.round(videoSec * PICTURE_SEC_PER_VIDEO_SEC * 1000) : 0;
+  return Math.max(perSceneTotalMs, byLength);
+}
+
 /** VIDEO 621 — the least time a scene that found nothing gets for its main-subject search. */
 export const EMPTY_SCENE_RESCUE_MIN_MS = 60_000;
 
@@ -27959,7 +27975,10 @@ async function _runVideoPipelineInner(
       title: asVideoTitleString(videoTitle),
       sceneTexts: scenes.filter((s) => !s.isChapterCard).map((s) => s.text),
     });
-    const visualDeadlineMs = (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length;
+    const visualDeadlineMs = visualDeadlineForVideoMs(
+      (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length,
+      scenes.reduce((sum, s) => sum + (s.duration || 0), 0)
+    );
     const visualDeadlineAtMs = Date.now() + visualDeadlineMs;
     console.log(
       `[Pipeline] video=${videoId} visual deadline ${Math.round(visualDeadlineMs / 1000)}s — ` +

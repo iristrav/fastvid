@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
-import { chunkShareOfVisualTimeMs } from "./videoPipeline";
+import { chunkShareOfVisualTimeMs, visualDeadlineForVideoMs, PICTURE_SEC_PER_VIDEO_SEC } from "./videoPipeline";
 import {
   __resetOverlayVerdictCacheForTest,
   archiveClipTextVerdict,
@@ -13,6 +13,22 @@ import {
 } from "./archiveClipFilter";
 
 const read = (f: string) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+
+describe("Video 621 — the picture time grows with the video", () => {
+  it("a one-minute film keeps the time it had: 165 s for 58 s", () => {
+    expect(visualDeadlineForVideoMs(165_000, 58)).toBe(165_300);
+    expect(PICTURE_SEC_PER_VIDEO_SEC * 58).toBeCloseTo(165.3, 1);
+  });
+
+  it("render 621's 85 s narration gets 242 s instead of 165 s", () => {
+    expect(Math.round(visualDeadlineForVideoMs(165_000, 85) / 1000)).toBe(242);
+  });
+
+  it("never less than the per-scene budget gave", () => {
+    expect(visualDeadlineForVideoMs(2_200_000, 600)).toBe(2_200_000);
+    expect(visualDeadlineForVideoMs(165_000, 0)).toBe(165_000);
+  });
+});
 
 describe("Video 621 — the picture time is shared between the chunks", () => {
   it("render 621: the first chunk (2 of 3 scenes) no longer takes all 165 s", () => {

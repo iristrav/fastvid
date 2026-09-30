@@ -110,7 +110,8 @@ describe("one hard deadline for the visual phase", () => {
   });
 
   it("the pipeline clamps every chunk to the one deadline and skips chunks after it", () => {
-    expect(PIPE).toContain("const visualDeadlineMs = (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length;");
+    /** VIDEO 621 — and at least as much picture time as the video is long, at the one-minute rate. */
+    expect(PIPE).toContain("const visualDeadlineMs = visualDeadlineForVideoMs(\n      (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length,");
     expect(PIPE).toContain("const visualTimeLeftMs = visualDeadlineAtMs - Date.now();");
     /** VIDEO 621 — and each chunk to its share of what is left, not to all of it. */
     expect(PIPE).toMatch(
