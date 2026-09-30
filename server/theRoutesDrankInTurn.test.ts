@@ -255,8 +255,11 @@ describe("R260 §4 — the numbers, all of them, unchanged", () => {
     const own = CODE.indexOf("export async function downloadYouTubeCCClip(");
     const ownEnd = CODE.indexOf("export async function fetchYouTubeCCClips(", own);
     const sites = callSitesOf(CODE, "downloadYouTubeCCClip");
-    /** One outside caller: the scene pool's own YouTube branch left with the pool. */
-    expect(sites.filter((at) => at < own || at > ownEnd)).toHaveLength(1);
+    /**
+     * Two outside callers: the beat's own download, and (VIDEO 620) the film's stock, which fetches
+     * the pool's videos before the beats need them. The scene pool's YouTube branch left with the pool.
+     */
+    expect(sites.filter((at) => at < own || at > ownEnd)).toHaveLength(2);
     expect(sites.filter((at) => at > own && at < ownEnd)).toHaveLength(1);
   });
 });

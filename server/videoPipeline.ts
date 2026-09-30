@@ -240,8 +240,11 @@ import {
   videoYoutubePoolGaveNoYoutube,
   youtubeVideoPoolEnabled,
   noteVideoYoutubePoolRefusal,
+  type VideoYoutubePool,
 } from "./youtubeVideoPool";
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
+import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShot, type StockShot } from "./youtubeShotStock";
+import { cutLocalVideoIntoShots, productionLocalShotCutter } from "./archiveShotPieces";
 
 export { getRenderTopic, getSearchProvenance, withRenderTopic, withSearchProvenance } from "./searchQueryContract";
 export { getQueryScope, withQueryScope } from "./searchQueryContract";
@@ -10789,6 +10792,69 @@ function archiveYoutubeDownloadInBackground(
   })();
 }
 
+/**
+ * VIDEO 620 — THE POOL'S VIDEOS, FETCHED AND CUT BEFORE THE BEATS NEED THEM.
+ *
+ * See `youtubeShotStock.ts`. Called the moment the film's YouTube pool is decided (and again when
+ * it is topped up), while the voice-over is still being made. Only videos YouTube's own search
+ * found and the pool judged usable; never one already written off. The download is the cloud route
+ * every beat uses, and it archives what arrives the same way; the cut is the archive's own.
+ * Returns the pool unchanged, so it can sit in the pool's promise chain.
+ */
+const YOUTUBE_STOCK_DOWNLOAD_MS = 150_000;
+
+function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: string): VideoYoutubePool {
+  try {
+    const usable = withoutUnusableYoutubeVideos(
+      pool.candidates.filter((c) => c.usable && c.from !== 0 && !youtubeDownloadRefusal(c.videoId)),
+      (c) => c.videoId
+    );
+    if (!usable.length) return pool;
+    startYoutubeShotStock(
+      filmId,
+      usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: c.durationSec, serves: c.serves.length })),
+      {
+        workDir,
+        startFor: pickLongVideoStartSec,
+        download: async (ytId, startSec, durationSec, outPath, title) => {
+          const dl: { status?: YoutubeDownloadStatus; reason?: string; transferStarted?: boolean } = {};
+          const ok = await downloadYouTubeCCClip(
+            ytId, durationSec, startSec, outPath, -1, title, undefined, true, dl, YOUTUBE_STOCK_DOWNLOAD_MS
+          );
+          if (!ok) noteYoutubeDownloadRefusal(ytId, dl.status, dl.reason);
+          return ok;
+        },
+        cut: async (filePath, dir) => {
+          const cut = await cutLocalVideoIntoShots(filePath, dir, await productionLocalShotCutter());
+          if (cut.kind === "pieces") return cut.pieces;
+          if (cut.kind === "one_shot") return [{ path: filePath, startSec: 0, endSec: cut.durationSec }];
+          /** No clean shot, or the cut scan did not finish: a section with a transition in it is not a shot. */
+          return [];
+        },
+      }
+    );
+  } catch (err) {
+    console.warn(`[YouTubeStock] film=${filmId} could not start:`, (err as Error)?.message?.slice(0, 120));
+  }
+  return pool;
+}
+
+/** A stock shot, cut to the beat's length, at the path the beat's own download would have written. */
+async function stockShotToBeatFile(shot: StockShot, durationSec: number, outPath: string): Promise<boolean> {
+  try {
+    if (shot.sourceEndSec - shot.sourceStartSec > durationSec + 0.3) {
+      const { extractVideoSegment } = await import("./archiveVideoSplitter");
+      await extractVideoSegment(shot.path, outPath, 0, durationSec);
+    } else {
+      fs.copyFileSync(shot.path, outPath);
+    }
+    return fs.existsSync(outPath) && fs.statSync(outPath).size > 0;
+  } catch (err) {
+    console.warn(`[YouTubeStock] ${shot.videoId}@${shot.sourceStartSec}s could not be cut for the beat:`, (err as Error)?.message?.slice(0, 120));
+    return false;
+  }
+}
+
 export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
@@ -12507,6 +12573,74 @@ export async function fetchYouTubeCCClips(
 
           try {
             const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
+            /**
+             * VIDEO 620 — THE FILM'S STOCK FIRST.
+             *
+             * This video was downloaded and cut the moment the pool was decided. A beat takes a
+             * ready shot instead of downloading, and when the video's section is still on its way it
+             * waits for that one download rather than starting a second of the same video. Only a
+             * failed stock download lets the beat try the video itself. The shot then goes through
+             * the same picture editor as any clip the beat downloaded.
+             */
+            if (poolMode && isStocked(poolVideoId!, videoId)) {
+              const stockWaitMs = Math.max(
+                0,
+                Math.min(ytDeadline - Date.now(), remainingScopeMs() - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS)
+              );
+              const shotDur = (s: StockShot) => Math.min(clipDur, Number((s.sourceEndSec - s.sourceStartSec).toFixed(2)));
+              const took = await takeStockShot(poolVideoId!, videoId, stockWaitMs, (s) =>
+                youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, shotDur(s))) != null
+              );
+              if (took.shot) {
+                const stockStart = took.shot.sourceStartSec;
+                const stockDur = shotDur(took.shot);
+                const stockPath = tagPathWithProviderAsset(
+                  path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}_${youtubeFragmentFileTag(stockStart, stockDur)}.mp4`),
+                  "youtube_cc",
+                  videoId,
+                  sourcingCache,
+                  {
+                    sceneIndex,
+                    ...(scriptGuided?.beatIndex != null ? { beatIndex: scriptGuided.beatIndex } : {}),
+                    ...(scriptGuided?.beatText ? { beatText: scriptGuided.beatText } : {}),
+                    title,
+                    mediaType: "video",
+                    searchRoute: "fetchYouTubeCCClips",
+                  }
+                );
+                putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, {
+                  providerText: { title, description: row.desc },
+                  license: youtubeLicenseMetadata(pass.license),
+                });
+                const ok = await stockShotToBeatFile(took.shot, stockDur, stockPath);
+                if (ok) {
+                  try {
+                    sourcingCache?.lineage.recordSourceTrim(stockPath, { inSec: stockStart, outSec: stockStart + stockDur });
+                  } catch {
+                    /* a clip that arrived correctly is never lost to its own bookkeeping */
+                  }
+                }
+                recordProviderDownloadOutcome(sourcingCache, stockPath, ok, ok ? undefined : "youtube_stock_cut_failed");
+                if (ok) {
+                  results.push(stockPath);
+                  downloadedIds.add(videoId);
+                  fetched++;
+                  console.log(
+                    `[YouTubeStock] Scene ${sceneIndex}: ${videoId} @${stockStart}s (${stockDur}s) from the film's stock — ` +
+                      `no download: "${title.slice(0, 60)}"`
+                  );
+                }
+                continue;
+              }
+              if (took.reason !== "download_failed") {
+                console.log(
+                  `[YouTubeStock] Scene ${sceneIndex}: ${videoId} not taken from stock (${took.reason}` +
+                    `${took.reason === "still_downloading" ? ` after ${Math.round(stockWaitMs / 1000)}s` : ""}) — ` +
+                    `no second download of the same video`
+                );
+                continue;
+              }
+            }
             /**
              * VIDEO 616 — the pool measured every candidate's length with `videos.list` before any
              * beat ran; the video context answers for a candidate the pool does not know. With
@@ -26883,6 +27017,14 @@ export async function runVideoPipeline(
       () => false
     );
     console.log(formatRenderLockRelease(videoId, productionRenderId, removed));
+    const stock = stockSummary(videoId);
+    if (stock.videos > 0) {
+      console.log(
+        `[YouTubeStock] film=${videoId} summary: videos=${stock.videos} ready=${stock.ready} failed=${stock.failed} ` +
+          `shots=${stock.shots} offered=${stock.handedOut}`
+      );
+    }
+    releaseYoutubeShotStock(videoId);
   }
 }
 
@@ -27083,10 +27225,14 @@ async function _runVideoPipelineInner(
           .catch((err: Error) => {
             console.warn(`[YouTubeSearchPlan] video=${videoId} pool failed: ${err.message?.slice(0, 160)} — beats go on without YouTube`);
             return emptyVideoYoutubePool(videoId);
-          }),
+          })
+          /** VIDEO 620 — and the moment it is decided, its videos are fetched and cut. */
+          .then((pool) => stockYoutubePool(videoId, pool, workDir)),
         /** VIDEO 616 — the same build, asked again with the videos refused on screen. */
         (refusedVideoIds) =>
-          productionVideoPoolDeps(poolInput).then((deps) => buildVideoYoutubePool(deps, poolInput, { refusedVideoIds }))
+          productionVideoPoolDeps(poolInput)
+            .then((deps) => buildVideoYoutubePool(deps, poolInput, { refusedVideoIds }))
+            .then((pool) => stockYoutubePool(videoId, pool, workDir))
       );
     }
 
