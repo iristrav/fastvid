@@ -76,7 +76,8 @@ describe("Video 622 — the same seconds are fetched once per render", () => {
   it("the download asks before it fetches, and reports the copy as its own reason", () => {
     const at = SRC.indexOf("const fragment = youtubeFragmentKeyFor(videoId, clipStart, duration);");
     expect(at).toBeGreaterThan(-1);
-    const block = SRC.slice(at, at + 900);
+    /** VIDEO 623 — the block grew by the wait for a video's first transfer; the order is what is asserted. */
+    const block = SRC.slice(at, at + 2400);
     expect(block).toContain('reportDownload("DOWNLOAD_SUCCESS", "same_seconds_already_fetched");');
     expect(block.indexOf("copyYoutubeFragmentAlreadyFetched")).toBeLessThan(block.indexOf("downloadYouTubeCCClip("));
     expect(block).toContain("keepYoutubeFragmentWhenFetched(fragment, outPath, done)");

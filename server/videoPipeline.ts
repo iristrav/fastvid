@@ -58,7 +58,7 @@ import {
 import { formatPreparationCache, preparationKey, resetPreparationScope, runPreparation } from "./preparationCache";
 import { BUDGETS, chargeAmbientBudget, createRetrievalBudgetState, formatRetrievalBudgets, setBudgetResolver, type RetrievalBudgetState } from "./retrievalBudget";
 import { SENTENCE_OPENERS, atSentenceStart, isSentenceOpener, withoutSentenceOpener } from "./sentenceOpeners";
-import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteRepeatedYoutubeRefusal, YOUTUBE_REFUSALS_BEFORE_WRITE_OFF_THIS_RENDER, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, youtubeDownloadRefusal, youtubeServiceRefusalReason } from "./providerFailureClass";
+import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteRepeatedYoutubeRefusal, noteArchiveAccessRefusal, YOUTUBE_REFUSALS_BEFORE_WRITE_OFF_THIS_RENDER, YOUTUBE_PERMANENT_DOWNLOAD_STATUSES, isDurableYoutubeServiceRefusal, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, youtubeDownloadRefusal, youtubeServiceRefusalReason } from "./providerFailureClass";
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry } from "./youtubeLookahead";
@@ -10475,12 +10475,11 @@ async function fetchArchiveSegmentViaFfmpeg(
     return false;
   } catch (err) {
     /** One truncation, not two: the old pair left a fragment from the middle of a sentence. */
+    noteArchiveAccessRefusal(videoUrl, (err as Error).message ?? ""); // VIDEO 623
     console.warn(
       `[Pipeline] Scene ${sceneIndex}: archive segment fetch failed:`,
       (err as Error).message?.slice(0, 240)
     );
-    const refusedWith = archiveAccessRefusal((err as Error).message ?? "");
-    if (refusedWith) notePermanentDownloadRefusal(videoUrl, refusedWith);
     try { fs.unlinkSync(outPath); } catch { /* ignore */ }
     return false;
   }
@@ -10859,15 +10858,6 @@ function countDownloadOutcome(
 }
 
 /**
- * VIDEO 623 — the HTTP refusal an archive.org file answered with, when it is one that will not
- * change within a render (401 Unauthorized, 403 Forbidden), or null.
- */
-export function archiveAccessRefusal(message: string): string | null {
-  const m = message.match(/Server returned (401|403)\b/);
-  return m ? `http_${m[1]}` : null;
-}
-
-/**
  * VIDEO 623 — does archive.org's own metadata mark this item as lending-only? TV-news recordings
  * carry `access-restricted-item: "true"`, and their files answer 401/403 to anyone not signed in.
  */
@@ -10920,7 +10910,8 @@ export function resetYoutubeFragmentsFetched(): void {
 }
 
 /** VIDEO 623 — each video's first transfer this render; see the wait in `downloadYouTubeCCClip`. */
-const youtubeFirstTransfers = new Map<string, Promise<boolean>>();
+type FirstTransferAnswer = { ok: boolean; status?: string; reason?: string };
+const youtubeFirstTransfers = new Map<string, Promise<FirstTransferAnswer>>();
 /** How long a second transfer of a video waits for the first one's answer. */
 export const YOUTUBE_FIRST_TRANSFER_WAIT_MS = 25_000;
 
@@ -10931,20 +10922,24 @@ export const YOUTUBE_FIRST_TRANSFER_WAIT_MS = 25_000;
  */
 export async function firstTransferWroteVideoOff(
   videoId: string,
-  first: Promise<boolean>,
+  first: Promise<FirstTransferAnswer>,
   waitMs = YOUTUBE_FIRST_TRANSFER_WAIT_MS
 ): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
-  const delivered = await Promise.race([
-    first.catch(() => false),
+  const answer = await Promise.race([
+    first.catch((): FirstTransferAnswer => ({ ok: false })),
     new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), waitMs);
       timer.unref?.();
     }),
   ]);
   if (timer) clearTimeout(timer);
-  if (delivered === true) return false;
-  return youtubeDownloadRefusal(videoId) != null || youtubeVideoUnusable(videoId) != null;
+  if (answer === null || answer.ok) return false;
+  /** The same two rules the render's memo writes by — read here, never written. */
+  const durable =
+    (answer.status != null && YOUTUBE_PERMANENT_DOWNLOAD_STATUSES.has(answer.status)) ||
+    isDurableYoutubeServiceRefusal(answer.reason);
+  return durable || youtubeDownloadRefusal(videoId) != null || youtubeVideoUnusable(videoId) != null;
 }
 
 /**
@@ -11206,12 +11201,6 @@ export async function downloadYouTubeCCClip(
     countDownloadOutcome(sourcingCache, "youtube_cc", status);
     void recordYoutubeVideoOutcome(videoId, status === "DOWNLOAD_SUCCESS", attempts);
     /**
-     * VIDEO 623 — remembered here, before this transfer's promise settles, so a transfer waiting
-     * on it (`firstTransferWroteVideoOff`) reads the verdict. The callers still note it too; the
-     * memo keeps the first reason.
-     */
-    if (status !== "DOWNLOAD_SUCCESS") noteYoutubeDownloadRefusal(videoId, status, reason);
-    /**
      * The same facts into the bundle, so the next capture can be counted rather than read. The
      * video id is an identity and is public; the signed format URL the transfer uses never
      * reaches here and is never recorded.
@@ -11279,9 +11268,11 @@ export async function downloadYouTubeCCClip(
      * video off.
      */
     const firstForVideo = youtubeFirstTransfers.get(videoId);
+    /** This transfer's own answer, read by a second transfer waiting on it — see the map below. */
+    const box: { status?: YoutubeDownloadStatus; reason?: string; transferStarted?: boolean } = outcome ?? {};
     const done = (async () => {
       if (firstForVideo && (await firstTransferWroteVideoOff(videoId, firstForVideo))) {
-        reportDownload("DOWNLOAD_FAILED", `refused_this_render:${youtubeDownloadRefusal(videoId) ?? "first transfer"}`);
+        reportDownload("DOWNLOAD_FAILED", "refused_this_render:the first transfer of this video was refused for good");
         return false;
       }
       if (youtubeFragmentsFetched.has(fragment) && (await copyYoutubeFragmentAlreadyFetched(fragment, outPath))) {
@@ -11291,11 +11282,21 @@ export async function downloadYouTubeCCClip(
       youtubeTransferReentry = outPath;
       return downloadYouTubeCCClip(
         videoId, duration, clipStart, outPath, sceneIndex, title, sourcingCache, startIsExact,
-        outcome, budgetMs, onlyRoute
+        box, budgetMs, onlyRoute
       );
     })();
     youtubeTransfersByFile.set(outPath, { seconds, done });
-    if (!firstForVideo) youtubeFirstTransfers.set(videoId, done);
+    if (!firstForVideo) {
+      const answer = done.then(
+        (ok) => ({ ok, status: box.status, reason: box.reason }),
+        () => ({ ok: false })
+      );
+      youtubeFirstTransfers.set(videoId, answer);
+      /** Only while it runs: a later transfer reads the render's memo, which the caller wrote. */
+      void answer.then(() => {
+        if (youtubeFirstTransfers.get(videoId) === answer) youtubeFirstTransfers.delete(videoId);
+      });
+    }
     const kept = keepYoutubeFragmentWhenFetched(fragment, outPath, done);
     try {
       return await done;

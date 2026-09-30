@@ -13,7 +13,6 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import {
-  archiveAccessRefusal,
   beatFillSecondsNeeded,
   beatHasOwnSubject,
   BEAT_FILL_MIN_GAP_SEC,
@@ -24,7 +23,13 @@ import {
   takeLateYoutubeCandidates,
 } from "./videoPipeline";
 import { atSentenceStart, isSentenceOpener, withoutSentenceOpener } from "./sentenceOpeners";
-import { noteYoutubeDownloadRefusal, resetPermanentDownloadRefusals } from "./providerFailureClass";
+import {
+  archiveAccessRefusal,
+  noteArchiveAccessRefusal,
+  noteYoutubeDownloadRefusal,
+  permanentDownloadRefusal,
+  resetPermanentDownloadRefusals,
+} from "./providerFailureClass";
 
 const SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -112,30 +117,38 @@ describe("Video 623 — a sentence longer than its clip gets another clip", () =
 describe("Video 623 — a second transfer of a video waits for the first one's answer", () => {
   afterEach(() => resetPermanentDownloadRefusals());
 
-  it("the first wrote the video off: the second does not start", async () => {
-    const first = (async () => {
-      noteYoutubeDownloadRefusal("vid623", "DOWNLOAD_INVALID_CONTENT", "cloud=NO_VIDEO_STREAM");
-      return false;
-    })();
+  it("the first answered with a refusal about the video: the second does not start", async () => {
+    const first = Promise.resolve({ ok: false, status: "DOWNLOAD_INVALID_CONTENT", reason: "cloud=NO_VIDEO_STREAM" });
     expect(await firstTransferWroteVideoOff("vid623", first, 1_000)).toBe(true);
+    const botCheck = Promise.resolve({ ok: false, status: "DOWNLOAD_FAILED", reason: "http_502:bot_check" });
+    expect(await firstTransferWroteVideoOff("vid623b", botCheck, 1_000)).toBe(true);
+  });
+
+  it("the render wrote the video off meanwhile: the second does not start", async () => {
+    noteYoutubeDownloadRefusal("vid623m", "DOWNLOAD_EMPTY", "cloud=empty");
+    expect(await firstTransferWroteVideoOff("vid623m", Promise.resolve({ ok: false }), 1_000)).toBe(true);
   });
 
   it("the first delivered: the second goes ahead", async () => {
-    expect(await firstTransferWroteVideoOff("vid623ok", Promise.resolve(true), 1_000)).toBe(false);
+    expect(await firstTransferWroteVideoOff("vid623ok", Promise.resolve({ ok: true }), 1_000)).toBe(false);
   });
 
   it("the first failed for a reason about the moment: the second goes ahead", async () => {
-    expect(await firstTransferWroteVideoOff("vid623t", Promise.resolve(false), 1_000)).toBe(false);
+    const timeout = Promise.resolve({ ok: false, status: "DOWNLOAD_TIMEOUT", reason: "scene_budget" });
+    expect(await firstTransferWroteVideoOff("vid623t", timeout, 1_000)).toBe(false);
+    const once = Promise.resolve({ ok: false, status: "DOWNLOAD_FAILED", reason: "http_502:stream_refused" });
+    expect(await firstTransferWroteVideoOff("vid623r", once, 1_000)).toBe(false);
   });
 
   it("the first is still running when the wait ends: the second goes ahead", async () => {
-    const never = new Promise<boolean>(() => undefined);
+    const never = new Promise<{ ok: boolean }>(() => undefined);
     expect(await firstTransferWroteVideoOff("vid623s", never, 20)).toBe(false);
   });
 
-  it("the download remembers its own refusal before its answer is read", () => {
-    expect(SRC).toContain('if (status !== "DOWNLOAD_SUCCESS") noteYoutubeDownloadRefusal(videoId, status, reason);');
-    expect(SRC).toContain("if (!firstForVideo) youtubeFirstTransfers.set(videoId, done);");
+  it("the wait only reads; the render's memo keeps its one writer; the entry lives only while it runs", () => {
+    expect(SRC).not.toContain('if (status !== "DOWNLOAD_SUCCESS") noteYoutubeDownloadRefusal(');
+    expect(SRC).toContain("youtubeFirstTransfers.set(videoId, answer);");
+    expect(SRC).toContain("if (youtubeFirstTransfers.get(videoId) === answer) youtubeFirstTransfers.delete(videoId);");
   });
 });
 
@@ -154,6 +167,11 @@ describe("Video 623 — archive.org items that only lend are not downloaded", ()
     expect(archiveAccessRefusal("Server returned 404 Not Found")).toBeNull();
     expect(archiveAccessRefusal("Connection timed out")).toBeNull();
     expect(SRC).toContain("if (permanentDownloadRefusal(videoUrl)) return false;");
+    resetPermanentDownloadRefusals();
+    expect(noteArchiveAccessRefusal("https://archive.org/download/x/x.mp4", "Server returned 403 Forbidden")).toBe(true);
+    expect(permanentDownloadRefusal("https://archive.org/download/x/x.mp4")).toBe("http_403");
+    expect(noteArchiveAccessRefusal("https://archive.org/download/y/y.mp4", "Connection reset")).toBe(false);
+    resetPermanentDownloadRefusals();
   });
 });
 

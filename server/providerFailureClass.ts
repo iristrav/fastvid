@@ -530,6 +530,24 @@ export function noteRepeatedYoutubeRefusal(videoId: string, reason: string | und
   return true;
 }
 
+/**
+ * VIDEO 623 — the HTTP refusal an archive.org file answered with, when it is one that will not
+ * change within a render (401 Unauthorized, 403 Forbidden: TV-news items lent to signed-in
+ * borrowers only), or null.
+ */
+export function archiveAccessRefusal(message: string): string | null {
+  const m = message.match(/Server returned (401|403)\b/);
+  return m ? `http_${m[1]}` : null;
+}
+
+/** Remember such a refusal for the file's URL, so no other beat asks for it this render. */
+export function noteArchiveAccessRefusal(url: string, message: string): boolean {
+  const refused = archiveAccessRefusal(message);
+  if (!url || !refused) return false;
+  notePermanentDownloadRefusal(url, refused);
+  return true;
+}
+
 /** Why this video was already written off this render, or null when it has not been. */
 export function youtubeDownloadRefusal(videoId: string): string | null {
   if (!videoId) return null;
