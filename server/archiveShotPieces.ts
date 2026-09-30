@@ -226,7 +226,8 @@ export async function productionShotPieceDeps(): Promise<ShotPieceDeps> {
     fetchAsset: cutDeps.fetchAsset,
     detect: cutDeps.detect,
     extract: (input, output, startSec, endSec) => splitter.extractVideoSegment(input, output, startSec, endSec),
-    textVerdict: async (piecePath, key) => (await filter.cachedClipBakedEditTextVerdict(piecePath, "video/mp4", key)).verdict as TextVerdict,
+    /** VIDEO 621 — the archive's own check, never on a render's budget. */
+    textVerdict: async (piecePath, key) => (await filter.archiveClipTextVerdict(piecePath, "video/mp4", key)).verdict as TextVerdict,
     storePiece: async (parent, piecePath, piece) => {
       const data = await fs.promises.readFile(piecePath);
       const { key, url } = await storage.storagePut(

@@ -22,11 +22,10 @@ import { AUTO_ARCHIVES, autoArchiveKind } from "./stockArchive";
 import { formatPreviewRefusal, verifyArchivePreview } from "./archivePreviewCheck";
 import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
-import { cachedClipBakedEditTextVerdict } from "./archiveClipFilter";
+import { archiveClipTextVerdict } from "./archiveClipFilter";
 import { cutLocalVideoIntoShots, productionLocalShotCutter, shotSourceUrl, type LocalShotCutter } from "./archiveShotPieces";
 import * as os from "os";
 import { isArticleScreenshotFile } from "./articleScreenshot";
-import { beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import { recordVisualSearchMemory, type ClassifiedEntity } from "./visualSearchMemory";
 import { Semaphore } from "./_core/semaphore";
 import type { InsertMediaArchiveAsset } from "../drizzle/schema";
@@ -436,9 +435,10 @@ async function ingestExternalClipToArchiveInner(
      * as having text (never offered as ordinary footage) instead of being refused for it.
      */
     const articleScreenshot = isArticleScreenshotFile(localPath);
-    const overlay: Awaited<ReturnType<typeof cachedClipBakedEditTextVerdict>> = articleScreenshot
+    const overlay: Awaited<ReturnType<typeof archiveClipTextVerdict>> = articleScreenshot
       ? { verdict: "has_text", reason: "a screenshot of a news article" }
-      : await cachedClipBakedEditTextVerdict(localPath, metadata.mimeType, overlayKey, beatClipTextFilterMaxChecks());
+      : /** VIDEO 621 — always looked at, never on the render's budget: see `archiveClipTextVerdict`. */
+        await archiveClipTextVerdict(localPath, metadata.mimeType, overlayKey);
     /**
      * VIDEO 619 — a video reaches this check one shot at a time (cut above), so a shot with text is
      * refused and the clean shots of the same download are kept.

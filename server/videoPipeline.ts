@@ -5480,6 +5480,22 @@ export function groupScenesIntoChunks(scenes: Scene[], targetChunkSec = 60): Arr
 }
 
 /**
+ * VIDEO 621 — EVERY CHUNK GETS ITS SHARE OF THE PICTURE TIME, NOT WHATEVER THE FIRST ONE LEFT.
+ *
+ * The visual deadline is the render's per-scene retrieval budget times the number of scenes. The
+ * chunks ran one after another and each was allowed everything still left, so render 621's first
+ * chunk (scenes 0 and 1, 23 s of narration) used all 165 s and its second (scene 2, 62 s) was never
+ * searched: the film held one archive shot for a minute and was refused. A chunk now gets the share
+ * of what is left that its scenes are of the scenes left; time a chunk does not use goes to the
+ * chunks after it, and the last chunk gets everything that remains.
+ */
+export function chunkShareOfVisualTimeMs(timeLeftMs: number, chunkSceneCount: number, scenesLeft: number): number {
+  if (!(timeLeftMs > 0)) return 0;
+  if (!(scenesLeft > chunkSceneCount) || chunkSceneCount <= 0) return timeLeftMs;
+  return Math.floor((timeLeftMs * chunkSceneCount) / scenesLeft);
+}
+
+/**
  * Portions a whole-video stage timeout down to this chunk's share, by scene count — reuses the
  * existing tuned whole-video timeout values instead of inventing new ones per chunk.
  *
@@ -27935,6 +27951,13 @@ async function _runVideoPipelineInner(
         );
       } else
       try {
+      if (chunks.length > 1) {
+        console.log(
+          `[Pipeline] video=${videoId} chunk ${chunkIdx + 1}/${chunks.length}: ` +
+            `${Math.round(chunkShareOfVisualTimeMs(visualTimeLeftMs, chunkScenes.length, scenes.length - chunk.start) / 1000)}s ` +
+            `of the ${Math.round(visualTimeLeftMs / 1000)}s picture time left, for ${chunkScenes.length} of ${scenes.length - chunk.start} scene(s)`
+        );
+      }
       await withSceneFetchTimeout(
         () => Promise.all(chunkScenes.map((scene, ci) => visualLimit(async () => {
         const sceneIdx = chunk.start + ci;
@@ -27995,7 +28018,7 @@ async function _runVideoPipelineInner(
         return result;
       }))),
       // RONDE 81: never below what the scenes in this chunk are each allowed to take —
-      // and never past the visual deadline.
+      // and never past the visual deadline. VIDEO 621: nor past this chunk's share of it.
       Math.min(
         chunkStageTimeoutMs(
           visualStageTimeoutMs(videoLength, perf),
@@ -28004,7 +28027,7 @@ async function _runVideoPipelineInner(
           20_000,
           perf.sceneVisualTimeoutMs
         ),
-        visualTimeLeftMs
+        chunkShareOfVisualTimeMs(visualTimeLeftMs, chunkScenes.length, scenes.length - chunk.start)
       ),
       `Visual generation stage chunk ${chunkIdx + 1}/${chunks.length}`
     );

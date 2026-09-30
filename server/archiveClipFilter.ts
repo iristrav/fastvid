@@ -486,6 +486,30 @@ export async function cachedClipBakedEditTextVerdict(
   cacheKey: string,
   maxChecks?: number
 ): Promise<OverlayVerdictResult> {
+  return overlayVerdictWithMemo(media, mimeType, cacheKey, { maxChecks, counted: true });
+}
+
+/**
+ * VIDEO 621 — THE ARCHIVE'S OWN TEXT CHECK, OUTSIDE THE RENDER'S BUDGET.
+ *
+ * The render's budget (`beatClipTextFilterMaxChecks`, 40) is for the render's own pictures. The
+ * archive's background work — the shot sweep and the ingestion of every download — asked through
+ * the same counter: render 621 spent 185 checks, most of them the sweep's, so from the 40th on the
+ * render's own candidates and the new YouTube shots were let through with nobody looking at them.
+ * Archive work now always looks, and does not count against the render. It shares the memo, so a
+ * clip the render already judged costs nothing here.
+ */
+export async function archiveClipTextVerdict(media: string, mimeType: string, cacheKey: string): Promise<OverlayVerdictResult> {
+  return overlayVerdictWithMemo(media, mimeType, cacheKey, { counted: false });
+}
+
+async function overlayVerdictWithMemo(
+  media: string,
+  mimeType: string,
+  cacheKey: string,
+  budget: { maxChecks?: number; counted: boolean }
+): Promise<OverlayVerdictResult> {
+  const { maxChecks } = budget;
   const cached = overlayVerdictCache.get(cacheKey);
   if (cached !== undefined) return { verdict: cached ? "has_text" : "clean" };
   /**
@@ -524,7 +548,7 @@ export async function cachedClipBakedEditTextVerdict(
     );
     return NOT_ASKED(`the overlay budget was spent (${overlayChecksPerformed}/${maxChecks})`);
   }
-  overlayChecksPerformed++;
+  if (budget.counted) overlayChecksPerformed++;
   let result: OverlayVerdictResult;
   try {
     result = await archiveClipBakedEditTextVerdict(media, mimeType);
