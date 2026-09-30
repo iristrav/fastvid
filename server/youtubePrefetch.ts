@@ -861,7 +861,9 @@ async function productionPrefetchDeps(): Promise<PrefetchDeps> {
                 p.startIsExact,
                 outcome as never,
                 undefined,
-                route
+                route,
+                /** VIDEO 624 — this loop ingests the segment itself; see `archiveDelivered`. */
+                false
               ),
             prefetchWindowMs(),
             `youtube prefetch ${route} ${p.videoId}@${p.startSec}s`

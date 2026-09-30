@@ -4438,7 +4438,14 @@ function releaseUnstartedYoutubeTurn(
  * fetcher closes the YouTube turn of whatever scope it runs in, and a lookahead must never close
  * the scene's. At most YOUTUBE_LOOKAHEAD_PARALLEL at a time across the render.
  */
-export const YOUTUBE_LOOKAHEAD_PARALLEL = 3;
+/**
+ * VIDEO 624 — every sentence, not three. With three at a time render 624 cancelled six of its
+ * eleven lookaheads before they started (`not_started_cancelled`), and those sentences searched
+ * YouTube only when their own short turn came — 12 to 55 s for work that takes 60 to 105 s. Ten
+ * covers every sentence a scene set of a short film has queued at once; the download service runs
+ * each request on its own worker thread.
+ */
+export const YOUTUBE_LOOKAHEAD_PARALLEL = 10;
 
 /** The lookahead's search, inside the beat's proof — the scope `withBeatProvenance` opens above. */
 async function runYoutubeLookaheadInner(
@@ -11178,7 +11185,14 @@ export async function downloadYouTubeCCClip(
    *
    * Absent for every render caller, which keeps both routes, in their order, exactly as before.
    */
-  onlyRoute?: "cloud"
+  onlyRoute?: "cloud",
+  /**
+   * VIDEO 624 — whether this function puts the delivered file into the archive. The background
+   * fetch ingests every segment itself (and records the asset on its queue row); archiving here as
+   * well stored each of Y9veskS_iH4's shots twice, milliseconds apart, past the duplicate check.
+   * It passes false; every other caller keeps the archive copy it always had.
+   */
+  archiveDelivered = true
 ): Promise<boolean> {
   const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
   const hasCloudRoute = Boolean(cloudDlService);
@@ -11312,7 +11326,7 @@ export async function downloadYouTubeCCClip(
       youtubeTransferReentry = outPath;
       return downloadYouTubeCCClip(
         videoId, duration, clipStart, outPath, sceneIndex, title, sourcingCache, startIsExact,
-        box, budgetMs, onlyRoute
+        box, budgetMs, onlyRoute, archiveDelivered
       );
     })();
     youtubeTransfersByFile.set(outPath, { seconds, done });
@@ -11715,7 +11729,9 @@ export async function downloadYouTubeCCClip(
           }
           reportDownload("DOWNLOAD_SUCCESS", "cloud_service");
           /** VIDEO 619 — every YouTube download goes into the archive, used in this film or not. */
-          archiveYoutubeDownloadInBackground(outPath, { videoId, title, startSec: clipStart, durationSec: duration });
+          if (archiveDelivered) {
+            archiveYoutubeDownloadInBackground(outPath, { videoId, title, startSec: clipStart, durationSec: duration });
+          }
           return true;
         } else {
           /**
@@ -12347,26 +12363,55 @@ export async function searchYoutubeVideoCandidates(
  * look shares the ranking's budget rule: it never touches the download floor, and out of time the
  * rows go out unfiltered, logged.
  */
-const youtubeTriageByVideoId = new Map<string, { footageType: string } | null>();
+/**
+ * VIDEO 624 — FIRST LOOK, THEN DOWNLOAD. "Kijken, dan pas downloaden."
+ *
+ * The look answered two questions and this route used one: WHAT the thumbnail shows (footage or
+ * not), and WHETHER it serves the sentence (`servesBeats`). A row that was never judged — no time
+ * left to look, no thumbnail, no answer — was downloaded anyway. Now a row is downloaded only when
+ * the look says it is real or archival footage AND, when there is a sentence, that it serves it.
+ * Rows past the ones looked at are not downloaded either. The frames are still judged after the
+ * download, as before; this decides only what is worth a transfer.
+ *
+ * The memory is keyed by video AND sentence: whether a picture serves a sentence depends on the
+ * sentence.
+ */
+const youtubeTriageByVideoAndSentence = new Map<string, { footageType: string; servesBeats?: number[] } | null>();
 const YOUTUBE_ROWS_LOOKED_AT = 5;
+
+type YoutubeRowLook = (
+  item: { videoId: string; title: string; description: string; channel: string; thumb: string },
+  title: string,
+  sentences: string[]
+) => Promise<{ footageType: string; servesBeats?: number[] } | null>;
+let youtubeRowLookForTests: YoutubeRowLook | null = null;
+/** Tests never reach the vision model: a test that downloads through the fetcher says what the look answers. */
+export function setYoutubeRowLookForTests(look: YoutubeRowLook | null): void {
+  youtubeRowLookForTests = look;
+  youtubeTriageByVideoAndSentence.clear();
+}
 
 export async function youtubeRowsWithoutNonFootage(
   rows: YoutubeSearchRow[],
   scriptGuided: ScriptGuidedBeatContext | undefined,
   sceneIndex: number,
-  look: (
-    item: { videoId: string; title: string; description: string; channel: string; thumb: string },
-    title: string,
-    sentences: string[]
-  ) => Promise<{ footageType: string } | null> = async (item, title, sentences) =>
-    (await import("./youtubeVideoPoolProduction")).triageYoutubeThumbnail(item, title, sentences)
+  look: YoutubeRowLook = youtubeRowLookForTests ??
+    (async (item, title, sentences) =>
+      (await import("./youtubeVideoPoolProduction")).triageYoutubeThumbnail(item, title, sentences))
 ): Promise<YoutubeSearchRow[]> {
   const beatIndex = scriptGuided?.beatIndex ?? 0;
+  if (rows.length === 0) return rows;
   const remaining = remainingScopeMs();
   const spare = Number.isFinite(remaining) ? remaining - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS : Number.POSITIVE_INFINITY;
-  if (spare <= 0 || rows.length === 0) return rows;
+  if (spare <= 0) {
+    console.log(
+      `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} NO_TIME_TO_LOOK — nothing is downloaded unseen`
+    );
+    return [];
+  }
   const lookMs = Math.min(YOUTUBE_SEARCH_TIMEOUT_MS, spare);
-  const sentences = scriptGuided?.beatText?.trim() ? [scriptGuided.beatText.trim()] : [];
+  const sentence = scriptGuided?.beatText?.trim() ?? "";
+  const sentences = sentence ? [sentence] : [];
   const head = rows.slice(0, YOUTUBE_ROWS_LOOKED_AT);
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -12375,13 +12420,14 @@ export async function youtubeRowsWithoutNonFootage(
       head.map(async (row) => {
         const videoId = row.item.id?.videoId ?? "";
         if (!videoId || !row.thumb) return null;
-        if (youtubeTriageByVideoId.has(videoId)) return youtubeTriageByVideoId.get(videoId) ?? null;
+        const memoKey = `${videoId}\u0001${sentence}`;
+        if (youtubeTriageByVideoAndSentence.has(memoKey)) return youtubeTriageByVideoAndSentence.get(memoKey) ?? null;
         const v = await look(
           { videoId, title: row.title, description: row.desc, channel: "", thumb: row.thumb },
           scriptGuided?.videoTitle ?? "",
           sentences
         ).catch(() => null);
-        youtubeTriageByVideoId.set(videoId, v);
+        youtubeTriageByVideoAndSentence.set(memoKey, v);
         return v;
       })
     ),
@@ -12392,31 +12438,40 @@ export async function youtubeRowsWithoutNonFootage(
   if (timer) clearTimeout(timer);
   if (!verdicts) {
     console.log(
-      `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} SKIPPED reason=LOOK_SPENT ` +
-        `budget=${Math.round(lookMs / 1000)}s — the rows go out unjudged`
+      `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} LOOK_SPENT ` +
+        `budget=${Math.round(lookMs / 1000)}s — nothing is downloaded unseen`
     );
-    return rows;
+    return [];
   }
   const kept: YoutubeSearchRow[] = [];
   head.forEach((row, i) => {
     const v = verdicts[i];
-    const type = v?.footageType;
-    if (type && type !== "real_footage" && type !== "archival_footage") {
+    const id = row.item.id?.videoId ?? "?";
+    const title = row.title.slice(0, 70);
+    if (!v) {
+      console.log(`[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} video=${id} NOT_JUDGED title="${title}" — not downloaded unseen`);
+      return;
+    }
+    if (v.footageType !== "real_footage" && v.footageType !== "archival_footage") {
       console.log(
-        `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} video=${row.item.id?.videoId ?? "?"} ` +
-          `footageType=${type} title="${row.title.slice(0, 70)}" — not downloaded`
+        `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} video=${id} footageType=${v.footageType} title="${title}" — not downloaded`
       );
       return;
     }
-    if (!v) {
+    if (sentences.length > 0 && !(v.servesBeats ?? []).includes(0)) {
       console.log(
-        `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} video=${row.item.id?.videoId ?? "?"} ` +
-          `NOT_JUDGED — kept; the frames are still checked after the download`
+        `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} video=${id} does not serve this sentence title="${title}" — not downloaded`
       );
+      return;
     }
     kept.push(row);
   });
-  return [...kept, ...rows.slice(YOUTUBE_ROWS_LOOKED_AT)];
+  if (rows.length > head.length) {
+    console.log(
+      `[YouTubeTriage] scene=${sceneIndex} beat=${beatIndex} ${rows.length - head.length} row(s) past the ${YOUTUBE_ROWS_LOOKED_AT} looked at — not downloaded unseen`
+    );
+  }
+  return kept;
 }
 
 export async function youtubeRowsRankedByThumbnail(

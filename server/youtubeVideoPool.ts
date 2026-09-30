@@ -566,31 +566,29 @@ export function poolRowsForBeat(
   pool: VideoYoutubePool,
   beatText: string,
   relevanceKeywords: string[],
-  requiredPersonName = ""
+  /** Kept for the callers; the look, not a name string, decides since video 624. */
+  _requiredPersonName = ""
 ): PoolRow[] {
   const mine = new Set(beatSentences(pool, beatText));
   const rows: PoolRow[] = [];
   for (const c of pool.candidates) {
     if (!c.usable) continue;
     const hay = `${c.title} ${c.description}`.toLowerCase();
-    const serves = c.serves.some((s) => mine.has(s));
     /**
-     * RONDE 659 — video 608: the person lock read "Hitler Took", this took its LAST word, and no
-     * YouTube title contains "took" — every candidate of every beat was dropped. A video the picture
-     * triage already judged to serve THIS beat is not second-guessed by a name string; any other
-     * must carry some real part of the name (four letters or more) in its title or description.
+     * VIDEO 624 — FIRST LOOK, THEN DOWNLOAD. The pool looked at every candidate's thumbnail and said
+     * which sentences it serves; a candidate it did not judge to serve THIS sentence is not
+     * downloaded for it. (Before, any usable candidate whose title carried part of the person's name
+     * was downloaded too, and judged only after the transfer.) RONDE 659's rule still holds: a video
+     * the look judged to serve this beat is never second-guessed by a name string.
      */
-    if (requiredPersonName && !serves) {
-      const parts = requiredPersonName.toLowerCase().split(/\s+/).filter((w) => w.length >= 4);
-      if (parts.length && !parts.some((w) => hay.includes(w))) continue;
-    }
+    if (!c.serves.some((s) => mine.has(s))) continue;
     const text = relevanceKeywords.filter((k) => k.length >= 3 && hay.includes(k.toLowerCase())).length;
     rows.push({
       item: { id: { videoId: c.videoId }, snippet: { title: c.title, description: c.description, channelTitle: c.channel, thumbnails: { high: { url: c.thumb } } } },
       title: c.title,
       desc: c.description,
       thumb: c.thumb,
-      rel: serves ? Math.max(3, text + 3) : text,
+      rel: Math.max(3, text + 3),
       durationSec: c.durationSec > 0 ? c.durationSec : 0,
     });
   }

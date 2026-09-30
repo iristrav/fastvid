@@ -19,13 +19,18 @@
  *      the editor. The feature matrix called that `graphics EXECUTED_WITHOUT_PLAN`.
  *   7  Retrieval was measured against 165 s while the pipeline's own picture deadline was 180 s
  *      plus up to 60 s for a scene that found nothing: "OVER +1m" on a stage inside every limit.
+ *   8  Look ahead for every sentence; first look, then download; archive each download once.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
 import { memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
 import { buildVideoYoutubePool, withYoutubeOwnText, type PoolDeps, type SearchItem } from "./youtubeVideoPool";
+import { createLookaheadRegistry } from "./youtubeLookahead";
+import { poolRowsForBeat, type VideoYoutubePool } from "./youtubeVideoPool";
 import {
+  YOUTUBE_LOOKAHEAD_PARALLEL,
+  youtubeRowsWithoutNonFootage,
   EMPTY_SCENE_RESCUE_MIN_MS,
   extractBeatRealEntities,
   personAsRead,
@@ -300,5 +305,49 @@ describe("7. the retrieval yardstick is the pipeline's own clock", () => {
     expect(at).toBeGreaterThan(0);
     expect(src.slice(at, at + 400)).toContain("visualDeadlineForVideoMs(");
     expect(src.slice(at, at + 400)).toContain("+ EMPTY_SCENE_RESCUE_MIN_MS");
+  });
+});
+
+describe("8. look ahead for every sentence; first look, then download; archive once", () => {
+  it("render 624's nine queued lookaheads all start — none is cancelled for waiting in line", async () => {
+    expect(YOUTUBE_LOOKAHEAD_PARALLEL).toBeGreaterThanOrEqual(9);
+    const registry = createLookaheadRegistry(YOUTUBE_LOOKAHEAD_PARALLEL);
+    for (let b = 0; b < 9; b++) registry.start(`0:${b}`, ["q"], () => new Promise(() => {}));
+    await new Promise((r) => setTimeout(r, 0));
+    for (let b = 0; b < 9; b++) expect(registry.take(`0:${b}`, ["q"]).kind, `beat ${b}`).toBe("use");
+    expect(registry.stats().cancelled).toBe(0);
+  });
+
+  it("the pool hands a sentence only the videos the look judged to serve it", () => {
+    const pool = {
+      videoId: 1, sentences: ["Elon Musk speaks at the meeting.", "The factory floor at night."],
+      query1: "Elon Musk", query2: null, searches: 1,
+      candidates: [
+        { videoId: "aaaaaaaaaaa", title: "Elon Musk speech", description: "", thumb: "t", durationSec: 600, footageType: "real_footage", serves: [0], from: 1, usable: true, why: "ok" },
+        { videoId: "bbbbbbbbbbb", title: "Elon Musk factory tour", description: "", thumb: "t", durationSec: 600, footageType: "real_footage", serves: [1], from: 1, usable: true, why: "ok" },
+      ],
+      coverage1: 1, archiveUsable: 0, search2Needed: false, search2Reason: "", finalCoverage: 1, decided: true,
+    } as unknown as VideoYoutubePool;
+    expect(poolRowsForBeat(pool, "Elon Musk speaks at the meeting.", ["musk"], "Elon Musk").map((r) => r.item.id.videoId)).toEqual(["aaaaaaaaaaa"]);
+    expect(poolRowsForBeat(pool, "The factory floor at night.", ["factory"], "Elon Musk").map((r) => r.item.id.videoId)).toEqual(["bbbbbbbbbbb"]);
+  });
+
+  it("whether a picture serves a sentence is asked per sentence, not once per video", async () => {
+    const row = { item: { id: { videoId: "ccccccccccc" } }, title: "a speech", desc: "", thumb: "t", rel: 1 } as never;
+    const look = async (_i: unknown, _t: string, sentences: string[]) =>
+      ({ footageType: "real_footage", servesBeats: sentences[0]?.includes("speech") ? [0] : [] });
+    const a = { beatText: "He gave a speech.", beatIndex: 0, videoTitle: "x" } as never;
+    const b = { beatText: "The rocket lifted off.", beatIndex: 1, videoTitle: "x" } as never;
+    expect(await youtubeRowsWithoutNonFootage([row], a, 0, look)).toHaveLength(1);
+    expect(await youtubeRowsWithoutNonFootage([row], b, 0, look)).toHaveLength(0);
+  });
+
+  it("the background fetch archives its segments itself; the download does not do it again", () => {
+    const pipe = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    expect(pipe).toMatch(/if \(archiveDelivered\) \{\s*archiveYoutubeDownloadInBackground\(outPath/);
+    expect(pipe).toContain("box, budgetMs, onlyRoute, archiveDelivered");
+    const prefetch = fs.readFileSync(path.join(__dirname, "youtubePrefetch.ts"), "utf8");
+    const call = prefetch.slice(prefetch.indexOf("pipeline.downloadYouTubeCCClip("), prefetch.indexOf("pipeline.downloadYouTubeCCClip(") + 500);
+    expect(call).toMatch(/route,\s*\/\*\*[^*]*\*\/\s*false/);
   });
 });

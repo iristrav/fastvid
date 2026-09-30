@@ -272,11 +272,15 @@ describe("one search fills the pool; a second only for a real gap; never a third
     const beat = tesla.sceneTexts[0]!.split(". ")[0]! + ".";
     /** Judged to serve this beat: kept whatever the name string says. */
     expect(poolRowsForBeat(pool, beat, [], "Hitler Took").length).toBe(50);
-    /** Not judged for this beat: a real part of the name must appear — "hitler", never "took". */
+    /** Not judged for this beat: not downloaded for it. */
     const other = poolRowsForBeat(pool, "An unrelated sentence about nothing here.", [], "Hitler Took");
     expect(other).toEqual([]);
+    /**
+     * VIDEO 624 — first look, then download: a video the look did not judge to serve this sentence
+     * is not downloaded for it, even when its title carries the name.
+     */
     const withName = { ...pool, candidates: pool.candidates.map((c, i) => (i === 0 ? { ...c, title: "Hitler in Berlin", serves: [9] } : c)) };
-    expect(poolRowsForBeat(withName, "An unrelated sentence about nothing here.", [], "Hitler Took").map((r) => r.title)).toEqual(["Hitler in Berlin"]);
+    expect(poolRowsForBeat(withName, "An unrelated sentence about nothing here.", [], "Hitler Took")).toEqual([]);
   });
 
   it("a beat gets the videos judged to serve it first", async () => {

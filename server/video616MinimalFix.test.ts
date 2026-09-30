@@ -26,6 +26,7 @@ import {
   youtubeFragmentFileTag,
   capYoutubeClipDurationForTest,
   setYoutubeLengthLookupForTests,
+  setYoutubeRowLookForTests,
 } from "./videoPipeline";
 import { notePermanentDownloadRefusal, permanentDownloadRefusal, resetPermanentDownloadRefusals } from "./providerFailureClass";
 import {
@@ -72,6 +73,8 @@ describe("A/B. a refused YouTube fragment is not downloaded again; the next cand
     process.env.YOUTUBE_API_KEY = "v616-test-key";
     /** VIDEO 624 — the download's Shorts check reads a length; these are long films. */
     setYoutubeLengthLookupForTests(async () => 600);
+    /** VIDEO 624 — first look, then download: these thumbnails show real footage. */
+    setYoutubeRowLookForTests(async () => ({ footageType: "real_footage", servesBeats: [0] }));
     process.env.YOUTUBE_CC_DL_SERVICE = "https://v616-cloud.example.com";
     process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";
     process.env.YOUTUBE_SEARCH_MODE = "per_beat";
@@ -83,6 +86,7 @@ describe("A/B. a refused YouTube fragment is not downloaded again; the next cand
   });
   afterEach(() => {
     setYoutubeLengthLookupForTests(null);
+    setYoutubeRowLookForTests(null);
     process.env = { ...ORIGINAL_ENV };
     vi.restoreAllMocks();
   });
@@ -97,7 +101,14 @@ describe("A/B. a refused YouTube fragment is not downloaded again; the next cand
           ok: true,
           status: 200,
           json: async () => ({
-            items: ids.map((id) => ({ id: { videoId: id }, snippet: { title: `Steam locomotive film ${id}`, description: "steam locomotive" } })),
+            items: ids.map((id) => ({
+              id: { videoId: id },
+              snippet: {
+                title: `Steam locomotive film ${id}`,
+                description: "steam locomotive",
+                thumbnails: { high: { url: `https://i.ytimg.com/vi/${id}/hqdefault.jpg` } },
+              },
+            })),
           }),
         });
       }

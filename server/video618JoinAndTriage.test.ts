@@ -134,18 +134,19 @@ const row = (videoId: string, title: string): YoutubeSearchRow =>
 const beat = { beatText: "Kylie Jenner turned lip kits into a fortune.", beatIndex: 0, videoTitle: "Kardashians" } as never;
 
 describe("Video 618 (4) — the pool's look on the route that runs without a pool", () => {
-  it("commentary and text videos are not downloaded; real footage and unjudged rows keep their order", async () => {
-    const verdicts: Record<string, string | null> = {
-      aaaaaaaaaa1: "text_or_graphic",
-      aaaaaaaaaa2: "real_footage",
-      aaaaaaaaaa3: "talking_head",
+  /**
+   * VIDEO 624 — first look, then download: a row the look did not judge, or judged as footage that
+   * does not serve the sentence, is not downloaded; nor is a row past the five looked at.
+   */
+  it("commentary and text videos are not downloaded; only judged footage that serves the sentence is, in order", async () => {
+    const verdicts: Record<string, { footageType: string; servesBeats: number[] } | null> = {
+      aaaaaaaaaa1: { footageType: "text_or_graphic", servesBeats: [0] },
+      aaaaaaaaaa2: { footageType: "real_footage", servesBeats: [0] },
+      aaaaaaaaaa3: { footageType: "talking_head", servesBeats: [0] },
       aaaaaaaaaa4: null,
-      aaaaaaaaaa5: "archival_footage",
+      aaaaaaaaaa5: { footageType: "archival_footage", servesBeats: [0] },
     };
-    const look = vi.fn(async (item: { videoId: string }) => {
-      const t = verdicts[item.videoId];
-      return t ? { footageType: t } : null;
-    });
+    const look = vi.fn(async (item: { videoId: string }) => verdicts[item.videoId] ?? null);
     const rows = [
       row("aaaaaaaaaa1", "Kris Jenner Lifestyle: How Rich Is the Momager Queen?"),
       row("aaaaaaaaaa2", "Kim Kardashian And Mom Kris Jenner Cause A Frenzy At LAX"),
@@ -155,8 +156,13 @@ describe("Video 618 (4) — the pool's look on the route that runs without a poo
       row("aaaaaaaaaa6", "beyond the five rows looked at"),
     ];
     const kept = await youtubeRowsWithoutNonFootage(rows, beat, 2, look);
-    expect(kept.map((r) => r.item.id!.videoId)).toEqual(["aaaaaaaaaa2", "aaaaaaaaaa4", "aaaaaaaaaa5", "aaaaaaaaaa6"]);
+    expect(kept.map((r) => r.item.id!.videoId)).toEqual(["aaaaaaaaaa2", "aaaaaaaaaa5"]);
     expect(look).toHaveBeenCalledTimes(5);
+  });
+
+  it("real footage the look says does not serve this sentence is not downloaded", async () => {
+    const look = vi.fn(async () => ({ footageType: "real_footage", servesBeats: [] as number[] }));
+    expect(await youtubeRowsWithoutNonFootage([row("eeeeeeeeee1", "a street")], beat, 0, look)).toEqual([]);
   });
 
   it("the same video is looked at once per process, whichever beat asks", async () => {
@@ -167,15 +173,16 @@ describe("Video 618 (4) — the pool's look on the route that runs without a poo
     expect(look).toHaveBeenCalledTimes(1);
   });
 
-  it("a look that fails is not a refusal", async () => {
+  /** VIDEO 624 — nothing is downloaded unseen: a look that fails downloads nothing. */
+  it("a look that fails downloads nothing unseen", async () => {
     const look = vi.fn(async () => {
       throw new Error("vision provider down");
     });
     const rows = [row("cccccccccc1", "x")];
-    expect(await youtubeRowsWithoutNonFootage(rows, beat, 0, look)).toEqual(rows);
+    expect(await youtubeRowsWithoutNonFootage(rows, beat, 0, look)).toEqual([]);
   });
 
-  it("it never spends the download's time: out of budget the rows go out unjudged", async () => {
+  it("it never spends the download's time: out of budget nothing is downloaded unseen", async () => {
     const look = vi.fn(() => new Promise<null>(() => {}));
     const rows = [row("dddddddddd1", "x"), row("dddddddddd2", "y")];
     const kept = await withSceneFetchTimeout(
@@ -183,7 +190,7 @@ describe("Video 618 (4) — the pool's look on the route that runs without a poo
       12_300,
       "a beat with 0.3s beyond the download floor"
     );
-    expect(kept).toEqual(rows);
+    expect(kept).toEqual([]);
   }, 20_000);
 
   it("wiring: only off the pool, after the ranking and before the loop; the pool's own look is the same function", () => {
