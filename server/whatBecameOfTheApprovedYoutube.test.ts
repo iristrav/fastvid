@@ -724,8 +724,10 @@ describe("§14 — a reader, and nothing more than a reader", () => {
 
   it("is wired into the render's own report, beside the trace it completes", () => {
     expect(PIPELINE).toContain('from "./youtubeLifecycleTrace"');
-    const trace = PIPELINE.indexOf("traceYoutubeLifecycle(ledger, visualDedup.beatRelevance)");
+    /** VIDEO 622 — read after the render, where the film's own answer is known. */
+    const trace = PIPELINE.indexOf("lineage ? traceYoutubeLifecycle(lineage, visualDedup.beatRelevance) : []");
     expect(trace).toBeGreaterThan(0);
+    expect(trace).toBeGreaterThan(PIPELINE.indexOf("youtubeFootageInTimeline(measured.clips"));
     for (const reader of [
       "formatYoutubeLifecycle(youtubeLifecycle)",
       "formatYoutubeLifecycleTable(youtubeLifecycle)",

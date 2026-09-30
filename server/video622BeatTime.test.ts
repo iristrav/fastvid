@@ -47,3 +47,19 @@ describe("Video 622 — a sentence's share of its scene's time", () => {
     expect(src).toContain("beats.slice(bi).reduce((sum, b) => sum + beatSecondsOnScreen(b), 0)");
   });
 });
+
+describe("Video 622 — a YouTube clip that reached the film is not reported as refused", () => {
+  it("the lifecycle is read after the render, beside the film's own count", () => {
+    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    const trace = src.indexOf("const youtubeLifecycle = lineage ? traceYoutubeLifecycle(lineage, visualDedup.beatRelevance) : [];");
+    expect(trace).toBeGreaterThan(src.indexOf("footage = youtubeFootageInTimeline(measured.clips, origins, measured.basis);"));
+    expect(src.match(/traceYoutubeLifecycle\(/g)?.length).toBe(1);
+  });
+
+  it("a second offer of the same picture refused as already used does not end the adopted one", async () => {
+    const { traceYoutubeLifecycle } = await import("./youtubeLifecycleTrace");
+    const src = fs.readFileSync(path.join(__dirname, "youtubeLifecycleTrace.ts"), "utf8");
+    expect(src).toContain('if (adopted && e.gate === "already_used_in_render") continue;');
+    expect(typeof traceYoutubeLifecycle).toBe("function");
+  });
+});

@@ -29246,42 +29246,11 @@ async function _runVideoPipelineInner(
         console.log(pipelineReport.add("sourcing", line));
       }
       /**
-       * AND WHAT THE PICTURE EDITOR SAID ABOUT EACH OF THOSE CLIPS, BESIDE WHERE IT ENDED UP.
-       *
-       * `[YouTubeTrace]` above reads the lineage and can say "adopted, then nothing". It cannot say
-       * "APPROVED, then nothing", because `LINEAGE_STAGES` has no stage for a vision verdict — the
-       * verdicts live in `beatRelevance` and have never been read against the lifecycle. So the one
-       * question this render keeps raising — did a clip the editor said yes to disappear before the
-       * film — had no reader at all, and `INCONCLUSIVE` was the honest answer to it.
-       *
-       * A third READER of registers that both already exist, joined on the content key both sides
-       * carry. It files no event, keeps no state and refuses nothing.
+       * VIDEO 622 — the YouTube lifecycle is reported after the render, where the film's own answer
+       * is known; see the block beside `[YouTubeInFilm]`. Read here, before the render, every
+       * adopted clip still waited for the timeline and its last recorded word was the refusal of a
+       * second offer of the same picture: a clip that was in the film read "rejected after adoption".
        */
-      const youtubeLifecycle = traceYoutubeLifecycle(ledger, visualDedup.beatRelevance);
-      for (const line of formatYoutubeLifecycle(youtubeLifecycle)) {
-        console.log(pipelineReport.add("sourcing", line));
-      }
-      /**
-       * Whether this render had a picture editor at all — once, for the render.
-       *
-       * `NOT_ASKED` on a row says the gate declined and cannot say why: the reason exists only as
-       * prose, and `judgementsProviderUnavailable` is the counter the gate keeps so that no reader
-       * has to match on prose. Read here exactly as the export gate reads it.
-       */
-      for (const line of formatYoutubeVisionAvailability(
-        visualDedup.beatImageGate,
-        youtubeLifecycle
-      )) {
-        console.log(pipelineReport.add("sourcing", line));
-      }
-      /** The same rows as columns, for reading a whole render's YouTube at a glance. */
-      for (const line of formatYoutubeLifecycleTable(youtubeLifecycle)) {
-        console.log(pipelineReport.add("sourcing", line));
-      }
-      /** A clean render prints nothing here; an approved clip that vanished is not routine. */
-      for (const line of youtubeLifecycleViolations(youtubeLifecycle)) {
-        console.warn(pipelineReport.add("sourcing", line));
-      }
       // RONDE 94: the same events, per provider, in found/validated/selected/downloaded/assigned/
       // rendered — plus a refusal to print a funnel that widens.
       for (const line of formatAssetUsageSummary(summary, ledger.finalVideoWasVerified)) {
@@ -31257,7 +31226,44 @@ async function _runVideoPipelineInner(
         footage = youtubeFootageInTimeline(measured.clips, origins, measured.basis);
       }
       const lineage = visualDedup.sourcingCache?.lineage;
-      const totals = lineage ? youtubeLifecycleTotals(traceYoutubeLifecycle(lineage, visualDedup.beatRelevance)) : null;
+      /**
+       * AND WHAT THE PICTURE EDITOR SAID ABOUT EACH OF THOSE CLIPS, BESIDE WHERE IT ENDED UP.
+       *
+       * `[YouTubeTrace]` above reads the lineage and can say "adopted, then nothing". It cannot say
+       * "APPROVED, then nothing", because `LINEAGE_STAGES` has no stage for a vision verdict — the
+       * verdicts live in `beatRelevance` and have never been read against the lifecycle. So the one
+       * question this render keeps raising — did a clip the editor said yes to disappear before the
+       * film — had no reader at all, and `INCONCLUSIVE` was the honest answer to it.
+       *
+       * A third READER of registers that both already exist, joined on the content key both sides
+       * carry. It files no event, keeps no state and refuses nothing.
+       */
+      const youtubeLifecycle = lineage ? traceYoutubeLifecycle(lineage, visualDedup.beatRelevance) : [];
+      for (const line of formatYoutubeLifecycle(youtubeLifecycle)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      /**
+       * Whether this render had a picture editor at all — once, for the render.
+       *
+       * `NOT_ASKED` on a row says the gate declined and cannot say why: the reason exists only as
+       * prose, and `judgementsProviderUnavailable` is the counter the gate keeps so that no reader
+       * has to match on prose. Read here exactly as the export gate reads it.
+       */
+      for (const line of formatYoutubeVisionAvailability(
+        visualDedup.beatImageGate,
+        youtubeLifecycle
+      )) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      /** The same rows as columns, for reading a whole render's YouTube at a glance. */
+      for (const line of formatYoutubeLifecycleTable(youtubeLifecycle)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      /** A clean render prints nothing here; an approved clip that vanished is not routine. */
+      for (const line of youtubeLifecycleViolations(youtubeLifecycle)) {
+        console.warn(pipelineReport.add("sourcing", line));
+      }
+      const totals = lineage ? youtubeLifecycleTotals(youtubeLifecycle) : null;
       const line = formatYoutubeFootage(videoId, footage, totals
         ? { found: totals.youtubeFound, downloaded: totals.youtubeDownloaded, adopted: totals.youtubeAdopted }
         : undefined, { delivered });

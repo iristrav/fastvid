@@ -404,6 +404,12 @@ function endingOf(
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i]!;
       if (e.status !== "REJECTED") continue;
+      /**
+       * VIDEO 622 — "already used in this render" on an adopted picture is the refusal of a SECOND
+       * offer of the same picture (another beat's copy of the same seconds), not of the picture
+       * itself. It explains nothing about where the adopted one went.
+       */
+      if (adopted && e.gate === "already_used_in_render") continue;
       if (!adopted) {
         if (!after) return e;
         continue;
