@@ -41,7 +41,7 @@ import { invokeLLM } from "./_core/llm";
 import { runAsBackgroundLlmWork } from "./_core/llmBudget";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { providerLimiter } from "./_core/providerLimiters";
-import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, getMediaArchiveAssetById, getCuratedArchiveProvenance, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoVoiceoverUrl, updateVideoScenes, mergeVideoMetadata, getMediaArchiveAssetById, getCuratedArchiveProvenance, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
 import {
   computeScreenTimeShare,
   finalTimelineFootageRefusal,
@@ -30184,7 +30184,8 @@ async function _runVideoPipelineInner(
               `alignment=${storedAlignment?.totalDurationSec ?? "none"} measured=${measuredVoiceSec ?? "none"}`
       );
       if (persisted.ok) {
-        await updateVideoStatus(videoId, "completed", { voiceoverUrl: persisted.url });
+        /** Only the address: the video is not complete until the render delivers its file. */
+        await updateVideoVoiceoverUrl(videoId, persisted.url);
         console.log(
           pipelineReport.add(
             "summary",

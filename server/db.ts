@@ -371,6 +371,65 @@ export async function getVideosByUserId(userId: number) {
   return db.select().from(videos).where(eq(videos.userId, userId)).orderBy(desc(videos.createdAt));
 }
 
+/** The `metadata` keys the dashboard's video card reads; the rest of the blob stays in the database. */
+export const VIDEO_LIST_METADATA_KEYS = ["generationDurationSec", "nicheTitle", "exportBlocked"] as const;
+
+/**
+ * The dashboard's video list: the columns a card shows, and of `metadata` only the keys it reads.
+ *
+ * `video.list` returned every column of every video — the script, the scene manifest, the editor's
+ * timeline and the progress log — and the dashboard asked for it every five seconds. A user with a
+ * few hundred videos was sent that whole table each time; the list took 2 to 60 seconds. Opening a
+ * video still reads the full row through `video.get`.
+ */
+export async function getVideoListRowsByUserId(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({
+      id: videos.id,
+      userId: videos.userId,
+      title: videos.title,
+      prompt: videos.prompt,
+      videoLength: videos.videoLength,
+      status: videos.status,
+      videoUrl: videos.videoUrl,
+      thumbnailUrl: videos.thumbnailUrl,
+      errorMessage: videos.errorMessage,
+      progressStep: videos.progressStep,
+      progressPercent: videos.progressPercent,
+      createdAt: videos.createdAt,
+      updatedAt: videos.updatedAt,
+      listMetadata: sql<unknown>`JSON_OBJECT(${sql.join(
+        VIDEO_LIST_METADATA_KEYS.map((k) => sql`${k}, JSON_EXTRACT(${videos.metadata}, ${`$.${k}`})`),
+        sql`, `
+      )})`,
+    })
+    .from(videos)
+    .where(eq(videos.userId, userId))
+    .orderBy(desc(videos.createdAt));
+  return rows.map(({ listMetadata, ...row }) => ({ ...row, metadata: slimListMetadata(listMetadata) }));
+}
+
+/** The JSON_OBJECT above, as an object: MySQL may hand it back as text; absent keys are dropped. */
+export function slimListMetadata(raw: unknown): Record<string, unknown> | null {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, unknown> = {};
+  for (const k of VIDEO_LIST_METADATA_KEYS) {
+    const v = (value as Record<string, unknown>)[k];
+    if (v !== null && v !== undefined) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 const PROCESSING_STATUS_LIST = [...PIPELINE_PROCESSING_STATUSES];
 const USER_IN_FLIGHT_STATUS_LIST = [...USER_IN_FLIGHT_VIDEO_STATUSES];
 const USER_ACTIVE_STATUS_LIST = [...USER_ACTIVE_VIDEO_STATUSES];
@@ -646,6 +705,20 @@ export async function updateVideoStatus(id: number, status: InsertVideo["status"
  * percent is raised and never lowered. A restart goes through updateVideoStatus, which knows
  * from the write itself whether it is starting a new run.
  */
+/**
+ * The narration's stored address, and nothing else.
+ *
+ * The pipeline wrote it with `updateVideoStatus(id, "completed", { voiceoverUrl })` before the render
+ * job ran: for the four minutes the render took, the video read `completed` with no file, the
+ * dashboard showed "This video completed but the file is missing" and stopped following it. The
+ * status is the render's to set, with the file.
+ */
+export async function updateVideoVoiceoverUrl(id: number, voiceoverUrl: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(videos).set({ voiceoverUrl }).where(eq(videos.id, id));
+}
+
 export async function updateVideoProgress(id: number, progressStep: string, progressPercent: number) {
   const db = await getDb();
   if (!db) return;
@@ -727,10 +800,19 @@ export async function updateVideoProgressLog(id: number, log: ProgressLogEntry[]
   );
 }
 
+/**
+ * `render_jobs.videoId` references `videos.id` without ON DELETE CASCADE (migration 0051), so a
+ * video that was ever rendered could not be deleted: the database refused, and "delete all failed"
+ * answered 500. A deleted video's render jobs go with it, in the same transaction. (Its render lock
+ * and YouTube search rows already cascade.)
+ */
 export async function deleteVideo(id: number) {
   const db = await getDb();
   if (!db) return;
-  await db.delete(videos).where(eq(videos.id, id));
+  await db.transaction(async (tx) => {
+    await tx.delete(renderJobs).where(eq(renderJobs.videoId, id));
+    await tx.delete(videos).where(eq(videos.id, id));
+  });
 }
 
 export async function updateVideoTitle(id: number, title: string) {
@@ -742,10 +824,20 @@ export async function updateVideoTitle(id: number, title: string) {
 export async function deleteAllFailedVideosForUser(userId: number) {
   const db = await getDb();
   if (!db) return 0;
-  const result = await db.delete(videos).where(
-    and(eq(videos.userId, userId), eq(videos.status, "failed"))
-  );
-  return (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
+  return db.transaction(async (tx) => {
+    const failed = await tx
+      .select({ id: videos.id })
+      .from(videos)
+      .where(and(eq(videos.userId, userId), eq(videos.status, "failed")));
+    const ids = failed.map((r) => r.id);
+    if (ids.length === 0) return 0;
+    /** See `deleteVideo`: their render jobs first, or the database refuses the delete. */
+    await tx.delete(renderJobs).where(inArray(renderJobs.videoId, ids));
+    const result = await tx.delete(videos).where(
+      and(eq(videos.userId, userId), eq(videos.status, "failed"), inArray(videos.id, ids))
+    );
+    return (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
+  });
 }
 
 const IN_PROGRESS_STATUSES = [

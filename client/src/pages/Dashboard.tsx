@@ -805,6 +805,8 @@ export default function Dashboard() {
     onError: (err) => toast.error("Failed", { description: toastErrorMessage(err) }),
   });
   const regenScriptMutation = trpc.video.regenScript.useMutation({
+    /** The list no longer refreshes itself while nothing is in flight; a retry puts one in flight. */
+    onSuccess: () => { void utils.video.list.invalidate(); },
     onError: (err) => toast.error("Retry failed", { description: toastErrorMessage(err) }),
   });
 
@@ -820,9 +822,16 @@ export default function Dashboard() {
     (!nicheAccess.canUsePlatform || !nicheAccess.hasOnboardingRequest);
   const showVideoStudio = canUsePlatform && hasActiveSubscription;
 
+  /**
+   * Refreshed every five seconds only while a video is being made; each such card also polls its own
+   * status. With nothing in flight the list changes only through actions here, which invalidate it.
+   */
   const { data: videos, isLoading: videosLoading, refetch } = trpc.video.list.useQuery(undefined, {
     enabled: isAuthenticated && showVideoStudio,
-    refetchInterval: showVideoStudio ? 5000 : false,
+    refetchInterval: (query) =>
+      showVideoStudio && (query.state.data ?? []).some((v) => !["completed", "failed"].includes(v.status))
+        ? 5000
+        : false,
   });
   const checkoutMutation = trpc.billing.createCheckout.useMutation({
     onSuccess: (data) => {

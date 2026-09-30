@@ -35,7 +35,7 @@ import bcrypt from "bcryptjs";
 import { SignJWT } from "jose";
 import {
   createVideo, getAllUsers, getAllVideos, getUserById, getUserByEmail, getUserLlmSpend,
-  searchVideos, getUserStats, getVideoById, getVideosByUserId, getVideoStats,
+  searchVideos, getUserStats, getVideoById, getVideoListRowsByUserId, slimListMetadata, getVideoStats,
   updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress, updateVideoProgressLog,
   touchVideoProgress,
   getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices,
@@ -982,19 +982,38 @@ export const appRouter = router({
   }),
 
   video: router({
+    /**
+     * The dashboard's list — only what a card shows (see `getVideoListRowsByUserId`). A video still
+     * in flight is read in full for `recoverVideoCompletionState`, which needs its progress log,
+     * and handed back in the same light shape.
+     */
     list: protectedProcedure.query(async ({ ctx }) => {
-      const rows = await getVideosByUserId(ctx.user.id);
+      const rows = await getVideoListRowsByUserId(ctx.user.id);
       const onboarding = await getLatestOnboardingRequest(ctx.user.id, ctx.user.email);
       const defaultNicheTitle = onboarding?.nicheTitle ?? null;
       const enriched = await Promise.all(
         rows.map(async (v) => {
-          const recovered =
-            v.status === "completed" || v.status === "failed" || v.status === "awaiting_approval"
-              ? v
-              : await recoverVideoCompletionState(v);
-          const meta = recovered.metadata as { nicheTitle?: string | null } | null | undefined;
+          let row = v;
+          if (v.status !== "completed" && v.status !== "failed" && v.status !== "awaiting_approval") {
+            const full = await getVideoById(v.id);
+            if (full) {
+              const recovered = await recoverVideoCompletionState(full);
+              row = {
+                ...v,
+                status: recovered.status,
+                videoUrl: recovered.videoUrl,
+                thumbnailUrl: recovered.thumbnailUrl,
+                errorMessage: recovered.errorMessage,
+                progressStep: recovered.progressStep,
+                progressPercent: recovered.progressPercent,
+                updatedAt: recovered.updatedAt,
+                metadata: slimListMetadata(recovered.metadata),
+              };
+            }
+          }
+          const meta = row.metadata as { nicheTitle?: string | null } | null | undefined;
           return {
-            ...recovered,
+            ...row,
             nicheTitle: meta?.nicheTitle ?? defaultNicheTitle,
           };
         })
