@@ -5508,6 +5508,26 @@ export function visualDeadlineForVideoMs(perSceneTotalMs: number, videoSec: numb
   return Math.max(perSceneTotalMs, byLength);
 }
 
+/**
+ * VIDEO 622 — a sentence's share of the time its scene has left: its seconds on screen out of the
+ * seconds of the sentences still to come. The last sentence gets everything left; no scope (tests,
+ * tools) means no limit here.
+ */
+export function beatShareOfSceneTimeMs(sceneLeftMs: number, beatSec: number, remainingSec: number): number {
+  if (!Number.isFinite(sceneLeftMs)) return Number.POSITIVE_INFINITY;
+  if (!(sceneLeftMs > 0)) return 0;
+  if (!(beatSec > 0) || !(remainingSec > beatSec)) return sceneLeftMs;
+  return Math.floor((sceneLeftMs * beatSec) / remainingSec);
+}
+
+/** How long a sentence is on screen: its voice window when aligned, otherwise its hold. */
+export function beatSecondsOnScreen(beat: { holdSec?: number; voiceStartSec?: number; voiceEndSec?: number }): number {
+  const voiced =
+    beat.voiceEndSec != null && beat.voiceStartSec != null ? beat.voiceEndSec - beat.voiceStartSec : Number.NaN;
+  if (Number.isFinite(voiced) && voiced > 0) return voiced;
+  return beat.holdSec && beat.holdSec > 0 ? beat.holdSec : 1;
+}
+
 /** VIDEO 621 — the least time a scene that found nothing gets for its main-subject search. */
 export const EMPTY_SCENE_RESCUE_MIN_MS = 60_000;
 
@@ -26756,7 +26776,25 @@ async function fetchSceneVisualsInner(
     onBeatProgress?.(bi, beats.length, "beat");
     const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
       pushSceneClip(clipPath, holdSec, beat.index);
-    const beatWallMs = beatVisualWallMs(dedup.perf);
+    /**
+     * VIDEO 622 — every sentence its own share of the scene's time. One sentence could take up to
+     * its full wall (180 s) waiting on a download, and the sentences after it opened with no time
+     * left and were never searched. A sentence now gets the part of the time still left that its
+     * length on screen is of the sentences still to come; what it does not use goes to the next.
+     */
+    const sceneLeftMs = remainingScopeMs();
+    const beatShareMs = beatShareOfSceneTimeMs(
+      sceneLeftMs,
+      beatSecondsOnScreen(beat),
+      beats.slice(bi).reduce((sum, b) => sum + beatSecondsOnScreen(b), 0)
+    );
+    const beatWallMs = Math.min(beatVisualWallMs(dedup.perf), beatShareMs);
+    if (Number.isFinite(sceneLeftMs) && beats.length > 1) {
+      console.log(
+        `[BeatTime] Scene ${scene.index} beat ${beat.index}: ${Math.round(beatWallMs / 1000)}s of the scene's ` +
+          `${Math.round(sceneLeftMs / 1000)}s left (${beats.length - bi} sentence(s) to go)`
+      );
+    }
     let clip: string | null = null;
     const beatPulse = setInterval(() => {
       onBeatProgress?.(bi, beats.length, "beat");
