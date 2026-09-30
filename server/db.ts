@@ -2131,6 +2131,13 @@ export async function claimArchiveAssetForShotSplit(id: number): Promise<boolean
   return (affectedRowCount(result) ?? 0) === 1;
 }
 
+/** VIDEO 621 — give a claimed clip back uncut, so a later sweep cuts it when its shots can be judged. */
+export async function releaseArchiveAssetShotSplitClaim(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(mediaArchiveAssets).set({ splitIntoShotsAt: null }).where(eq(mediaArchiveAssets.id, id));
+}
+
 /** F3-26: look up an already-ingested archive asset by its web source URL hash, so a repeat
  *  web-sourcing hit reuses the existing asset instead of re-downloading/re-archiving it. */
 export async function findMediaArchiveAssetBySourceUrlHash(sourceUrlHash: string): Promise<MediaArchiveAsset | null> {

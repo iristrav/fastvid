@@ -22,6 +22,7 @@
  * not adding DB latency to the hot LLM path of a safety net, not a payment system.
  */
 
+import { AsyncLocalStorage } from "async_hooks";
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { llmSpendDaily, llmSpendByUser } from "../../drizzle/schema";
@@ -109,6 +110,39 @@ export async function isLlmBudgetExceeded(): Promise<boolean> {
 
 export function llmDailyBudgetUsd(): number {
   return dailyBudgetUsd();
+}
+
+/**
+ * VIDEO 621 — THE ARCHIVE'S BACKGROUND WORK NEVER SPENDS THE RENDERS' MONEY.
+ *
+ * The shot sweep, the archive's text checks, the clip auditor, the embedding backfill and the
+ * YouTube prefetch all called the model from the same daily budget as the renders, with no share
+ * of their own. On 30 September the sweep checked every shot of ten archive videos every two
+ * minutes, the $15 was gone by 09:50, and the next render was refused before it started: "the
+ * picture editor cannot be reached".
+ *
+ * Work that runs in the background says so (`runAsBackgroundLlmWork`), and may spend only while
+ * the day's total is below `BACKGROUND_SHARE` of the budget. The rest is kept for renders. When the
+ * share is spent the background call is refused like any over-budget call — the work that asked
+ * decides what to do with that, and the archive's own callers leave the work for another day.
+ */
+export const BACKGROUND_SHARE = 0.5;
+
+const backgroundWork = new AsyncLocalStorage<true>();
+
+/** Run `fn` — and every timer and promise it starts — as background LLM work. */
+export function runAsBackgroundLlmWork<T>(fn: () => T): T {
+  return backgroundWork.run(true, fn);
+}
+
+export function isBackgroundLlmWork(): boolean {
+  return backgroundWork.getStore() === true;
+}
+
+/** Background work may call the model only while the day is below its share of the budget. */
+export async function isBackgroundLlmShareSpent(): Promise<boolean> {
+  if (!budgetEnforced()) return false;
+  return (await currentDailySpendUsd()) >= dailyBudgetUsd() * BACKGROUND_SHARE;
 }
 
 /**

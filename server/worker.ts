@@ -391,10 +391,12 @@ async function main() {
    */
   const { startRenderJobWorker } = await import("./renderJobWorker");
   startRenderJobWorker();
+  /** VIDEO 621 — everything started below is background LLM work: see `runAsBackgroundLlmWork`. */
+  const { runAsBackgroundLlmWork } = await import("./_core/llmBudget");
   const { scheduleClipEmbeddingBackfill } = await import("./archiveClipIndexBackfill");
-  scheduleClipEmbeddingBackfill();
+  runAsBackgroundLlmWork(() => scheduleClipEmbeddingBackfill());
   const { startClipBackgroundAuditor } = await import("./clipBackgroundAuditor");
-  startClipBackgroundAuditor();
+  runAsBackgroundLlmWork(() => startClipBackgroundAuditor());
   /**
    * RONDE 640 — YouTube found during a render is fetched here, between renders, into the archive.
    * Render 603 found 49 videos and downloaded none: every scene reached YouTube with seconds left.
@@ -423,7 +425,7 @@ async function main() {
     console.warn("[ArchiveInventory] could not read:", (err as Error).message)
   );
   const { startYoutubePrefetchWorker } = await import("./youtubePrefetch");
-  await startYoutubePrefetchWorker().catch((err) =>
+  await runAsBackgroundLlmWork(() => startYoutubePrefetchWorker()).catch((err) =>
     console.warn("[YouTubePrefetch] could not start:", (err as Error).message)
   );
   /**
@@ -434,7 +436,9 @@ async function main() {
     const { startArchiveShotSplitSweep } = await import("./archiveShotPieces");
     const { workerLocalActiveJobs } = await import("./videoQueue");
     const { activeRenderJobCount } = await import("./renderJobWorker");
-    startArchiveShotSplitSweep(() => workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0);
+    runAsBackgroundLlmWork(() =>
+      startArchiveShotSplitSweep(() => workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0)
+    );
     console.log("[ArchivePieces] sweep started — archive videos are cut into shots of at most 11s while idle");
   }
 

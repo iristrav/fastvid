@@ -137,10 +137,28 @@ describe("Video 619 — cutting an archive clip", () => {
     expect(marks).toEqual([{ id: 7, deactivate: true }]);
   });
 
-  it("an unjudged piece is kept and written as unjudged, never as clean", async () => {
-    const { deps, stored } = fakeDeps({ durationSec: 20, verdicts: () => "not_asked" });
-    await splitArchiveAssetIntoShots(7, deps);
-    expect(stored.map((s) => s.verdict)).toEqual(["not_asked", "not_asked"]);
+  /**
+   * VIDEO 621 — no longer stored unjudged: a shot nobody could look at stops the cut, nothing is
+   * stored, and the clip is given back uncut for a later sweep. Still never written as clean.
+   */
+  it("an unjudged shot stops the cut: nothing is stored, the clip is given back, never written as clean", async () => {
+    const { deps, stored, marks } = fakeDeps({ durationSec: 20, verdicts: () => "not_asked" });
+    const released: number[] = [];
+    deps.release = async (id) => void released.push(id);
+    expect(await splitArchiveAssetIntoShots(7, deps)).toMatchObject({ status: "skipped" });
+    expect(stored).toEqual([]);
+    expect(marks).toEqual([]);
+    expect(released).toEqual([7]);
+  });
+
+  it("a clip is not even claimed while its shots cannot be judged", async () => {
+    const { deps, stored } = fakeDeps({ durationSec: 20 });
+    let claimed = false;
+    deps.claim = async () => (claimed = true);
+    deps.mayJudge = async () => false;
+    expect(await splitArchiveAssetIntoShots(7, deps)).toMatchObject({ status: "skipped" });
+    expect(claimed).toBe(false);
+    expect(stored).toEqual([]);
   });
 
   it("a scan that did not finish leaves the clip whole — a cut it did not see could sit inside a piece", async () => {
@@ -191,7 +209,8 @@ describe("Video 619 — the wiring", () => {
 
   it("the archive stored before the rule is cut in the background, only while nothing renders", () => {
     const worker = read("worker.ts");
-    expect(worker).toContain("startArchiveShotSplitSweep(() => workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0);");
+    /** VIDEO 621 — as background LLM work, within its share of the day's budget. */
+    expect(worker).toContain("runAsBackgroundLlmWork(() =>\n      startArchiveShotSplitSweep(() => workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0)");
   });
 
   it("uploaded videos are held to the same eleven seconds", () => {

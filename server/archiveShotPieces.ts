@@ -114,6 +114,10 @@ export type ShotPieceDeps = {
    * without this two of them cut the same clip and store its shots twice. Absent = always yours.
    */
   claim?: (id: number) => Promise<boolean>;
+  /** VIDEO 621 — give a claimed clip back uncut. Absent = nothing to give back. */
+  release?: (id: number) => Promise<void>;
+  /** VIDEO 621 — can the shots be judged at all right now? Absent = yes. */
+  mayJudge?: () => Promise<boolean>;
   workDir?: string;
   log?: (line: string) => void;
 };
@@ -144,6 +148,13 @@ export async function splitArchiveAssetIntoShots(
   if (notEligible) return { status: "skipped", reason: notEligible };
   /** A clip an operator switched off stays off: its pieces would bring it back. */
   if (parent!.isActive !== 1 && !opts.allowInactive) return { status: "skipped", reason: "switched off in the archive" };
+  /**
+   * VIDEO 621 — a clip is not cut while its shots cannot be judged. It was cut anyway, its shots were
+   * stored with nobody having looked for text, and the log said "no text".
+   */
+  if (deps.mayJudge && !(await deps.mayJudge())) {
+    return { status: "skipped", reason: "the text check cannot run now (the background share of the AI budget is spent)" };
+  }
   if (deps.claim && !(await deps.claim(assetId))) return { status: "skipped", reason: "another worker is cutting it" };
 
   const dir = fs.mkdtempSync(path.join(deps.workDir ?? os.tmpdir(), `archive-pieces-${assetId}-`));
@@ -160,8 +171,12 @@ export async function splitArchiveAssetIntoShots(
     const ranges = shotPieceRanges(found.durationSec, found.cutsSec);
     const whole = isAlreadyOnePiece(found.durationSec, ranges);
 
-    const pieces: number[] = [];
-    let withText = 0;
+    /**
+     * Every shot is judged before any is stored. VIDEO 621: a shot nobody could look at stops the
+     * cut — nothing is stored, the clip is given back uncut, and a later sweep cuts it when its
+     * shots can be judged. Nothing is written down as clean that nobody looked at.
+     */
+    const judged: Array<{ r: PieceRange; index: number; out: string; verdict: TextVerdict }> = [];
     for (let i = 0; i < ranges.length; i++) {
       const r = ranges[i]!;
       const out = path.join(dir, `piece_${i}.mp4`);
@@ -169,12 +184,22 @@ export async function splitArchiveAssetIntoShots(
       if (whole) fs.copyFileSync(src, out);
       else await deps.extract(src, out, r.startSec, r.endSec);
       const verdict = await deps.textVerdict(out, `archive-piece:${assetId}:${r.startSec}-${r.endSec}`);
-      if (verdict === "has_text") {
+      if (verdict === "not_asked") {
+        await deps.release?.(assetId);
+        say(`[ArchivePieces] asset=${assetId} left uncut — shot ${i + 1} could not be checked for text; tried again later`);
+        return { status: "skipped", reason: "a shot could not be checked for text" };
+      }
+      judged.push({ r, index: i, out, verdict });
+    }
+    const pieces: number[] = [];
+    let withText = 0;
+    for (const j of judged) {
+      if (j.verdict === "has_text") {
         withText += 1;
         continue;
       }
       if (whole) break;
-      const id = await deps.storePiece(parent!, out, { ...r, index: i, verdict });
+      const id = await deps.storePiece(parent!, j.out, { ...j.r, index: j.index, verdict: j.verdict });
       if (id != null) pieces.push(id);
     }
 
@@ -264,6 +289,12 @@ export async function productionShotPieceDeps(): Promise<ShotPieceDeps> {
       );
     },
     claim: (id) => db.claimArchiveAssetForShotSplit(id),
+    release: (id) => db.releaseArchiveAssetShotSplitClaim(id),
+    /** VIDEO 621 — only while the background share of today's AI budget is not spent. */
+    mayJudge: async () => {
+      const budget = await import("./_core/llmBudget");
+      return !(await budget.isBackgroundLlmShareSpent()) && !(await budget.isLlmBudgetExceeded());
+    },
     markParent: async (id, change) => {
       await db.updateMediaArchiveAsset(id, {
         splitIntoShotsAt: new Date(),
@@ -285,7 +316,11 @@ export function queueArchiveShotSplit(assetId: number, opts: { allowInactive?: b
   if (queued.has(assetId)) return;
   queued.add(assetId);
   chain = chain
-    .then(async () => splitArchiveAssetIntoShots(assetId, await productionShotPieceDeps(), opts))
+    /** VIDEO 621 — a split is background work, whoever queued it: see `runAsBackgroundLlmWork`. */
+    .then(async () => {
+      const { runAsBackgroundLlmWork } = await import("./_core/llmBudget");
+      return runAsBackgroundLlmWork(async () => splitArchiveAssetIntoShots(assetId, await productionShotPieceDeps(), opts));
+    })
     .catch((err) => console.warn(`[ArchivePieces] asset=${assetId} failed:`, (err as Error)?.message?.slice(0, 160)))
     .finally(() => queued.delete(assetId));
 }
@@ -300,6 +335,9 @@ export function queuedArchiveShotSplits(): number {
  */
 export async function sweepArchiveShotSplits(isIdle: () => boolean, batch = 10): Promise<number> {
   if (!isIdle() || queued.size > 0) return 0;
+  /** VIDEO 621 — no sweep while its shots could not be judged; see `BACKGROUND_SHARE`. */
+  const budget = await import("./_core/llmBudget");
+  if ((await budget.isBackgroundLlmShareSpent()) || (await budget.isLlmBudgetExceeded())) return 0;
   const { listArchiveAssetsAwaitingShotSplit } = await import("./db");
   const ids = await listArchiveAssetsAwaitingShotSplit(batch);
   for (const id of ids) queueArchiveShotSplit(id);

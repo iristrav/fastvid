@@ -38,6 +38,7 @@ import * as os from "os";
 import { pipeline } from "stream/promises";
 import { storagePutFromFile } from "./storage";
 import { invokeLLM } from "./_core/llm";
+import { runAsBackgroundLlmWork } from "./_core/llmBudget";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { providerLimiter } from "./_core/providerLimiters";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, getMediaArchiveAssetById, getCuratedArchiveProvenance, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
@@ -10803,7 +10804,8 @@ function archiveYoutubeDownloadInBackground(
   } catch {
     return;
   }
-  void (async () => {
+  /** VIDEO 621 — archive work, not the render's: see `runAsBackgroundLlmWork`. */
+  void runAsBackgroundLlmWork(async () => {
     try {
       const [{ archiveMetadataForPrefetchedSegment }, { ingestExternalClipToArchiveWithReason }] = await Promise.all([
         import("./youtubePrefetch"),
@@ -10826,7 +10828,7 @@ function archiveYoutubeDownloadInBackground(
     } finally {
       try { fs.unlinkSync(spool); } catch { /* already gone */ }
     }
-  })();
+  });
 }
 
 /**

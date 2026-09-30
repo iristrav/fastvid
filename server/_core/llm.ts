@@ -1230,7 +1230,15 @@ const normalizeResponseFormat = ({
 
 export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   assertApiKey();
-  const { isLlmBudgetExceeded, llmDailyBudgetUsd } = await import("./llmBudget");
+  const { isLlmBudgetExceeded, llmDailyBudgetUsd, isBackgroundLlmWork, isBackgroundLlmShareSpent, BACKGROUND_SHARE } =
+    await import("./llmBudget");
+  /** VIDEO 621 — background work stops at its share of the day, so a render always has the rest. */
+  if (isBackgroundLlmWork() && (await isBackgroundLlmShareSpent())) {
+    throw new LlmUnavailableError(
+      `background share of the LLM daily budget (${Math.round(BACKGROUND_SHARE * 100)}% of ` +
+        `$${llmDailyBudgetUsd()}) reached — the rest is kept for renders; background work waits for the next UTC day`
+    );
+  }
   if (await isLlmBudgetExceeded()) {
     // Pre-flight: nothing is sent, so a caller must not record this as a provider failure.
     throw new LlmUnavailableError(
