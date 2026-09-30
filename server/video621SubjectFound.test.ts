@@ -77,3 +77,47 @@ describe("Video 621 — a sentence's first word is not part of the name after it
     expect(lines.join("\n")).not.toContain("NO_QUERY");
   });
 });
+
+describe("Video 621 — the system knows what a name is: the narration is read, the rules decide", () => {
+  const script = `# ${tesla.title}\n\n${tesla.sceneTexts.join("\n\n")}`;
+  const input = { prompt: tesla.prompt, videoTitle: tesla.title, topicContext: tesla.prompt, script };
+  const answer = (people: string[], mainPerson: string) =>
+    vi.fn(async () => ({ choices: [{ message: { content: JSON.stringify({ people, mainPerson }) } }] }));
+
+  it("the model's reading of the narration locks the person the video is about", async () => {
+    const { resolvePrimaryPersonLockByReading } = await import("./videoPipeline");
+    expect(await resolvePrimaryPersonLockByReading(input, answer(["Elon Musk"], "Elon Musk"))).toBe("Elon Musk");
+  });
+
+  it("a name the narration does not say is refused, whoever says it", async () => {
+    const { resolvePrimaryPersonLockByReading } = await import("./videoPipeline");
+    expect(await resolvePrimaryPersonLockByReading(input, answer(["Elon Musk Shocks"], "Elon Musk Shocks"))).toBe("");
+  });
+
+  it("a person the prompt, title and topic never name is not the video's subject", async () => {
+    const { resolvePrimaryPersonLockByReading } = await import("./videoPipeline");
+    const other = { ...input, videoTitle: "Tesla Failliet", script: `# Tesla Failliet\n\n${tesla.sceneTexts.join("\n\n")}` };
+    expect(await resolvePrimaryPersonLockByReading(other, answer(["Elon Musk"], "Elon Musk"))).toBe("");
+  });
+
+  it("a video about a company locks no person", async () => {
+    const { resolvePrimaryPersonLockByReading } = await import("./videoPipeline");
+    expect(await resolvePrimaryPersonLockByReading(input, answer(["Elon Musk"], ""))).toBe("");
+  });
+
+  it("when the model cannot be asked, the render says so and reads capital letters as before", async () => {
+    const { resolvePrimaryPersonLockByReading } = await import("./videoPipeline");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failing = vi.fn(async () => {
+      throw new Error("no key");
+    });
+    expect(await resolvePrimaryPersonLockByReading(input, failing)).toBe("Elon Musk");
+    expect(warn.mock.calls.flat().join(" ")).toContain("falls back to reading capital letters");
+    warn.mockRestore();
+  });
+
+  it("the render asks the reading, not the capital letters", () => {
+    const src = require("fs").readFileSync(require("path").join(__dirname, "videoPipeline.ts"), "utf8") as string;
+    expect(src).toContain("const primaryPerson = await resolvePrimaryPersonLockByReading({");
+  });
+});

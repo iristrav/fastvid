@@ -244,6 +244,7 @@ import {
 } from "./youtubeVideoPool";
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 import { videoMainSubject } from "./mainSubject";
+import { readPeopleInNarration } from "./personNames";
 import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShot, type StockShot } from "./youtubeShotStock";
 import { cutLocalVideoIntoShots, productionLocalShotCutter } from "./archiveShotPieces";
 
@@ -13346,6 +13347,45 @@ export function nameIsSpokenInNarration(name: string, narration: string): boolea
   return false;
 }
 
+/** Do the prompt, the title or the topic name this person — every word, in order? */
+export function personNamedByTopic(
+  name: string,
+  input: { prompt: string; videoTitle: string; topicContext: string }
+): boolean {
+  const topicText = `${input.prompt} ${input.videoTitle} ${input.topicContext}`;
+  const tokens = name.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return false;
+  const body = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "iu").test(topicText);
+}
+
+/**
+ * VIDEO 621 — THE PERSON LOCK, DECIDED BY WHAT A NAME IS.
+ *
+ * The model names the people in the narration and says who the video is about (see
+ * `readPeopleInNarration`); the lock takes that person only when the narration says the name in
+ * full and the prompt, title or topic name them. When the model cannot be asked, the render says so
+ * and the capital-letter chain below decides, exactly as before.
+ */
+export async function resolvePrimaryPersonLockByReading(
+  input: { prompt: string; videoTitle: string; topicContext: string; script: string },
+  llm: (params: unknown) => Promise<unknown> = (p) => invokeLLM(p as Parameters<typeof invokeLLM>[0])
+): Promise<string> {
+  const narration = narrationWithoutHeadings(input.script);
+  const reading = await readPeopleInNarration(
+    {
+      llm,
+      spoken: (name) => nameIsSpokenInNarration(name, narration),
+      namedByTopic: (name) => personNamedByTopic(name, input),
+      log: (line) => console.log(line),
+    },
+    { prompt: input.prompt, title: input.videoTitle, narration }
+  );
+  if (reading) return reading.mainPerson;
+  console.warn("[PersonNames] no reading of the narration — the person lock falls back to reading capital letters");
+  return resolvePrimaryPersonLock(input);
+}
+
 /**
  * The render's person lock — the existing chain, fed the narration instead of the whole script.
  *
@@ -13379,13 +13419,7 @@ export function resolvePrimaryPersonLock(input: {
    * Empire…") locked "Scipio Africanus" that way. A narration name locks only when the prompt,
    * title or topic names that person too — "Who Was Julius Caesar?".
    */
-  const topicText = `${input.prompt} ${input.videoTitle} ${input.topicContext}`;
-  const namedByTopic = (name: string): boolean => {
-    const tokens = name.split(/\s+/).filter(Boolean);
-    if (!tokens.length) return false;
-    const body = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
-    return new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "iu").test(topicText);
-  };
+  const namedByTopic = (name: string): boolean => personNamedByTopic(name, input);
   const candidates = [
     extractPrimaryPersonFromText(input.prompt),
     anchorResolvedPerson,
@@ -27320,7 +27354,7 @@ async function _runVideoPipelineInner(
   const videoTitle = scriptTitle(script);
   const topicContext = asVideoTitleString(buildTopicContext(userPrompt ?? videoRow?.prompt, videoTitle));
   const muskLocked = isMuskTeslaTopic(topicContext, script);
-  const primaryPerson = resolvePrimaryPersonLock({
+  const primaryPerson = await resolvePrimaryPersonLockByReading({
     prompt: userPrompt ?? videoRow?.prompt ?? "",
     videoTitle,
     topicContext,
