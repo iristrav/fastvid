@@ -172,7 +172,6 @@ describe("Video 619 — the wiring", () => {
   it("a video is cut BEFORE it is stored; the long original never enters the archive", () => {
     const ingest = read("archiveIngestion.ts");
     expect(ingest).toContain("const asShots = await ingestAsSingleShots(localPath, metadata);");
-    expect(ingest).not.toContain("queueArchiveShotSplit(");
     expect(ingest).not.toContain("cutForCleanPieces");
     /** Each shot passes its own text check: a shot with text is refused, its clean neighbours kept. */
     expect(ingest).toContain('if (overlay.verdict === "has_text" && !articleScreenshot) {');
@@ -180,7 +179,8 @@ describe("Video 619 — the wiring", () => {
 
   it("the clip a film is made with stays the film's record, switched off", () => {
     expect(read("productionMediaArchive.ts")).toContain("{ ...metadata, usedInFilm: true }");
-    expect(read("archiveIngestion.ts")).toContain("...(metadata.storeSwitchedOff ? { isActive: 0, splitIntoShotsAt: new Date() } : {}),");
+    expect(read("archiveIngestion.ts")).toContain("...(metadata.storeSwitchedOff ? { isActive: 0 } : {}),");
+    expect(read("archiveIngestion.ts")).toContain("queueArchiveShotSplit(assetId, { allowInactive: true });");
   });
 
   it("every YouTube download is archived, used in the film or not", () => {

@@ -94,6 +94,8 @@ export type IngestMetadata = {
   usedInFilm?: boolean;
   /** Set by the intake itself: store this row switched off. */
   storeSwitchedOff?: boolean;
+  /** Set by the intake itself: cut this row into shots in the background once it is stored. */
+  cutAfterStoring?: boolean;
 };
 
 export type IngestResult = {
@@ -307,6 +309,16 @@ async function ingestAsSingleShots(
   localPath: string,
   metadata: IngestMetadata
 ): Promise<IngestOutcome | null> {
+  /**
+   * The clip a film is being made with is stored at once, as the film's record, switched off; its
+   * shots are cut in the background afterwards. Cutting it here would make the render wait for a
+   * cut scan and a text check per shot, inside the film's own time.
+   */
+  if (metadata.usedInFilm) {
+    metadata.storeSwitchedOff = true;
+    metadata.cutAfterStoring = true;
+    return null;
+  }
   const cutter = shotCutterOverride ?? (await productionLocalShotCutter());
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-ingest-shots-"));
   try {
@@ -321,10 +333,6 @@ async function ingestAsSingleShots(
         `[Ingestion] "${metadata.title.slice(0, 60)}" stored whole — the cut scan did not finish ` +
           `(${cut.reason}); the archive sweep cuts it later`
       );
-      return null;
-    }
-    if (cut.kind === "no_clean_shot" && metadata.usedInFilm) {
-      metadata.storeSwitchedOff = true;
       return null;
     }
     if (cut.kind === "no_clean_shot") {
@@ -347,7 +355,6 @@ async function ingestAsSingleShots(
           sourceUrl: shotSourceUrl(metadata.sourceUrl, metadata.sourceNote, piece),
           durationSec: Number((piece.endSec - piece.startSec).toFixed(2)),
           alreadyOneShot: true,
-          usedInFilm: false,
         })
       );
     }
@@ -356,11 +363,6 @@ async function ingestAsSingleShots(
       `[Ingestion] "${metadata.title.slice(0, 60)}" cut before storing: ${cut.cuts} cut(s) → ` +
         `${cut.pieces.length} shot(s), ${stored.length} stored, ${cut.pieces.length - stored.length} refused`
     );
-    /** The film keeps its own clip as the record it re-renders from; later films get the shots. */
-    if (metadata.usedInFilm) {
-      metadata.storeSwitchedOff = true;
-      return null;
-    }
     return stored[0] ?? outcomes[outcomes.length - 1] ?? refuse("NO_CLEAN_SHOT", "no shot could be cut out of the file");
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -614,7 +616,7 @@ async function ingestExternalClipToArchiveInner(
       hasBakedEditText: overlay.verdict === "clean" ? 0 : overlay.verdict === "has_text" ? 1 : null,
       /** VIDEO 619 — a single shot, cut at the door: nothing left to cut, no cut inside it. */
       ...(metadata.alreadyOneShot ? { shotCutsSec: [], splitIntoShotsAt: new Date() } : {}),
-      ...(metadata.storeSwitchedOff ? { isActive: 0, splitIntoShotsAt: new Date() } : {}),
+      ...(metadata.storeSwitchedOff ? { isActive: 0 } : {}),
       // RONDE 118: verified a few lines above, before the bytes were even stored.
       previewCheckedAt: new Date(),
     };
@@ -626,6 +628,11 @@ async function ingestExternalClipToArchiveInner(
         fileSizeBytes: data.length,
         mimeType: metadata.mimeType,
       });
+    }
+    /** VIDEO 619 — the film's own clip: its shots are cut once it is safely stored, off the render's clock. */
+    if (metadata.cutAfterStoring) {
+      const { queueArchiveShotSplit } = await import("./archiveShotPieces");
+      queueArchiveShotSplit(assetId, { allowInactive: true });
     }
 
     // Index embedding in background — non-blocking

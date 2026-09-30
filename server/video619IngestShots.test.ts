@@ -19,6 +19,10 @@ vi.mock("./db", () => ({
 vi.mock("./storage", () => ({ storagePut: async (key: string) => ({ key, url: `https://cdn.example/${key}` }) }));
 vi.mock("./archiveEmbeddingIndex", () => ({ indexArchiveAssetEmbedding: async () => undefined }));
 vi.mock("./visualSearchMemory", () => ({ recordVisualSearchMemory: async () => undefined }));
+vi.mock("./archiveShotPieces", async (orig) => ({
+  ...(await orig<typeof import("./archiveShotPieces")>()),
+  queueArchiveShotSplit: () => undefined,
+}));
 vi.mock("./archiveClipFilter", () => ({
   cachedClipBakedEditTextVerdict: async () => ({ verdict: "clean" }),
 }));
@@ -68,13 +72,12 @@ describe("Video 619 — cut first, then store", () => {
     }
   }, 60_000);
 
-  it("a clip a film is made with is also kept as the film's record, switched off", async () => {
+  it("a clip a film is made with is stored at once, switched off, and not cut on the film's clock", async () => {
     const out = await ingestExternalClipToArchiveWithReason(clip, meta({ usedInFilm: true }));
     expect(out.status).toBe("ingested");
-    expect(created.length).toBe(6);
-    const record = created[created.length - 1]!;
-    expect(record.isActive).toBe(0);
-    expect(String(record.title)).not.toContain("· shot");
+    expect(created.length).toBe(1);
+    expect(created[0]!.isActive).toBe(0);
+    expect(created[0]!.splitIntoShotsAt).toBeUndefined();
   }, 60_000);
 
   it("stock is not cut here; it goes to its own archive as before", async () => {
