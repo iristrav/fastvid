@@ -24,6 +24,7 @@ vi.mock("node-fetch", () => ({ default: (...args: unknown[]) => nodeFetchMock(..
 
 import {
   fetchYouTubeCCClips,
+  resetYoutubeFragmentsFetched,
   alternativeYoutubeStartSec,
   youtubeFragmentKeyFor,
   capYoutubeClipDurationForTest,
@@ -217,6 +218,8 @@ describe("Fix 2/3. one other window after a black fragment; the pool's length fi
     process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";
     delete process.env.YOUTUBE_SEARCH_MODE;
     resetPermanentDownloadRefusals();
+    /** VIDEO 622 — a new render starts with no seconds fetched, as the pipeline does. */
+    resetYoutubeFragmentsFetched();
     nodeFetchMock.mockReset();
     nodeFetchMock.mockImplementation((url: string) => {
       const u = String(url);
@@ -332,6 +335,8 @@ describe("Fix 2. the other window, as a rule", () => {
 
   it("the refusal memory stays per fragment: the other window's key is its own", () => {
     resetPermanentDownloadRefusals();
+    /** VIDEO 622 — a new render starts with no seconds fetched, as the pipeline does. */
+    resetYoutubeFragmentsFetched();
     const first = pickLongVideoStartSec(537, 5, "c_d8DhDgPwg");
     const alt = alternativeYoutubeStartSec("c_d8DhDgPwg", 537, 5, first)!;
     noteYoutubeFragmentRefusal(youtubeFragmentKeyFor("c_d8DhDgPwg", first, 5), "mostly_black");
@@ -458,6 +463,8 @@ describe("Scenario. A black · B baked text · C commentary · D real footage ·
     process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";
     delete process.env.YOUTUBE_SEARCH_MODE;
     resetPermanentDownloadRefusals();
+    /** VIDEO 622 — a new render starts with no seconds fetched, as the pipeline does. */
+    resetYoutubeFragmentsFetched();
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     nodeFetchMock.mockReset();

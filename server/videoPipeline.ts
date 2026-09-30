@@ -11150,15 +11150,21 @@ export async function downloadYouTubeCCClip(
      * is fetching or already delivered is waited for and copied; one that failed is fetched here.
      */
     const fragment = youtubeFragmentKeyFor(videoId, clipStart, duration);
-    if (await copyYoutubeFragmentAlreadyFetched(fragment, outPath)) {
-      reportDownload("DOWNLOAD_SUCCESS", "same_seconds_already_fetched");
-      return true;
-    }
-    youtubeTransferReentry = outPath;
-    const done = downloadYouTubeCCClip(
-      videoId, duration, clipStart, outPath, sceneIndex, title, sourcingCache, startIsExact,
-      outcome, budgetMs, onlyRoute
-    );
+    /**
+     * Registered for this file before anything is awaited, so a second call for the same file
+     * always finds it. Nothing is awaited when nobody fetched these seconds yet.
+     */
+    const done = (async () => {
+      if (youtubeFragmentsFetched.has(fragment) && (await copyYoutubeFragmentAlreadyFetched(fragment, outPath))) {
+        reportDownload("DOWNLOAD_SUCCESS", "same_seconds_already_fetched");
+        return true;
+      }
+      youtubeTransferReentry = outPath;
+      return downloadYouTubeCCClip(
+        videoId, duration, clipStart, outPath, sceneIndex, title, sourcingCache, startIsExact,
+        outcome, budgetMs, onlyRoute
+      );
+    })();
     youtubeTransfersByFile.set(outPath, { seconds, done });
     const kept = keepYoutubeFragmentWhenFetched(fragment, outPath, done);
     try {

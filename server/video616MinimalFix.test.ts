@@ -20,6 +20,7 @@ vi.mock("node-fetch", () => ({ default: (...args: unknown[]) => nodeFetchMock(..
 
 import {
   fetchYouTubeCCClips,
+  resetYoutubeFragmentsFetched,
   youtubeFragmentKey,
   youtubeFragmentKeyFor,
   youtubeFragmentFileTag,
@@ -72,6 +73,8 @@ describe("A/B. a refused YouTube fragment is not downloaded again; the next cand
     process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";
     process.env.YOUTUBE_SEARCH_MODE = "per_beat";
     resetPermanentDownloadRefusals();
+    /** VIDEO 622 — a new render starts with no seconds fetched, as the pipeline does. */
+    resetYoutubeFragmentsFetched();
     nodeFetchMock.mockReset();
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
