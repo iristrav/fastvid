@@ -190,3 +190,54 @@ describe("Video 620 — the render uses the stock", () => {
     expect(src).toContain("releaseYoutubeShotStock(videoId);");
   });
 });
+
+describe("Video 620 — another shot of the same YouTube video may join the film; the same seconds never", () => {
+  const pipe = () => import("./videoPipeline");
+
+  it("a YouTube clip is known by its seconds, so two shots of one video are two pictures", async () => {
+    const { clipContentKey, tagPathWithProviderAsset, youtubeFragmentFileTag } = await pipe();
+    const a = tagPathWithProviderAsset(`/w/scene_0_ytfu_0_${youtubeFragmentFileTag(100, 4)}.mp4`, "youtube_cc", "vidA");
+    const b = tagPathWithProviderAsset(`/w/scene_1_ytfu_0_${youtubeFragmentFileTag(110, 4)}.mp4`, "youtube_cc", "vidA");
+    expect(clipContentKey(a)).not.toBe(clipContentKey(b));
+    expect(clipContentKey(a)).toMatch(/^youtube_cc:[0-9a-f]{16}@t1000d40$/);
+    expect(clipContentKey(a.replace(".mp4", "_transformed.mp4"))).toBe(clipContentKey(a));
+  });
+
+  it("overlapping seconds count as used; touching ones, and another video's, do not", async () => {
+    const { youtubeSecondsAlreadyUsed, youtubeFragmentKeyFor } = await pipe();
+    const used = new Set([youtubeFragmentKeyFor("vidA", 100, 4)]);
+    expect(youtubeSecondsAlreadyUsed(used, "vidA", 100, 4)).toBe(true);
+    expect(youtubeSecondsAlreadyUsed(used, "vidA", 102, 4)).toBe(true);
+    expect(youtubeSecondsAlreadyUsed(used, "vidA", 98, 3)).toBe(true);
+    expect(youtubeSecondsAlreadyUsed(used, "vidA", 104.1, 4)).toBe(false);
+    expect(youtubeSecondsAlreadyUsed(used, "vidA", 96, 4.1)).toBe(false);
+    expect(youtubeSecondsAlreadyUsed(used, "vidB", 100, 4)).toBe(false);
+  });
+
+  it("a YouTube video held without its seconds counts as wholly used", async () => {
+    const { youtubeSecondsAlreadyUsed, providerAssetKey } = await pipe();
+    expect(youtubeSecondsAlreadyUsed(new Set([providerAssetKey("youtube_cc", "vidA")]), "vidA", 500, 4)).toBe(true);
+  });
+
+  it("a clip is never blocked by its own mark, only by other seconds that overlap", async () => {
+    const { youtubeClipSecondsAlreadyUsed, tagPathWithProviderAsset, youtubeFragmentFileTag, clipContentKey } = await pipe();
+    const own = tagPathWithProviderAsset(`/w/s_${youtubeFragmentFileTag(100, 4)}.mp4`, "youtube_cc", "vidA");
+    const overlapping = tagPathWithProviderAsset(`/w/s_${youtubeFragmentFileTag(103, 4)}.mp4`, "youtube_cc", "vidA");
+    const other = tagPathWithProviderAsset(`/w/s_${youtubeFragmentFileTag(120, 4)}.mp4`, "youtube_cc", "vidA");
+    const used = new Set([clipContentKey(own)]);
+    expect(youtubeClipSecondsAlreadyUsed(used, own)).toBe(false);
+    expect(youtubeClipSecondsAlreadyUsed(used, overlapping)).toBe(true);
+    expect(youtubeClipSecondsAlreadyUsed(used, other)).toBe(false);
+    expect(youtubeClipSecondsAlreadyUsed(used, "/w/not_a_youtube_clip.mp4")).toBe(false);
+  });
+
+  it("the adopt point, the push, the stock and the beat's own download all ask about the seconds", () => {
+    const src = read("server/videoPipeline.ts");
+    expect(src).toContain("if (dedup.usedContentKeys.has(contentKey) || youtubeClipSecondsAlreadyUsed(dedup.usedContentKeys, p)) {");
+    expect(src).toContain("if (youtubeClipSecondsAlreadyUsed(dedup.usedContentKeys, clipPath)) {");
+    expect(src).toContain("youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, shotDur(s))");
+    expect(src).toContain("if (youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, clipStart, clipDur)) {");
+    const claim = src.indexOf("if (youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, clipStart, clipDur)) {");
+    expect(claim).toBeLessThan(src.indexOf("if (!claimDownloadSlot()) {"));
+  });
+});

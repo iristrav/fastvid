@@ -12558,9 +12558,9 @@ export async function fetchYouTubeCCClips(
           const item = row.item;
           const videoId = item.id?.videoId;
           if (!videoId || downloadedIds.has(videoId)) continue;
-          // Pre-download visual dedup: skip a YouTube video we already adopted this render
-          // (possibly via a different cascade/query), before script-guided planning or the
-          // download itself — see providerAssetKey.
+          // Pre-download visual dedup: skip a YouTube video whose WHOLE identity is already in the
+          // film. VIDEO 620: a clip is held under its seconds, so this now only matches a video
+          // adopted without them; the seconds themselves are checked once the start is known.
           if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "youtube_cc", videoId)) continue;
 
           const title = row.title;
@@ -12588,8 +12588,14 @@ export async function fetchYouTubeCCClips(
                 Math.min(ytDeadline - Date.now(), remainingScopeMs() - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS)
               );
               const shotDur = (s: StockShot) => Math.min(clipDur, Number((s.sourceEndSec - s.sourceStartSec).toFixed(2)));
-              const took = await takeStockShot(poolVideoId!, videoId, stockWaitMs, (s) =>
-                youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, shotDur(s))) != null
+              const took = await takeStockShot(
+                poolVideoId!,
+                videoId,
+                stockWaitMs,
+                (s) =>
+                  youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, shotDur(s))) != null ||
+                  /** VIDEO 620 — another shot of this video may join the film; these seconds may not again. */
+                  youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, shotDur(s))
               );
               if (took.shot) {
                 const stockStart = took.shot.sourceStartSec;
@@ -12724,6 +12730,31 @@ export async function fetchYouTubeCCClips(
                   `was refused earlier this render (${fragmentRefused}), no download slot spent`
               );
               continue;
+            }
+            /**
+             * VIDEO 620 — these seconds are already in the film (another beat used them): the video's
+             * other window, once, when it has one; otherwise the next candidate. No slot spent.
+             */
+            if (youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, clipStart, clipDur)) {
+              const altStart = alternativeYoutubeStartSec(videoId, sourceDurationSec, clipDur, clipStart);
+              if (
+                altStart != null &&
+                !youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, altStart, clipDur) &&
+                !youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, altStart, clipDur))
+              ) {
+                console.log(
+                  `[Pipeline] Scene ${sceneIndex}: YouTube ${videoId} @${clipStart}s is already in the film — ` +
+                    `taking its other window @${altStart}s`
+                );
+                clipStart = altStart;
+                startIsExact = false;
+              } else {
+                console.log(
+                  `[Pipeline] Scene ${sceneIndex}: skipping YouTube ${videoId} @${clipStart}s — these seconds are ` +
+                    `already in the film, no download slot spent`
+                );
+                continue;
+              }
             }
             const outPath = tagPathWithProviderAsset(
               path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}_${youtubeFragmentFileTag(clipStart, clipDur)}.mp4`),
@@ -17790,7 +17821,8 @@ export function tagPathWithProviderAsset(
    */
   const ledgerCache = cache ?? get_activeSourcingCache() ?? undefined;
   if (ledgerCache?.lineage) {
-    const contentKey = providerAssetKey(provider, id);
+    /** VIDEO 620 — a YouTube fragment has its own record: see `clipContentKey`. */
+    const contentKey = (provider === "youtube_cc" && youtubeFragmentKey(tagged)) || providerAssetKey(provider, id);
     const existing = ledgerCache.lineage.resolve(tagged, contentKey);
     /**
      * An existing record with no provider gets this one — see `attributeProvider`. The same shape
@@ -18733,6 +18765,15 @@ export function clipContentKey(filePath: string): string {
   const curatedId = curatedClipPathAssetId(base);
   if (curatedId != null) return curatedAssetContentKey(curatedId);
   const providerTag = base.match(PROVIDER_ASSET_TAG_RE);
+  /**
+   * VIDEO 620 — a YouTube clip is known by the seconds it holds, not by its video: two different
+   * shots of one video are two pictures, and each is judged and used on its own. See
+   * `youtubeSecondsAlreadyUsed` for what keeps the same seconds out of the film twice.
+   */
+  if (providerTag?.[1] === "youtube_cc") {
+    const fragment = youtubeFragmentKey(filePath);
+    if (fragment) return fragment;
+  }
   if (providerTag) return `${providerTag[1]}:${providerTag[2]}`;
   const vidMatch = base.match(/_vid(\d+)/);
   if (vidMatch) return `stock:vid:${vidMatch[1]}`;
@@ -18807,6 +18848,56 @@ export function youtubeFragmentKey(clipPath: string): string | null {
   const tag = base.match(PROVIDER_ASSET_TAG_RE);
   if (!fragment || !tag || tag[1] !== "youtube_cc") return null;
   return `${tag[1]}:${tag[2]}@${fragment[1]}`;
+}
+
+/**
+ * VIDEO 620 — THE SAME SECONDS NEVER TWICE; ANOTHER SHOT OF THE SAME VIDEO IS WELCOME.
+ *
+ * The film's used set holds a YouTube clip under its seconds (`youtube_cc:<hash>@t<start>d<len>`).
+ * A clip is taken when any of its seconds overlap seconds already in the film by more than a
+ * quarter of a second (the edge the shot cutter keeps clear of each cut). A YouTube key without
+ * seconds names the whole video, and then every second of it counts as used. A clip's own key is
+ * never counted against it, so a clip adopted for a beat does not block its own push.
+ */
+export const YOUTUBE_SECONDS_OVERLAP_TOLERANCE_SEC = 0.25;
+
+export function youtubeSecondsAlreadyUsed(
+  usedKeys: ReadonlySet<string> | undefined,
+  videoId: string,
+  startSec: number,
+  durationSec: number
+): boolean {
+  if (!videoId) return false;
+  return secondsOverlapUsed(usedKeys, providerAssetKey("youtube_cc", videoId), startSec, startSec + durationSec);
+}
+
+/** The same question for a clip file `fetchYouTubeCCClips` named; false for any other file. */
+export function youtubeClipSecondsAlreadyUsed(usedKeys: ReadonlySet<string> | undefined, clipPath: string): boolean {
+  const key = youtubeFragmentKey(clipPath);
+  const m = key ? /^(youtube_cc:[0-9a-f]{16})@t(\d+)d(\d+)$/.exec(key) : null;
+  if (!key || !m) return false;
+  const startSec = Number(m[2]) / 10;
+  return secondsOverlapUsed(usedKeys, m[1]!, startSec, startSec + Number(m[3]) / 10, key);
+}
+
+function secondsOverlapUsed(
+  usedKeys: ReadonlySet<string> | undefined,
+  videoKey: string,
+  startSec: number,
+  endSec: number,
+  exceptKey?: string
+): boolean {
+  if (!usedKeys?.size) return false;
+  if (usedKeys.has(videoKey)) return true;
+  for (const k of usedKeys) {
+    if (k === exceptKey || !k.startsWith(`${videoKey}@t`)) continue;
+    const m = /@t(\d+)d(\d+)$/.exec(k);
+    if (!m) continue;
+    const s = Number(m[1]) / 10;
+    const e = s + Number(m[2]) / 10;
+    if (Math.min(endSec, e) - Math.max(startSec, s) > YOUTUBE_SECONDS_OVERLAP_TOLERANCE_SEC) return true;
+  }
+  return false;
 }
 
 /** Remember a refused YouTube fragment for this render, and tell the video's pool. */
@@ -20651,7 +20742,7 @@ async function adoptClip(
       // so a duplicate still image consumed a scarce still-photo slot and then got rejected
       // anyway, permanently costing the render a still it never used.
       const contentKey = clipContentKey(p);
-      if (dedup.usedContentKeys.has(contentKey)) {
+      if (dedup.usedContentKeys.has(contentKey) || youtubeClipSecondsAlreadyUsed(dedup.usedContentKeys, p)) {
         dedup.sourcingCache.totals.duplicateCandidatesSkipped++;
         refuse("already_used_in_render");
         continue;
@@ -26459,6 +26550,14 @@ async function fetchSceneVisualsInner(
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
+    /** VIDEO 620 — other seconds of a YouTube video already in the film are a different picture; these are not. */
+    if (youtubeClipSecondsAlreadyUsed(dedup.usedContentKeys, clipPath)) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping ${path.basename(clipPath)} — these YouTube seconds are already in the film`
+      );
+      noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
+      return false;
+    }
     /** VIDEO 618 — the mark `adoptClip` wrote for THIS beat is not a previous use. */
     if (dedup.usedContentKeys.has(key)) {
       if (!claimAdoptedForBeat(dedup, key, scene.index, beatIndex)) {

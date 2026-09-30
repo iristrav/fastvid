@@ -22,9 +22,10 @@
  *
  * A shot is not used up by being handed out. Render 620's lost clips were handed to a beat whose
  * turn had already ended; a shot handed out the same way here stays in the stock. It stops being
- * offered when the picture editor refused it, and the whole video when it is already in the film
- * (the caller's own checks). Between the shots that are left, the one handed out least goes first,
- * so beats running at the same time get different shots.
+ * offered when the picture editor refused it or when its seconds are already in the film (the
+ * caller's own checks) — another shot of the same video is still welcome. Between the shots that
+ * are left, the one handed out least goes first, so beats running at the same time get different
+ * shots.
  */
 import * as fs from "fs";
 import * as path from "path";
