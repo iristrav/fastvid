@@ -243,6 +243,7 @@ import {
   type VideoYoutubePool,
 } from "./youtubeVideoPool";
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
+import { videoMainSubject } from "./mainSubject";
 import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShot, type StockShot } from "./youtubeShotStock";
 import { cutLocalVideoIntoShots, productionLocalShotCutter } from "./archiveShotPieces";
 
@@ -5489,6 +5490,9 @@ export function groupScenesIntoChunks(scenes: Scene[], targetChunkSec = 60): Arr
  * of what is left that its scenes are of the scenes left; time a chunk does not use goes to the
  * chunks after it, and the last chunk gets everything that remains.
  */
+/** VIDEO 621 — the least time a scene that found nothing gets for its main-subject search. */
+export const EMPTY_SCENE_RESCUE_MIN_MS = 60_000;
+
 export function chunkShareOfVisualTimeMs(timeLeftMs: number, chunkSceneCount: number, scenesLeft: number): number {
   if (!(timeLeftMs > 0)) return 0;
   if (!(scenesLeft > chunkSceneCount) || chunkSceneCount <= 0) return timeLeftMs;
@@ -15869,6 +15873,11 @@ interface SceneBeat {
 }
 
 export interface VisualDedupState {
+  /**
+   * VIDEO 621 — the text a beat is judged against when it is not its own sentence: a scene that
+   * found nothing is searched on the video's main subject, keyed `"<scene>:<beat>"`.
+   */
+  beatJudgeTextOverride?: Map<string, string>;
   /**
    * VIDEO 617 — each scene's approved clips while it is still running, by scene index. The chunk's
    * deadline reads it for a scene that has not returned, so a picture already approved is kept.
@@ -26439,13 +26448,15 @@ async function fetchSceneVisuals(
   videoTitle: string | undefined,
   dedup: VisualDedupState,
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
-  sceneAudioPath?: string
+  sceneAudioPath?: string,
+  /** VIDEO 621 — search every beat on this subject only; see `rescueEmptyScenesOnMainSubject`. */
+  rescueSubject?: string
 ): Promise<SceneVisualsResult> {
   const heartbeatLabel = `fetchSceneVisuals s${scene.index}`;
   setWorkerHeartbeat(heartbeatLabel);
   try {
     return await fetchSceneVisualsInner(
-      scene, workDir, videoTitle, dedup, onBeatProgress, sceneAudioPath
+      scene, workDir, videoTitle, dedup, onBeatProgress, sceneAudioPath, rescueSubject
     );
   } finally {
     clearWorkerHeartbeat(heartbeatLabel);
@@ -26458,7 +26469,8 @@ async function fetchSceneVisualsInner(
   videoTitle: string | undefined,
   dedup: VisualDedupState,
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
-  sceneAudioPath?: string
+  sceneAudioPath?: string,
+  rescueSubject?: string
 ): Promise<SceneVisualsResult> {
   videoTitle = coerceVisionString(videoTitle);
   
@@ -26508,15 +26520,33 @@ async function fetchSceneVisualsInner(
         : dedup.perf.fastStockMode
           ? 2
           : maxStillPhotosForScene(scene.index, scenePersons.length > 0, dedup.personTopicLock);
-  const beats = resolveSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup);
+  let beats = resolveSceneBeats(scene, scene.duration, beatCap, videoTitle, scenePersons, dedup);
   await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration, dedup, scene.index);
+  /**
+   * VIDEO 621 — the main-subject search. The beats keep their timing and the recorded narration (the
+   * array above stays what the film says); the search and the picture editor are handed the main
+   * subject instead of the sentence, for this scene's beats only.
+   */
+  const rescue = rescueSubject?.trim();
+  if (rescue) {
+    for (const b of beats) (dedup.beatJudgeTextOverride ??= new Map()).set(`${scene.index}:${b.index}`, rescue);
+    beats = beats.map((b) => ({
+      ...b,
+      text: rescue,
+      searchQuery: rescue,
+      powerWord: rescue,
+      keywords: [rescue],
+      visualDescription: undefined,
+    }));
+    console.log(`[MainSubject] Scene ${scene.index}: ${beats.length} beat(s) searched on "${rescue}" only`);
+  }
   const clips: string[] = [];
   const beatDurations: number[] = [];
   (dedup.sceneClipsSoFar ??= new Map()).set(scene.index, { clips, beatDurations });
   const archiveBeatFilled = new Set<number>();
 
   // ── Editorial Sequence Planner: enrich beats with shot-level visual descriptions ──
-  if (editorialSequencePlannerEnabled() && beats.length > 0) {
+  if (!rescue && editorialSequencePlannerEnabled() && beats.length > 0) {
     try {
       const vctx = dedup.videoVisualContext ?? { people: [], period: "", locations: [], visualStyles: [] };
       await getOrGenerateStoryboard(
@@ -27537,7 +27567,9 @@ async function _runVideoPipelineInner(
     if (subjectGateScope) {
       visualDedup.candidateSubjectGate = subjectGateScope.state;
       subjectGateScope.contextFor = (sceneIndex, beatIndex) => {
-        const beatText = visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex]?.text;
+        const beatText =
+          visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ??
+          visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex]?.text;
         if (!beatText?.trim()) return undefined;
         const scene = scenes.find((s) => s.index === sceneIndex);
         return {
@@ -27639,10 +27671,12 @@ async function _runVideoPipelineInner(
         visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.length;
       composeJudgeScope.contextFor = (sceneIndex, beatIndex) => {
         const beat = visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex];
-        if (!beat?.text?.trim()) return undefined;
+        /** VIDEO 621 — a beat searched on the main subject is judged on it. */
+        const text = visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ?? beat?.text;
+        if (!text?.trim()) return undefined;
         const scene = scenes.find((s) => s.index === sceneIndex);
         return beatVisualContext(
-          { text: beat.text, index: beatIndex },
+          { text, index: beatIndex },
           { text: scene?.text, index: sceneIndex },
           asVideoTitleString(videoTitle) || undefined
         );
@@ -27903,6 +27937,12 @@ async function _runVideoPipelineInner(
      * this moment no search, download or fallback may start and in-flight ones are aborted. A beat
      * or scene with no picture by then is a gap; the timeline holds the previous shot over it.
      */
+    /** VIDEO 621 — what a scene that finds nothing searches on; see `videoMainSubject`. */
+    const mainSubject = videoMainSubject(primaryPerson, {
+      prompt: asVideoTitleString(userPrompt ?? videoRow?.prompt ?? topicContext ?? ""),
+      title: asVideoTitleString(videoTitle),
+      sceneTexts: scenes.filter((s) => !s.isChapterCard).map((s) => s.text),
+    });
     const visualDeadlineMs = (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length;
     const visualDeadlineAtMs = Date.now() + visualDeadlineMs;
     console.log(
@@ -28086,6 +28126,67 @@ async function _runVideoPipelineInner(
 
     if (visualDedup.forceExportMode) {
       console.warn("[Pipeline] Force-export — skipping polish, proceeding to compose with current clips");
+    }
+
+    /**
+     * VIDEO 621 — A SCENE THAT FOUND NOTHING SEARCHES ONCE MORE, ON THE VIDEO'S MAIN SUBJECT ONLY.
+     *
+     * Every beat of it, with its own timing, searched and judged on the main subject instead of its
+     * sentence — the same sources, the same picture editor, the same text, black and duplicate
+     * checks. It gets what is left of the picture time, and at least `EMPTY_SCENE_RESCUE_MIN_MS`
+     * even when the deadline has passed: a scene with no picture is a film that is refused.
+     */
+    {
+      const empty: number[] = [];
+      for (let si = chunk.start; si < chunk.end; si++) {
+        if (!(sceneVisualResults[si]?.clips ?? []).some((c) => c && !isPipelineFallbackClip(c))) empty.push(si);
+      }
+      if (empty.length > 0 && !mainSubject) {
+        console.warn(
+          `[MainSubject] video=${videoId} ${empty.length} scene(s) found nothing and the video has no main subject ` +
+            `the narration returns to — no second search`
+        );
+      } else if (empty.length > 0 && mainSubject) {
+        const windowMs = Math.max(visualDeadlineAtMs - Date.now(), EMPTY_SCENE_RESCUE_MIN_MS);
+        console.log(
+          `[MainSubject] video=${videoId} scene(s) ${empty.map((si) => scenes[si]!.index).join(", ")} found nothing — ` +
+            `searching on "${mainSubject}" only, ${Math.round(windowMs / 1000)}s`
+        );
+        let rescueClosed = false;
+        try {
+          await withSceneFetchTimeout(
+            () =>
+              Promise.all(
+                empty.map((si) =>
+                  visualLimit(async () => {
+                    const r = await fetchSceneVisuals(
+                      scenes[si]!, workDir, topicContext, visualDedup, undefined, audioPaths[si], mainSubject
+                    ).catch((err: Error) => {
+                      console.warn(`[MainSubject] Scene ${scenes[si]!.index}: search failed: ${err.message?.slice(0, 120)}`);
+                      return { clips: [], beatDurations: [] } as SceneVisualsResult;
+                    });
+                    if (!rescueClosed && r.clips.length > 0) sceneVisualResults[si] = r;
+                  })
+                )
+              ),
+            windowMs,
+            `Main-subject search chunk ${chunkIdx + 1}/${chunks.length}`
+          );
+        } catch (err) {
+          console.warn(`[MainSubject] video=${videoId} time is up:`, (err as Error).message?.slice(0, 120));
+          visualDedup.lock = Promise.resolve();
+        }
+        rescueClosed = true;
+        for (const si of empty) {
+          if ((sceneVisualResults[si]?.clips ?? []).length === 0) {
+            const kept = sceneClipsKeptAtDeadline(visualDedup.sceneClipsSoFar?.get(scenes[si]!.index));
+            if (kept.clips.length > 0) sceneVisualResults[si] = kept;
+          }
+          console.log(
+            `[MainSubject] Scene ${scenes[si]!.index}: ${(sceneVisualResults[si]?.clips ?? []).length} picture(s) of "${mainSubject}"`
+          );
+        }
+      }
     }
 
     /**

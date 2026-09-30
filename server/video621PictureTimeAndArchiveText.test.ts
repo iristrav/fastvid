@@ -68,3 +68,47 @@ describe("Video 621 — the archive's text check is never skipped for a render's
     expect(read("server/archiveShotPieces.ts")).toContain("filter.archiveClipTextVerdict(piecePath");
   });
 });
+
+describe("Video 621 — a scene that finds nothing searches on the video's main subject only", () => {
+  it("the main subject is the locked person when there is one", async () => {
+    const { videoMainSubject } = await import("./mainSubject");
+    expect(videoMainSubject("Elon Musk", { prompt: "Tesla", title: "t", sceneTexts: ["Tesla grew. Tesla fell."] })).toBe("Elon Musk");
+  });
+
+  it("otherwise the name the narration returns to in the most scenes — never a year, never a name said once", async () => {
+    const { videoMainSubject } = await import("./mainSubject");
+    expect(
+      videoMainSubject("", {
+        prompt: "the story of the Titanic",
+        title: "Titanic",
+        sceneTexts: [
+          "In 1912 the Titanic left Southampton. The Titanic was the largest ship afloat.",
+          "The Titanic struck an iceberg in 1912. Few lifeboats were ready.",
+          "Survivors reached New York aboard the Carpathia.",
+        ],
+      })
+    ).toBe("Titanic");
+    expect(videoMainSubject(null, { prompt: "x", title: "x", sceneTexts: ["It happened in 1999. Nobody knew why."] })).toBeNull();
+  });
+
+  it("every empty scene is searched again on the main subject, with at least a minute, before it is left empty", () => {
+    const src = read("server/videoPipeline.ts");
+    const rescueAt = src.indexOf("VIDEO 621 — A SCENE THAT FOUND NOTHING SEARCHES ONCE MORE");
+    const leftEmptyAt = src.indexOf("no picture found — the timeline holds the previous shot");
+    expect(rescueAt).toBeGreaterThan(0);
+    expect(rescueAt).toBeLessThan(leftEmptyAt);
+    expect(src).toContain("Math.max(visualDeadlineAtMs - Date.now(), EMPTY_SCENE_RESCUE_MIN_MS)");
+    expect(src).toContain("scenes[si]!, workDir, topicContext, visualDedup, undefined, audioPaths[si], mainSubject");
+  });
+
+  it("the beats keep their timing and recorded narration; the search and the picture editor get the main subject", () => {
+    const src = read("server/videoPipeline.ts");
+    expect(src).toContain("for (const b of beats) (dedup.beatJudgeTextOverride ??= new Map()).set(`${scene.index}:${b.index}`, rescue);");
+    expect(src).toContain("text: rescue,\n      searchQuery: rescue,\n      powerWord: rescue,\n      keywords: [rescue],");
+    expect(src).toContain("visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ?? beat?.text");
+    expect(src).toContain("visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ??\n          visualDedup.sceneBeatsBySceneIndex");
+    /** The override is set after the beats are recorded, so the recorded array keeps the narration. */
+    const recordAt = src.indexOf("await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration, dedup, scene.index);\n  /**\n   * VIDEO 621");
+    expect(recordAt).toBeGreaterThan(0);
+  });
+});
