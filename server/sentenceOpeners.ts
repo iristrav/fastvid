@@ -31,7 +31,18 @@ export const SENTENCE_OPENERS: ReadonlySet<string> = new Set(
     "however although though because since instead thus therefore perhaps nevertheless nonetheless " +
     "moreover furthermore indeed whatever whenever wherever whoever " +
     // imperatives narration opens with
-    "let lets imagine consider remember picture look listen meet enter think"
+    "let lets imagine consider remember picture look listen meet enter think " +
+    // Dutch — narration may be written in it (see scriptWriter's LANGUAGE rule). Not "van", "de",
+    // "den", "ter", "ten" (name particles: "Van Gogh"), nor "dan" and "elke" (also first names).
+    "het een deze dit dat die er hij zij ze wij jij je ik op bij met voor tijdens toen nu vandaag " +
+    "gisteren morgen hier daar maar want omdat hoewel toch ook zelfs pas eerst later ooit ondertussen " +
+    "intussen kijk stel laten laat denk ontmoet waarom hoe wat wie waar wanneer welke nog alle iedere " +
+    "geen niet zo " +
+    // German — likewise. Not "von", "zu", "der", "du", "das", "na" (name particles or surnames:
+    // "von Braun", "van der Waals", "Du Bois", "Das").
+    "ein eine es sie wir ich im am auf mit nach vor während jetzt heute gestern dort dann aber " +
+    "und oder wenn weil obwohl doch auch sogar erst später einst inzwischen schau stell lass lasst " +
+    "warum wie was wer wo wann welche alle jede kein nicht"
   ).split(" ")
 );
 

@@ -174,3 +174,46 @@ describe("Video 623 — a YouTube file that arrives late is offered to the next 
     expect(SRC).toContain("offerLateYoutubeCandidates(dedup, late.paths, `s${sceneIndex}b${beat.index}`)");
   });
 });
+
+describe("Video 623 — the same for every topic, every name, every narration language", () => {
+  it("openers in English, Dutch and German are not names; the names beside them are", () => {
+    const cases: Array<[string, string[]]> = [
+      ["Let's look at how Marie Curie changed science.", ["Marie Curie"]],
+      ["Now Napoleon Bonaparte marched on Moscow.", ["Napoleon Bonaparte"]],
+      ["Here's why Frida Kahlo painted herself.", ["Frida Kahlo"]],
+      ["Laten we kijken hoe Vincent van Gogh werkte.", ["Vincent van Gogh"]],
+      ["Nu zegt Mark Rutte dat het kabinet valt.", ["Mark Rutte"]],
+      ["Toen Anne Frank schreef, was ze dertien.", ["Anne Frank"]],
+      ["Heute spricht Angela Merkel in Berlin.", ["Angela Merkel"]],
+      ["Wernher von Braun built the rocket.", ["Wernher von Braun"]],
+    ];
+    for (const [text, names] of cases) expect(extractPersonNamesFromText(text), text).toEqual(names);
+  });
+
+  it("name particles and first names are not on the opener list", () => {
+    for (const w of ["van", "von", "de", "der", "den", "ter", "ten", "du", "das", "na", "dan", "elke", "zu"]) {
+      expect(isSentenceOpener(w), w).toBe(false);
+    }
+  });
+
+  it("a sentence with no subject of its own is recognised whatever the topic or language", () => {
+    const titanic = "The Titanic left Southampton.";
+    expect(beatHasOwnSubject("The ship sank in under three hours.", [], titanic)).toBe(false);
+    expect(beatHasOwnSubject("Nobody expected the iceberg.", [], titanic)).toBe(false);
+    expect(beatHasOwnSubject("Southampton was crowded that morning.", [], titanic)).toBe(true);
+    const nl = "De Titanic vertrok uit Southampton.";
+    expect(beatHasOwnSubject("Laten we kijken hoe het schip zonk.", [], nl)).toBe(false);
+    expect(beatHasOwnSubject("Het schip vertrok uit Southampton.", [], nl)).toBe(true);
+  });
+
+  it("nothing added for 623 names a topic or a person", () => {
+    const opener = fs.readFileSync(path.join(__dirname, "sentenceOpeners.ts"), "utf8").split("\n")
+      .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
+    expect(opener).not.toMatch(/musk|tesla|kylie|jenner|titanic/i);
+    for (const fn of ["beatHasOwnSubject", "beatFillSecondsNeeded", "firstTransferWroteVideoOff", "iaItemIsAccessRestricted", "offerLateYoutubeCandidates"]) {
+      const at = SRC.indexOf(`export function ${fn}`) >= 0 ? SRC.indexOf(`export function ${fn}`) : SRC.indexOf(`export async function ${fn}`);
+      const body = SRC.slice(at, SRC.indexOf("\n}\n", at));
+      expect(body.split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n"), fn).not.toMatch(/musk|tesla|kylie|jenner/i);
+    }
+  });
+});
