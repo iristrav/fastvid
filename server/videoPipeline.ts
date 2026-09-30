@@ -57,6 +57,7 @@ import {
 } from "./curatedProvenanceRepair";
 import { formatPreparationCache, preparationKey, resetPreparationScope, runPreparation } from "./preparationCache";
 import { BUDGETS, chargeAmbientBudget, createRetrievalBudgetState, formatRetrievalBudgets, setBudgetResolver, type RetrievalBudgetState } from "./retrievalBudget";
+import { SENTENCE_OPENERS, atSentenceStart, isSentenceOpener, withoutSentenceOpener } from "./sentenceOpeners";
 import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteRepeatedYoutubeRefusal, YOUTUBE_REFUSALS_BEFORE_WRITE_OFF_THIS_RENDER, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, youtubeDownloadRefusal, youtubeServiceRefusalReason } from "./providerFailureClass";
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
@@ -4518,6 +4519,25 @@ function startSceneYoutubeLookahead(
   }
 }
 
+/** VIDEO 623 — keep what a lookahead delivered too late for its own sentence. */
+export function offerLateYoutubeCandidates(dedup: Pick<VisualDedupState, "lateYoutubeCandidates">, paths: readonly string[], from: string): void {
+  const list = (dedup.lateYoutubeCandidates ??= []);
+  const fresh = paths.filter((p) => p && !list.includes(p) && fs.existsSync(p));
+  if (fresh.length === 0) return;
+  list.push(...fresh);
+  console.log(`[YouTubeLookahead] ${from} LATE clips=${fresh.length} — offered to the next sentence that takes a YouTube turn`);
+}
+
+/** VIDEO 623 — hand every late YouTube file still on disk to this sentence, once. */
+export function takeLateYoutubeCandidates(dedup: Pick<VisualDedupState, "lateYoutubeCandidates">, to: string): string[] {
+  const list = dedup.lateYoutubeCandidates ?? [];
+  if (list.length === 0) return [];
+  dedup.lateYoutubeCandidates = [];
+  const onDisk = list.filter((p) => fs.existsSync(p));
+  if (onDisk.length > 0) console.log(`[YouTubeLookahead] ${to} TAKES_LATE clips=${onDisk.length}`);
+  return onDisk;
+}
+
 /**
  * VIDEO 619 — a beat waits for its lookahead no longer than its own turn.
  *
@@ -4625,14 +4645,30 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
           `[YouTubeLookahead] s${sceneIndex}b${beat.index} WAIT_ENDED after ${Math.round(waitMs / 1000)}s — ` +
             `the beat's own turn is over; the lookahead keeps running without it`
         );
+        /**
+         * VIDEO 623 — zQCZL9WRjzY arrived six seconds after its sentence stopped waiting, and no
+         * other sentence was ever offered it: the only fresh YouTube download of the render, unused.
+         * What arrives late is offered to the next sentence that takes a YouTube turn, which judges
+         * it against its own words like any other candidate.
+         */
+        void ahead.result.then(
+          (late) => {
+            if (late.paths.length > 0) offerLateYoutubeCandidates(dedup, late.paths, `s${sceneIndex}b${beat.index}`);
+          },
+          () => undefined
+        );
         return found;
       }
       lookaheadSearched = got.searched;
       if (got.paths.length > 0 || got.searched) {
-        found = found.concat(got.paths);
-        return got.paths;
+        const late = takeLateYoutubeCandidates(dedup, `s${sceneIndex}b${beat.index}`);
+        found = found.concat(late, got.paths);
+        return [...late, ...got.paths];
       }
     }
+    /** A lookahead gathers for its own sentence; only a sentence's own turn takes late files. */
+    const lateHere = req.lookahead ? [] : takeLateYoutubeCandidates(dedup, `s${sceneIndex}b${beat.index}`);
+    found = found.concat(lateHere);
     const paths = await fetchYouTubeCCClips(
       req.queries.slice(0, 5),
       clipFetchDur,
@@ -4652,7 +4688,7 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
       dedup.sourcingCache
     );
     found = found.concat(paths);
-    return paths;
+    return [...lateHere, ...paths];
   };
   try {
     if (req.deliver === "candidates") {
@@ -5532,6 +5568,19 @@ export const PICTURE_SEC_PER_VIDEO_SEC = 2.85;
 export function visualDeadlineForVideoMs(perSceneTotalMs: number, videoSec: number): number {
   const byLength = Number.isFinite(videoSec) && videoSec > 0 ? Math.round(videoSec * PICTURE_SEC_PER_VIDEO_SEC * 1000) : 0;
   return Math.max(perSceneTotalMs, byLength);
+}
+
+/** VIDEO 623 — see `fillBeatWithMoreClips`: how many more clips a sentence may take, and when. */
+export const BEAT_FILL_MAX_EXTRA_CLIPS = 3;
+export const BEAT_FILL_MIN_SCOPE_MS = 15_000;
+export const BEAT_FILL_FETCH_MS = 12_000;
+/** A gap shorter than this is held over by the clip before it; a longer one gets another clip. */
+export const BEAT_FILL_MIN_GAP_SEC = 1.5;
+
+/** The seconds of a sentence its clips do not cover, or 0 when the rest is too short to fill. */
+export function beatFillSecondsNeeded(beatSec: number, coveredSec: number): number {
+  const rest = (Number.isFinite(beatSec) ? beatSec : 0) - (Number.isFinite(coveredSec) ? coveredSec : 0);
+  return rest >= BEAT_FILL_MIN_GAP_SEC ? Math.round(rest * 100) / 100 : 0;
 }
 
 /**
@@ -9963,6 +10012,8 @@ export async function fetchInternetArchiveClips(
     // F3-34 metadata shape (hoisted for the concurrent resolve below).
     type IaMetaData = {
       metadata?: {
+        /** VIDEO 623 — "true" on items archive.org only lends to signed-in borrowers. */
+        "access-restricted-item"?: string | boolean | string[];
         licenseurl?: string | string[];
         rights?: string | string[];
         date?: string | string[];
@@ -10044,6 +10095,15 @@ export async function fetchInternetArchiveClips(
       for (const { doc, metaData } of resolvedBatch) {
       if (fetched >= count) break;
       if (cancelled()) break;
+      /**
+       * VIDEO 623 — ten TV-news items (CSPAN, BBC News, CNBC, GBN, 1TV…) were tried and each
+       * answered 401/403: archive.org lends them to signed-in borrowers only, and says so in the
+       * item's own metadata. Such an item is skipped before any download is tried.
+       */
+      if (metaData && iaItemIsAccessRestricted(metaData)) {
+        console.log(`[Pipeline] Scene ${sceneIndex}: skipping archive.org ${doc.identifier} — access-restricted item (lending only)`);
+        continue;
+      }
       if (!metaData) continue;
       try {
 
@@ -10346,6 +10406,8 @@ async function fetchArchiveSegmentViaFfmpeg(
   segmentSec: number,
   sceneIndex: number
 ): Promise<boolean> {
+  /** VIDEO 623 — a file archive.org already refused to this render is not asked for again. */
+  if (permanentDownloadRefusal(videoUrl)) return false;
   try {
     const { spawn: spawnChild } = await import("child_process");
     await ffmpegSemaphore.run(() => new Promise<void>((resolve, reject) => {
@@ -10417,6 +10479,8 @@ async function fetchArchiveSegmentViaFfmpeg(
       `[Pipeline] Scene ${sceneIndex}: archive segment fetch failed:`,
       (err as Error).message?.slice(0, 240)
     );
+    const refusedWith = archiveAccessRefusal((err as Error).message ?? "");
+    if (refusedWith) notePermanentDownloadRefusal(videoUrl, refusedWith);
     try { fs.unlinkSync(outPath); } catch { /* ignore */ }
     return false;
   }
@@ -10795,6 +10859,25 @@ function countDownloadOutcome(
 }
 
 /**
+ * VIDEO 623 — the HTTP refusal an archive.org file answered with, when it is one that will not
+ * change within a render (401 Unauthorized, 403 Forbidden), or null.
+ */
+export function archiveAccessRefusal(message: string): string | null {
+  const m = message.match(/Server returned (401|403)\b/);
+  return m ? `http_${m[1]}` : null;
+}
+
+/**
+ * VIDEO 623 — does archive.org's own metadata mark this item as lending-only? TV-news recordings
+ * carry `access-restricted-item: "true"`, and their files answer 401/403 to anyone not signed in.
+ */
+export function iaItemIsAccessRestricted(meta: { metadata?: { "access-restricted-item"?: unknown } } | null | undefined): boolean {
+  const flag = meta?.metadata?.["access-restricted-item"];
+  const values = Array.isArray(flag) ? flag : [flag];
+  return values.some((v) => v === true || (typeof v === "string" && v.trim().toLowerCase() === "true"));
+}
+
+/**
  * RONDE 641 — is this media link bound to the address that requested it?
  *
  * `ip_locked` when a googlevideo link signs its `ip` parameter (valid only from that address),
@@ -10833,6 +10916,35 @@ let youtubeTransferReentry: string | null = null;
 const youtubeFragmentsFetched = new Map<string, Promise<string | null>>();
 export function resetYoutubeFragmentsFetched(): void {
   youtubeFragmentsFetched.clear();
+  youtubeFirstTransfers.clear();
+}
+
+/** VIDEO 623 — each video's first transfer this render; see the wait in `downloadYouTubeCCClip`. */
+const youtubeFirstTransfers = new Map<string, Promise<boolean>>();
+/** How long a second transfer of a video waits for the first one's answer. */
+export const YOUTUBE_FIRST_TRANSFER_WAIT_MS = 25_000;
+
+/**
+ * Wait (at most `YOUTUBE_FIRST_TRANSFER_WAIT_MS`) for a video's first transfer, and say whether
+ * the render wrote the video off meanwhile. A first transfer that delivered, or is still running
+ * when the wait ends, lets this one go ahead.
+ */
+export async function firstTransferWroteVideoOff(
+  videoId: string,
+  first: Promise<boolean>,
+  waitMs = YOUTUBE_FIRST_TRANSFER_WAIT_MS
+): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const delivered = await Promise.race([
+    first.catch(() => false),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), waitMs);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (delivered === true) return false;
+  return youtubeDownloadRefusal(videoId) != null || youtubeVideoUnusable(videoId) != null;
 }
 
 /**
@@ -11094,6 +11206,12 @@ export async function downloadYouTubeCCClip(
     countDownloadOutcome(sourcingCache, "youtube_cc", status);
     void recordYoutubeVideoOutcome(videoId, status === "DOWNLOAD_SUCCESS", attempts);
     /**
+     * VIDEO 623 — remembered here, before this transfer's promise settles, so a transfer waiting
+     * on it (`firstTransferWroteVideoOff`) reads the verdict. The callers still note it too; the
+     * memo keeps the first reason.
+     */
+    if (status !== "DOWNLOAD_SUCCESS") noteYoutubeDownloadRefusal(videoId, status, reason);
+    /**
      * The same facts into the bundle, so the next capture can be counted rather than read. The
      * video id is an identity and is public; the signed format URL the transfer uses never
      * reaches here and is never recorded.
@@ -11154,7 +11272,18 @@ export async function downloadYouTubeCCClip(
      * Registered for this file before anything is awaited, so a second call for the same file
      * always finds it. Nothing is awaited when nobody fetched these seconds yet.
      */
+    /**
+     * VIDEO 623 — three scenes asked for 6sUwRiIncKU in the same second, and all three got a file
+     * with no picture in it. While a video's first transfer this render is still running, a
+     * second one waits for its answer (bounded), and does not start when that answer wrote the
+     * video off.
+     */
+    const firstForVideo = youtubeFirstTransfers.get(videoId);
     const done = (async () => {
+      if (firstForVideo && (await firstTransferWroteVideoOff(videoId, firstForVideo))) {
+        reportDownload("DOWNLOAD_FAILED", `refused_this_render:${youtubeDownloadRefusal(videoId) ?? "first transfer"}`);
+        return false;
+      }
       if (youtubeFragmentsFetched.has(fragment) && (await copyYoutubeFragmentAlreadyFetched(fragment, outPath))) {
         reportDownload("DOWNLOAD_SUCCESS", "same_seconds_already_fetched");
         return true;
@@ -11166,6 +11295,7 @@ export async function downloadYouTubeCCClip(
       );
     })();
     youtubeTransfersByFile.set(outPath, { seconds, done });
+    if (!firstForVideo) youtubeFirstTransfers.set(videoId, done);
     const kept = keepYoutubeFragmentWhenFetched(fragment, outPath, done);
     try {
       return await done;
@@ -14581,7 +14711,11 @@ function beatSubjectCandidates(clean: string): { proper: string[]; common: strin
       // A pure number is a year or a count; years are handled separately, counts are not visual.
       if (/^\d+$/.test(word)) return;
       const capitalised = word[0] !== word[0]!.toLowerCase();
-      const isProperNoun = capitalised && (i > 0 || !SENTENCE_OPENER_WORDS.has(lower));
+      /** VIDEO 623 — and the shared list, so "Let's" and "Now" are not a sentence's subject either. */
+      const opener = SENTENCE_OPENER_WORDS.has(lower) || SENTENCE_OPENERS.has(lower.replace(/['’]s$/, ""));
+      /** An opening contraction or "Let" is grammar, not even a common noun. */
+      if (i === 0 && opener && (/['’]s$/.test(lower) || lower === "let" || lower === "lets")) return;
+      const isProperNoun = capitalised && (i > 0 || !opener);
       // Three letters is enough for a name — May, RAF, Ford — but not for a common noun, where
       // it is almost always grammar the stop list has not happened to catch.
       if (word.length < 4 && !isProperNoun) return;
@@ -14642,6 +14776,33 @@ function beatSubjectCandidates(clean: string): { proper: string[]; common: strin
   // Only a year the beat itself states — never one inherited from the video title.
   const year = clean.match(/\b(1[5-9]\d{2}|20\d{2})\b/)?.[0] ?? "";
   return { proper, common, year };
+}
+
+/**
+ * VIDEO 623 — does this sentence name a subject of its own: a person the scene knows, or a proper
+ * noun (a place, a company, an event) that is not a month? A pronoun, a common noun or an opener
+ * is not one.
+ */
+export function beatHasOwnSubject(beatText: string, persons: readonly string[] = [], contextText = ""): boolean {
+  const clean = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  if (!clean) return false;
+  if (persons.some((p) => p && beatMentionsPerson(clean, p))) return true;
+  /**
+   * A sentence's first word is capitalised whatever it is — "Social media turned him…". It counts
+   * as a name only when the narration also writes it capitalised in the middle of a sentence.
+   */
+  const sentences = clean.split(/(?<=[.!?])\s+/);
+  const context = `${contextText} ${clean}`;
+  for (const sentence of sentences) {
+    const first = sentence.match(/^["“'‘(]*(\p{Lu}[\p{L}\p{N}-]+)/u)?.[1];
+    if (!first || isSentenceOpener(first) || MONTH_NAMES.has(first.toLowerCase())) continue;
+    const escaped = first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`[\\p{L}\\p{N},;]\\s+${escaped}(?![\\p{L}])`, "u").test(context)) return true;
+  }
+  const lowered = sentences
+    .map((x) => x.replace(/^(["“'‘(]*)(\p{Lu})/u, (_m, q: string, c: string) => q + c.toLowerCase()))
+    .join(" ");
+  return beatSubjectCandidates(lowered).proper.some((p) => !MONTH_NAMES.has(p.toLowerCase()));
 }
 
 function extractBeatSubject(beatText: string, persons: string[] = []): string {
@@ -15642,9 +15803,9 @@ export function extractPersonNamesFromText(text: string): string[] {
   const found = new Set<string>();
   // RONDE 123: `[a-z]` cannot read `ö`, so this run broke AT the diacritic and the two halves
   // were matched as separate names — see personNameChars.ts for the measurement.
-  const fullNames = text.match(nameRunRegex(1)) ?? [];
-  for (const name of fullNames) {
-    const n = name.trim();
+  for (const m of text.matchAll(nameRunRegex(1))) {
+    /** VIDEO 623 — "Let Musk explain", "Now Musk says": the opener is not part of the name. */
+    const n = withoutSentenceOpener(m[0], text, m.index ?? 0);
     if (n.length < 5 || PERSON_NAME_SKIP_PHRASES.has(n.toLowerCase())) continue;
     // P1-A2 (render 518): a capitalized title fragment inside the script ("His Wife", "Why
     // Hitler Killed Himself") must never be treated as a person — every consumer of this list
@@ -15707,9 +15868,16 @@ export function extractPersonNamesFromText(text: string): string[] {
   // acting as a person. "Berlin was under bombardment" and "Dunkirk had fallen" stay places:
   // "was" and "had" are not person verbs, and both words are in the geo vocabulary anyway.
   for (const sentence of text.split(/(?<=[.!?])\s+/)) {
-    const singles = sentence.match(singleNameTokenRegex(3)) ?? [];
-    for (const token of singles) {
+    for (const single of sentence.matchAll(singleNameTokenRegex(3))) {
+      const token = single[0];
       if (found.has(token)) continue;
+      /**
+       * VIDEO 623 — "Let's look at…" is not a person called Let: a sentence opener, and any
+       * opener followed by `'s`, is language. See `sentenceOpeners.ts`.
+       */
+      const at = single.index ?? 0;
+      const contracted = /^['’]s\b/i.test(sentence.slice(at + token.length));
+      if (isSentenceOpener(token) && (contracted || atSentenceStart(sentence, at))) continue;
       // Already covered by a full name in this text ("Hitler" beside "Adolf Hitler").
       if ([...found].some((n) => n.split(/\s+/).includes(token))) continue;
       if (TITLE_NON_NAME_WORDS.has(token.toLowerCase())) continue;
@@ -16072,6 +16240,10 @@ export interface VisualDedupState {
    * found nothing is searched on the video's main subject, keyed `"<scene>:<beat>"`.
    */
   beatJudgeTextOverride?: Map<string, string>;
+  /** VIDEO 623 — the video's main subject; a sentence that names nothing of its own searches on it. */
+  mainSubject?: string | null;
+  /** VIDEO 623 — YouTube files a lookahead delivered after its sentence stopped waiting. */
+  lateYoutubeCandidates?: string[];
   /**
    * VIDEO 617 — each scene's approved clips while it is still running, by scene index. The chunk's
    * deadline reads it for a scene that has not returned, so a picture already approved is kept.
@@ -26767,6 +26939,23 @@ async function fetchSceneVisualsInner(
     }
   }
 
+  /**
+   * VIDEO 623 — A SENTENCE THAT NAMES NOTHING OF ITS OWN SEARCHES ON THE VIDEO'S MAIN SUBJECT.
+   *
+   * Render 623 searched "people, walking, city" and "Let" for two sentences of a film about Elon
+   * Musk, found a black X and a street of rental signs, and the picture editor refused both. A
+   * sentence that names no person, place or thing — "He turned it into a stage" — is about the
+   * film's subject. Its timing and narration stay; its search is the main subject.
+   */
+  const mainSubject = dedup.mainSubject?.trim();
+  if (!rescue && mainSubject) {
+    beats = beats.map((b) => {
+      if (beatHasOwnSubject(b.text, scenePersons, scene.text ?? "")) return b;
+      console.log(`[MainSubject] s${scene.index}b${b.index}: names nothing of its own — searching on "${mainSubject}"`);
+      return { ...b, searchQuery: mainSubject, powerWord: mainSubject, keywords: [mainSubject], visualDescription: undefined };
+    });
+  }
+
   console.log(
     `[Pipeline] Scene ${scene.index}: ${beats.length} zin-beats (~${effectiveBeatSec()}s) — ` +
     `power words: [${beats.map((b) => b.powerWord).join(", ")}]` +
@@ -26863,9 +27052,53 @@ async function fetchSceneVisualsInner(
   }
   const renderIdForLadder = String(getActiveVideoId() ?? "-");
   let closeBeatLadder: (() => void) | null = null;
+  /**
+   * VIDEO 623 — A SENTENCE LONGER THAN ITS CLIP GETS ANOTHER CLIP, NOT THE SAME SECONDS AGAIN.
+   *
+   * `pushSceneClip` holds a clip only as long as it is, so a 3.9 s archive shot on a 19 s sentence
+   * left 15 s that the timeline filled by stretching the same shot into four zoomed pieces, while
+   * three other approved-looking Elon Musk shots from the own archive were downloaded and unused.
+   * When a sentence's clips cover less of it than it lasts, the own archive is asked for another
+   * unused shot for the rest — judged like every other push — up to three times, and only while the
+   * scene has time left. Run for the previous sentence at the top of each iteration (a `continue`
+   * cannot skip it) and once after the loop.
+   */
+  let fillFor: { beat: SceneBeat; clipsBefore: number } | null = null;
+  const fillBeatWithMoreClips = async (): Promise<void> => {
+    const f = fillFor;
+    fillFor = null;
+    if (!f) return;
+    const pushed = beatDurations.slice(f.clipsBefore);
+    if (pushed.length === 0) return;
+    for (let extra = 0; extra < BEAT_FILL_MAX_EXTRA_CLIPS; extra++) {
+      const covered = beatDurations.slice(f.clipsBefore).reduce((sum, d) => sum + d, 0);
+      const rest = beatFillSecondsNeeded(f.beat.holdSec, covered);
+      if (rest <= 0 || !(remainingScopeMs() > BEAT_FILL_MIN_SCOPE_MS)) return;
+      let more: string | null = null;
+      try {
+        more = await withSceneFetchTimeout(
+          () => ownArchiveBeatClip({ ...f.beat, holdSec: rest }, scene, workDir, scene.index, dedup, videoTitle),
+          BEAT_FILL_FETCH_MS,
+          `scene ${scene.index} beat ${f.beat.index} fill`
+        );
+      } catch {
+        return;
+      }
+      if (!more || isPipelineFallbackClip(more)) return;
+      const clipPath = more;
+      const ok = await withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, rest, f.beat.index));
+      console.log(
+        `[BeatFill] s${scene.index}b${f.beat.index}: clips cover ${covered.toFixed(1)}s of ${f.beat.holdSec.toFixed(1)}s — ` +
+          `${ok ? "added" : "refused"} ${path.basename(more)} for the other ${rest.toFixed(1)}s`
+      );
+      if (!ok) return;
+    }
+  };
   try {
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi];
+    await fillBeatWithMoreClips();
+    fillFor = { beat, clipsBefore: beatDurations.length };
     closeBeatLadder?.();
     /**
      * The scene's own discovery is carried IN, not re-derived. The funnel and the pool really did
@@ -27019,6 +27252,7 @@ async function fetchSceneVisualsInner(
       }
     }
   }
+    await fillBeatWithMoreClips();
   } finally {
     /** The last beat's ladder, and any beat the loop left through a throw. */
     closeBeatLadder?.();
@@ -28160,6 +28394,7 @@ async function _runVideoPipelineInner(
       title: asVideoTitleString(videoTitle),
       sceneTexts: scenes.filter((s) => !s.isChapterCard).map((s) => s.text),
     });
+    visualDedup.mainSubject = mainSubject;
     const visualDeadlineMs = visualDeadlineForVideoMs(
       (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length,
       scenes.reduce((sum, s) => sum + (s.duration || 0), 0)

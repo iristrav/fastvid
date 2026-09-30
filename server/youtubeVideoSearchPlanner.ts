@@ -17,6 +17,8 @@
  * The gate is not relaxed — it is given the right evidence, and the planner is told why it refused.
  */
 
+import { isSentenceOpener } from "./sentenceOpeners";
+
 export type PlannerInput = {
   /** What the user asked for. The gate's own topic: its words prove themselves. */
   prompt: string;
@@ -136,7 +138,7 @@ export function analyzeVideo(input: PlannerInput): VideoAnalysis {
    */
   const notAName = (word: string): boolean => {
     const w = word.toLowerCase();
-    if (STOP.has(w) || OPENERS.has(w)) return true;
+    if (STOP.has(w) || OPENERS.has(w) || isSentenceOpener(w)) return true;
     return new RegExp(`(?<![\\p{L}])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "u").test(allText);
   };
   sentences.forEach((s, i) => {
