@@ -13635,6 +13635,31 @@ export function renderReadPeople(): readonly string[] | null {
   return renderPeopleReading;
 }
 
+/**
+ * VIDEO 624 — a capitalised name, as the render's reading of the narration knows it.
+ *
+ * "Uncover Musk's tales…" gave the capital-letter reader a person called "Uncover Musk": the
+ * imperative opening the sentence was taken for a first name, and "Uncover Musk" went to Unsplash,
+ * archive.org, Pexels and Pixabay, which answered with derelict factories. The reading had named one
+ * person, "Elon Musk". A name that shares a word with exactly one person the reading names is that
+ * person; a name that shares a word with none is not a person. For every name alike.
+ *
+ *   undefined  there is no reading this render — the capital-letter reader decides, as before
+ *   null       the reading names no such person
+ *   string     the person, spelled as the reading spells them
+ */
+export function personAsRead(name: string): string | null | undefined {
+  if (!renderPeopleReading) return undefined;
+  const lower = name.toLowerCase().replace(/['’]s$/, "").trim();
+  const exact = renderPeopleReading.find((r) => r.toLowerCase() === lower);
+  if (exact) return exact;
+  const words = lower.split(/\s+/).filter((w) => w.length >= 3 && !isNameParticleToken(w));
+  const sharing = renderPeopleReading.filter((r) => r.toLowerCase().split(/\s+/).some((w) => words.includes(w)));
+  if (sharing.length === 0) return null;
+  /** Two people share the word ("Musk" beside Elon and Kimbal): a person, but not which one. */
+  return sharing.length === 1 ? sharing[0] : name;
+}
+
 export async function resolvePrimaryPersonLockByReading(
   input: { prompt: string; videoTitle: string; topicContext: string; script: string },
   llm: (params: unknown) => Promise<unknown> = (p) => invokeLLM(p as Parameters<typeof invokeLLM>[0])
@@ -15960,7 +15985,15 @@ function resolveScenePersons(scene: Scene, videoTitle?: string, globalPrimaryPer
   const titlePerson =
     coercePersonName(globalPrimaryPerson) || extractPrimaryPersonFromTitle(coerceVisionString(videoTitle));
   if (titlePerson) persons.add(titlePerson);
-  return Array.from(persons);
+  /** VIDEO 624 — each name as the render's reading knows it; one the reading never names is dropped. */
+  const byLower = new Map<string, string>();
+  for (const name of persons) {
+    const read = name === titlePerson ? name : personAsRead(name);
+    if (read === null) continue;
+    const kept = read ?? name;
+    if (!byLower.has(kept.toLowerCase())) byLower.set(kept.toLowerCase(), kept);
+  }
+  return Array.from(byLower.values());
 }
 
 /**
@@ -17354,27 +17387,26 @@ export function namedEntityRules(text: string): RealEntityRule[] {
   };
   const rules: RealEntityRule[] = [];
   /**
-   * A person when the render's reading of the narration names them (or shares a word of their
-   * name with one it names — "Musk" beside "Elon Musk"); without a reading, the capital-letter
-   * reader decides, as before. A name the reading does not know stays a named thing.
+   * A person when the render's reading of the narration names them, spelled as it spells them
+   * ("Uncover Musk" beside "Elon Musk" is Elon Musk — see `personAsRead`); without a reading, the
+   * capital-letter reader decides, as before. A name the reading does not know stays a named thing.
    */
-  const read = renderPeopleReading?.map((n) => n.toLowerCase());
-  const isPerson = (name: string): boolean => {
-    if (!read) return true;
-    const words = name.toLowerCase().split(/\s+/).filter((w) => w.length >= 3 && !isNameParticleToken(w));
-    return read.some((r) => r === name.toLowerCase() || words.some((w) => r.split(/\s+/).includes(w)));
-  };
   const persons = extractPersonNamesFromText(clean);
+  const asRead: string[] = [];
   for (const name of persons) {
-    const r = ruleFor(name, isPerson(name) ? "person" : "object");
-    if (r) rules.push(r);
+    const read = personAsRead(name);
+    if (typeof read === "string") asRead.push(read);
+    const r = read === null ? ruleFor(name, "object") : ruleFor(read ?? name, "person");
+    if (r && !rules.some((x) => x.id === r.id)) rules.push(r);
   }
-  const personText = persons.join(" ").toLowerCase();
+  const personText = [...persons, ...asRead].join(" ").toLowerCase();
   for (const lower of beatSubjectCandidates(withSentenceStartsLowered(clean)).proper) {
     if (MONTH_NAMES.has(lower) || lower.split(/\s+/).some((w) => personText.includes(w))) continue;
     /** "Rome's ideas" names Rome: the possessive is grammar, not part of the name. */
     const written = clean.match(whole(lower))?.[0]?.replace(/['’]s$/i, "");
     if (!written) continue;
+    /** "Our Musk" is the person the reading names, not a thing called Musk. */
+    if (typeof personAsRead(written) === "string") continue;
     const words = written.split(/\s+/);
     if (words.every((w) => isPlaceToken(w))) continue;
     const r = ruleFor(written, "object");

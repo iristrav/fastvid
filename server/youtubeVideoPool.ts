@@ -27,7 +27,15 @@ import {
 } from "./youtubeVideoSearchPlanner";
 
 export type SearchItem = { videoId: string; title: string; description: string; channel: string; thumb: string };
-export type ItemDetails = { durationSec: number; embeddable: boolean; live: boolean };
+export type ItemDetails = {
+  durationSec: number;
+  embeddable: boolean;
+  live: boolean;
+  /** VIDEO 624 — YouTube's own title, description and channel, from the same videos.list call. */
+  title?: string;
+  description?: string;
+  channel?: string;
+};
 export type FootageType = "real_footage" | "archival_footage" | "talking_head" | "text_or_graphic" | "animation_or_game" | "other";
 export type Triage = { footageType: FootageType; servesBeats: number[]; depicts: string };
 
@@ -99,6 +107,24 @@ async function mapLimit<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): 
   return out;
 }
 
+/**
+ * VIDEO 624 — an archive item keeps the title the archive stored, and tnBQmEqBCY0 had none: the
+ * clip reached the beat with an empty title, the person check had no text to read, and the only
+ * fresh YouTube footage of the render was refused for `entity_evidence`. YouTube's own title,
+ * description and channel came back in the videos.list answer the pool already asked for; an empty
+ * or placeholder field is filled from it. A real title the item already carries is never replaced.
+ */
+export function withYoutubeOwnText(item: SearchItem, d: ItemDetails | null): SearchItem {
+  if (!d) return item;
+  const missing = (t: string | undefined) => !t?.trim() || /^YouTube [\w-]{11}$/.test(t.trim());
+  return {
+    ...item,
+    title: missing(item.title) && d.title?.trim() ? d.title.trim() : item.title,
+    description: !item.description?.trim() && d.description?.trim() ? d.description.trim() : item.description,
+    channel: (!item.channel?.trim() || item.channel === "archive") && d.channel?.trim() ? d.channel.trim() : item.channel,
+  };
+}
+
 /** Judge a set of items the same way, wherever they came from. */
 async function judge(
   deps: PoolDeps,
@@ -108,9 +134,10 @@ async function judge(
   title: string,
   sentences: string[]
 ): Promise<PoolCandidate[]> {
-  return mapLimit(items, deps.concurrency ?? 8, async (it) => {
+  return mapLimit(items, deps.concurrency ?? 8, async (item) => {
+    const d = details?.get(item.videoId) ?? null;
+    const it = withYoutubeOwnText(item, d);
     const genre = deps.notFootage(it.title);
-    const d = details?.get(it.videoId) ?? null;
     let why = "ok";
     /** Video 613 — a Short is never downloaded: by its hashtag, or by its measured length. */
     const short = youtubeResultIsShort(it.title, it.description, d?.durationSec ?? null);

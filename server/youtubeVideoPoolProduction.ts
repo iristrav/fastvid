@@ -166,13 +166,21 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
     console.log(`[YouTubeVideosList] video=${input.videoId} ids=${Math.min(ids.length, 50)} status=${resp.status} quotaUnits=1`);
     if (!resp.ok) return out;
     const data = (await resp.json()) as {
-      items?: Array<{ id: string; contentDetails?: { duration?: string }; status?: { embeddable?: boolean }; snippet?: { liveBroadcastContent?: string } }>;
+      items?: Array<{
+        id: string;
+        contentDetails?: { duration?: string };
+        status?: { embeddable?: boolean };
+        snippet?: { liveBroadcastContent?: string; title?: string; description?: string; channelTitle?: string };
+      }>;
     };
     for (const v of data.items ?? []) {
       out.set(v.id, {
         durationSec: isoDurationSec(v.contentDetails?.duration),
         embeddable: v.status?.embeddable !== false,
         live: (v.snippet?.liveBroadcastContent ?? "none") !== "none",
+        title: v.snippet?.title ?? "",
+        description: v.snippet?.description ?? "",
+        channel: v.snippet?.channelTitle ?? "",
       });
     }
     return out;
