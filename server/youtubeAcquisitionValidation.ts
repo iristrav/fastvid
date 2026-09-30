@@ -12,6 +12,7 @@
  *
  *   NO_VIDEO_STREAM     ffprobe found no video stream, or could not read the container
  *   INVALID_DIMENSIONS  a video stream with no width or height
+ *   VERTICAL_SHORT      taller than wide — the YouTube Short format, never used
  *   DURATION_TOO_SHORT  shorter than half of what was asked for (a stub, a truncated transfer)
  *   CORRUPT_FILE        the container reads but no frame decodes
  *
@@ -23,7 +24,7 @@ export type AcquiredFileVerdict =
   | { ok: true; width: number; height: number; durationSec: number }
   | {
       ok: false;
-      code: "NO_VIDEO_STREAM" | "INVALID_DIMENSIONS" | "DURATION_TOO_SHORT" | "CORRUPT_FILE";
+      code: "NO_VIDEO_STREAM" | "INVALID_DIMENSIONS" | "VERTICAL_SHORT" | "DURATION_TOO_SHORT" | "CORRUPT_FILE";
       detail: string;
     };
 
@@ -42,6 +43,13 @@ export function judgeAcquiredFile(p: {
   const { width, height, durationSec } = p.meta;
   if (!(width > 0) || !(height > 0)) {
     return { ok: false, code: "INVALID_DIMENSIONS", detail: `${width}x${height}` };
+  }
+  /**
+   * VIDEO 624 — "Er mogen nooit shorts gedownload worden." Taller than wide is the Short format;
+   * such a file is never handed to a beat, whatever its title or length said.
+   */
+  if (height > width) {
+    return { ok: false, code: "VERTICAL_SHORT", detail: `${width}x${height} — the Short format` };
   }
   const floor = minimumAcquiredDurationSec(p.requestedSec);
   if (!(durationSec >= floor)) {

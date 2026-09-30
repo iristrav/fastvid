@@ -25,6 +25,7 @@ import {
   youtubeFragmentKeyFor,
   youtubeFragmentFileTag,
   capYoutubeClipDurationForTest,
+  setYoutubeLengthLookupForTests,
 } from "./videoPipeline";
 import { notePermanentDownloadRefusal, permanentDownloadRefusal, resetPermanentDownloadRefusals } from "./providerFailureClass";
 import {
@@ -69,6 +70,8 @@ describe("A/B. a refused YouTube fragment is not downloaded again; the next cand
     process.env = { ...ORIGINAL_ENV };
     process.env.ENABLE_YOUTUBE_SOURCING = "true";
     process.env.YOUTUBE_API_KEY = "v616-test-key";
+    /** VIDEO 624 — the download's Shorts check reads a length; these are long films. */
+    setYoutubeLengthLookupForTests(async () => 600);
     process.env.YOUTUBE_CC_DL_SERVICE = "https://v616-cloud.example.com";
     process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";
     process.env.YOUTUBE_SEARCH_MODE = "per_beat";
@@ -79,6 +82,7 @@ describe("A/B. a refused YouTube fragment is not downloaded again; the next cand
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
   afterEach(() => {
+    setYoutubeLengthLookupForTests(null);
     process.env = { ...ORIGINAL_ENV };
     vi.restoreAllMocks();
   });

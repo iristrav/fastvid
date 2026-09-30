@@ -11,7 +11,7 @@
  */
 import type { PoolDeps, SearchItem, ItemDetails, Triage } from "./youtubeVideoPool";
 import type { PlannerInput } from "./youtubeVideoSearchPlanner";
-import { isoDurationSec } from "./youtubeVideoDuration";
+import { isoDurationSec, rememberYoutubeVideoDurationSec } from "./youtubeVideoDuration";
 
 const TRIAGE_SCHEMA = {
   type: "json_schema" as const,
@@ -174,6 +174,7 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
       }>;
     };
     for (const v of data.items ?? []) {
+      rememberYoutubeVideoDurationSec(v.id, isoDurationSec(v.contentDetails?.duration));
       out.set(v.id, {
         durationSec: isoDurationSec(v.contentDetails?.duration),
         embeddable: v.status?.embeddable !== false,

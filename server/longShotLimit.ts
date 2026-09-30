@@ -16,6 +16,14 @@
  * Pure. The span the clips cover is unchanged, so the narration, the captions and the scene offsets
  * are untouched. Piece ids follow RONDE 647's `_pN`, so `lostEditorialIntent` reads a split shot as
  * one decision.
+ *
+ * VIDEO 624 — A PIECE NEVER RUNS PAST THE SOURCE IT WAS GIVEN. A 3.4 s archive shot was held for
+ * 24 s and cut into five pieces of 4.8 s whose in-points ran 4.8, 9.6, 14.4 s into a file that
+ * ended at 3.4 s: the renderer showed a frozen frame and jumped, and the cut check found picture
+ * changes inside shots at exactly those moments. The planner's own window — `sourceIn` to
+ * `sourceOut`, which it never sets past the file — is now the stretch the pieces come from: a
+ * shot on screen longer than that window is cut into pieces no longer than it, and a piece that
+ * would run past its end starts again at the window's beginning, with its own camera move.
  */
 import type { ClipCamera, TimelineVideoClip } from "./projectTimeline";
 
@@ -48,21 +56,33 @@ export function limitLongShots(params: {
   const out: TimelineVideoClip[] = [];
   for (const clip of params.clips) {
     const dur = clip.timelineEnd - clip.timelineStart;
+    const inSec = clip.sourceIn ?? 0;
+    /** The stretch of source the planner chose; null when it did not say where it ends. */
+    const window =
+      clip.kind === "video" && clip.sourceOut != null && clip.sourceOut - inSec > EPS ? clip.sourceOut - inSec : null;
+    const pastItsSource = window != null && dur > window + EPS;
     /** A shot the user edited is theirs; a piece an earlier rule cut is already short. */
-    if (clip.disabled || clip.editedByUser || dur <= maxSec + EPS) {
+    if (clip.disabled || clip.editedByUser || (dur <= maxSec + EPS && !pastItsSource)) {
       out.push(clip);
       continue;
     }
-    const count = Math.max(2, Math.ceil(dur / maxSec - EPS));
+    const count = Math.max(2, Math.ceil(dur / maxSec - EPS), window != null ? Math.ceil(dur / window - EPS) : 0);
     const len = dur / count;
     adjustedIds.push(clip.id);
-    notes.push(`${clip.id}: ${dur.toFixed(2)}s on screen → ${count} pieces of ${len.toFixed(2)}s, each moving`);
-    const inSec = clip.sourceIn ?? 0;
+    notes.push(
+      `${clip.id}: ${dur.toFixed(2)}s on screen → ${count} pieces of ${len.toFixed(2)}s, each moving` +
+        (pastItsSource ? ` — its source holds ${window!.toFixed(2)}s, and no piece runs past it` : "")
+    );
     let at = clip.timelineStart;
     for (let k = 0; k < count; k++) {
       const last = k === count - 1;
       const end = last ? clip.timelineEnd : round(at + len);
-      const pieceIn = round(inSec + k * len);
+      let offset = k * len;
+      if (window != null) {
+        offset %= window;
+        if (offset + (end - at) > window + EPS) offset = 0;
+      }
+      const pieceIn = round(inSec + offset);
       const piece: TimelineVideoClip = {
         ...clip,
         id: `${clip.id}_p${k + 1}`,

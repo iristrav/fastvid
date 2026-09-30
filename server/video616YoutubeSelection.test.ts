@@ -29,6 +29,7 @@ import {
   youtubeFragmentKeyFor,
   capYoutubeClipDurationForTest,
   YOUTUBE_ALT_START_MIN_GAP_SEC,
+  setYoutubeLengthLookupForTests,
 } from "./videoPipeline";
 import { pickLongVideoStartSec } from "./beatSegmentChoice";
 import { noteYoutubeFragmentRefusal, youtubeFragmentRefusal, resetPermanentDownloadRefusals } from "./providerFailureClass";
@@ -214,6 +215,8 @@ describe("Fix 2/3. one other window after a black fragment; the pool's length fi
     process.env = { ...ORIGINAL_ENV };
     process.env.ENABLE_YOUTUBE_SOURCING = "true";
     process.env.YOUTUBE_API_KEY = "v616b-test-key";
+    /** VIDEO 624 — the download's Shorts check reads a length; these are long films. */
+    setYoutubeLengthLookupForTests(async () => LENGTH);
     process.env.YOUTUBE_CC_DL_SERVICE = "https://v616b-cloud.example.com";
     process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";
     delete process.env.YOUTUBE_SEARCH_MODE;
@@ -232,6 +235,7 @@ describe("Fix 2/3. one other window after a black fragment; the pool's length fi
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(() => {
+    setYoutubeLengthLookupForTests(null);
     releaseVideoYoutubePool(RENDER);
     process.env = { ...ORIGINAL_ENV };
     vi.restoreAllMocks();

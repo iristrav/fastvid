@@ -198,7 +198,9 @@ describe("the [Graphics] line", () => {
     const src = fs.readFileSync(path.join(__dirname, "cinematicPipeline.ts"), "utf8");
     const at = src.indexOf("export function formatCinematicGraphics");
     const body = src.slice(at, at + 1400);
-    expect(body).toContain("graphics.map((g) => graphicRendererClass(");
+    /** VIDEO 624 — per graphic that will be drawn: one switched off is not. */
+    expect(body).toContain(".filter((g) => !g.disabled)");
+    expect(body).toContain(".map((g) => graphicRendererClass(");
     expect(body).toContain("const rendered = explicitRendered + genericRendered;");
   });
 });

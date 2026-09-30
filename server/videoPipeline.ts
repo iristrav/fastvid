@@ -147,6 +147,7 @@ import {
   
   noteEligible as noteBeatShortlistEligible,
   noteNotAsked,
+  noteJudgedAtPush,
   noteRanked,
   noteRetrieved,
   noteVisionAsked,
@@ -331,6 +332,8 @@ import { describeOnScreenTextPolicy } from "./onScreenTextPolicy";
 import { ARTICLE_FILE_MARKER, ARTICLE_SCREENSHOTS_PER_VIDEO, chooseArticle, newsResultsFrom, takeArticleScreenshot, type NewsResult } from "./articleScreenshot";
 import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
 import { isNameParticleToken } from "./searchQueryContract";
+import { knownYoutubeVideoDurationSec, rememberYoutubeVideoDurationSec } from "./youtubeVideoDuration";
+import { LEFT_TO_EDITOR } from "./onScreenTextDirector";
 import { sceneSearchBudgetMs } from "./sceneSearchBudget";
 import {
   formatYoutubeLicenseLine,
@@ -11089,6 +11092,39 @@ async function stockShotToBeatFile(shot: StockShot, durationSec: number, outPath
   }
 }
 
+/** VIDEO 624 — videos whose file arrived taller than wide: never asked for again by this process. */
+const youtubeUprightVideos = new Set<string>();
+
+/**
+ * VIDEO 624 — why a YouTube video may not be downloaded as a possible Short, or null.
+ *
+ * The length comes from the YouTube Data API (one unit, remembered; the pool's own videos.list
+ * fills the same memory). With no API key there is nothing to measure against and this answers on
+ * the title alone — the upright-frame check on the file still applies.
+ */
+let youtubeLengthLookupForTests: ((id: string) => Promise<number>) | null = null;
+/** Tests never reach the network: a test that downloads says how long its videos are. */
+export function setYoutubeLengthLookupForTests(lookup: ((id: string) => Promise<number>) | null): void {
+  youtubeLengthLookupForTests = lookup;
+}
+
+export async function youtubeShortAtTheDoor(
+  videoId: string,
+  title: string | undefined,
+  lengthSec: (id: string) => Promise<number> = youtubeLengthLookupForTests ??
+    (process.env.VITEST
+      ? async (id) => knownYoutubeVideoDurationSec(id)
+      : async (id) => (await import("./youtubeVideoDuration")).youtubeVideoDurationSec(id))
+): Promise<string | null> {
+  const byTitle = youtubeResultIsShort(title, null, null);
+  if (byTitle) return byTitle;
+  if (youtubeUprightVideos.has(videoId)) return "an upright frame — the Short format";
+  if (!process.env.YOUTUBE_API_KEY?.trim()) return null;
+  const sec = await lengthSec(videoId).catch(() => 0);
+  if (!(sec > 0)) return "length unknown — may be a Short";
+  return youtubeResultIsShort(title, null, sec);
+}
+
 export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
@@ -11298,6 +11334,23 @@ export async function downloadYouTubeCCClip(
       if (youtubeTransfersByFile.get(outPath)?.done === done) youtubeTransfersByFile.delete(outPath);
       await kept;
     }
+  }
+
+  /**
+   * VIDEO 624 — "ER MOGEN NOOIT SHORTS GEDOWNLOAD WORDEN."
+   *
+   * Every YouTube download of every route — the beats, the stock shots, the background fetch, a
+   * re-render — reaches this line before a byte moves. The pool and the background fetch already
+   * measured the length; a sentence searching YouTube for itself checked only the hashtag. Here
+   * the question is asked once for all of them: a Shorts hashtag, a length of three minutes or
+   * less, or a length YouTube would not give, and nothing is downloaded. The file itself is
+   * checked for the Short's upright frame once it arrives (`judgeAcquiredFile`).
+   */
+  const shortAtTheDoor = await youtubeShortAtTheDoor(videoId, title);
+  if (shortAtTheDoor) {
+    console.warn(`[YouTubeNotFootage] video=${videoId} ${shortAtTheDoor} — never downloaded`);
+    reportDownload("DOWNLOAD_FAILED", `youtube_short:${shortAtTheDoor}`);
+    return false;
   }
 
   // F3-41: cloud/yt-dlp service tried FIRST — this is the intended primary route (see the F3-40
@@ -11606,6 +11659,7 @@ export async function downloadYouTubeCCClip(
             `[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(cloudFileSize / 1024 / 1024).toFixed(1)}MB), skipping cloud service — falling back to RapidAPI`
           );
         } else if (cloudVerdict && !cloudVerdict.ok) {
+          if (cloudVerdict.code === "VERTICAL_SHORT") youtubeUprightVideos.add(videoId);
           note("cloud", "DOWNLOAD_INVALID_CONTENT", `${cloudVerdict.code}:${cloudVerdict.detail}`);
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: Cloud DL delivered ${cloudFileSize} bytes for ${videoId} ` +
@@ -12947,6 +13001,8 @@ export async function fetchYouTubeCCClips(
              * neither, `pickLongVideoStartSec`'s fallback picks the start.
              */
             const poolDurationSec = row.durationSec && row.durationSec > 0 ? row.durationSec : 0;
+            /** VIDEO 624 — the length the pool measured is the one the download's Shorts check reads. */
+            rememberYoutubeVideoDurationSec(videoId, poolDurationSec);
             const sourceDurationSec = poolDurationSec || peekYoutubeVideoContext(videoId)?.durationSec || 0;
             // The old flat 15 was applied to every candidate past the guided-attempt limit —
             // second 15 of a forty-minute documentary is its intro.
@@ -16716,6 +16772,8 @@ export interface VisualDedupState {
    */
   movingClipCount: number;
   stillClipCount: number;
+  /** VIDEO 624 — content keys already in the two counts above, so no clip is counted twice. */
+  mixCountedKeys?: Set<string>;
   /**
    * RONDE 180 — every asset this VIDEO has already adopted, so a repeat can be penalised.
    *
@@ -21440,8 +21498,7 @@ async function adoptClip(
       // RONDE 29: count the moving/still split as it happens. Classified with the file's own
       // existing classifiers rather than the extension — by this point every adopted path is an
       // mp4, including the ones that are a photograph panned with Ken Burns.
-      if (isStillPhotoClip(p) || isCuratedPreparedStillClip(p)) dedup.stillClipCount++;
-      else if (isRealVideoFootageClip(p)) dedup.movingClipCount++;
+      countClipInMix(dedup, p, contentKey);
       // RONDE 28: this is the moment we know a source WORKED — the provider, the query that
       // found it, and the score the gate gave it. Recording here rather than at archive
       // ingestion is the difference between remembering a couple of clips per render and
@@ -25149,6 +25206,35 @@ function recordArchivePushRefusal(
 }
 
 /** The editorial gate exactly as it was — see `beatClipRefusedByRelevanceGate` above. */
+/** RONDE 29 — the moving/still split, counted once per clip whichever route put it in the film. */
+function countClipInMix(
+  dedup: Pick<VisualDedupState, "movingClipCount" | "stillClipCount" | "mixCountedKeys">,
+  clipPath: string,
+  contentKey: string
+): void {
+  const counted = (dedup.mixCountedKeys ??= new Set<string>());
+  if (counted.has(contentKey)) return;
+  counted.add(contentKey);
+  if (isStillPhotoClip(clipPath) || isCuratedPreparedStillClip(clipPath)) dedup.stillClipCount++;
+  else if (isRealVideoFootageClip(clipPath)) dedup.movingClipCount++;
+}
+
+/**
+ * VIDEO 624 — A PICTURE PUT INTO THE FILM IS AN ADOPTED PICTURE, WHICHEVER ROUTE BROUGHT IT.
+ *
+ * The own-archive routes push a clip straight into its scene; only `adoptClip` wrote ADOPTED and
+ * counted the mix. Render 624 delivered six archive clips and reported "visual mix — no clips
+ * adopted", "rendered=6 exceeds assigned=0" and `DOWNLOADED_ASSET_NEVER_JUDGED` for a clip the
+ * editor had approved. A clip whose record has no ADOPTED yet gets it here, at the push.
+ */
+function notePushedIntoFilm(dedup: VisualDedupState, clipPath: string, contentKey: string): void {
+  countClipInMix(dedup, clipPath, contentKey);
+  const lineage = dedup.sourcingCache?.lineage;
+  const record = lineage?.resolve(clipPath, contentKey);
+  if (!lineage || !record || lineage.hasStage(record.lineageId, "ADOPTED")) return;
+  lineage.recordEvent(record.lineageId, "ADOPTED", { status: "OK", currentPath: clipPath, reason: "pushed_into_scene" });
+}
+
 async function relevanceGateRefusesClip(
   dedup: VisualDedupState,
   clipPath: string,
@@ -25196,6 +25282,8 @@ async function relevanceGateRefusesClip(
       finalSay: true,
     });
     lastLook = ensured.outcome;
+    /** VIDEO 624 — a look taken here is a look, not a picture taken without one. */
+    if (ensured.outcome === "judged") noteJudgedAtPush(dedup.beatShortlist, sceneIndex, beatIndex);
   }
   const contentKey = clipContentKey(clipPath);
   /**
@@ -26710,6 +26798,7 @@ async function fetchSceneVisualsInner(
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
+    notePushedIntoFilm(dedup, clipPath, key);
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
     
     if (
@@ -26771,8 +26860,18 @@ async function fetchSceneVisualsInner(
     const f = fillFor;
     fillFor = null;
     if (!f) return;
-    const pushed = beatDurations.slice(f.clipsBefore);
-    if (pushed.length === 0) return;
+    /**
+     * VIDEO 624 — and a sentence that found NOTHING is asked for too. Four of scene 1's six
+     * sentences ended with no clip, this fill skipped them for having nothing to add to, and the
+     * timeline held one 3.4 s shot for 24 s. Its own search is spent; the own archive is asked on
+     * the video's main subject, the picture editor judging the result against the sentence itself.
+     */
+    const found = beatDurations.slice(f.clipsBefore).length > 0;
+    const subject = found ? null : mainSubject;
+    if (!found && !subject) return;
+    const asked: SceneBeat = subject
+      ? { ...f.beat, searchQuery: subject, powerWord: subject, keywords: [subject], visualDescription: undefined }
+      : f.beat;
     for (let extra = 0; extra < BEAT_FILL_MAX_EXTRA_CLIPS; extra++) {
       const covered = beatDurations.slice(f.clipsBefore).reduce((sum, d) => sum + d, 0);
       const rest = beatFillSecondsNeeded(f.beat.holdSec, covered);
@@ -26780,7 +26879,7 @@ async function fetchSceneVisualsInner(
       let more: string | null = null;
       try {
         more = await withSceneFetchTimeout(
-          () => ownArchiveBeatClip({ ...f.beat, holdSec: rest }, scene, workDir, scene.index, dedup, videoTitle),
+          () => ownArchiveBeatClip({ ...asked, holdSec: rest }, scene, workDir, scene.index, dedup, videoTitle),
           BEAT_FILL_FETCH_MS,
           `scene ${scene.index} beat ${f.beat.index} fill`
         );
@@ -26792,7 +26891,8 @@ async function fetchSceneVisualsInner(
       const ok = await withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, rest, f.beat.index));
       console.log(
         `[BeatFill] s${scene.index}b${f.beat.index}: clips cover ${covered.toFixed(1)}s of ${f.beat.holdSec.toFixed(1)}s — ` +
-          `${ok ? "added" : "refused"} ${path.basename(more)} for the other ${rest.toFixed(1)}s`
+          `${ok ? "added" : "refused"} ${path.basename(more)} for the other ${rest.toFixed(1)}s` +
+          (subject ? ` (the sentence found nothing; asked on "${subject}")` : "")
       );
       if (!ok) return;
     }
@@ -27622,7 +27722,20 @@ async function _runVideoPipelineInner(
     // ── Stage 3: Per-zin visuals (power word → clip) ─────────────────────────
     onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
     const t2 = Date.now();
-    get_activeBudgetTracker()?.stageStart("retrieval", (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length);
+    /**
+     * VIDEO 624 — the yardstick is the clock the pipeline itself keeps. The picture stage runs to
+     * `visualDeadlineForVideoMs` (which is never less than the per-scene figure and grows with the
+     * film's length) and a scene that found nothing gets `EMPTY_SCENE_RESCUE_MIN_MS` more. Render
+     * 624 was measured against the per-scene figure alone — 165 s against its own 180 s deadline —
+     * and reported "OVER +1m" for a stage that stayed inside every limit it had.
+     */
+    get_activeBudgetTracker()?.stageStart(
+      "retrieval",
+      visualDeadlineForVideoMs(
+        (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length,
+        scenes.reduce((sum, s) => sum + (s.duration || 0), 0)
+      ) + EMPTY_SCENE_RESCUE_MIN_MS
+    );
     {
       const hasRealOrAi =
         youtubeCcReady() ||
@@ -28598,7 +28711,12 @@ async function _runVideoPipelineInner(
       }
       const share = computeScreenTimeShare(delivered);
       const findings = screenTimeFindings(share, {}, delivered);
-      const line = formatScreenTimeShare(share, findings);
+      /**
+       * VIDEO 624 — these are the clip FILES, before the edit held any of them: 624 read
+       * "total=28.8s" for a 64-second film. The film's own seconds are measured again on the
+       * delivered timeline (see `[ScreenTime] timeline`).
+       */
+      const line = `${formatScreenTimeShare(share, findings)} (clip files, before the edit)`;
       if (findings.length > 0) console.warn(line);
       else console.log(line);
       for (const f of findings) {
@@ -30118,6 +30236,8 @@ async function _runVideoPipelineInner(
        */
       captionsOnTimeline: 0,
       graphicsOnTimeline: 0,
+      graphicsPlanned: 0,
+      textLeftToEditor: 0,
       ambientClipsOnTimeline: 0,
       sfxClipsOnTimeline: 0,
       musicClipsOnTimeline: 0,
@@ -30491,8 +30611,17 @@ async function _runVideoPipelineInner(
            */
           try {
             const t = outcome.timeline;
-            cinematicProgress.captionsOnTimeline = captionTrack(t).length;
-            cinematicProgress.graphicsOnTimeline = graphicsTrack(t).length;
+            /**
+             * VIDEO 624 — what will PLAY: an element switched off for the editor is on the document
+             * and not in the film. 624 counted three switched-off graphics as executed and the
+             * matrix reported `graphics EXECUTED_WITHOUT_PLAN`.
+             */
+            cinematicProgress.captionsOnTimeline = captionTrack(t).filter((c) => !c.disabled).length;
+            cinematicProgress.graphicsOnTimeline = graphicsTrack(t).filter((g) => !g.disabled).length;
+            cinematicProgress.graphicsPlanned = graphicsTrack(t).length;
+            cinematicProgress.textLeftToEditor = [...captionTrack(t), ...graphicsTrack(t)].filter(
+              (x) => x.disabled && x.disabledReason === LEFT_TO_EDITOR
+            ).length;
             cinematicProgress.ambientClipsOnTimeline = audioTrackOf(t, "AMBIENT").length;
             cinematicProgress.sfxClipsOnTimeline = audioTrackOf(t, "SFX").length;
             cinematicProgress.musicClipsOnTimeline = audioTrackOf(t, "MUSIC").length;
@@ -31157,8 +31286,9 @@ async function _runVideoPipelineInner(
         cinematicRendered: cinematicProgress.rendered,
         captionsEnabled: enableSubtitles,
         captionsPlanned: enableSubtitles ? allBeats.length : 0,
-        graphicsEnabled: visualDedup.graphicClips.size > 0,
-        graphicsPlanned: visualDedup.graphicClips.size,
+        /** VIDEO 624 — the graphics the cinematic plan wrote, not the compose route's old tally. */
+        graphicsEnabled: visualDedup.graphicClips.size > 0 || cinematicProgress.graphicsPlanned > 0,
+        graphicsPlanned: Math.max(visualDedup.graphicClips.size, cinematicProgress.graphicsPlanned),
         /**
          * RONDE 661 — read off the delivered timeline: every join into a clip that is not a hard
          * cut. The compose montage's own tally went with the compose route.
@@ -31187,6 +31317,7 @@ async function _runVideoPipelineInner(
           assetsInFinalVideo,
           captionsOnTimeline: cinematicProgress.captionsOnTimeline,
           graphicsOnTimeline: cinematicProgress.graphicsOnTimeline,
+          textLeftToEditor: cinematicProgress.textLeftToEditor,
           ambientClipsOnTimeline: cinematicProgress.ambientClipsOnTimeline,
           sfxClipsOnTimeline: cinematicProgress.sfxClipsOnTimeline,
           musicClipsOnTimeline: cinematicProgress.musicClipsOnTimeline,
@@ -31272,6 +31403,37 @@ async function _runVideoPipelineInner(
           if (row) origins.set(id, { sourcePlatform: row.sourcePlatform ?? null, sourceUrl: row.sourceUrl ?? null });
         }
         footage = youtubeFootageInTimeline(measured.clips, origins, measured.basis);
+        /**
+         * VIDEO 624 — WHAT THE VIEWER SPENDS THE FILM LOOKING AT, ON THE TIMELINE THAT WAS RENDERED.
+         *
+         * The screen-time line before the edit measures clip files; 624's said 28.8 s of a 64 s
+         * film, because a held shot is on screen far longer than its file. Here every clip counts
+         * for the seconds it is on the timeline, its pieces as the same footage.
+         */
+        if (delivered) {
+          const onTimeline: DeliveredClip[] = measured.clips
+            .filter((c) => !c.disabled)
+            .map((c) => {
+              const src = c.source;
+              const identity =
+                src?.archiveAssetId != null
+                  ? `archive:${src.archiveAssetId}`
+                  : src?.providerAssetId
+                    ? `${src.provider}:${src.providerAssetId}`
+                    : null;
+              return {
+                path: c.id.replace(/_p\d+$/, ""),
+                source: src?.provider ?? null,
+                contentKey: identity,
+                durationSec: Math.max(0, c.timelineEnd - c.timelineStart),
+              };
+            });
+          const filmShare = computeScreenTimeShare(onTimeline);
+          const filmFindings = screenTimeFindings(filmShare, {}, onTimeline);
+          const filmLine = formatScreenTimeShare(filmShare, filmFindings).replace("[ScreenTime]", "[ScreenTime] timeline");
+          if (filmFindings.length > 0) console.warn(filmLine);
+          else console.log(filmLine);
+        }
       }
       const lineage = visualDedup.sourcingCache?.lineage;
       /**

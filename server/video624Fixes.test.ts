@@ -7,13 +7,37 @@
  *   2  "Uncover Musk's tales…" gave the capital-letter reader a person called "Uncover Musk", and
  *      "Uncover Musk" went to Unsplash, archive.org, Pexels and Pixabay. The render's reading of the
  *      narration had named one person, Elon Musk. Every capitalised name is now read against it.
+ *   3  "Er mogen nooit shorts gedownload worden." Every download asks, before a byte moves, whether
+ *      the video may be a Short; the file that arrives is refused when it stands upright.
+ *   4  A 3.4 s archive shot held for 24 s was cut into pieces whose in-points ran past the end of
+ *      the file: frozen frames, and picture changes inside shots at those moments. No piece runs
+ *      past its source now, and a sentence that found nothing is filled from the own archive.
+ *   5  The reports contradicted the film: "no clips adopted", "rendered=6 exceeds assigned=0",
+ *      "never judged" for an approved clip, "adopted without judgement" for judged pictures, and
+ *      a screen time of 28.8 s for a 64 s film.
+ *   6  The made video carries no text (video 619): its captions and graphics are switched off for
+ *      the editor. The feature matrix called that `graphics EXECUTED_WITHOUT_PLAN`.
+ *   7  Retrieval was measured against 165 s while the pipeline's own picture deadline was 180 s
+ *      plus up to 60 s for a scene that found nothing: "OVER +1m" on a stage inside every limit.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
 import { memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
 import { buildVideoYoutubePool, withYoutubeOwnText, type PoolDeps, type SearchItem } from "./youtubeVideoPool";
-import { extractBeatRealEntities, personAsRead, setRenderPeopleReadingForTests } from "./videoPipeline";
+import {
+  EMPTY_SCENE_RESCUE_MIN_MS,
+  extractBeatRealEntities,
+  personAsRead,
+  setRenderPeopleReadingForTests,
+  visualDeadlineForVideoMs,
+  youtubeShortAtTheDoor,
+} from "./videoPipeline";
+import { judgeAcquiredFile } from "./youtubeAcquisitionValidation";
+import { limitLongShots } from "./longShotLimit";
+import { buildRenderFeatureMatrix, featureMatrixViolations, type RenderFeatureFacts } from "./renderContract";
+import { createBeatShortlistState, formatBeatShortlists, noteJudgedAtPush, noteNotAsked, beatFunnel } from "./beatShortlist";
+import type { TimelineVideoClip } from "./projectTimeline";
 
 const TITLE = "How Elon Musk shapes the news";
 const input = {
@@ -104,5 +128,177 @@ describe("2. a capitalised name is the person the reading names", () => {
     const body = src.slice(src.indexOf("function resolveScenePersons("), src.indexOf("function resolveScenePersons(") + 1400);
     expect(body).toContain("personAsRead(name)");
     expect(body).toMatch(/if \(read === null\) continue;/);
+  });
+});
+
+describe("3. never a Short", () => {
+  const KEY = process.env.YOUTUBE_API_KEY;
+  afterEach(() => {
+    if (KEY === undefined) delete process.env.YOUTUBE_API_KEY;
+    else process.env.YOUTUBE_API_KEY = KEY;
+  });
+  const long = async () => 600;
+
+  it("a hashtag, three minutes or less, or an unknown length: not downloaded", async () => {
+    process.env.YOUTUBE_API_KEY = "test-key";
+    expect(await youtubeShortAtTheDoor("aaaaaaaaaaa", "Crazy moment #shorts", long)).toMatch(/hashtag/);
+    expect(await youtubeShortAtTheDoor("bbbbbbbbbbb", "A clip", async () => 45)).toMatch(/Short length/);
+    expect(await youtubeShortAtTheDoor("ccccccccccc", "A clip", async () => 180)).toMatch(/Short length/);
+    expect(await youtubeShortAtTheDoor("ddddddddddd", "A clip", async () => 0)).toMatch(/length unknown/);
+    expect(await youtubeShortAtTheDoor("eeeeeeeeeee", "A clip", async () => { throw new Error("quota"); })).toMatch(/length unknown/);
+    expect(await youtubeShortAtTheDoor("fffffffffff", "A full documentary", long)).toBeNull();
+  });
+
+  it("an upright file is refused whatever its title and length said", () => {
+    const v = judgeAcquiredFile({ meta: { width: 1080, height: 1920, durationSec: 6 }, requestedSec: 6, frameDecoded: true });
+    expect(v.ok).toBe(false);
+    expect(!v.ok && v.code).toBe("VERTICAL_SHORT");
+    expect(judgeAcquiredFile({ meta: { width: 1920, height: 1080, durationSec: 6 }, requestedSec: 6, frameDecoded: true }).ok).toBe(true);
+  });
+
+  it("the check stands at the one door every YouTube download passes, before the transfer", () => {
+    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    const fn = src.indexOf("export async function downloadYouTubeCCClip(");
+    const door = src.indexOf("const shortAtTheDoor = await youtubeShortAtTheDoor(videoId, title);", fn);
+    const transfer = src.indexOf("const cloudVerdict =", fn);
+    expect(fn).toBeGreaterThan(0);
+    expect(door).toBeGreaterThan(fn);
+    expect(transfer).toBeGreaterThan(door);
+    /** The background fetch downloads through the same function. */
+    expect(fs.readFileSync(path.join(__dirname, "youtubePrefetch.ts"), "utf8")).toContain("pipeline.downloadYouTubeCCClip(");
+    /** The pool's measured lengths feed the same memory, so the door costs no extra request for them. */
+    expect(fs.readFileSync(path.join(__dirname, "youtubeVideoPoolProduction.ts"), "utf8")).toContain("rememberYoutubeVideoDurationSec(v.id");
+  });
+});
+
+describe("4. no piece runs past its source; an empty sentence is filled", () => {
+  const clip = (id: string, start: number, end: number, sourceIn: number, sourceOut: number): TimelineVideoClip =>
+    ({
+      id, kind: "video", source: { provider: "archive", archiveAssetId: 58089 },
+      sourceIn, sourceOut, timelineStart: start, timelineEnd: end,
+      motion: "none", transitionIn: "hard_cut", transitionOut: "hard_cut", sceneIndex: 1,
+    }) as TimelineVideoClip;
+
+  it("video 624: 3.4 s of source held for 24 s — every piece lies inside those 3.4 s", () => {
+    const { clips } = limitLongShots({ clips: [clip("vc_38d6214afb", 23.95, 47.99, 0, 3.4)] });
+    expect(clips.length).toBeGreaterThanOrEqual(Math.ceil(24.04 / 3.4));
+    for (const c of clips) {
+      expect(c.sourceIn!).toBeGreaterThanOrEqual(0);
+      expect(c.sourceOut!).toBeLessThanOrEqual(3.4 + 0.001);
+      expect(c.timelineEnd - c.timelineStart).toBeLessThanOrEqual(3.4 + 0.001);
+      expect(c.camera).toBeTruthy();
+    }
+    expect(clips[0]!.timelineStart).toBe(23.95);
+    expect(clips.at(-1)!.timelineEnd).toBe(47.99);
+    for (let i = 1; i < clips.length; i++) expect(clips[i]!.timelineStart).toBe(clips[i - 1]!.timelineEnd);
+  });
+
+  it("a shot under six seconds is still cut when it outlasts its source", () => {
+    const { clips } = limitLongShots({ clips: [clip("vc_58470", 4.97, 11.51, 0, 4)] });
+    expect(clips.length).toBe(2);
+    for (const c of clips) expect(c.sourceOut!).toBeLessThanOrEqual(4 + 0.001);
+  });
+
+  it("a shot whose source covers it is untouched", () => {
+    const input = [clip("fits", 0, 5, 1, 6)];
+    expect(limitLongShots({ clips: input }).clips).toEqual(input);
+  });
+
+  it("the fill asks for a sentence that found nothing, on the main subject", () => {
+    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    const body = src.slice(src.indexOf("const fillBeatWithMoreClips = async"), src.indexOf("const fillBeatWithMoreClips = async") + 2600);
+    expect(body).not.toContain("if (pushed.length === 0) return;");
+    expect(body).toContain("const subject = found ? null : mainSubject;");
+    expect(body).toContain("ownArchiveBeatClip({ ...asked, holdSec: rest }");
+  });
+});
+
+describe("5. the reports say what the film did", () => {
+  it("a picture judged as it is put into the film retracts 'adopted without judgement'", () => {
+    const state = createBeatShortlistState();
+    noteNotAsked(state, 1, 0, "ADOPTED_WITHOUT_JUDGEMENT");
+    noteJudgedAtPush(state, 1, 0);
+    const f = beatFunnel(state, 1, 0);
+    expect(f.notAsked).toBe(0);
+    expect(f.notAskedReasons.has("ADOPTED_WITHOUT_JUDGEMENT")).toBe(false);
+    expect(f.judgedAtPush).toBe(1);
+    const lines = formatBeatShortlists(state);
+    expect(lines.some((l) => l.includes("s1b0") && l.includes("judgedAtPush=1"))).toBe(true);
+    expect(lines.join("\n")).not.toContain("ADOPTED_WITHOUT_JUDGEMENT");
+  });
+
+  it("another reason is never retracted by a look", () => {
+    const state = createBeatShortlistState();
+    noteNotAsked(state, 0, 2, "REJECTED_BY_EDITOR");
+    noteJudgedAtPush(state, 0, 2);
+    expect(beatFunnel(state, 0, 2).notAskedReasons.get("REJECTED_BY_EDITOR")).toBe(1);
+  });
+
+  it("every push records the adoption and the mix, once per clip; the timeline is measured too", () => {
+    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    const push = src.slice(src.indexOf("const pushSceneClip = async"), src.indexOf("const pushSceneClip = async") + 2600);
+    expect(push).toContain("notePushedIntoFilm(dedup, clipPath, key);");
+    const helper = src.slice(src.indexOf("function notePushedIntoFilm("), src.indexOf("function notePushedIntoFilm(") + 700);
+    expect(helper).toContain('lineage.hasStage(record.lineageId, "ADOPTED")');
+    expect(helper).toContain("countClipInMix(dedup, clipPath, contentKey);");
+    expect(src).toContain("countClipInMix(dedup, p, contentKey);");
+    expect(src).not.toMatch(/else if \(isRealVideoFootageClip\(p\)\) dedup\.movingClipCount\+\+;/);
+    expect(src).toContain('if (ensured.outcome === "judged") noteJudgedAtPush(dedup.beatShortlist, sceneIndex, beatIndex);');
+    expect(src).toContain('.replace("[ScreenTime]", "[ScreenTime] timeline")');
+  });
+});
+
+describe("6. text left to the editor is planned, not executed, and says so", () => {
+  const facts = (): RenderFeatureFacts => ({
+    beatsWithIntent: 11, beatsTotal: 11, retrieved: 25, eligible: 1, shortlisted: 1,
+    visionEnabled: true, visionReviewPool: 1, visionAsked: 1, visionApproved: 0,
+    motionBandsPlanned: 11, motionScored: 11,
+    cinematicEnabled: true, cinematicPlanned: true, cinematicRendered: true,
+    captionsEnabled: true, captionsPlanned: 11,
+    graphicsEnabled: true, graphicsPlanned: 3,
+    transitionsApplied: 3, musicCatalogueAvailable: false,
+    ambiencePlanned: 3, ambienceUnavailable: 0, sfxPlanned: 0, duckingApplied: true,
+    delivery: {
+      fileExists: true, hasVideoStream: true, hasAudioStream: true, fromCinematicRender: true,
+      assetsInFinalVideo: 6, captionsOnTimeline: 0, graphicsOnTimeline: 0, textLeftToEditor: 14,
+      ambientClipsOnTimeline: 3, sfxClipsOnTimeline: 0, musicClipsOnTimeline: 0,
+      graphicsBurnedInByCompose: 0, avSyncMeasured: true, spotChecked: true,
+    },
+  });
+
+  it("video 624's graphics and captions: planned, not drawn, left to the editor", () => {
+    const m = buildRenderFeatureMatrix(facts());
+    expect(m.graphics?.planned).toBe(true);
+    expect(m.graphics?.executed).toBe(false);
+    expect(m.graphics?.reason).toContain("left to the editor");
+    expect(m.captions?.executed).toBe(false);
+    expect(m.captions?.reason).toContain("left to the editor");
+    const v = featureMatrixViolations(m).join("\n");
+    expect(v).not.toContain("graphics EXECUTED_WITHOUT_PLAN");
+    expect(v).not.toContain("graphics UNEXPLAINED_GAP");
+    expect(v).not.toContain("captions UNEXPLAINED_GAP");
+  });
+
+  it("the pipeline counts what will play, and the plan's own graphics", () => {
+    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    expect(src).toContain("cinematicProgress.graphicsOnTimeline = graphicsTrack(t).filter((g) => !g.disabled).length;");
+    expect(src).toContain("cinematicProgress.captionsOnTimeline = captionTrack(t).filter((c) => !c.disabled).length;");
+    expect(src).toContain("graphicsPlanned: Math.max(visualDedup.graphicClips.size, cinematicProgress.graphicsPlanned),");
+  });
+});
+
+describe("7. the retrieval yardstick is the pipeline's own clock", () => {
+  it("video 624: three scenes, 64 s of film, 226 s of retrieval — inside its own limits", () => {
+    const yardstick = visualDeadlineForVideoMs(55_000 * 3, 64) + EMPTY_SCENE_RESCUE_MIN_MS;
+    expect(yardstick).toBeGreaterThanOrEqual(180_000 + 60_000);
+    expect(226_000).toBeLessThanOrEqual(yardstick);
+  });
+
+  it("the tracker is started with it", () => {
+    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    const at = src.indexOf('get_activeBudgetTracker()?.stageStart(\n      "retrieval",');
+    expect(at).toBeGreaterThan(0);
+    expect(src.slice(at, at + 400)).toContain("visualDeadlineForVideoMs(");
+    expect(src.slice(at, at + 400)).toContain("+ EMPTY_SCENE_RESCUE_MIN_MS");
   });
 });

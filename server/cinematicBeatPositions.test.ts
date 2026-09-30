@@ -211,7 +211,12 @@ describe("a measured voice window still wins", () => {
       beats,
     };
     const { clips } = videoClips([facts]);
-    expect(clips.map((c) => c.timelineStart)).toEqual([0, 5]);
+    /**
+     * VIDEO 624 — a shot on screen longer than its source is cut into pieces (`limitLongShots`);
+     * where each BEAT starts is read off its first piece.
+     */
+    const beatStarts = clips.filter((c) => !/_p(?:[2-9]|\d{2,})$/.test(c.id)).map((c) => c.timelineStart);
+    expect(beatStarts).toEqual([0, 5]);
   });
 
   /** Nothing is laid out when everything was measured. */

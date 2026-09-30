@@ -44,6 +44,17 @@ export async function youtubeVideoDurationSec(
   }
 }
 
+/** Only what is already known — no request. */
+export function knownYoutubeVideoDurationSec(videoId: string): number {
+  return known.get(videoId.trim()) ?? 0;
+}
+
+/** A length YouTube already told us elsewhere (the pool's videos.list), so the door does not ask again. */
+export function rememberYoutubeVideoDurationSec(videoId: string, sec: number): void {
+  const id = videoId.trim();
+  if (id && sec > 0) known.set(id, sec);
+}
+
 export function forgetYoutubeVideoDurationsForTests(): void {
   known.clear();
 }

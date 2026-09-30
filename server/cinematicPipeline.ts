@@ -623,7 +623,13 @@ export function formatCinematicGraphics(result: CinematicPipelineResult): string
    * so `explicit + generic` is the same population `rendered` counted before — the total is
    * unchanged and only gains a breakdown.
    */
-  const classes = graphics.map((g) => graphicRendererClass(g.graphicType, g.data, g.label ?? null));
+  /**
+   * VIDEO 624 — a graphic switched off (for the editor, since video 619) is not drawn; 624 read
+   * `rendered=1` for a film with no graphic in it.
+   */
+  const classes = graphics
+    .filter((g) => !g.disabled)
+    .map((g) => graphicRendererClass(g.graphicType, g.data, g.label ?? null));
   const explicitRendered = classes.filter((c) => c === "explicit").length;
   const genericRendered = classes.filter((c) => c === "generic").length;
   const rendered = explicitRendered + genericRendered;

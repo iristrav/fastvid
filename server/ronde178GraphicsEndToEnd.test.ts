@@ -346,8 +346,9 @@ describe("R178 — the graphics line reports planned, drawn and skipped", () => 
 
   it("counts drawn graphics by the renderer's own predicate, not by the planner's intention", () => {
     const result = runRoute([sceneFacts(0, BEAT_TEXTS)]);
+    /** VIDEO 624 — the renderer skips a switched-off graphic, so it is not counted as drawn. */
     const drawable = graphicsOf(result.timeline).filter((g) =>
-      graphicIsRenderable(g.graphicType, g.data, g.label ?? null)
+      !g.disabled && graphicIsRenderable(g.graphicType, g.data, g.label ?? null)
     ).length;
     expect(formatCinematicGraphics(result)).toContain(`rendered=${drawable}`);
   });

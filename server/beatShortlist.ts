@@ -210,6 +210,12 @@ export type BeatFunnel = {
   unclear: number;
   unavailable: number;
   notAsked: number;
+  /**
+   * VIDEO 624 — pictures the editor judged at the moment they were put into the film, outside the
+   * shortlist. Six of 624's beats read `ADOPTED_WITHOUT_JUDGEMENT` for pictures the editor had in
+   * fact judged at that moment; this is where those looks are counted instead.
+   */
+  judgedAtPush: number;
   /** Content keys admitted to this beat's shortlist, so a re-ask is not a second slot. */
   admitted: Set<string>;
   /** Candidates turned away because the bound was already reached. */
@@ -328,6 +334,7 @@ export function beatFunnel(
     unclear: 0,
     unavailable: 0,
     notAsked: 0,
+    judgedAtPush: 0,
     admitted: new Set<string>(),
     refusedForCap: 0,
     bySource: new Map<string, number>(),
@@ -737,6 +744,25 @@ export function noteNotAsked(
   bumpReason(f, reason);
 }
 
+/**
+ * VIDEO 624 — the editor judged a picture as it was put into the film.
+ *
+ * The rescue routes note `ADOPTED_WITHOUT_JUDGEMENT` when they take a picture, and the push that
+ * follows asks the editor anyway (`finalSay`). That look retracts one such note for the beat, so
+ * the funnel no longer claims a picture nobody looked at.
+ */
+export function noteJudgedAtPush(state: BeatShortlistState | undefined, sceneIndex: number, beatIndex: number): void {
+  if (!state) return;
+  const f = beatFunnel(state, sceneIndex, beatIndex);
+  f.judgedAtPush += 1;
+  const unjudged = f.notAskedReasons.get("ADOPTED_WITHOUT_JUDGEMENT") ?? 0;
+  if (unjudged > 0) {
+    if (unjudged === 1) f.notAskedReasons.delete("ADOPTED_WITHOUT_JUDGEMENT");
+    else f.notAskedReasons.set("ADOPTED_WITHOUT_JUDGEMENT", unjudged - 1);
+    f.notAsked = Math.max(0, f.notAsked - 1);
+  }
+}
+
 function bumpReason(f: BeatFunnel, reason: NotAskedReason): void {
   f.notAskedReasons.set(reason, (f.notAskedReasons.get(reason) ?? 0) + 1);
 }
@@ -781,6 +807,7 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
     unclear: 0,
     unavailable: 0,
     notAsked: 0,
+    judgedAtPush: 0,
     refusedForCap: 0,
     refusedForSourceShare: 0,
   };
@@ -794,6 +821,7 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
     total.unclear += f.unclear;
     total.unavailable += f.unavailable;
     total.notAsked += f.notAsked;
+    total.judgedAtPush += f.judgedAtPush;
     total.refusedForCap += f.refusedForCap;
     total.refusedForSourceShare += f.refusedForSourceShare;
     const reasons = reasonsFor(f);
@@ -810,6 +838,7 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
         ` shortlisted=${f.shortlisted}/${cap} visionAsked=${f.visionAsked} ` +
         `approved=${f.approved} rejected=${f.rejected} unclear=${f.unclear} ` +
         `unavailable=${f.unavailable} notAsked=${f.notAsked}` +
+        (f.judgedAtPush > 0 ? ` judgedAtPush=${f.judgedAtPush}` : "") +
         (f.refusedForCap > 0 ? ` cappedOut=${f.refusedForCap}` : "") +
         /** One source out of room while the beat was not — see SHORTLIST_SOURCE_SHARE. */
         (f.refusedForSourceShare > 0 ? ` sourceShareOut=${f.refusedForSourceShare}` : "") +
@@ -825,7 +854,9 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
     `[BeatFunnel] TOTAL beats=${beats.length} retrieved=${total.retrieved} eligible=${total.eligible} ` +
       `shortlisted=${total.shortlisted} visionAsked=${total.visionAsked} approved=${total.approved} ` +
       `rejected=${total.rejected} unclear=${total.unclear} unavailable=${total.unavailable} ` +
-      `notAsked=${total.notAsked} cappedOut=${total.refusedForCap}`
+      `notAsked=${total.notAsked}` +
+      (total.judgedAtPush > 0 ? ` judgedAtPush=${total.judgedAtPush}` : "") +
+      ` cappedOut=${total.refusedForCap}`
   );
   return lines;
 }

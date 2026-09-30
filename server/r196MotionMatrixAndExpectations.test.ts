@@ -334,7 +334,7 @@ describe("the matrix says what was promised and what arrived", () => {
 
   it("its facts come from what the render recorded, not from the flags", () => {
     const at = PIPE.indexOf("const matrix = buildRenderFeatureMatrix({");
-    const block = PIPE.slice(at, at + 3200);
+    const block = PIPE.slice(at, at + 3800);
     expect(block).toContain("avSyncMeasured: qualityReport.avSync != null,");
     expect(block).toContain("fromCinematicRender: cinematicDeliveredUrl != null,");
     expect(block).toContain("motionScored: visualDedup.motionScoredBeats.size,");
@@ -344,6 +344,6 @@ describe("the matrix says what was promised and what arrived", () => {
   it("building it is wrapped", () => {
     const at = PIPE.indexOf("const matrix = buildRenderFeatureMatrix({");
     expect(PIPE.slice(at - 600, at)).toContain("try {");
-    expect(PIPE.slice(at, at + 3800)).toContain("[FeatureMatrix] video=${videoId} not built");
+    expect(PIPE.slice(at, at + 4400)).toContain("[FeatureMatrix] video=${videoId} not built");
   });
 });
