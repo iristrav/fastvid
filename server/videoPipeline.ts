@@ -125,7 +125,7 @@ import {
 import { createPipelineProfiler } from "./pipelineProfiler";
 import { summarizeArchiveSourcing, type ArchiveSourcingAudit } from "./archiveSourcingAudit";
 import { cachedClipBakedEditTextVerdict, resetOverlayBudget } from "./archiveClipFilter";
-import { externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, sceneBeatCapForCadence, maxBeatCapForVisualCadence, visualStageWallClockMin, isFastShortVideoLength, composeLocalClipsOnly, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, type YoutubeLicenseMode, downloadStallTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, youtubeSearchPassesPerQuery, type YoutubeSearchDuration, youtubeFirstEnabled, youtubeBeatBudgetMs, youtubeFirstPerBeatEnabled, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_PARALLEL_BEATS, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
+import { externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, sceneBeatCapForCadence, maxBeatCapForVisualCadence, visualStageWallClockMin, isFastShortVideoLength, composeLocalClipsOnly, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, type YoutubeLicenseMode, downloadStallTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, youtubeSearchPassesPerQuery, type YoutubeSearchDuration, youtubeFirstEnabled, youtubeBeatBudgetMs, youtubeFirstPerBeatEnabled, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_FALLBACK_MIN_MS, YOUTUBE_FIRST_PARALLEL_BEATS, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -2699,6 +2699,30 @@ export function youtubeTurnLeavingRoomForLaterBeats(
   return Math.min(askedMs, Math.max(room, Math.min(askedMs, YOUTUBE_TURN_FLOOR_MS)));
 }
 
+/**
+ * VIDEO 622 — A BEAT'S YOUTUBE WAIT LEAVES ROOM TO JUDGE WHAT THE ARCHIVE ALREADY BROUGHT.
+ *
+ * YouTube, the own archive and the open archives start together; the beat takes YouTube first, so
+ * it waits for the YouTube turn before it looks at anything else. When that wait took the beat's
+ * whole time, the archive clips downloaded beside it were never judged. The turn now keeps back
+ * `ARCHIVE_JUDGE_SHARE` of the beat's time (at least 10 s, at most a minute, never more than half)
+ * for the sources after it. A YouTube result the stock or lookahead already holds still arrives at
+ * once.
+ */
+export const ARCHIVE_JUDGE_SHARE = 0.4;
+export const ARCHIVE_JUDGE_MIN_MS = 10_000;
+
+export function youtubeTurnLeavingRoomForArchive(askedMs: number, beatLeftMs: number): number {
+  if (!Number.isFinite(beatLeftMs)) return askedMs;
+  if (!(beatLeftMs > 0)) return 0;
+  const reserve = Math.min(
+    Math.max(beatLeftMs * ARCHIVE_JUDGE_SHARE, ARCHIVE_JUDGE_MIN_MS),
+    YOUTUBE_FIRST_FALLBACK_MIN_MS,
+    beatLeftMs / 2
+  );
+  return Math.max(0, Math.min(askedMs, Math.floor(beatLeftMs - reserve)));
+}
+
 /** How many beats of this scene come after this one; 0 when the scene never said. */
 export function youtubeBeatsAfter(
   dedup: Pick<VisualDedupState, "sceneBeatCount">,
@@ -2743,11 +2767,13 @@ async function youtubeFirstBeatSlice(
    * See `youtubeTurnLeavingRoomForLaterBeats`. The two minutes stay the ceiling; in a scene with
    * more beats than its window can give two minutes each, a beat leaves room for the ones after it.
    */
-  const turnMs = youtubeTurnLeavingRoomForLaterBeats(
-    ytBudget,
-    remainingScopeMs(),
-    youtubeBeatsAfter(dedup, sceneIndex, beat.index)
-  );
+  /**
+   * VIDEO 622 — the later beats' room is now each sentence's own share of the scene (see
+   * `beatShareOfSceneTimeMs`), so this beat's scope already excludes it. What the turn must leave
+   * is room in THIS beat for the sources that ran beside it: render 622 downloaded fourteen archive
+   * clips that were never judged, because the beat's YouTube wait took the whole of its time.
+   */
+  const turnMs = youtubeTurnLeavingRoomForArchive(ytBudget, remainingScopeMs());
   const sliceMs = Math.min(turnMs, remainingScopeMs());
   /** VIDEO 618 — see `YoutubeAdoptionHandle`. */
   const adoption = openYoutubeAdoptionHandle();

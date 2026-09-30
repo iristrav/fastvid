@@ -63,3 +63,23 @@ describe("Video 622 — a YouTube clip that reached the film is not reported as 
     expect(typeof traceYoutubeLifecycle).toBe("function");
   });
 });
+
+describe("Video 622 — a beat's YouTube wait leaves room to judge the archive", () => {
+  it("a 34 s beat: YouTube may wait about 20 s, the archive keeps at least 10 s", async () => {
+    const { youtubeTurnLeavingRoomForArchive } = await import("./videoPipeline");
+    expect(youtubeTurnLeavingRoomForArchive(120_000, 34_000)).toBe(20_400);
+  });
+
+  it("a long beat: the archive keeps at most a minute, YouTube is still capped at its own two minutes", async () => {
+    const { youtubeTurnLeavingRoomForArchive } = await import("./videoPipeline");
+    expect(youtubeTurnLeavingRoomForArchive(120_000, 300_000)).toBe(120_000);
+    expect(youtubeTurnLeavingRoomForArchive(120_000, 160_000)).toBe(100_000);
+  });
+
+  it("a short beat is split in two; no time is no turn; no scope is the full turn", async () => {
+    const { youtubeTurnLeavingRoomForArchive } = await import("./videoPipeline");
+    expect(youtubeTurnLeavingRoomForArchive(120_000, 12_000)).toBe(6_000);
+    expect(youtubeTurnLeavingRoomForArchive(120_000, 0)).toBe(0);
+    expect(youtubeTurnLeavingRoomForArchive(120_000, Number.POSITIVE_INFINITY)).toBe(120_000);
+  });
+});

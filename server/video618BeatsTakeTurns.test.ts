@@ -64,7 +64,11 @@ describe("Video 617/618 — a beat's YouTube turn leaves room for the scene's la
       /startSceneYoutubeLookahead\(scene, beats, workDir, clipFetchDur, videoTitle, personName, dedup\);\s*\/\*\*[^\n]*\*\/\s*\(dedup\.sceneBeatCount \?\?= new Map\(\)\)\.set\(scene\.index, beats\.length\);/
     );
     const slice = PIPE.slice(PIPE.indexOf("async function youtubeFirstBeatSlice("), PIPE.indexOf("export async function fetchBeatArchivalThenPexels("));
-    expect(slice).toContain("youtubeBeatsAfter(dedup, sceneIndex, beat.index)");
+    /**
+     * VIDEO 622 — the later beats' room is each sentence's own share of the scene now, so the turn
+     * leaves room in its own beat instead: see `youtubeTurnLeavingRoomForArchive`.
+     */
+    expect(slice).toContain("const turnMs = youtubeTurnLeavingRoomForArchive(ytBudget, remainingScopeMs());");
     expect(slice).toContain("const sliceMs = Math.min(turnMs, remainingScopeMs());");
     /** The request is still printed next to the grant, as before. */
     expect(slice).toContain("asked for ${Math.round(ytBudget / 1000)}s");

@@ -464,6 +464,7 @@ describe("R259 §6 — a metric that reported the request and spent the grant", 
      * still holds: the scope gets the number the log line is computed from, never a quieter one.
      */
     expect(slice).toContain("      turnMs,\n");
-    expect(slice).toContain("const turnMs = youtubeTurnLeavingRoomForLaterBeats(\n    ytBudget,");
+    /** VIDEO 622 — the turn now leaves room in its own beat for the archive: `youtubeTurnLeavingRoomForArchive`. */
+    expect(slice).toContain("const turnMs = youtubeTurnLeavingRoomForArchive(ytBudget, remainingScopeMs());");
   });
 });
