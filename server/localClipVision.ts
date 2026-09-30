@@ -192,7 +192,7 @@ export function topicNeedsHistoricalFootage(beatText: string, videoTitle?: unkno
   const topic = inferVideoVisualTopic(videoTitle, beatText);
   if (topic === "wwii" || topic === "cold_war") return true;
   const hay = `${asVideoTitleString(videoTitle)} ${beatText}`.toLowerCase();
-  return /\b(19\d{2}|20[0-1]\d|world war|wwii|ww2|war|historical|archive|ancient|century|hitler|nazi|berlin|titanic)\b/.test(
+  return /\b(19\d{2}|20[0-1]\d|world war|wwii|ww2|war|historical|archive|ancient|century)\b/.test(
     hay
   );
 }

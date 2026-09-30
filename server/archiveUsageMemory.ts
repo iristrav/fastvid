@@ -43,24 +43,35 @@ function persistStore(): void {
   }
 }
 
-/** Normalize topic so similar prompts share a cooldown bucket (e.g. Hitler docs). */
+/**
+ * VIDEO 623 — a topic's key is its own distinctive words, the same for every subject. It used to
+ * have hand-made buckets for four subjects (Hitler, World War II, the Titanic, Musk) and nothing
+ * for any other; two videos now share a cooldown when their topics share a distinctive word — the
+ * name they are about — see `archiveTopicsShareSubject`.
+ */
+const TOPIC_FILLER = new Set([
+  "documentary", "story", "stories", "history", "historical", "video", "rise", "fall", "life", "lives",
+  "facts", "fact", "truth", "true", "secret", "secrets", "untold", "real", "inside", "world", "years",
+  "days", "final", "first", "last", "great", "greatest", "biggest", "strange", "rumors", "rumours",
+  "about", "what", "when", "where", "which", "while", "with", "from", "into", "their", "they", "this",
+  "that", "these", "those", "there", "here", "have", "were", "will", "your", "does", "done",
+]);
+
 export function normalizeArchiveTopicKey(topic: string): string {
-  const t = topic.toLowerCase();
-  const buckets: Array<[RegExp, string]> = [
-    [/hitler|third reich|nazi|nsdap|führer|fuhrer/, "hitler"],
-    [/world war|ww2|wwii|1939|1945/, "ww2"],
-    [/titanic|maritime|ship/, "maritime"],
-    [/musk|tesla|spacex|elon/, "musk"],
-  ];
-  for (const [re, key] of buckets) {
-    if (re.test(t)) return key;
-  }
-  const words = foldSearchText(t)
+  const words = foldSearchText(topic.toLowerCase())
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 3)
+    .filter((w) => w.length > 3 && !TOPIC_FILLER.has(w))
     .slice(0, 4);
   return words.join("_") || "general";
+}
+
+/** Do two topic keys share a distinctive word ("hitler_third_reich" and "adolf_hitler")? */
+export function archiveTopicsShareSubject(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a === "general" || b === "general") return false;
+  const words = new Set(a.split("_"));
+  return b.split("_").some((w) => words.has(w));
 }
 
 export function recordArchiveVideoUsage(
@@ -98,7 +109,7 @@ export function getCrossVideoExcludeAssetIds(
   for (let i = entries.length - 1; i >= 0 && matchedVideos < lastVideos; i--) {
     const e = entries[i]!;
     if (e.videoId === currentVideoId) continue;
-    if (e.topicKey !== key) continue;
+    if (!archiveTopicsShareSubject(e.topicKey, key)) continue;
     matchedVideos++;
     for (const id of e.assetIds) ids.add(id);
   }

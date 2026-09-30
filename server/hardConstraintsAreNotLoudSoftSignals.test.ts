@@ -250,7 +250,12 @@ describe("R265 §5 — the existing sum is byte-for-byte what it was", () => {
     );
     expect(CODE).toContain("scoreBeatNarrationMatch(beatText, sourceQuery, p) * 4 +");
     expect(CODE).toContain("realEntityScore(entityRules, sourceQuery, p) +");
-    expect(CODE).toContain("nextLevelScore(p) +");
+    /**
+     * VIDEO 623 — the sum's last term was `(muskTopic ? muskBrandScore(sourceQuery, p) : 0)`, a
+     * bonus one subject had and no other; it is gone, so `nextLevelScore(p)` now ends the sum.
+     */
+    expect(CODE).toContain("nextLevelScore(p);");
+    expect(CODE).not.toContain("muskBrandScore");
   });
 
   it("THE HARD KEY READS SIGNALS THE SHARED SCORER ALREADY PRODUCED", () => {

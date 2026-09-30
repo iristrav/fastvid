@@ -507,10 +507,16 @@ describe("E. the stock filter does not refuse a clip for the words FastVid added
   });
 
   it("real stock refusals are unchanged", () => {
-    expect(isRejectedStockClip(YT, "space shuttle launch archival footage")).toBe(true);
-    expect(isRejectedStockClip(YT, "highway night driving")).toBe(true);
+    /**
+     * VIDEO 623 — "space shuttle" and "highway night driving" were refused on every topic because
+     * one kind of film did not want them; what a clip shows is the picture editor's call now, and
+     * only what a clip IS (archival-looking stock, a miniature, a render) is refused here.
+     */
+    expect(isRejectedStockClip(YT, "space shuttle launch archival footage")).toBe(false);
+    expect(isRejectedStockClip(YT, "highway night driving")).toBe(false);
     expect(isRejectedStockClip("/tmp/old-nasa-archival-reel.mp4", "rocket")).toBe(true);
     expect(isRejectedStockClip(YT, "vintage archival reel")).toBe(true);
+    expect(isRejectedStockClip(YT, "miniature diorama")).toBe(true);
   });
 
   it("the adoption loop still asks the same filter with the clip's own query", () => {

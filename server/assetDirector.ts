@@ -171,77 +171,11 @@ export type SceneStyleMemory = {
 // ─── Knowledge Graph ──────────────────────────────────────────────────────────
 
 /**
- * Compact entity–relation graph.
- * Key = entity term (lowercase). Value = related terms that should count as
- * a semantic hit when the entity is active in the narration.
- *
- * The graph is intentionally flat (depth 1) to keep scoring O(1).
- * Add entries as topics expand.
+ * VIDEO 623 — the knowledge graph was a hand-written table of about sixty subjects (World War II,
+ * the Cold War, Napoleon, Elon Musk, Tesla, SpaceX, …) that gave those subjects, and no others, a
+ * bonus for related words the narration never said. The bonus now counts only the words the
+ * narration and the active entity themselves carry, the same for every subject.
  */
-const KNOWLEDGE_GRAPH: Record<string, string[]> = {
-  // ─── World War II ──────────────────────────────────────────────────────────
-  "churchill": ["united kingdom", "london", "world war ii", "wwii", "1940", "1941", "1944", "parliament", "speech", "prime minister", "battle of britain", "raf", "blitz", "downing street", "winston", "microphone", "house of commons"],
-  "hitler": ["germany", "berlin", "nazi", "world war ii", "wwii", "third reich", "1933", "1939", "1945", "reichstag", "führer", "nuremberg"],
-  "roosevelt": ["united states", "usa", "washington", "white house", "1941", "1944", "war", "democracy", "new deal"],
-  "stalin": ["soviet union", "russia", "moscow", "red army", "wwii", "1941", "1945", "kremlin"],
-  "eisenhower": ["united states", "general", "d-day", "normandy", "1944", "supreme commander", "europe"],
-  "d-day": ["normandy", "france", "1944", "beach", "landing", "allied forces", "operation overlord", "june"],
-  "holocaust": ["auschwitz", "concentration camp", "nazi", "1942", "1943", "1944", "germany", "jewish", "genocide"],
-  "pearl harbor": ["hawaii", "1941", "japan", "attack", "december", "pacific", "navy", "battleship"],
-  "hiroshima": ["japan", "1945", "atomic bomb", "nuclear", "explosion", "mushroom cloud", "nagasaki"],
-
-  // ─── Cold War ──────────────────────────────────────────────────────────────
-  "berlin wall": ["germany", "berlin", "1961", "1989", "east germany", "west germany", "concrete", "wall", "division"],
-  "kennedy": ["united states", "usa", "white house", "1961", "1963", "dallas", "assassination", "cuban missile crisis", "president", "cold war"],
-  "khrushchev": ["soviet union", "russia", "cold war", "1950s", "1960s", "kremlin"],
-  "cuban missile crisis": ["cuba", "1962", "usa", "soviet union", "nuclear", "kennedy", "khrushchev"],
-  "vietnam war": ["vietnam", "saigon", "hanoi", "1965", "1975", "usa", "jungle", "soldiers"],
-  "moon landing": ["nasa", "apollo", "1969", "moon", "armstrong", "houston", "rocket", "astronaut", "space"],
-
-  // ─── Napoleonic Era ────────────────────────────────────────────────────────
-  "napoleon": ["france", "paris", "empire", "1804", "1812", "1815", "waterloo", "elba", "military", "army", "emperor", "battlefield"],
-  "waterloo": ["napoleon", "1815", "belgium", "battle", "wellington", "defeat", "france"],
-
-  // ─── French Revolution ─────────────────────────────────────────────────────
-  "french revolution": ["france", "paris", "1789", "1793", "guillotine", "bastille", "king", "louis xvi", "mob", "crowd", "republic"],
-  "robespierre": ["france", "paris", "1793", "revolution", "terror", "guillotine"],
-
-  // ─── American History ──────────────────────────────────────────────────────
-  "lincoln": ["usa", "united states", "civil war", "1861", "1865", "washington", "slavery", "gettysburg", "assassination", "president"],
-  "civil war": ["usa", "1861", "1865", "soldier", "battlefield", "north", "south", "lincoln"],
-  "martin luther king": ["usa", "civil rights", "1963", "1968", "washington", "march", "speech", "birmingham", "montgomery"],
-  "9/11": ["new york", "2001", "twin towers", "attack", "terrorism", "pentagon", "firefighter"],
-
-  // ─── Modern Middle East ────────────────────────────────────────────────────
-  "gulf war": ["iraq", "kuwait", "1991", "usa", "military", "desert", "baghdad", "operation desert storm"],
-  "iraq war": ["iraq", "baghdad", "2003", "usa", "military", "soldier", "desert", "saddam"],
-  "saddam hussein": ["iraq", "baghdad", "1990s", "2003", "dictator", "military", "gulf war"],
-  "arab spring": ["egypt", "tunisia", "syria", "2011", "protest", "revolution", "cairo", "tahrir"],
-
-  // ─── Russia / Ukraine ─────────────────────────────────────────────────────
-  "ukraine": ["kiev", "kyiv", "russia", "war", "2022", "europe", "military", "zelenskyy", "nato"],
-  "putin": ["russia", "moscow", "kremlin", "2000s", "ukraine", "military"],
-  "crimea": ["ukraine", "russia", "2014", "peninsula", "black sea"],
-
-  // ─── Technology ────────────────────────────────────────────────────────────
-  "elon musk": ["tesla", "spacex", "twitter", "electric car", "rocket", "silicon valley", "billionaire"],
-  "tesla": ["electric car", "elon musk", "silicon valley", "factory", "gigafactory", "battery", "model s"],
-  "spacex": ["rocket", "elon musk", "nasa", "launch", "falcon", "starship", "cape canaveral", "space"],
-  "apple": ["steve jobs", "iphone", "cupertino", "silicon valley", "technology", "computer"],
-  "steve jobs": ["apple", "iphone", "macintosh", "1984", "silicon valley", "presentation", "stage"],
-  "artificial intelligence": ["ai", "robot", "computer", "data center", "neural network", "machine learning", "openai", "chatgpt"],
-
-  // ─── Climate & Energy ─────────────────────────────────────────────────────
-  "climate change": ["global warming", "ice", "glacier", "flood", "fire", "storm", "carbon", "emissions", "renewable"],
-  "chernobyl": ["ukraine", "1986", "nuclear", "reactor", "explosion", "radiation", "soviet union", "disaster"],
-  "oil crisis": ["oil", "1973", "1979", "energy", "middle east", "opec", "petrol", "queue"],
-
-  // ─── Historical empires ────────────────────────────────────────────────────
-  "roman empire": ["rome", "italy", "colosseum", "senate", "legion", "caesar", "gladiator", "aqueduct", "ancient"],
-  "julius caesar": ["rome", "senate", "1 bc", "44 bc", "ancient rome", "gaul", "rubicon", "assassination"],
-  "egyptian": ["egypt", "cairo", "pyramid", "pharaoh", "nile", "ancient", "hieroglyph", "sphinx"],
-  "ottoman empire": ["turkey", "istanbul", "1299", "1922", "sultan", "mosque", "constantinople"],
-};
 
 /**
  * Expands an entity string to all related KG terms.
@@ -250,16 +184,7 @@ const KNOWLEDGE_GRAPH: Record<string, string[]> = {
 function expandWithKnowledgeGraph(entity: string): Set<string> {
   const lower = entity.toLowerCase();
   const tokens = lower.split(/[\s,]+/).filter((t) => t.length > 2);
-  const expanded = new Set<string>(tokens);
-
-  for (const [key, relations] of Object.entries(KNOWLEDGE_GRAPH)) {
-    // Match if any token appears in the KG key, or if the key appears in the entity
-    const matches = tokens.some((t) => key.includes(t) || t.includes(key)) || lower.includes(key);
-    if (matches) {
-      for (const r of relations) expanded.add(r);
-    }
-  }
-  return expanded;
+  return new Set<string>(tokens);
 }
 
 // ─── AssetDirectorContext ─────────────────────────────────────────────────────

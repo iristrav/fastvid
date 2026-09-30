@@ -132,6 +132,15 @@ export function extractFullNarrationText(script: string): string {
   if (blocks.length > 0) {
     return blocks.map((b) => b.text).filter((t) => t.length > 0).join(" ");
   }
+  return plainNarrationText(script);
+}
+
+/**
+ * VIDEO 623 — the script as plain text, headings and marks removed. Its own function because the
+ * block parser's fallback called `extractFullNarrationText`, which called the parser again: a
+ * script with no `##` section long enough to keep recursed until the stack ran out.
+ */
+function plainNarrationText(script: string): string {
   return script
     .replace(/\[visual:[^\]]*\]/gi, "")
     .replace(/^#+\s+.+$/gm, "")
@@ -183,7 +192,7 @@ export function parseMarkdownNarrationBlocks(script: string): MarkdownNarrationB
   }
 
   if (blocks.length === 0) {
-    const fallback = extractFullNarrationText(raw);
+    const fallback = plainNarrationText(raw);
     if (fallback.length > 20) {
       blocks.push({
         heading: "Document",
@@ -240,7 +249,7 @@ Your scripts are written for the EAR — one continuous voice-over. Not essays. 
 OUTPUT RULES (non-negotiable):
 - Write ONLY spoken narration. No [VISUAL: ...] tags, stage directions, bullet lists, or meta-commentary.
 - Name real people, companies, places, dates, and events — the video system finds footage from your words automatically.
-- Use exact brand/product names — never generic "car" or "rocket" when Tesla or SpaceX exists.
+- Use exact brand/product names — never a generic word when the topic names a specific company or product.
 
 RETENTION SPINE — every script follows this arc:
 HOOK → SETUP → COMPLICATION → REVELATION → CONSEQUENCE → CTA
@@ -380,8 +389,7 @@ export function buildSectionUserPrompt(
   sectionTotal: number,
   prompt: string,
   title: string,
-  budget: ScriptLengthBudget,
-  isMuskTopic: boolean
+  budget: ScriptLengthBudget
 ): string {
   const wordTarget = wordsPerSection(budget, sectionIndex, sectionTotal);
   const minW = Math.max(20, wordTarget - 12);
@@ -390,9 +398,8 @@ export function buildSectionUserPrompt(
     ? `Narrative role from outline: ${sec.narrativeRole}.`
     : sectionNarrativeBrief(sectionIndex, sectionTotal, budget.videoLength);
 
-  const brandRule = isMuskTopic
-    ? "When mentioning vehicles or space, use exact names (Tesla Model 3, SpaceX Falcon 9, Gigafactory) — never generic 'car' or 'rocket'."
-    : "Use exact real names (people, companies, places) whenever the topic includes them — never generic stock where a brand is named.";
+  const brandRule =
+    "Use exact real names (people, companies, places) whenever the topic includes them — never generic stock where a brand is named.";
 
   return `Video: "${title}" (topic: ${prompt})
 Section ${sectionIndex + 1} of ${sectionTotal}: "${sec.title}"
@@ -418,8 +425,7 @@ Do not repeat the hook. Start in medias res for this beat.`;
 export function buildOneShotScriptUserPrompt(
   prompt: string,
   videoType: string,
-  budget: ScriptLengthBudget,
-  isMuskTopic: boolean
+  budget: ScriptLengthBudget
 ): string {
   const valueBombSection = Math.max(2, Math.ceil(budget.sectionCount * 0.65));
   const sections =
@@ -428,9 +434,8 @@ export function buildOneShotScriptUserPrompt(
       : budget.sectionCount <= 3
         ? "## Setup\n…\n\n## Complication\n…\n\n## Consequence\n…"
         : `## Setup\n…\n\n## Complication\n…\n\n(middle escalation sections)\n\n## Revelation\n(value bomb — strongest insight, ~section ${valueBombSection})\n…\n\n## Consequence\n…`;
-  const brandRule = isMuskTopic
-    ? "Use exact names (Tesla Model 3, SpaceX Falcon 9, Gigafactory) — never generic car/rocket."
-    : "Use exact real names (people, companies, places) from the topic — never generic stock where a brand is named.";
+  const brandRule =
+    "Use exact real names (people, companies, places) from the topic — never generic stock where a brand is named.";
 
   return `Topic: "${prompt}"
 Video length: ${budget.label} (~${budget.targetSpokenSec}s spoken VO)
@@ -476,20 +481,8 @@ export function scriptStillOnTopic(topicPrompt: string, script: string): boolean
     .split(/[^a-z0-9]+/i)
     .map((w) => w.trim())
     .filter((w) => w.length >= 4);
-  const hits = tokens.filter((t) => narration.includes(t));
-  if (hits.length >= 1) return true;
-
-  const shortAnchors = [
-    "musk",
-    "tesla",
-    "spacex",
-    "kylie",
-    "jenner",
-    "trump",
-    "bezos",
-    "zuckerberg",
-  ];
-  return shortAnchors.some((a) => topic.includes(a) && narration.includes(a));
+  /** VIDEO 623 — the same rule for every name; the list of eight names it used to add is gone. */
+  return tokens.some((t) => narration.includes(t));
 }
 
 export function buildScriptLengthRefinePrompt(

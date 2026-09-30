@@ -184,7 +184,8 @@ describe("R177 — the object the beat centres on", () => {
 
   /** A named entity is more specific than a common noun, so it wins the slot. */
   it("prefers the named entity over the generic noun", () => {
-    expect(intentOf("The Titanic was a ship of the White Star Line.").objects[0]).toBe("RMS Titanic");
+    /** VIDEO 623 — the name as the sentence writes it; no table turns "Titanic" into "RMS Titanic". */
+    expect(intentOf("The Titanic was a ship of the White Star Line.").objects[0]).toBe("Titanic");
   });
 
   it("makes the motion graphics planner able to draw a highlight box", () => {
@@ -198,12 +199,24 @@ describe("R177 — the object the beat centres on", () => {
 /* ═══════════════════════ brands and companies ═══════════════════════ */
 
 describe("R177 — named brands and companies, from the retrieval path's own table", () => {
-  it("puts a company in companies", () => {
-    expect(intentOf("Tesla opened a new plant this year.").companies).toContain("Tesla");
+  /**
+   * VIDEO 623 — WHAT A NAME IS, NOBODY CLAIMS FROM A LIST ANY MORE.
+   *
+   * "Tesla is a company, the Cybertruck a product" was known for the ten names in one subject's
+   * table and for no other name on earth. The table is gone: a named thing the sentence states is
+   * an object, whatever it is, and nothing is called a company or a brand on a guess.
+   */
+  it("a named thing is an object, not a company on a list's say-so", () => {
+    /** Not the sentence's first word: capitalised there, a word proves nothing about being a name. */
+    const intent = intentOf("Last year Tesla opened a new plant.");
+    expect(intent.companies).toEqual([]);
+    expect(intent.objects).toContain("Tesla");
   });
 
-  it("puts a product in brands", () => {
-    expect(intentOf("The Cybertruck was unveiled to a packed hall.").brands).toContain("Cybertruck");
+  it("the same for any product's name", () => {
+    const intent = intentOf("The Hindenburg was unveiled to a packed hall.");
+    expect(intent.brands).toEqual([]);
+    expect(intent.objects).toContain("Hindenburg");
   });
 
   /**
@@ -217,11 +230,9 @@ describe("R177 — named brands and companies, from the retrieval path's own tab
     expect(intent.companies).toEqual([]);
   });
 
-  it("makes the brand icon reachable, labelled with the entity's own name", () => {
+  it("no brand icon is drawn for a name nobody has shown to be a brand", () => {
     const graphics = planMotionGraphics(intentOf("Tesla opened a new plant this year."), undefined, 0, 4);
-    const icon = graphics.find((g) => g.graphicType === "animated_icon");
-    expect(icon, "the brand icon rule is still unreachable").toBeTruthy();
-    expect(JSON.stringify(icon!.data)).toContain("Tesla");
+    expect(graphics.find((g) => g.graphicType === "animated_icon")).toBeUndefined();
   });
 
   it("stays empty for a beat naming no entity in the table", () => {

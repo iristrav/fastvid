@@ -1,16 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
   getCrossVideoExcludeAssetIds,
+  archiveTopicsShareSubject,
   normalizeArchiveTopicKey,
   recordArchiveVideoUsage,
   seededShuffle,
 } from "./archiveUsageMemory";
 
 describe("archiveUsageMemory", () => {
-  it("normalizes Hitler topics to same bucket", () => {
-    expect(normalizeArchiveTopicKey("Hitler: Rise of the Third Reich")).toBe("hitler");
-    expect(normalizeArchiveTopicKey("Adolf Hitler documentary")).toBe("hitler");
-    expect(normalizeArchiveTopicKey("Titanic sinking 1912")).toBe("maritime");
+  it("two topics about the same subject share a cooldown, for any subject", () => {
+    /**
+     * VIDEO 623 — this asserted hand-made buckets ("hitler", "maritime") that four subjects had and
+     * no other. The key is now the topic's own distinctive words, and topics that share one match.
+     */
+    const same = (a: string, b: string) => archiveTopicsShareSubject(normalizeArchiveTopicKey(a), normalizeArchiveTopicKey(b));
+    expect(same("Hitler: Rise of the Third Reich", "Adolf Hitler documentary")).toBe(true);
+    expect(same("Marie Curie's secret life", "The untold story of Marie Curie")).toBe(true);
+    expect(same("Titanic sinking 1912", "Adolf Hitler documentary")).toBe(false);
+    expect(same("The rise of the Roman Empire", "The fall of Napoleon")).toBe(false);
   });
 
   it("excludes assets from recent same-topic videos", () => {

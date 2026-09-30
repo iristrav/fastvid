@@ -354,20 +354,32 @@ describe("RONDE 100B §6 — a query says what the beat said", () => {
     expect(body).not.toContain("billion|million");
   });
 
-  it("TEST 14 — a celebrity's name does not prove a red carpet, a makeup launch or fashion", () => {
-    const idx = PIPELINE_SRC.indexOf("const REAL_ENTITY_RULES: RealEntityRule[] = [");
-    const table = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n];", idx));
-    for (const invented of [
+  it("TEST 14 — a celebrity's name does not prove a red carpet, a makeup launch or fashion", async () => {
+    /**
+     * VIDEO 623 — the table this read is gone; every rule is now built from the sentence's own
+     * names (`namedEntityRules`). The property is the same and is asserted on behaviour: a rule
+     * asks for the name and nothing the sentence did not say.
+     */
+    const { extractBeatRealEntities } = await import("./videoPipeline");
+    const invented = [
       "red carpet", "makeup launch", "interview", "keynote", "presentation",
       "unveiling", "production line", "archival footage", "documentary", "tour",
-      '"celebrity"', '"fashion"', '"car"', '"brain"', '"technology"', '"satellite"', '"factory"',
+      "celebrity", "fashion", "car", "brain", "technology", "satellite", "factory",
+    ];
+    for (const sentence of [
+      "Kylie Jenner built a brand on her own face.",
+      "The RMS Titanic left Southampton on its first voyage.",
+      "Frida Kahlo painted in Coyoacán.",
     ]) {
-      expect(table, `REAL_ENTITY_RULES still invents ${invented}`).not.toContain(invented);
+      const rules = extractBeatRealEntities(sentence);
+      expect(rules.length, sentence).toBeGreaterThan(0);
+      for (const r of rules) {
+        expect(r.stockQueries.length, sentence).toBe(1);
+        expect(sentence, `${r.stockQueries[0]} is not said`).toContain(r.stockQueries[0]);
+        for (const w of invented) expect(r.stockQueries[0]!.toLowerCase(), `${sentence} invents ${w}`).not.toBe(w);
+      }
     }
-    // The names themselves survive — those ARE the entity.
-    expect(table).toContain('"Kylie Jenner"');
-    expect(table).toContain('"RMS Titanic"');
-    expect(table).toContain('"Falcon 9"');
+    expect(PIPELINE_SRC).not.toContain("const REAL_ENTITY_RULES");
   });
 
   it("TEST 15 — 'truly' is in the beat and still is never chosen as the subject", () => {

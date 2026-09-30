@@ -77,11 +77,6 @@ function generateInviteCode(): string {
   return code; // e.g. ABCD-EFGH-IJKL
 }
 
-function isMuskTeslaPromptTopic(prompt: string, title: string): boolean {
-  const text = `${prompt} ${title}`.toLowerCase();
-  return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship/.test(text);
-}
-
 import { storagePut, storageGetSignedUrl } from "./storage";
 import { FASTVID_PRO_PLAN } from "./products";
 import { processArchiveAssetUpload, ArchiveUploadError } from "./archiveUpload";
@@ -158,7 +153,6 @@ async function generateSectionNarration(
   prompt: string,
   title: string,
   budget: ReturnType<typeof getScriptLengthBudget>,
-  muskTopic: boolean,
   writerSystem: string
 ): Promise<string> {
   const minChars = Math.max(120, Math.round((budget.minWords / sectionTotal) * 4));
@@ -170,7 +164,7 @@ async function generateSectionNarration(
           {
             role: "user",
             content:
-              buildSectionUserPrompt(sec, idx, sectionTotal, prompt, title, budget, muskTopic) +
+              buildSectionUserPrompt(sec, idx, sectionTotal, prompt, title, budget) +
               (attempt > 1
                 ? "\n\nIMPORTANT: Your previous draft was too short or cut off. Write the FULL section narration — complete sentences only, no outline bullets."
                 : ""),
@@ -394,7 +388,6 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
   assertProductionLlmReady();
   const videoLength = normalizeVideoLength(videoLengthRaw);
   const budget = getScriptLengthBudget(videoLength);
-  const muskTopic = isMuskTeslaPromptTopic(prompt, prompt);
   const writerSystem = buildScriptWriterSystemPrompt(videoType);
 
   // Fencing token for this run — if a stall-requeue supersedes us mid-flight (possibly from a
@@ -487,7 +480,7 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
       const sectionTotal = outline.sections.length || budget.sectionCount;
       const sectionTexts = await Promise.all(
         outline.sections.map((sec, idx) =>
-          generateSectionNarration(sec, idx, sectionTotal, prompt, title, budget, muskTopic, writerSystem)
+          generateSectionNarration(sec, idx, sectionTotal, prompt, title, budget, writerSystem)
         )
       );
 

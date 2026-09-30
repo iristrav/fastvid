@@ -204,22 +204,29 @@ describe("§4 — no silent starvation in tryStockSources", () => {
   it("THE DEFECT: three refusals used to end the loop without a word", () => {
     expect(body, "a bare continue on a blocked query").not.toContain("if (isBlockedStockQuery(query)) continue;");
     expect(body, "a bare continue on a spent category").not.toContain(
-      "if (categoryAtLimit(dedup, category, adoptOpts.muskTopic)) continue;"
+      "if (categoryAtLimit(dedup, category)) continue;"
     );
   });
 
   it("each names itself, the query and the scope of the limit", () => {
     expect(body).toContain("[SourceSkipped]");
     expect(body).toContain('declineSource("BLOCKED_QUERY", query)');
-    expect(body).toContain('declineSource("MUSK_CATEGORY_NOT_APPROVED"');
+    /** VIDEO 623 — the Musk-only refusal is gone with the rest of that subject's code. */
+    expect(body).not.toContain("MUSK_CATEGORY_NOT_APPROVED");
     expect(body).toContain('declineSource(\n        "CATEGORY_AT_LIMIT"');
     expect(body, "a render-wide cap must say that it is render-wide").toContain("scope=render");
   });
 
-  it("the limits themselves are untouched", () => {
-    expect(PIPELINE).toContain("const STOCK_CATEGORY_LIMITS: Record<string, number> = {");
-    expect(PIPELINE).toContain("  generic: 4,");
+  it("the gate is still there; its quotas were one subject's and are gone", () => {
+    /**
+     * VIDEO 623 — `STOCK_CATEGORY_LIMITS` held quotas for gigafactory, solar, rocket, tesla,
+     * factory, robot and space: the ladder's own comment called its vocabulary Musk/Tesla/SpaceX.
+     * The gate stays, and refuses what is refused for its form (`blocked_model`); nothing else
+     * has a quota.
+     */
+    expect(PIPELINE).not.toContain("const STOCK_CATEGORY_LIMITS");
     expect(PIPELINE).toContain("function categoryAtLimit(");
+    expect(PIPELINE).toContain("return categoryIsBlockedContent(category) ? 0 : Number.POSITIVE_INFINITY;");
   });
 });
 

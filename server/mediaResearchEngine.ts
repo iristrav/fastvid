@@ -49,7 +49,6 @@ export interface MediaSearchIntent {
   powerWord: string;
   personTopicLock: boolean;
   spaceTopic: boolean;
-  muskTopic: boolean;
 }
 
 export interface MediaCandidate {
@@ -79,7 +78,7 @@ export const SOURCE_BASE_SCORE: Record<MediaSourceKind, number> = {
 };
 
 const HISTORICAL_TOPIC_RE =
-  /\b(19\d{2}|20\d{2}|war|battle|empire|ancient|century|titanic|medieval|revolution|dynasty|civilization|archaeolog|historical|vintage|ww1|ww2|world war|southampton|colosseum|pyramid|pharaoh|roman|greek|viking|renaissance)\b/i;
+  /\b(19\d{2}|20\d{2}|war|battle|empire|ancient|century|medieval|revolution|dynasty|civilization|archaeolog|historical|vintage|ww1|ww2|world war|colosseum|pyramid|pharaoh|roman|greek|viking|renaissance)\b/i;
 
 const NEWS_TOPIC_RE =
   /\b(interview|breaking|scandal|controversy|trial|verdict|announcement|keynote|press conference|news report)\b/i;
@@ -155,7 +154,6 @@ export function buildMediaSearchIntent(params: {
   powerWord: string;
   personTopicLock: boolean;
   spaceTopic: boolean;
-  muskTopic: boolean;
 }): MediaSearchIntent {
   const topicHay = [params.beatText, asVideoTitleString(params.videoTitle)].filter(Boolean).join(" ");
   const topicKind = inferTopicKind(
@@ -179,7 +177,6 @@ export function buildMediaSearchIntent(params: {
     powerWord: params.powerWord,
     personTopicLock: params.personTopicLock,
     spaceTopic: params.spaceTopic,
-    muskTopic: params.muskTopic,
   };
 }
 

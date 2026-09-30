@@ -2,6 +2,7 @@
  * Semantic visual matching — per-sentence meaning → tiered archive clip selection.
  * Uses LLM entity extraction + embedding similarity (OpenAI) with lexical fallback.
  */
+import { provenPersonNames } from "./searchQueryContract";
 import { createHash } from "crypto";
 import { invokeLLM, describeLlmFailure } from "./_core/llm";
 import { getCachedBeatProfile, putCachedBeatProfile } from "./beatSemanticCache";
@@ -165,9 +166,7 @@ function inferTopicDomain(text: string, videoTitle?: string): string {
   if (topic === "wwii") return "wwii";
   if (topic === "cold_war") return "cold_war";
   if (topic === "geography_urban") return "geography_urban";
-  const hay = slug(`${asVideoTitleString(videoTitle)} ${text}`);
-  if (/elon|musk|spacex|starship|tesla|starlink|falcon/.test(hay)) return "space_tech";
-  if (/titanic|maritime|ship|ocean liner/.test(hay)) return "maritime";
+  /** VIDEO 623 — no domain is inferred from one company's or one ship's name. */
   return "general";
 }
 
@@ -181,9 +180,6 @@ function domainFallbackTiers(domain: string): string[][] {
       ["public transport", "architecture", "modern city"],
       ["netherlands", "amsterdam", "dutch city", "canal"],
     ];
-  }
-  if (domain === "space_tech") {
-    return [["rocket launch", "space launch"], ["technology", "innovation"]];
   }
   return [["documentary archive", "historical footage"]];
 }
@@ -223,12 +219,8 @@ export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: stri
   const salient = extractSalientBeatTokens(cleaned);
   const slugged = slug(cleaned);
   const entities: SemanticEntityList = {
-    persons: uniqueStrings([
-      ...extractEntitySearchTags(cleaned).filter((t) =>
-        /hitler|stalin|churchill|rommel|musk|elon|goebbels|keitel|jodl|eva braun|braun/.test(t)
-      ),
-      ...( /musk|elon\b/.test(slugged) ? ["elon musk", "musk"] : []),
-    ]),
+    /** VIDEO 623 — every person the sentence names, by one reader; not a list of eleven. */
+    persons: uniqueStrings(provenPersonNames(cleaned).map((n) => n.toLowerCase())),
     locations: uniqueStrings(
       extractVisualSearchTags(cleaned, videoTitle).filter((t) =>
         /berlin|poland|germany|france|moscow|vienna|munich|normandy|auschwitz|warsaw|america|europe|russia|uk|england|city|urban|skyline|street|architecture|transit|metro/.test(
@@ -236,14 +228,10 @@ export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: stri
         )
       )
     ),
-    companies: uniqueStrings([
-      ...salient.filter((t) => /spacex|tesla|nasa|apple|google|microsoft|amazon/.test(t)),
-      ...( /spacex|starship|falcon/.test(slugged) ? ["spacex", "space exploration"] : []),
-    ]),
+    companies: [],
     events: uniqueStrings(extractSceneSearchTags(cleaned)),
     objects: uniqueStrings([
-      ...salient.filter((t) => /tank|rocket|starship|aircraft|bunker|flag|map|submarine|ship/.test(t)),
-      ...( /starship/.test(slugged) ? ["starship", "rocket"] : []),
+      ...salient.filter((t) => /tank|rocket|aircraft|bunker|flag|map|submarine|ship/.test(t)),
     ]),
     emotions: uniqueStrings(
       salient.filter((t) =>

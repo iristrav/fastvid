@@ -9,6 +9,7 @@ import { ffmpegThreadFlag } from "./sourcingPolicy";
 import { extractYearsFromText, limitOnScreenText, TYPEWRITER_CHAR_SEC, type BeatLabelInput } from "./cinematicEffectsEngine";
 import { DOC_STYLE_VIDEO_HEIGHT, DOC_STYLE_VIDEO_WIDTH } from "./documentaryStyle";
 import { extractVoiceLabelTerms } from "./visualBeatTags";
+import { provenPersonNames } from "./searchQueryContract";
 
 export const STANDARD_IMAGE_ANIMATION = "slow_zoom_in" as const;
 export const STANDARD_TRANSITION = "crossfade" as const;
@@ -69,30 +70,10 @@ const STOP_WORDS = new Set([
   "maar", "dan", "door", "naar", "bij", "uit", "als", "om", "er", "nog", "wel",
 ]);
 
-const PERSON_ENTRIES: Array<{ pattern: RegExp; label: string }> = [
-  { pattern: /\bhitler\b|\badolf\b/i, label: "HITLER" },
-  { pattern: /\bstalin\b/i, label: "STALIN" },
-  { pattern: /\bchurchill\b/i, label: "CHURCHILL" },
-  { pattern: /\brommel\b/i, label: "ROMMEL" },
-  { pattern: /\beisenhower\b/i, label: "EISENHOWER" },
-  { pattern: /\bgoebbels\b/i, label: "GOEBBELS" },
-  { pattern: /\btruman\b/i, label: "TRUMAN" },
-  { pattern: /\broosevelt\b|\bfdr\b/i, label: "ROOSEVELT" },
-  { pattern: /\bmao\b|\bmao zedong\b/i, label: "MAO" },
-  { pattern: /\bnapoleon\b/i, label: "NAPOLEON" },
-  { pattern: /\bkennedy\b|\bjfk\b/i, label: "KENNEDY" },
-  { pattern: /\bputin\b/i, label: "PUTIN" },
-  { pattern: /\btrump\b/i, label: "TRUMP" },
-  { pattern: /\bbiden\b/i, label: "BIDEN" },
-  { pattern: /\bmusk\b|\belon\b/i, label: "MUSK" },
-];
 
 const EVENT_ENTRIES: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /\binvasie\b|\binvasion\b/i, label: "INVASIE" },
   { pattern: /\bmislukt\b|\bfailed\b|\bfailure\b|\bfaalde\b/i, label: "MISLUKT" },
-  { pattern: /\bholocaust\b/i, label: "HOLOCAUST" },
-  { pattern: /\bd-day\b|\bdddag\b/i, label: "D-DAY" },
-  { pattern: /\bblitzkrieg\b/i, label: "BLITZKRIEG" },
   { pattern: /\bsurrender\b|\bovergave\b|\bcapitulatie\b/i, label: "OVERGAVE" },
   { pattern: /\bgenocide\b|\bvolkenmoord\b/i, label: "GENOCIDE" },
   { pattern: /\bbombardement\b|\bbombing\b|\bbombardment\b/i, label: "BOMBARDEMENT" },
@@ -224,12 +205,16 @@ export function extractMotionOverlayCandidates(
     });
   }
 
-  for (const entry of PERSON_ENTRIES) {
-    const match = cleaned.match(entry.pattern);
-    if (!match) continue;
+  /**
+   * VIDEO 623 — every person the sentence names, by the same reader for every name. This was a
+   * table of fifteen (Hitler, Stalin, Churchill, … Musk); anyone else got no label.
+   */
+  for (const name of provenPersonNames(cleaned)) {
+    const surname = name.trim().split(/\s+/).pop() ?? "";
+    if (surname.length < 2) continue;
     push({
-      text: entry.label,
-      trigger_word: match[0].trim(),
+      text: surname.toUpperCase(),
+      trigger_word: surname,
       kind: "person",
       priority: 80,
     });

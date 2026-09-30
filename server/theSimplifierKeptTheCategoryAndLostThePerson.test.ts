@@ -49,15 +49,20 @@ function collapse(query: string): string | null {
 
 describe("the defect, measured on the table the pipeline reads", () => {
   it("a named person collapses to a category", () => {
-    expect(collapse("Kim Kardashian")).toBe("celebrity");
-    expect(collapse("Kim Kardashian news conference")).toBe("celebrity");
-    expect(collapse("Kim Kardashian 2018 interview")).toBe("celebrity");
+    /**
+     * VIDEO 623 — the table no longer holds anyone's name ("kardashian" was in the celebrity rule,
+     * "musk" and "elon" in a rule of their own), so a name alone no longer collapses at all. The
+     * defect this file is about is still measured on the words around a name, below.
+     */
+    expect(collapse("Kim Kardashian")).toBeNull();
+    expect(collapse("Kim Kardashian news conference")).not.toBe("celebrity");
+    expect(collapse("Kim Kardashian celebrity interview")).toBe("celebrity");
   });
 
   it("AND IT IS NOT ONE UNLUCKY NAME", () => {
     /** Topic-agnostic: the same erasure lands on unrelated subjects from unrelated domains. */
     expect(collapse("Marie Curie laboratory Paris")).toBe("science");
-    expect(collapse("Elon Musk factory floor")).toBe("tesla");
+    expect(collapse("Elon Musk factory floor")).toBe("factory");
     expect(collapse("Greta Thunberg climate speech")).toBe("climate");
   });
 

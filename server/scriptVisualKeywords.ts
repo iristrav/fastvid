@@ -252,8 +252,8 @@ function inferSceneTypeFromSentence(sentence: string, primaryKeyword: string): s
   if (/\b(home|woonkamer|keuken|kitchen|bedroom|huis)\b/.test(hay)) return "home";
   if (/\b(hospital|medical|doctor|ziekenhuis|arts)\b/.test(hay)) return "medical";
   if (/\b(school|university|student|education|onderwijs)\b/.test(hay)) return "education";
-  if (/\b(aerial|drone|skyline|city|urban|amsterdam|berlin)\b/.test(hay)) return "city";
-  if (/\b(war|hitler|nazi|1945|historical|archief)\b/.test(hay)) return "historical";
+  if (/\b(aerial|drone|skyline|city|urban)\b/.test(hay)) return "city";
+  if (/\b(war|historical|archief)\b/.test(hay) || /\b1[0-9]{3}\b/.test(hay)) return "historical";
   if (/\b(nature|forest|ocean|wildlife|bos|zee)\b/.test(hay)) return "nature";
   return "other";
 }

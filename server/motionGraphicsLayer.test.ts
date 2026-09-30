@@ -35,8 +35,13 @@ describe("motionGraphicsLayer", () => {
   });
 
   it("detects countries, people, and events", () => {
+    /**
+     * VIDEO 623 — a person's label comes from the one name reader every person goes through, which
+     * reads a full name; a table of fifteen surnames (Hitler, Stalin, … Musk) gave those alone a
+     * label from one word. So the sentence names the person the way any other name is named.
+     */
     const candidates = extractMotionOverlayCandidates(
-      "In 1940 begon de invasie in Duitsland door Hitler."
+      "In 1940 begon de invasie in Duitsland door Adolf Hitler."
     );
     const texts = candidates.map((c) => c.text);
     expect(texts).toContain("1940");

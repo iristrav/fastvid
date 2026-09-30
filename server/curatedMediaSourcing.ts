@@ -1214,7 +1214,7 @@ export function isCuratedOffTopicAsset(
     ) ||
     beatTags.some((t) => /hitler|nazi|1945|1944|holocaust|wehrmacht|bunker|fuhrer|third reich|wwii|ww2/i.test(t));
   if (!beatContextWwii) return false;
-  return /\b(middeleeuws|medieval|uithangbord|titanic|prehistoric|steentijd|dinosaur|sprookje|fantasy|mytholog)\b/i.test(
+  return /\b(middeleeuws|medieval|uithangbord|prehistoric|steentijd|dinosaur|sprookje|fantasy|mytholog)\b/i.test(
     hay
   );
 }

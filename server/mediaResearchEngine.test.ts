@@ -52,7 +52,6 @@ describe("scoreMediaCandidate", () => {
     powerWord: "Titanic",
     personTopicLock: false,
     spaceTopic: false,
-    muskTopic: false,
   });
 
   it("penalizes stock and stills below archival video for historical beats", () => {
@@ -182,7 +181,6 @@ describe("buildMediaSearchIntent", () => {
       powerWord: "Titanic",
       personTopicLock: false,
       spaceTopic: false,
-      muskTopic: false,
     });
     expect(intent.topicKind).toBe("historical");
   });
@@ -199,7 +197,6 @@ describe("buildHistoricalArchivalQueries", () => {
       powerWord: "Titanic",
       personTopicLock: false,
       spaceTopic: false,
-      muskTopic: false,
     });
     const queries = buildHistoricalArchivalQueries(intent, intent.beatText);
     expect(queries.some((q) => /titanic/i.test(q) && /archival|1912|rms/i.test(q))).toBe(true);
@@ -219,7 +216,6 @@ describe("buildHistoricalArchivalQueries", () => {
       powerWord: "Hitler",
       personTopicLock: false,
       spaceTopic: false,
-      muskTopic: false,
     });
     const queries = buildHistoricalArchivalQueries(intent, intent.beatText);
     expect(queries.length).toBeGreaterThan(1);
@@ -242,7 +238,6 @@ describe("extractBeatVisualTargets — point 1 (multiple concrete visual targets
       powerWord: "Hitler",
       personTopicLock: false,
       spaceTopic: false,
-      muskTopic: false,
     });
     const targets = extractBeatVisualTargets(intent.beatText, intent, intent.videoTitle);
     expect(targets.length).toBeGreaterThan(1);
@@ -264,7 +259,6 @@ describe("extractBeatVisualTargets — point 1 (multiple concrete visual targets
       powerWord: "",
       personTopicLock: false,
       spaceTopic: false,
-      muskTopic: false,
     });
     const targets = extractBeatVisualTargets(intent.beatText, intent, intent.videoTitle);
     expect(targets.length).toBeGreaterThan(0);
@@ -291,7 +285,6 @@ describe("partitionCandidatesForIntent", () => {
       powerWord: "Titanic",
       personTopicLock: false,
       spaceTopic: false,
-      muskTopic: false,
     });
     const ranked: MediaCandidate[] = [
       { path: "/a.mp4", query: "ocean", source: "pexels", isVideo: true, score: 200 },
@@ -315,7 +308,6 @@ describe("buildMediaSearchIntent", () => {
       powerWord: "Bitcoin",
       personTopicLock: false,
       spaceTopic: false,
-      muskTopic: false,
     });
     expect(intent.searchQueries).toEqual(["Bitcoin", "cryptocurrency market", "blockchain"]);
     expect(intent.topicKind).toBe("general");

@@ -17,7 +17,7 @@
 import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
-import { extractBeatRealEntities } from "./videoPipeline";
+import { extractBeatRealEntities, setRenderPeopleReadingForTests } from "./videoPipeline";
 
 const PIPE = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const ids = (beat: string): string[] => extractBeatRealEntities(beat, "", "").map((r) => r.id);
@@ -25,55 +25,51 @@ const ids = (beat: string): string[] => extractBeatRealEntities(beat, "", "").ma
 /** Render 584, scene 2, beat 0 — the sentence that produced the wrong ask. */
 const RENDER_584 = "Inside a Los Angeles conference room, Kris Jenner watches the Beverly Hills deal close in 2022.";
 
-describe("1. a person rule fires on a person, not on a family", () => {
-  it("the beat that named Kris Jenner no longer matches Kylie", () => {
-    expect(ids(RENDER_584), "render 584 returned the kylie rule here").toEqual([]);
+/**
+ * VIDEO 623 — THE TABLE IS GONE, AND WITH IT THE WAY THIS HAPPENED.
+ *
+ * Section 1 asserted the twelve-rule table's own behaviour (the kylie rule, the musk rule, the
+ * mention pattern). The table was one subject's list and has been removed: every rule is now
+ * built from the names the sentence itself states. What this section protects is the property,
+ * not the table — a rule never asks for a person, or a name, the sentence did not say.
+ */
+const queries = (beat: string): string[] => extractBeatRealEntities(beat, "", "").flatMap((r) => r.youtubeQueries);
+
+describe("1. a rule asks for what the sentence names, never for someone else", () => {
+  it("the beat that named Kris Jenner asks for Kris Jenner, never Kylie", () => {
+    expect(ids(RENDER_584)).toContain("person:kris jenner");
+    expect(queries(RENDER_584).join(" ")).not.toMatch(/kylie/i);
   });
 
-  it("nor does a bare surname, for either person in the table", () => {
-    expect(ids("Jenner arrived at the office.")).toEqual([]);
-    expect(ids("Musk walked onto the stage.")).toEqual([]);
+  it("a bare surname asks for that surname, not for a person the list knew", () => {
+    expect(queries("Jenner arrived at the office.").join(" ")).not.toMatch(/kylie/i);
+    expect(queries("Musk walked onto the stage.").join(" ")).not.toMatch(/elon/i);
   });
 
-  /** THE DIRECTION THAT MUST NOT MOVE — the rules still recognise the people they are for. */
-  it("but the whole name still matches", () => {
-    expect(ids("Kylie Jenner launched the line in 2015.")).toEqual(["kylie"]);
-    expect(ids("Elon Musk walked onto the stage.")).toEqual(["musk"]);
+  it("the whole name still matches, for anyone", () => {
+    expect(ids("Kylie Jenner launched the line in 2015.")).toEqual(["person:kylie jenner"]);
+    expect(ids("Elon Musk walked onto the stage.")).toEqual(["person:elon musk"]);
+    expect(ids("Frida Kahlo walked onto the stage.")).toEqual(["person:frida kahlo"]);
   });
 
-  /**
-   * The other ten rules are companies, brands and objects, where the bare token IS the whole
-   * name. Nothing about them changes, and `fullName` would mean nothing on them.
-   */
-  it("and a company, brand or object is untouched", () => {
-    expect(ids("A Tesla rolled off the line.")).toEqual(["tesla"]);
-    expect(ids("The Titanic left Southampton.")).toEqual(["titanic"]);
-    expect(ids("The Starlink array went up on a Falcon 9.")).toEqual(
-      expect.arrayContaining(["falcon9", "starlink"])
-    );
-  });
-
-  /**
-   * `mentionRe` is deliberately NOT narrowed. It is also read by the candidate filters, where it
-   * decides what a clip has to show — a different question from when a rule may fire, and one
-   * this round is not answering.
-   */
-  it("the mention pattern itself is left alone", () => {
-    expect(PIPE, "narrowing this would change the clip filter too").toContain(
-      "mentionRe: /\\b(kylie\\s+jenner|kylie\\b|jenner\\b)/i"
-    );
-  });
-
-  /**
-   * Enforced by the compiler rather than by remembering: `RealEntityRule` is a union whose
-   * "person" arm requires `fullName`. Rule thirteen cannot be added without one, which is what
-   * an optional field would have allowed — silently matching a surname again, or going quiet.
-   */
-  it("and the type makes a person rule carry the name it recognises", () => {
-    expect(PIPE).toMatch(/kind:\s*"person";\s*\n[^}]*fullName:\s*string;/);
-    for (const [id, name] of [["kylie", "Kylie Jenner"], ["musk", "Elon Musk"]] as const) {
-      expect(PIPE, id).toContain(`fullName: "${name}",`);
+  it("a company, brand or object is the name the sentence writes", () => {
+    /** As in a render: the model's reading of the narration names no person here. */
+    setRenderPeopleReadingForTests([]);
+    try {
+      expect(ids("Then the Titanic left Southampton.")).toContain("object:titanic");
+      expect(ids("Then the Titanic left Southampton.").some((id) => id.startsWith("person:"))).toBe(false);
+    } finally {
+      setRenderPeopleReadingForTests(null);
     }
+    expect(ids("A Tesla rolled off the line.")).toEqual(["object:tesla"]);
+    expect(ids("The Starlink array went up on a Falcon.")).toEqual(
+      expect.arrayContaining(["object:starlink", "object:falcon"])
+    );
+  });
+
+  it("the type still makes a person rule carry the name it recognises", () => {
+    expect(PIPE).toMatch(/kind:\s*"person";\s*\n[^}]*fullName:\s*string;/);
+    expect(PIPE).not.toContain("const REAL_ENTITY_RULES");
   });
 });
 

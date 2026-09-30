@@ -292,6 +292,9 @@ export const DUTCH_FUNCTION_WORDS: readonly string[] = [
    */
 ];
 
+/** VIDEO 623 — the Dutch function words alone, for the one rule that treats them differently. */
+const DUTCH_FUNCTION_WORD_SET: ReadonlySet<string> = new Set(DUTCH_FUNCTION_WORDS);
+
 export const FUNCTION_WORDS: ReadonlySet<string> = new Set([
   ...FORBIDDEN_PERSON_PRONOUNS,
   ...DUTCH_FUNCTION_WORDS,
@@ -707,6 +710,15 @@ export function checkPersonName(
   // "Mohammed bin Salman" into too_many_tokens the moment particles were admitted at all.
   const significantTokens = tokens.filter((t) => !isNameParticleToken(t));
   if (significantTokens.length > 3) return { ok: false, reason: "too_many_tokens" };
+  /**
+   * VIDEO 623 — "Dan Brown", "Van Gogh", "De Gaulle": a name may open with a word that is also a
+   * particle or a (Dutch) function word. Opening a sentence it proves nothing — "De Nederlandse
+   * regering" is not a person — so it is admitted only on the text's own evidence: the same name
+   * written in the middle of a sentence ("the author Dan Brown", "Vincent van Gogh").
+   */
+  const leadingWordProven = () =>
+    (isNameParticleToken(tokens[0]!) || DUTCH_FUNCTION_WORD_SET.has(tokens[0]!.toLowerCase())) &&
+    nameUsedMidSentence(`${sourceText} ${corroboration}`, tokens);
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i]!;
     if (isPronounToken(token)) return { ok: false, reason: "pronoun" };
@@ -716,10 +728,14 @@ export function checkPersonName(
      * name, and neither is "Hermann de".
      */
     if (isNameParticleToken(token)) {
+      if (i === 0 && tokens.length > 1 && leadingWordProven()) continue;
       if (i === 0 || i === tokens.length - 1) return { ok: false, reason: "function_word" };
       continue;
     }
-    if (blocksPersonName(token)) return { ok: false, reason: "function_word" };
+    if (blocksPersonName(token)) {
+      if (i === 0 && tokens.length > 1 && leadingWordProven()) continue;
+      return { ok: false, reason: "function_word" };
+    }
     if (!isNameShapedToken(token)) return { ok: false, reason: "not_name_shaped" };
   }
   if (sourceText && !containsContiguous(sourceText, name)) {
@@ -732,6 +748,21 @@ export function checkPersonName(
     if (verbToken) return { ok: false, reason: "title_case_uncorroborated" };
   }
   return { ok: true };
+}
+
+/**
+ * VIDEO 623 — is this name written somewhere in the text where capitalisation means something:
+ * after a lower-case word, a digit or a comma, not at the start of a sentence? The first word may
+ * be written in lower case there when it is a particle ("Vincent van Gogh" proves "Van Gogh").
+ */
+export function nameUsedMidSentence(text: string, tokens: readonly string[]): boolean {
+  if (!text || tokens.length < 2) return false;
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const [first, ...rest] = tokens as [string, ...string[]];
+  const lead = isNameParticleToken(first) ? `(?:${esc(first.toLowerCase())}|${esc(first)})` : esc(first);
+  const body = [lead, ...rest.map(esc)].join("\\s+");
+  /** The word before must itself be written in lower case (or be a number or a comma): in a Title Case line, "Story Of Adolf" proves nothing. */
+  return new RegExp(`(?:(?:^|\\s)\\p{Ll}[\\p{L}\\p{N}'’-]*|\\p{N}|[,;])\\s+${body}(?![\\p{L}])`, "u").test(text);
 }
 
 /** Does `haystack` contain `needle` as a whole-word contiguous run? */

@@ -29,12 +29,19 @@
  * a Musk topic, the named categories keep their quotas on every topic, and the two content
  * refusals — `blocked_model`, `blocked_offtopic` — are untouched. This gate counts; it does not
  * judge, and every gate that does judge still runs.
+ *
+ * ── VIDEO 623 — THE LADDER ITSELF WENT ─────────────────────────────────────────────────────
+ *
+ * The ladder's words were one subject's (Musk/Tesla/SpaceX), and so were its quotas. With that
+ * subject's mode gone, every query is `generic` or `blocked_model`, no category has a quota, and
+ * the two neighbours this file pinned as open are closed. The claims that were about every film —
+ * generic is not a quota, a content refusal comes before any counting — are still asserted.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { stockCategoryGateForTest } from "./videoPipeline";
+import { isRejectedStockClip, stockCategoryGateForTest } from "./videoPipeline";
 
 const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -50,30 +57,21 @@ const R597_QUERIES = [
 ];
 
 /** The render-wide counter where render 597 spent most of its beats. */
-const atCap = () =>
-  new Map<string, number>([
-    ["generic", 4],
-    ["tesla", 3],
-    ["rocket", 2],
-    ["solar", 1],
-    ["gigafactory", 1],
-    ["factory", 2],
-  ]);
+const atCap = () => new Map<string, number>([["generic", 4], ["rocket", 2], ["factory", 2]]);
+const gate = (q: string, used = new Map<string, number>()) => stockCategoryGateForTest(used, q);
 
-/* ═══════════ §1 — the ladder has no words for this film ═══════════ */
+/* ═══════════ §1 — the ladder has no subject's words ═══════════ */
 
-describe("§1 — what the classifier says about a 1945 documentary", () => {
+describe("§1 — what the classifier says about any documentary", () => {
   it("EVERY ONE of render 597's queries classifies as generic", () => {
-    for (const q of R597_QUERIES) {
-      expect(stockCategoryGateForTest(new Map(), q, false).category, q).toBe("generic");
-    }
+    for (const q of R597_QUERIES) expect(gate(q).category, q).toBe("generic");
   });
 
-  it("which is the fall-through, not a judgement — the ladder is Musk vocabulary", () => {
+  it("and the ladder carries no subject's vocabulary", () => {
     const at = SRC.indexOf("function stockVisualCategory(");
-    const body = SRC.slice(at, SRC.indexOf('return "generic";', at));
+    const body = SRC.slice(at, SRC.indexOf('return "generic";', at)).split("\n").filter((l) => !/^\s*\*/.test(l)).join("\n");
     for (const word of ["gigafactory", "solar", "tesla", "falcon", "spacex", "cybertruck"]) {
-      expect(body, `${word} left the ladder`).toContain(word);
+      expect(body, `${word} is back on the ladder`).not.toContain(word);
     }
   });
 });
@@ -82,106 +80,58 @@ describe("§1 — what the classifier says about a 1945 documentary", () => {
 
 describe("§2 — a render-wide quota nobody chose", () => {
   it("THE SOURCE IS ASKED, with the counter at the cap that used to shut it", () => {
-    const used = atCap();
-    for (const q of R597_QUERIES) {
-      expect(stockCategoryGateForTest(used, q, false).atLimit, `${q} was refused`).toBe(false);
-    }
+    for (const q of R597_QUERIES) expect(gate(q, atCap()).atLimit, `${q} was refused`).toBe(false);
   });
 
   it("and it stays asked however far past the cap the render goes", () => {
-    const used = new Map<string, number>([["generic", 40]]);
-    expect(stockCategoryGateForTest(used, "reichstag", false).atLimit).toBe(false);
+    expect(gate("reichstag", new Map([["generic", 40]])).atLimit).toBe(false);
   });
 
-  it("A MUSK VIDEO IS UNCHANGED — generic still caps there, where the word means something", () => {
-    const used = new Map<string, number>([["generic", 2]]);
-    expect(stockCategoryGateForTest(used, "a warehouse interior", true).category).toBe("generic");
-    expect(stockCategoryGateForTest(used, "a warehouse interior", true).atLimit).toBe(true);
-  });
-
-  it("the guard reads the topic, and nothing else", () => {
-    expect(SRC).toContain('if (!muskTopic && category === "generic") return false;');
+  it("no subject has a gate of its own", () => {
+    expect(SRC).not.toContain("muskTopic");
+    expect(SRC).toContain("function categoryAtLimit(dedup: VisualDedupState, category: string): boolean {");
   });
 });
 
-/* ═══════════ §3 — NOTHING WAS RELAXED ═══════════ */
+/* ═══════════ §3 — NOTHING ABOUT FORM WAS RELAXED ═══════════ */
 
-describe("§3 — every other refusal is the one it was", () => {
-  it("the limits table is untouched", () => {
-    expect(SRC).toContain("  generic: 4,");
-    expect(SRC).toContain("  gigafactory: 1,");
-    expect(SRC).toContain("  rocket: 2,");
+describe("§3 — what a clip IS is still refused", () => {
+  it("fake footage is refused, on any topic and at any count", () => {
+    const g = gate("a tabletop diorama of a city");
+    expect(g.category).toBe("blocked_model");
+    expect(g.atLimit, "blocked_model stopped refusing").toBe(true);
   });
 
-  it("A NAMED CATEGORY STILL CAPS ON A DOCUMENTARY — this change is about `generic` alone", () => {
-    const used = atCap();
-    const g = stockCategoryGateForTest(used, "assembly line manufacturing", false);
-    expect(g.category).toBe("factory");
-    expect(g.atLimit, "the named categories kept their quotas").toBe(true);
+  it("a dashcam clip is refused as stock for what it is", () => {
+    expect(isRejectedStockClip("/x/pexels-dashcam-motorway.mp4", "dashcam on the motorway")).toBe(true);
   });
 
-  it("the two content refusals still refuse, on any topic and at any count", () => {
-    for (const [q, cat] of [
-      ["a tabletop diorama of a city", "blocked_model"],
-      ["dashcam on the motorway", "blocked_offtopic"],
-    ] as const) {
-      const g = stockCategoryGateForTest(new Map(), q, false);
-      expect(g.category).toBe(cat);
-      expect(g.atLimit, `${cat} stopped refusing`).toBe(true);
-    }
-  });
-
-  it("and they are refused BEFORE the counting, so no count can excuse them", () => {
+  it("and the content refusal is decided BEFORE the counting, so no count can excuse it", () => {
     const at = SRC.indexOf("function categoryAtLimit(");
     const body = SRC.slice(at, SRC.indexOf("\n}", at));
-    /**
-     * RONDE 621 moved the two literals into `categoryIsBlockedContent`, which decides the same
-     * refusals plus the one that asks whose film this is. The claim here is unchanged: a content
-     * refusal is settled before any counting, so no count can excuse one.
-     */
-    const blocked = body.indexOf("categoryIsBlockedContent(category, muskTopic)");
-    const guard = body.indexOf('if (!muskTopic && category === "generic")');
+    const blocked = body.indexOf("categoryIsBlockedContent(category)");
+    const counting = body.indexOf("dedup.usedCategories.get(category)");
     expect(blocked).toBeGreaterThan(-1);
-    expect(blocked, "the content refusal must come first").toBeLessThan(guard);
+    expect(blocked, "the content refusal must come first").toBeLessThan(counting);
   });
 });
 
-/* ═══════════ §4 — the neighbours, named and left alone ═══════════ */
+/* ═══════════ §4 — the neighbours, closed ═══════════ */
 
-describe("§4 — the same defect one category over: one taken since, one still open", () => {
-  /**
-   * RONDE 617 found two neighbours and fixed neither, pinning both as current behaviour so that
-   * whoever took them could see exactly what changed. RONDE 621 took the second — the blocklist
-   * that refused a moon-landing film its own subject — and the pin below is kept, inverted, so
-   * that fix cannot be undone silently.
-   *
-   * The first is still open and is still asserted as CURRENT behaviour, not desired: a quota of
-   * two yields two clips where a block yields none, so it is the less urgent half, and it still
-   * has no render behind it.
-   */
-  it("a space-race documentary meets the wall one category over", () => {
-    const used = new Map<string, number>([["rocket", 2]]);
-    const g = stockCategoryGateForTest(used, "rocket launch pad ignition", false);
-    expect(g.category).toBe("rocket");
-    expect(g.atLimit, "still capped render-wide on a non-Musk topic").toBe(true);
+describe("§4 — the same defect one category over: both closed", () => {
+  it("a space-race documentary is not capped at two rockets", () => {
+    const g = gate("rocket launch pad ignition", new Map([["rocket", 2], ["generic", 9]]));
+    expect(g.category).toBe("generic");
+    expect(g.atLimit).toBe(false);
   });
 
-  it("THE SECOND NEIGHBOUR WAS TAKEN — RONDE 621 split the blocklist", () => {
-    /**
-     * This test pinned a defect: `blocked_model` matched saturn|apollo|lunar|moon-landing|space
-     * shuttle, so a film about the moon landing had its own subject refused unconditionally.
-     * RONDE 621 separated "this footage is fake" from "this is a different space programme", and
-     * only the second asks whose film it is. The pin is kept, inverted, so the fix cannot be
-     * undone silently — see aDioramaIsNotTheApolloProgramme.
-     */
-    const doc = stockCategoryGateForTest(new Map(), "apollo 11 lunar module", false);
-    expect(doc.category).toBe("blocked_other_programme");
-    expect(doc.atLimit, "a documentary may search for its own subject").toBe(false);
-    /** And it is still the wrong programme on a SpaceX video, which is what the list was for. */
-    expect(stockCategoryGateForTest(new Map(), "apollo 11 lunar module", true).atLimit).toBe(true);
+  it("a moon-landing documentary may search for its own subject", () => {
+    const doc = gate("apollo 11 lunar module");
+    expect(doc.category).toBe("generic");
+    expect(doc.atLimit).toBe(false);
   });
 
-  it("the code says both out loud where the gate is", () => {
-    expect(SRC).toContain("TWO NEIGHBOURS FOUND HERE AND DELIBERATELY NOT FIXED");
+  it("the code says so where the gate is", () => {
+    expect(SRC).toContain("VIDEO 623 — BOTH NEIGHBOURS ARE CLOSED.");
   });
 });

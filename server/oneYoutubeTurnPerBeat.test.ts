@@ -407,7 +407,8 @@ describe("§18 — the static audit: no route reaches YouTube on its own", () =>
       // To the end of the argument list, not the first `)` — a query expression has its own.
       return PIPELINE.slice(at, PIPELINE.indexOf("\n", PIPELINE.indexOf('"', at + tier.length)));
     };
-    expect(floorOf('"hero", "hero"'), "the hero tier lost its floor").toContain(", 2,");
+    /** VIDEO 623 — the hero tier (one subject's fixed queries) is gone; see oneDoorToYoutube T10. */
+    expect(PIPELINE).not.toContain('"hero", "hero"');
     expect(floorOf('"archival early", "archival"')).toContain(", 2,");
     expect(floorOf('"archival", "archival"')).toContain(", 2,");
     expect(floorOf('"real-event YouTube", "event"')).toContain(", 1,");

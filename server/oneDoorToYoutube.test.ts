@@ -430,7 +430,12 @@ describe("T10 — the central route is not an archival route", () => {
         .flatMap((m) => (m ? [m[1], m[2], m[3]] : []))
         .filter(Boolean) as string[]
     );
-    for (const need of ["person", "event", "topic", "archival", "hero", "research", "last_resort"]) {
+    /**
+     * VIDEO 623 — "hero" is not in this list any more: the only hero turns were the Musk/Tesla
+     * opening searches ("SpaceX Falcon 9 rocket launch", …), one subject's fixed queries, and they
+     * were removed with the rest of that subject's code.
+     */
+    for (const need of ["person", "event", "topic", "archival", "research", "last_resort"]) {
       expect([...needs], `${need} beats no longer use the central route`).toContain(need);
     }
   });

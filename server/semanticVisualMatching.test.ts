@@ -34,9 +34,15 @@ function asset(
 }
 
 describe("semanticVisualMatching", () => {
+  /**
+   * VIDEO 623 — the fallback profile read persons from a list of eleven names (Hitler, Stalin, …
+   * Musk) and companies from a list of seven brands. It now reads every person the one name reader
+   * proves — a full name, as for anyone — and invents no company. The sentences below name the
+   * person in full; what is asserted about the profile is unchanged.
+   */
   it("builds tiered profile for Hitler invaded Poland", () => {
     const profile = analyzeBeatSemanticsFallback(
-      "In September 1939, Hitler invaded Poland with the German army.",
+      "In September 1939, Adolf Hitler invaded Poland with the German army.",
       "WWII Documentary"
     );
     expect(profile.entities.persons.some((p) => p.includes("hitler"))).toBe(true);
@@ -49,12 +55,13 @@ describe("semanticVisualMatching", () => {
       "Elon Musk launched Starship on its first orbital test flight.",
       "SpaceX Documentary"
     );
-    expect(profile.entities.companies.some((c) => c.includes("spacex"))).toBe(true);
+    expect(profile.entities.persons).toContain("elon musk");
+    expect(profile.entities.companies, "a company is not invented from a list").toEqual([]);
     expect(profile.searchTiers.flat().some((t) => t.includes("starship") || t.includes("elon"))).toBe(true);
   });
 
   it("ranks Hitler footage above generic soldiers for invasion sentence", () => {
-    const profile = analyzeBeatSemanticsFallback("Hitler invaded Poland in 1939.", "WWII");
+    const profile = analyzeBeatSemanticsFallback("Adolf Hitler invaded Poland in 1939.", "WWII");
     const hitlerClip = asset({
       id: 1,
       title: "Adolf Hitler speech rally 1939",

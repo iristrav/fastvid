@@ -2203,7 +2203,6 @@ export interface PipelinePerfProfile {
   enableArchival: boolean;
   enableNasa: boolean;
   /** One hero fetch (YouTube CC + NASA) for Musk 2-min opening — real SpaceX/Tesla footage. */
-  enableMuskHeroFetch: boolean;
   /** Max per-video YouTube CC searches on entity beats (each search is slow). */
   maxEntityYoutubePerVideo: number;
   /** Generate AI b-roll only when no matching stock clip was found for that beat. */
@@ -2890,7 +2889,6 @@ export async function fetchBeatArchivalThenPexels(
     powerWord: beat.powerWord,
     personTopicLock: dedup.personTopicLock && !historicalDoc,
     spaceTopic: isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, beat.text, scene.text, videoTitle ?? ""),
-    muskTopic: adoptOpts.muskTopic ?? false,
   });
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
 
@@ -3403,7 +3401,6 @@ async function fetchBeatAuthenticStillsInner(
     powerWord: beat.powerWord,
     personTopicLock: adoptOpts.personTopic ?? false,
     spaceTopic: false,
-    muskTopic: adoptOpts.muskTopic ?? false,
   });
   const queries = [
     ...buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text), action: extractActionCue(beat.text) }).slice(0, 3),
@@ -5140,7 +5137,6 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
        */
       maxTopicQueries: IS_RAILWAY ? 2 : 3,
       transformTimeoutMs: 12_000,
-      enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
       sceneParallelism: IS_RAILWAY ? 4 : 3,
       pexelsDownloadRetries: 1,
@@ -5163,7 +5159,6 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
       maxBeatsPerScene: 5,
       maxTopicQueries: 3,
       transformTimeoutMs: 40_000,
-      enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 2,
@@ -5180,7 +5175,6 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
       maxBeatsPerScene: 7,
       maxTopicQueries: 4,
       transformTimeoutMs: 45_000,
-      enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
       sceneParallelism: railwayParallel,
       pexelsDownloadRetries: 2,
@@ -5290,7 +5284,7 @@ async function resolveBeatClipFastInner(
       "fast primary"
     );
     if (primary) {
-      dedup.lastMuskStockClip = primary; dedup.lastRealClip = primary;
+      dedup.lastRealClip = primary;
       return primary;
     }
   }
@@ -5332,7 +5326,7 @@ async function resolveBeatClipFastInner(
                timeoutMs: ytMs,
              })).clip;
       if (clip) {
-        dedup.lastMuskStockClip = clip; dedup.lastRealClip = clip;
+        dedup.lastRealClip = clip;
         console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast person YouTube (${person})`);
         return clip;
       }
@@ -5353,7 +5347,7 @@ async function resolveBeatClipFastInner(
              timeoutMs: ytMs,
            })).clip;
     if (clip) {
-      dedup.lastMuskStockClip = clip; dedup.lastRealClip = clip;
+      dedup.lastRealClip = clip;
       return clip;
     }
   }
@@ -5374,7 +5368,7 @@ async function resolveBeatClipFastInner(
     );
     if (stock && isRealVideoClip(stock)) {
       markLicensedStockBeatUsed(dedup);
-      dedup.lastMuskStockClip = stock; dedup.lastRealClip = stock;
+      dedup.lastRealClip = stock;
       return stock;
     }
     return null;
@@ -5394,7 +5388,7 @@ async function resolveBeatClipFastInner(
       { includeTopicYoutube: true, fileTag: `b${beat.index}_fast` }
     );
     if (topicClip) {
-      dedup.lastMuskStockClip = topicClip; dedup.lastRealClip = topicClip;
+      dedup.lastRealClip = topicClip;
       return topicClip;
     }
     return null;
@@ -5442,7 +5436,7 @@ async function resolveBeatClipFastInner(
         }
         dedup.usedPaths.add(p);
         dedup.usedContentKeys.add(contentKey);
-        dedup.lastMuskStockClip = p; dedup.lastRealClip = p;
+        dedup.lastRealClip = p;
         // R198: adopted on file facts alone. Say so, so the beat is not silently "fine".
         noteNotAsked(dedup.beatShortlist, sceneIndex, beat.index, "ADOPTED_WITHOUT_JUDGEMENT");
         console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast Pexels "${q}"`);
@@ -9872,7 +9866,7 @@ export type WebWideVideoCandidate = {
 
 function isSpaceRelatedTopic(...parts: string[]): boolean {
   const text = parts.filter(Boolean).join(" ").toLowerCase();
-  return /space|rocket|nasa|esa|spacex|mars|moon|satellite|launch|orbit|astronaut|shuttle|station|tesla|electric vehicle|factory/i.test(text);
+  return /space|rocket|nasa|esa|mars|moon|satellite|launch|orbit|astronaut|shuttle|station/i.test(text);
 }
 
 // F3-34: Internet Archive license gate. A licenseurl the item's own uploader set
@@ -11815,7 +11809,8 @@ export async function probeYouTubeCcPipeline(): Promise<{
       message: "Set YOUTUBE_API_KEY and YOUTUBE_CC_DL_SERVICE",
     };
   }
-  const probeQuery = "SpaceX Falcon 9 rocket launch";
+  /** VIDEO 623 — a probe, so a phrase about no subject in particular. */
+  const probeQuery = "history documentary";
   let searchStatus: number | null = null;
   let ccResultCount = 0;
   let sampleVideoId: string | null = null;
@@ -13511,7 +13506,7 @@ function cleanPersonNameCandidate(candidate: string): string[] {
   return tokens;
 }
 
-/** Extract a person name from prompts/titles like "Rumors about Kylie Jenner". */
+/** Extract a person name from prompts/titles like "Rumors about <name>". */
 export function extractPrimaryPersonFromText(
   text?: string,
   /**
@@ -13529,8 +13524,6 @@ export function extractPrimaryPersonFromText(
     const aboutTokens = cleanPersonNameCandidate(aboutMatch[1]);
     if (aboutTokens.length > 0) return aboutTokens.join(" ");
   }
-  const kylieMatch = cleaned.match(/\b(kylie\s+jenner)\b/i);
-  if (kylieMatch?.[1]) return "Kylie Jenner";
   const nameMatches = cleaned.match(nameRunRegex(1, 2)) ?? [];
   const skip = new Set(["deep dive", "the story", "a deep", "full story", "rumors about"]);
   for (const candidate of nameMatches) {
@@ -13629,6 +13622,19 @@ export function personNamedByTopic(
  * full and the prompt, title or topic name them. When the model cannot be asked, the render says so
  * and the capital-letter chain below decides, exactly as before.
  */
+/**
+ * VIDEO 623 — the people the model read in this render's narration (null when it could not be
+ * asked). `namedEntityRules` gates a clip on a person only when this reading agrees that the name
+ * is a person: the capital-letter reader alone took "Palo Alto" for one.
+ */
+let renderPeopleReading: string[] | null = null;
+export function setRenderPeopleReadingForTests(people: string[] | null): void {
+  renderPeopleReading = people;
+}
+export function renderReadPeople(): readonly string[] | null {
+  return renderPeopleReading;
+}
+
 export async function resolvePrimaryPersonLockByReading(
   input: { prompt: string; videoTitle: string; topicContext: string; script: string },
   llm: (params: unknown) => Promise<unknown> = (p) => invokeLLM(p as Parameters<typeof invokeLLM>[0])
@@ -13643,6 +13649,7 @@ export async function resolvePrimaryPersonLockByReading(
     },
     { prompt: input.prompt, title: input.videoTitle, narration }
   );
+  renderPeopleReading = reading ? reading.people : null;
   if (reading) return reading.mainPerson;
   console.warn("[PersonNames] no reading of the narration — the person lock falls back to reading capital letters");
   return resolvePrimaryPersonLock(input);
@@ -13710,8 +13717,6 @@ export function resolvePrimaryPersonLock(input: {
 }
 
 function isPersonCelebrityTopic(topicContext?: string): boolean {
-  const t = (topicContext ?? "").toLowerCase();
-  if (/\bkylie\b|\bjenner\b|\bkardashian\b/.test(t)) return true;
   return Boolean(extractPrimaryPersonFromText(topicContext));
 }
 
@@ -15798,7 +15803,7 @@ export function buildVerifiedQueryContextForBeat(
  * admitted queries the real gate refuses. ronde91SearchCleanup asserts it stays gone.
  */
 
-/** Capitalized names from narration (Kylie Jenner, Elon Musk, …). */
+/** Capitalized names from narration — any person, read by the same rules. */
 export function extractPersonNamesFromText(text: string): string[] {
   if (!text?.trim()) return [];
   const found = new Set<string>();
@@ -15898,11 +15903,10 @@ export function extractPersonNamesFromText(text: string): string[] {
       found.add(token);
     }
   }
-  const kylie = text.match(/\b(kylie\s+jenner)\b/i);
-  if (kylie?.[1]) found.add("Kylie Jenner");
-  const musk = text.match(/\b(elon\s+musk)\b/i);
-  if (musk?.[1]) found.add("Elon Musk");
-  return Array.from(found);
+  /** VIDEO 623 — "Van Gogh" beside "Vincent van Gogh" is the same person, named shorter. */
+  const all = Array.from(found);
+  const lower = all.map((n) => n.toLowerCase());
+  return all.filter((n, i) => !lower.some((other, j) => j !== i && other.length > lower[i]!.length && other.endsWith(` ${lower[i]}`)));
 }
 
 /**
@@ -15944,8 +15948,6 @@ function scriptEventSearchQueries(beatText: string, persons: string[]): string[]
   spoken(/\b(wedding|engagement|divorce)\b/);
   spoken(/\b(protest|demonstration|rally)\b/);
   spoken(/\b(concert|performance|tour)\b/);
-  spoken(/\b(rocket launch|falcon|starship|spacex)\b/);
-  spoken(/\b(tesla|cybertruck|gigafactory)\b/);
 
   return [...new Set(out.filter((q) => q.length >= 3 && !isBlockedStockQuery(q)))];
 }
@@ -16268,9 +16270,7 @@ export interface VisualDedupState {
   usedFunnelCandidateIds: Set<string>;
   usedCategories: Map<string, number>;
   globalBeatIndex: number;
-  muskHeroFetchUsed: boolean;
   /** Last adopted real stock clip (any topic) — reused instead of color/black placeholders. */
-  lastMuskStockClip: string | null;
   /** Last adopted real (non-fallback) clip this video — used for extendLastClip rescue. */
   lastRealClip: string | null;
   /** Video-level visual context (persons, period, locations, styles) — built once per render. */
@@ -16981,8 +16981,6 @@ export function createVisualDedupState(
     usedFunnelCandidateIds: new Set(),
     usedCategories: new Map(),
     globalBeatIndex: 0,
-    muskHeroFetchUsed: false,
-    lastMuskStockClip: null,
     lastRealClip: null,
     aiClipsUsed: 0,
     rescueAiClipsUsed: 0,
@@ -17133,32 +17131,8 @@ export function createVisualDedupState(
  */
 const ledgerBySourcingCache = new WeakMap<SourcingCache, BeatRelevanceLedger>();
 
-const STOCK_CATEGORY_LIMITS: Record<string, number> = {
-  gigafactory: 1,
-  solar: 1,
-  rocket: 2,
-  tesla: 3,
-  factory: 2,
-  robot: 2,
-  space: 1,
-  generic: 4,
-};
-
-/** High-quality rotating queries for Musk/Tesla/SpaceX — modern real-world B-roll only. */
-/** Brand-forward hero searches — recognizable Tesla/SpaceX (not generic factory). */
-const HERO_MUSK_QUERIES = ["tesla", "spacex", "rocket", "factory", "car", "cybertruck"];
-
-const HERO_YOUTUBE_QUERIES = [
-  "SpaceX Falcon 9 rocket launch",
-  "SpaceX Starship launch test flight",
-  "Tesla Gigafactory tour",
-  "Falcon 9 landing booster drone ship",
-];
-
-const GOLDEN_MUSK_QUERIES = [...HERO_MUSK_QUERIES, "solar", "battery", "satellite", "moon"];
 
 type VisualAdoptOptions = {
-  muskTopic?: boolean;
   personTopic?: boolean;
   primaryPerson?: string;
   keywords?: string[];
@@ -17167,8 +17141,6 @@ type VisualAdoptOptions = {
   /** Rich CLIP query context (semantic summary, [visual:] cue). */
   visualDescription?: string;
   semanticSummary?: string;
-  /** Hero/opening: require Tesla/SpaceX tokens in slug or query. */
-  requireMuskBrand?: boolean;
   /** Clip must match words in the beat narration (real footage on-topic). */
   requireBeatMatch?: boolean;
   /** Vidrush literal matching: reject clips with zero narration overlap. */
@@ -17192,10 +17164,14 @@ async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise
   }
 }
 
+/**
+ * VIDEO 623 — what a stock clip IS (a cartoon, a render, a miniature), never what it is ABOUT.
+ * The list also refused bridges, campfires, journalists, courtrooms, textile mills and roads on
+ * every topic — words chosen for one kind of film. What a clip shows is the picture editor's call.
+ */
 const BLOCKED_STOCK_TAGS_RE =
-  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|campfire|bonfire|fireplace|bbq|barbecue|driving|dashcam|highway|bridge|miniature|scale model|toy|diorama|tabletop|model rocket|shuttle|saturn|apollo|lunar|moon landing|moon surface|science fiction|sci-fi|vhs|glitch|vintage space|archival|textile|weaving|loom|garment factory|fabric mill|crime scene|forensic|police tape|news reporter|journalist|reporter microphone|hazmat suit|investigation|murder|courtroom/i;
+  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|dashcam|miniature|scale model|toy|diorama|tabletop|model rocket|science fiction|sci-fi|vhs|glitch|archival/i;
 
-const MUSK_TOPIC_TOKENS = ["tesla", "spacex", "musk", "electric", "ev", "battery", "gigafactory", "falcon", "starship", "cybertruck", "automotive", "rocket", "launch"];
 
 /** When narration names a real company/product, clip slug/query must show that same entity (real-world footage). */
 type RealEntityRuleBase = {
@@ -17277,106 +17253,15 @@ function beatNamesWholePerson(rule: RealEntityRule, text: string): boolean {
  * mentionRe and clipMustMatchRe are untouched: they filter candidates, they do not build
  * queries, and loosening or tightening a filter is a separate question from inventing a term.
  */
-const REAL_ENTITY_RULES: RealEntityRule[] = [
-  {
-    id: "kylie",
-    kind: "person",
-    fullName: "Kylie Jenner",
-    mentionRe: /\b(kylie\s+jenner|kylie\b|jenner\b)/i,
-    clipMustMatchRe: /\b(kylie|jenner|kardashian|celebrity|influencer|makeup|fashion)\b/i,
-    stockQueries: ["Kylie Jenner"],
-    youtubeQueries: ["Kylie Jenner"],
-  },
-  {
-    id: "musk",
-    kind: "person",
-    fullName: "Elon Musk",
-    mentionRe: /\b(elon\s+musk|musk)\b/i,
-    clipMustMatchRe: /\b(musk|elon|tesla|spacex)\b/i,
-    stockQueries: ["Elon Musk"],
-    youtubeQueries: ["Elon Musk"],
-  },
-  {
-    id: "tesla",
-    kind: "company",
-    mentionRe: /\btesla\b/i,
-    clipMustMatchRe: /\btesla\b/i,
-    stockQueries: ["Tesla"],
-    youtubeQueries: ["Tesla"],
-  },
-  {
-    id: "spacex",
-    kind: "company",
-    mentionRe: /\bspacex\b/i,
-    clipMustMatchRe: /\b(spacex|falcon|starship)\b/i,
-    stockQueries: ["SpaceX"],
-    youtubeQueries: ["SpaceX"],
-  },
-  {
-    id: "falcon9",
-    kind: "brand",
-    mentionRe: /\bfalcon\s*9\b/i,
-    clipMustMatchRe: /\b(falcon|spacex)\b/i,
-    stockQueries: ["Falcon 9"],
-    youtubeQueries: ["Falcon 9"],
-  },
-  {
-    id: "starship",
-    kind: "brand",
-    mentionRe: /\bstarship\b/i,
-    clipMustMatchRe: /\b(starship|spacex)\b/i,
-    stockQueries: ["Starship"],
-    youtubeQueries: ["Starship"],
-  },
-  {
-    id: "cybertruck",
-    kind: "brand",
-    mentionRe: /\bcybertruck\b/i,
-    clipMustMatchRe: /\b(tesla|cybertruck)\b/i,
-    stockQueries: ["Cybertruck"],
-    youtubeQueries: ["Tesla Cybertruck"],
-  },
-  {
-    id: "gigafactory",
-    kind: "brand",
-    mentionRe: /\bgigafactory\b/i,
-    clipMustMatchRe: /\b(tesla|gigafactory)\b/i,
-    stockQueries: ["Gigafactory"],
-    youtubeQueries: ["Tesla Gigafactory"],
-  },
-  {
-    id: "model3",
-    kind: "brand",
-    mentionRe: /\bmodel\s*[3y]\b/i,
-    clipMustMatchRe: /\b(tesla|model)\b/i,
-    stockQueries: ["Tesla Model 3", "Tesla Model Y"],
-    youtubeQueries: ["Tesla Model 3", "Tesla Model Y"],
-  },
-  {
-    id: "starlink",
-    kind: "brand",
-    mentionRe: /\bstarlink\b/i,
-    clipMustMatchRe: /\b(starlink|spacex|satellite)\b/i,
-    stockQueries: ["Starlink"],
-    youtubeQueries: ["SpaceX Starlink"],
-  },
-  {
-    id: "neuralink",
-    kind: "company",
-    mentionRe: /\bneuralink\b/i,
-    clipMustMatchRe: /\b(neuralink|brain|neuroscience)\b/i,
-    stockQueries: ["Neuralink"],
-    youtubeQueries: ["Neuralink"],
-  },
-  {
-    id: "titanic",
-    kind: "object",
-    mentionRe: /\b(rms\s+titanic|titanic)\b/i,
-    clipMustMatchRe: /\b(titanic|rms|liner|iceberg|southampton|1912|shipwreck|white\s+star)\b/i,
-    stockQueries: ["RMS Titanic", "Titanic"],
-    youtubeQueries: ["RMS Titanic", "Titanic"],
-  },
-];
+/**
+ * VIDEO 623 — THE TABLE IS GONE: EVERY NAME A SENTENCE STATES IS A RULE.
+ *
+ * Twelve hand-written rules (Kylie Jenner, Elon Musk, Tesla, SpaceX, Falcon 9, Starship,
+ * Cybertruck, Gigafactory, Model 3, Starlink, Neuralink, Titanic) gave those subjects their own
+ * queries, scores and evidence gate, and every other subject none. A rule is now built from what
+ * the sentence itself names — see `namedEntityRules` — so any person, company or thing is treated
+ * the way those twelve were.
+ */
 
 /**
  * RONDE 177 — the named entities this beat proves, grouped by what they are.
@@ -17424,13 +17309,78 @@ export function extractBeatRealEntities(beatText: string, _sceneText = "", _vide
   const matches = (r: RealEntityRule, text: string): boolean =>
     r.mentionRe.test(text) && beatNamesWholePerson(r, text);
 
-  const fromBeat = REAL_ENTITY_RULES.filter((r) => matches(r, beatText));
+  const fromBeat = namedEntityRules(beatText).filter((r) => matches(r, beatText));
   if (fromBeat.length > 0) return fromBeat;
   for (const cue of extractInlineVisualCues(beatText)) {
-    const fromCue = REAL_ENTITY_RULES.filter((r) => matches(r, cue));
+    const fromCue = namedEntityRules(cue).filter((r) => matches(r, cue));
     if (fromCue.length > 0) return fromCue;
   }
   return [];
+}
+
+/** VIDEO 623 — the sentence with each sentence's first letter lowered: capitalised there, it proves nothing. */
+function withSentenceStartsLowered(clean: string): string {
+  return clean
+    .split(/(?<=[.!?])\s+/)
+    .map((x) => x.replace(/^(["“'‘(]*)(\p{Lu})/u, (_m, q: string, c: string) => q + c.toLowerCase()))
+    .join(" ");
+}
+
+/**
+ * VIDEO 623 — one rule per name the text states, for every subject alike.
+ *
+ *   person   every name `extractPersonNamesFromText` proves. The clip must carry independent
+ *            evidence of one of the name's own words (see `clipSatisfiesRealEntities`).
+ *   object   every other proper noun that is not a month and not a place (places have their own
+ *            route). Asked for and scored; not gated, because a thing's name is rarely in a
+ *            stock clip's text even when the clip shows it.
+ */
+export function namedEntityRules(text: string): RealEntityRule[] {
+  const clean = (text ?? "").replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  if (!clean) return [];
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const whole = (t: string) => new RegExp(`(?<![\\p{L}\\p{N}])${esc(t).replace(/\s+/g, "\\s+")}(?![\\p{L}\\p{N}])`, "iu");
+  const ruleFor = (name: string, kind: "person" | "object"): RealEntityRule | null => {
+    const words = name.split(/\s+/).filter((w) => w.length >= 3 && !isNameParticleToken(w));
+    if (words.length === 0) return null;
+    const base = {
+      id: `${kind}:${name.toLowerCase()}`,
+      mentionRe: whole(name),
+      clipMustMatchRe: new RegExp(`(?<![\\p{L}\\p{N}])(?:${words.map(esc).join("|")})(?![\\p{L}\\p{N}])`, "iu"),
+      stockQueries: [name],
+      youtubeQueries: [name],
+    };
+    return kind === "person" ? { ...base, kind, fullName: name } : { ...base, kind };
+  };
+  const rules: RealEntityRule[] = [];
+  /**
+   * A person when the render's reading of the narration names them (or shares a word of their
+   * name with one it names — "Musk" beside "Elon Musk"); without a reading, the capital-letter
+   * reader decides, as before. A name the reading does not know stays a named thing.
+   */
+  const read = renderPeopleReading?.map((n) => n.toLowerCase());
+  const isPerson = (name: string): boolean => {
+    if (!read) return true;
+    const words = name.toLowerCase().split(/\s+/).filter((w) => w.length >= 3 && !isNameParticleToken(w));
+    return read.some((r) => r === name.toLowerCase() || words.some((w) => r.split(/\s+/).includes(w)));
+  };
+  const persons = extractPersonNamesFromText(clean);
+  for (const name of persons) {
+    const r = ruleFor(name, isPerson(name) ? "person" : "object");
+    if (r) rules.push(r);
+  }
+  const personText = persons.join(" ").toLowerCase();
+  for (const lower of beatSubjectCandidates(withSentenceStartsLowered(clean)).proper) {
+    if (MONTH_NAMES.has(lower) || lower.split(/\s+/).some((w) => personText.includes(w))) continue;
+    /** "Rome's ideas" names Rome: the possessive is grammar, not part of the name. */
+    const written = clean.match(whole(lower))?.[0]?.replace(/['’]s$/i, "");
+    if (!written) continue;
+    const words = written.split(/\s+/);
+    if (words.every((w) => isPlaceToken(w))) continue;
+    const r = ruleFor(written, "object");
+    if (r && !rules.some((x) => x.id === r.id)) rules.push(r);
+  }
+  return rules;
 }
 
 /**
@@ -17496,30 +17446,18 @@ function realEntityScore(rules: RealEntityRule[], sourceQuery: string, filePath:
   return rules.filter((r) => r.clipMustMatchRe.test(hay)).length * 4;
 }
 
+/** VIDEO 623 — form only (see `BLOCKED_STOCK_TAGS_RE`); no subject, brand, vehicle or place. */
 const BLOCKED_STOCK_QUERY_RE =
-  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|space shuttle|shuttle model|saturn v|apollo|lunar|moon landing|moon surface|diorama|replica rocket|mission control|astronaut suit|vintage nasa|archival footage|science fiction|sci-fi|cgi rocket|crime scene|forensic|police tape|murder|courtroom)\b/i;
+  /\b(subscribe|like button|thumbs up|thumbs down|social media ui|notification bell|emoji|icon animation|button animation|wallpaper|seamless loop|motion graphics|scale model|miniature|toy rocket|model rocket|diorama|replica rocket|archival footage|science fiction|sci-fi|cgi rocket)\b/i;
 
-/** Reject model/CGI/archival-looking clips (Pexels slugs + local filenames). */
+/** Reject model/CGI/archival-looking clips (Pexels slugs + local filenames) — form only. */
 const BLOCKED_STOCK_VISUAL_RE =
-  /shuttle|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|vintage[- ]?space|archival|old[- ]?nasa|space[- ]?shuttle|saturn[- ]?v|rocket[- ]?model|model[- ]?launch|volkswagen|vw\b|ford\b|bmw|mercedes|audi\b|toyota factory|honda factory|container ship|cargo ship|freight ship|bulk carrier|ferry|passenger boat|catamaran|harbor cruise|shipping port|port crane|logistics hub|cargo terminal|container terminal|river boat|canal boat|textile mill|weaving factory|yarn factory|fabric mill|sewing factory|highway|motorway|freeway|country road|rural road|pickup truck|desert road|coastal road|dashcam|night driving/i;
-
-const BLOCKED_MUSK_COMPETITOR_RE =
-  /\b(volkswagen|vw|ford|gm|general motors|bmw|mercedes|audi|toyota|honda|hyundai|kia|rivian|lucid)\b/i;
-
-/** Wildlife/nature stock that must never appear on Musk/Tesla/SpaceX videos. */
-const MUSK_OFFTOPIC_VISUAL_RE =
-  /\b(dolphin|dolphins|whale|whales|shark|sharks|sea turtle|ocean wildlife|underwater mammal|reef|jellyfish|penguin|polar bear|safari|zoo animal|aquarium|swimming with|marine life|tropical fish)\b/i;
+  /miniature|diorama|tabletop|model[- ]?rocket|scale[- ]?model|toy[- ]?rocket|replica|maquette|science[- ]?fiction|sci[- ]?fi|cgi|3d[- ]?animation|vhs|glitch|archival|rocket[- ]?model|model[- ]?launch|dashcam/i;
 
 /** Animals / random nature B-roll that must not appear on named-celebrity videos (e.g. Kylie → flamingos). */
 const PERSON_OFFTOPIC_VISUAL_RE =
   /\b(flamingo|flamingos|peacock|parrot|zoo|safari|wildlife|aquarium|dolphin|whale|penguin|giraffe|elephant|lion|tiger|bear|crocodile|snake|monkey|gorilla|zebra|hippo|bird flock|flock of birds|exotic bird|pink birds)\b/i;
 
-/** Opening = hero Tesla car / SpaceX pad first. */
-const OPENING_MUSK_QUERIES = HERO_MUSK_QUERIES;
-
-/** Only these rocket/space queries may yield rocket-category clips on Musk/Tesla topics. */
-const MUSK_APPROVED_ROCKET_QUERY_RE =
-  /\b(rocket|spacex|falcon|starship)\b|falcon\s*9.*(land|boost|recover|drone\s*ship)|starship.*(pad|boca|texas|static)|spacex.*crew\s*dragon/i;
 
 /**
  * RONDE 621 — A MODEL ROCKET AND THE APOLLO PROGRAMME ARE NOT THE SAME REFUSAL.
@@ -17544,34 +17482,17 @@ const MUSK_APPROVED_ROCKET_QUERY_RE =
  */
 const BLOCKED_FAKE_FOOTAGE_RE =
   /miniature|diorama|tabletop|toy|model rocket|scale model|vhs|glitch|sci[- ]?fi|cgi/;
-const BLOCKED_OTHER_SPACE_PROGRAMME_RE =
-  /saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|space shuttle|shuttle/;
 
 function stockVisualCategory(query: string, filePath?: string): string {
   const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
+  /**
+   * VIDEO 623 — the ladder's other rungs (gigafactory, solar, tesla, rocket, robot, factory,
+   * space, the other space programmes, ships, roads, textile mills) were one film's vocabulary,
+   * with quotas and refusals no other subject had. What is left is about the footage itself.
+   */
   if (BLOCKED_FAKE_FOOTAGE_RE.test(combined)) {
     return "blocked_model";
   }
-  /**
-   * Named separately so the GATE can ask whose film this is — see `categoryIsBlockedContent`.
-   * The classifier knows the query and not the topic; the gate knows the topic and not the query.
-   */
-  if (BLOCKED_OTHER_SPACE_PROGRAMME_RE.test(combined)) {
-    return "blocked_other_programme";
-  }
-  if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|shipping port|port crane|logistics hub|cargo terminal|container terminal|warehouse district|distribution center|highway|motorway|freeway|country road|rural road|pickup truck|pickup|semi truck|freight truck|delivery truck|desert road|coastal road|dashcam/.test(combined)) {
-    return "blocked_offtopic";
-  }
-  if (/\b(pickup|pick-up|off[- ]?road truck)\b/.test(combined) && !/\btesla\b/.test(combined)) {
-    return "blocked_offtopic";
-  }
-  if (/gigafactory|solar.*(factory|plant|roof)|factory.*solar|solar panel.*roof/.test(combined)) return "gigafactory";
-  if (/solar|photovoltaic|panel array|sun panel/.test(combined)) return "solar";
-  if (/tesla|supercharger|model [3syx]|cybertruck/.test(combined)) return "tesla";
-  if (/falcon|spacex|starship|rocket|launch pad|booster|spacecraft|ignition/.test(combined)) return "rocket";
-  if (/robot arm|humanoid|cybernetic|prosthetic arm/.test(combined)) return "robot";
-  if (/assembly line|manufacturing|factory|gigafactory|welding plant/.test(combined)) return "factory";
-  if (/astronaut|mission control|orbit|satellite deploy|space station/.test(combined)) return "space";
   return "generic";
 }
 
@@ -17586,36 +17507,17 @@ function stockVisualCategory(query: string, filePath?: string): string {
  * One place, so a caller cannot answer this question differently by accident — which is how the
  * two came to be one list in the first place.
  */
-function categoryIsBlockedContent(category: string, muskTopic: boolean): boolean {
-  if (category === "blocked_model" || category === "blocked_offtopic") return true;
-  return category === "blocked_other_programme" && muskTopic;
+function categoryIsBlockedContent(category: string): boolean {
+  return category === "blocked_model";
 }
 
-function categoryLimitFor(dedup: VisualDedupState, category: string, muskTopic = false): number {
-  if (muskTopic) {
-    if (category === "rocket") return 1;
-    if (category === "space") return 0;
-    if (category === "generic") return 2;
-  }
-  return STOCK_CATEGORY_LIMITS[category] ?? 2;
+/** VIDEO 623 — no category has a quota any more; a blocked one has none left. */
+function categoryLimitFor(_dedup: VisualDedupState, category: string): number {
+  return categoryIsBlockedContent(category) ? 0 : Number.POSITIVE_INFINITY;
 }
 
-function muskBrandScore(sourceQuery: string, filePath: string): number {
-  const t = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
-  let s = 0;
-  if (/\btesla\b/.test(t)) s += 3;
-  if (/\bspacex\b/.test(t)) s += 3;
-  if (/\bfalcon\b|\bstarship\b|\bcybertruck\b/.test(t)) s += 2;
-  return s;
-}
-
-function hasMuskBrandSignal(sourceQuery: string, filePath: string): boolean {
-  if (muskBrandScore(sourceQuery, filePath) >= 1) return true;
-  return /\b(tesla|spacex|falcon|starship|cybertruck|gigafactory|supercharger|model 3)\b/i.test(sourceQuery);
-}
-
-function categoryAtLimit(dedup: VisualDedupState, category: string, muskTopic = false): boolean {
-  if (categoryIsBlockedContent(category, muskTopic)) return true;
+function categoryAtLimit(dedup: VisualDedupState, category: string): boolean {
+  if (categoryIsBlockedContent(category)) return true;
   /**
    * RONDE 617 — "GENERIC" IS NOT A CATEGORY, IT IS THE CLASSIFIER SAYING NOTHING.
    *
@@ -17667,9 +17569,11 @@ function categoryAtLimit(dedup: VisualDedupState, category: string, muskTopic = 
    *
    * Both are this defect one notch further, and neither has a render behind it. They belong to
    * their own round with their own measurement, not to this one.
+   *
+   * VIDEO 623 — BOTH NEIGHBOURS ARE CLOSED. The ladder's vocabulary was one subject's, and with that
+   * subject's mode gone no category keeps a quota: only what a clip IS (`blocked_model`) is refused.
    */
-  if (!muskTopic && category === "generic") return false;
-  const limit = categoryLimitFor(dedup, category, muskTopic);
+  const limit = categoryLimitFor(dedup, category);
   return (dedup.usedCategories.get(category) ?? 0) >= limit;
 }
 
@@ -17681,21 +17585,15 @@ function categoryAtLimit(dedup: VisualDedupState, category: string, muskTopic = 
  */
 export function stockCategoryGateForTest(
   usedCategories: Map<string, number>,
-  query: string,
-  muskTopic: boolean
+  query: string
 ): { category: string; limit: number; atLimit: boolean } {
   const dedup = { usedCategories } as VisualDedupState;
   const category = stockVisualCategory(query);
   return {
     category,
-    limit: categoryLimitFor(dedup, category, muskTopic),
-    atLimit: categoryAtLimit(dedup, category, muskTopic),
+    limit: categoryLimitFor(dedup, category),
+    atLimit: categoryAtLimit(dedup, category),
   };
-}
-
-function pickMuskGoldenQuery(globalBeat: number, beatIndex = 0): string {
-  const idx = (globalBeat * 3 + beatIndex) % GOLDEN_MUSK_QUERIES.length;
-  return GOLDEN_MUSK_QUERIES[idx];
 }
 
 /** Normalize scene stock fields from scene narration (not video title). */
@@ -17714,42 +17612,6 @@ function sanitizeSceneStockQueries(scene: Scene, videoTitle?: string): void {
     ? [`${persons[0]} interview`].filter((q) => q.length >= 3)
     : [];
   if (persons.length > 0) scene.personNames = persons;
-}
-
-/** Rewrite LLM scene queries that cause CGI/model rocket hits on Pexels. */
-function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?: string): void {
-  if (!isMuskTeslaTopic(videoTitle, scene.text)) return;
-  const fallback = pickMuskGoldenQuery(sceneIndex, 0);
-  const safe = (raw: unknown): string => {
-    const trimmed = toQueryString(raw);
-    if (!trimmed) return fallback;
-    const cat = stockVisualCategory(trimmed);
-    /**
-     * RONDE 621 — this whole function returns early unless the film IS a Musk topic, so both
-     * refusals apply here in full: a model rocket and the Apollo programme are equally wrong on a
-     * SpaceX video. The split exists for the films this function never runs on.
-     */
-    if (cat === "blocked_model" || cat === "blocked_other_programme" || isBlockedStockQuery(trimmed)) {
-      return fallback;
-    }
-    if (cat === "solar" && !/solar|photovoltaic|zon\b|sun\b/.test(scene.text.toLowerCase())) return fallback;
-    if (cat === "space") return fallback;
-    if (cat === "rocket" && !isMuskApprovedRocketQuery(trimmed)) {
-      return "rocket";
-    }
-    if (isAmbiguousRocketQuery(trimmed)) return fallback;
-    /** No searchable subject falls to this scene's own golden query, never to an empty string. */
-    return simplifyStockSearchWord(trimmed, scene.text) || fallback;
-  };
-  if (scene.literalVisualCue) scene.literalVisualCue = safe(scene.literalVisualCue);
-  scene.pexelsQuery = safe(scene.pexelsQuery);
-  scene.visualCue = safe(scene.visualCue);
-  scene.pexelsQueries = (scene.pexelsQueries ?? []).map(safe).filter((q, i, arr) => q && arr.indexOf(q) === i);
-  scene.brollQueries = (scene.brollQueries ?? []).map((q) => {
-    const cat = stockVisualCategory(toQueryString(q));
-    if (cat === "tesla" || cat === "factory" || cat === "robot") return safe(q);
-    return "factory";
-  });
 }
 
 /** Celebrity/person videos: never search wildlife metaphors (flamingo etc.) — anchor on the named person. */
@@ -17785,16 +17647,6 @@ function sanitizeSceneForPersonTopic(scene: Scene, primaryPerson: string): void 
     .slice(0, 4);
   scene.brollQueries = [anchor, first].filter((q) => !isBlockedStockQuery(q));
   if (!scene.personNames?.length) scene.personNames = [anchor];
-}
-
-function isMuskApprovedRocketQuery(q: string): boolean {
-  return MUSK_APPROVED_ROCKET_QUERY_RE.test(q);
-}
-
-function isAmbiguousRocketQuery(q: string): boolean {
-  const lower = q.toLowerCase();
-  if (!/\brocket\b/.test(lower) && !/\bspace shuttle\b/.test(lower)) return false;
-  return !isMuskApprovedRocketQuery(q);
 }
 
 /**
@@ -17976,11 +17828,6 @@ async function isMostlyBlackClip(filePath: string, precomputedDurationSec?: numb
   return mid !== null && mid < 28;
 }
 
-function isMuskTeslaTopic(videoTitle?: string, sceneText?: string): boolean {
-  const text = `${videoTitle ?? ""} ${sceneText ?? ""}`.toLowerCase();
-  return /musk|tesla|spacex|starlink|gigafactory|cybertruck|falcon|starship|elon/.test(text);
-}
-
 /**
  * VIDEO 618 — THE SCRIPT'S TITLE, WITHOUT ITS MARKDOWN.
  *
@@ -18013,15 +17860,6 @@ function buildTopicContext(userPrompt: unknown, videoTitle: unknown): string {
   return [prompt, title].filter(Boolean).join(" — ").slice(0, 240);
 }
 
-function isOffTopicVisualForMusk(sourceQuery: string, filePath: string): boolean {
-  const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
-  if (MUSK_OFFTOPIC_VISUAL_RE.test(hay)) return true;
-  if (/\b(ocean wave|beach sunset|tropical beach|underwater|snorkel|diving)\b/.test(hay) && !hasMuskBrandSignal(sourceQuery, filePath)) {
-    return true;
-  }
-  return false;
-}
-
 export function isOffTopicVisualForPersonTopic(
   sourceQuery: string,
   filePath: string,
@@ -18049,7 +17887,7 @@ export function isOffTopicVisualForPersonTopic(
         (parts.length === 1 && titleHay.includes(parts[0]));
       if (
         !titleMentionsPerson &&
-        (PERSON_OFFTOPIC_VISUAL_RE.test(titleHay) || MUSK_OFFTOPIC_VISUAL_RE.test(titleHay))
+        PERSON_OFFTOPIC_VISUAL_RE.test(titleHay)
       ) {
         return true;
       }
@@ -18057,7 +17895,6 @@ export function isOffTopicVisualForPersonTopic(
     return false;
   }
   if (/\b(celebrity|interview|red carpet|paparazzi|influencer|makeup|fashion)\b/.test(hay)) return false;
-  if (MUSK_OFFTOPIC_VISUAL_RE.test(hay)) return true;
   return false;
 }
 
@@ -18066,17 +17903,12 @@ function hasBlockedStockTags(tags?: string): boolean {
 }
 
 function isBlockedStockQuery(q: string): boolean {
-  if (BLOCKED_STOCK_QUERY_RE.test(q)) return true;
-  if (isAmbiguousRocketQuery(q)) return true;
-  if (/\b(highway|motorway|freeway|country road|rural road|pickup truck|off road truck|desert road|coastal road|ferry route)\b/i.test(q)) {
-    return true;
-  }
-  return false;
+  return BLOCKED_STOCK_QUERY_RE.test(q);
 }
 
 function isRejectedPexelsVideo(video: { url?: string }): boolean {
   const slug = (video.url ?? "").toLowerCase();
-  return BLOCKED_STOCK_VISUAL_RE.test(slug) || BLOCKED_MUSK_COMPETITOR_RE.test(slug);
+  return BLOCKED_STOCK_VISUAL_RE.test(slug);
 }
 
 export function isRejectedStockClip(filePath: string, sourceQuery = ""): boolean {
@@ -19351,12 +19183,6 @@ function buildTopicAnchoredQueries(
     ...(scene.brollQueries ?? []).map((q) => enrichStockQuery(q, scene, videoTitle, person, script)),
   );
 
-  if (titleLower.includes("tesla") || textLower.includes("tesla")) {
-    queries.push("tesla", "factory", "car");
-  }
-  if (titleLower.includes("spacex") || textLower.includes("spacex") || textLower.includes("rocket")) {
-    queries.push("spacex", "rocket");
-  }
 
   const allowSolar = /solar|photovoltaic|sun energy|panel|zon\b|sun\b/.test(textLower);
   return uniqueCoercedQueries(queries, 3, (q) => {
@@ -19406,8 +19232,6 @@ const STOCK_TOPIC_WORD_RULES: [RegExp, string][] = [
   [/\bwindmolen\b|\bdutch windmill\b/, "windmill Netherlands"],
   [/\bpolder\b/, "netherlands landscape"],
   [/\btulpen\b|\bdutch tulip\b/, "tulip Netherlands"],
-  [/\b(cybertruck|gigafactory|supercharger|model\s*[3y])\b|\btesla\b|\bmusk\b|\belon\b/, "tesla"],
-  [/\bspacex\b|\bfalcon\b|\bstarship\b/, "spacex"],
   [/\brocket\b|\blaunch\b|\bbooster\b|\borbit\b|\bmissile\b/, "rocket"],
   [/\bsolar\b|\bphotovoltaic\b/, "solar"],
   [/\bsun\b|\bsunshine\b|\bzon\b/, "sun"],
@@ -19467,7 +19291,7 @@ const STOCK_TOPIC_WORD_RULES: [RegExp, string][] = [
   [/\bwoman\b|\bwomen\b|\bfemale\b|\bvrouw\b/, "woman"],
   [/\bman\b|\bmen\b|\bmale\b|\bman\b/, "man"],
   [/\bpeople\b|\bcrowd\b|\baudience\b|\bconcert goers\b|\bmensen\b|\bmenigte\b/, "crowd"],
-  [/\bcelebrity\b|\bpaparazzi\b|\bfamous\b|\bstar\b|\binfluencer\b|\bkardashian\b/, "celebrity"],
+  [/\bcelebrity\b|\bpaparazzi\b|\bfamous\b|\bstar\b|\binfluencer\b/, "celebrity"],
   [/\bcamera\b|\bphotography\b|\bfilming\b|\bmedia\b/, "camera"],
   [/\bnews\b|\bpress\b|\bjournalist\b|\breporter\b|\banchor\b/, "news"],
   [/\bmovie\b|\bfilm\b|\bhollywood\b|\bcinema\b|\bactor\b/, "cinema"],
@@ -19477,8 +19301,8 @@ const STOCK_TOPIC_WORD_RULES: [RegExp, string][] = [
   [/\bspace\b|\bnasa\b|\bastronaut\b|\bplanet\b|\bgalaxy\b|\bruimte\b/, "space"],
   [/\bmoon\b|\blunar\b|\bmaan\b/, "moon"],
   [/\bmars\b/, "mars"],
-  [/\bsatellite\b|\bstarlink\b|\borbit\b/, "satellite"],
-  [/\bneuralink\b|\bbrain\b|\bneuroscience\b/, "brain"],
+  [/\bsatellite\b|\borbit\b/, "satellite"],
+  [/\bbrain\b|\bneuroscience\b/, "brain"],
   [/\btravel\b|\bvacation\b|\btourism\b|\bhotel\b|\bresort\b/, "travel"],
   [/\bnight\b|\bevening\b|\bsunset\b|\bdawn\b/, "sunset"],
   [/\bdesert\b|\bsahara\b/, "desert"],
@@ -19544,7 +19368,6 @@ function simplifyStockSearchWord(input: string, hintText = "", scriptOnly = fals
   for (const t of unique) {
     if (t.length >= 3 && !RELEVANCE_STOP_WORDS.has(t)) return t.slice(0, 24);
   }
-  if (/\bmodel\s*3\b/.test(combined)) return "tesla";
   /**
    * NOTHING SURVIVED, AND "documentary" IS A WORD THE GATE REFUSES BY NAME.
    *
@@ -20502,7 +20325,6 @@ async function adoptClip(
   opts: VisualAdoptOptions = {}
 ): Promise<string | null> {
   const keywords = opts.keywords ?? [];
-  const muskTopic = opts.muskTopic ?? false;
   const strictBeat = strictVoiceVisualMatchEnabled() && !opts.scriptImageFallback;
   const requireBeat = opts.requireBeatMatch || strictBeat;
   const scriptAnchored = opts.scriptAnchored || strictBeat;
@@ -20579,8 +20401,7 @@ async function adoptClip(
     scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
     scoreBeatNarrationMatch(beatText, sourceQuery, p) * 4 +
     realEntityScore(entityRules, sourceQuery, p) +
-    nextLevelScore(p) +
-    (muskTopic ? muskBrandScore(sourceQuery, p) : 0);
+    nextLevelScore(p);
   /**
    * RONDE 96 — resolved BEFORE the sort, because the sort now reads it.
    *
@@ -21171,7 +20992,6 @@ async function adoptClip(
         if (text?.verdict === "has_text" && refuse("baked_edit_text_before_vision")) continue;
       }
       if (!opts.scriptImageFallback) {
-        if (muskTopic && isOffTopicVisualForMusk(sourceQuery, p)) continue;
         if (
           opts.personTopic &&
           opts.primaryPerson &&
@@ -21182,14 +21002,14 @@ async function adoptClip(
         if (opts.personTopic && opts.primaryPerson && isStockVideoClip(p)) {
           const hay = `${sourceQuery} ${path.basename(p)}`.toLowerCase();
           const personHit = textMentionsPersonName(hay, opts.primaryPerson);
-          const celebCue = /\b(interview|red carpet|talk show|celebrity|paparazzi|jenner|kardashian)\b/.test(hay);
+          const celebCue = /\b(interview|red carpet|talk show|celebrity|paparazzi)\b/.test(hay);
           if (!personHit && !celebCue && refuse("stock_without_person")) continue;
         }
       }
       const category = stockVisualCategory(sourceQuery, p);
       /** RONDE 621 — the same question the gate below asks, so the two cannot answer differently. */
-      if (categoryIsBlockedContent(category, muskTopic) && refuse(`blocked_category:${category}`)) continue;
-      if (categoryAtLimit(dedup, category, muskTopic) && refuse(`category_at_limit:${category}`)) continue;
+      if (categoryIsBlockedContent(category) && refuse(`blocked_category:${category}`)) continue;
+      if (categoryAtLimit(dedup, category) && refuse(`category_at_limit:${category}`)) continue;
       // Documentary beat gate (blocklist-only: known non-documentary / off-topic geo-urban
       // filename patterns) now applies unconditionally, including scriptImageFallback
       // candidates — it was previously exempted here, one of the gaps that let a completely
@@ -21203,10 +21023,6 @@ async function adoptClip(
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "documentary_beat_gate", sourceQuery);
         continue;
       }
-      // Musk/Tesla topics: reject generic clips when query targets a specific category
-      const queryCategory = stockVisualCategory(sourceQuery);
-      if (queryCategory !== "generic" && category === "generic" && refuse("generic_for_specific_query")) continue;
-      if (opts.requireMuskBrand && !hasMuskBrandSignal(sourceQuery, p)) continue;
       const beatMatch = scoreBeatNarrationMatch(beatText, sourceQuery, p);
       const queryWords = sourceQuery.split(/\s+/).filter((w) => w.length >= 3);
       const queryInBeat = scoreVisualRelevance(beatText, queryWords) >= 1;
@@ -21214,10 +21030,12 @@ async function adoptClip(
       // scriptImageFallback candidates — a named, REAL_ENTITY_RULES-covered entity in the beat
       // still needs independently-authored evidence (curated-archive annotation, or provider
       // title/description/tags) that the candidate actually shows that entity.
-      if (entityRules.length > 0) {
+      /** VIDEO 623 — gated on the PEOPLE a sentence names; see `namedEntityRules`. */
+      const personRules = entityRules.filter((r) => r.kind === "person");
+      if (personRules.length > 0) {
         // Only counted when the beat actually HAS entity rules — a beat with none was never
         // asked, and counting it as a silent ask would bury a genuinely broken gate in noise.
-        const failsEntityEvidence = !clipSatisfiesRealEntities(entityRules, dedup.clipAnnotationMeta.get(p));
+        const failsEntityEvidence = !clipSatisfiesRealEntities(personRules, dedup.clipAnnotationMeta.get(p));
         recordGateVerdict("entity_evidence", failsEntityEvidence);
         if (failsEntityEvidence) {
           recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "entity_evidence", sourceQuery);
@@ -21286,19 +21104,6 @@ async function adoptClip(
           const eventHit = /\b(interview|celebrity|red carpet|keynote|conference|launch)\b/.test(hay);
           if (!personHit && !eventHit && beatMatch < 1 && refuse("person_not_named")) continue;
         }
-      }
-      if (muskTopic) {
-        if (category === "solar" && !/solar|photovoltaic|sun panel/.test(beatText.toLowerCase())) continue;
-        if ((category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(sourceQuery)) {
-          continue;
-        }
-        if (BLOCKED_MUSK_COMPETITOR_RE.test(`${sourceQuery} ${path.basename(p)}`)) continue;
-        const rel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, keywords);
-        const topicRel = scoreVisualRelevance(`${sourceQuery} ${path.basename(p)}`, MUSK_TOPIC_TOKENS);
-        const brand = muskBrandScore(sourceQuery, p);
-        // Pexels filenames rarely include "Tesla" — reject only when clearly unrelated.
-        if (rel < 1 && topicRel < 1 && brand === 0 && category === "generic") continue;
-        if (category === "generic" && queryCategory !== "generic" && rel < 1 && brand === 0) continue;
       }
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { refuse("file_missing"); continue; }
@@ -21622,7 +21427,7 @@ async function adoptClip(
       const mustFairUse = clipRequiresFairUseTransform(p);
       if (dedup.perf.skipFairUseTransform && !mustFairUse) {
         if (await isValidVideoFile(p)) {
-          if (!isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) { dedup.lastMuskStockClip = p; dedup.lastRealClip = p; }
+          if (!isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) { dedup.lastRealClip = p; }
           recordAdoptedClip(p, adCtx);
           dedup.assetDirectorSceneClips.push(p);
           /**
@@ -21663,7 +21468,7 @@ async function adoptClip(
       }
       if (await isValidVideoFile(transformed)) {
         if (!isPipelineFallbackClip(transformed) && !(await isMostlyBlackClip(transformed))) {
-          dedup.lastMuskStockClip = transformed; dedup.lastRealClip = transformed;
+          dedup.lastRealClip = transformed;
         }
         recordAdoptedClip(transformed, adCtx);
         dedup.assetDirectorSceneClips.push(transformed);
@@ -21684,7 +21489,7 @@ async function adoptClip(
       noteVisionUnusable(dedup.visionReviewPool, sceneIndex, beatIndex, contentKey, "transform_failed");
       if (mustFairUse) continue;
       if (await isValidVideoFile(p) && !isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) {
-        dedup.lastMuskStockClip = p; dedup.lastRealClip = p;
+        dedup.lastRealClip = p;
       }
     }
     return null;
@@ -21731,16 +21536,12 @@ async function tryStockSources(
       continue;
     }
     const category = stockVisualCategory(query);
-    if (adoptOpts.muskTopic && (category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(query)) {
-      declineSource("MUSK_CATEGORY_NOT_APPROVED", query, ` category=${category}`);
-      continue;
-    }
-    if (categoryAtLimit(dedup, category, adoptOpts.muskTopic)) {
+    if (categoryAtLimit(dedup, category)) {
       declineSource(
         "CATEGORY_AT_LIMIT",
         query,
         ` category=${category} used=${dedup.usedCategories.get(category) ?? 0}` +
-          `/${categoryLimitFor(dedup, category, adoptOpts.muskTopic)} scope=render`
+          `/${categoryLimitFor(dedup, category)} scope=render`
       );
       continue;
     }
@@ -21818,13 +21619,11 @@ async function fetchUniqueStockForBeatInner(
 ): Promise<string | null> {
   if (!youtubeCcReady() && !PEXELS_API_KEY && !PIXABAY_API_KEY) return null;
   const perf = dedup.perf;
-  const muskTopic = isMuskTeslaTopic(videoTitle, beat.text);
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const offset = dedup.globalBeatIndex * 11 + sceneIndex * 5 + beat.index * 3;
   const tag = `b${beat.index}_uniq`;
   const looseOpts: VisualAdoptOptions = {
     ...adoptOpts,
-    muskTopic,
     requireBeatMatch: false,
     scriptAnchored: false,
     personTopic: dedup.personTopicLock,
@@ -21930,7 +21729,6 @@ async function fetchUniqueStockForBeatInner(
   const queryCap = perf.minimizeStockFootage ? 1 : perf.fastStockMode ? 4 : 6;
   const queries = [
     ...buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, queryCap),
-    ...(muskTopic ? GOLDEN_MUSK_QUERIES.slice(0, perf.fastStockMode ? 2 : 4) : []),
     enrichStockQuery(scene.pexelsQuery, scene, videoTitle, personName, beat.text),
     stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle),
     ...(scene.brollQueries ?? []).map((q) =>
@@ -22689,13 +22487,12 @@ async function researchBeatClipUnified(
   videoTitle: string | undefined,
   adoptOpts: VisualAdoptOptions,
   tag: string,
-  muskTopic: boolean,
   pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
   candidateOffset: number
 ): Promise<string | null> {
   // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
   return withSearchProvenance(beatSearchProvenance(beat, scene, primary, scenePersons), () =>
-    researchBeatClipUnifiedInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, beatQueries, scenePersons, primary, videoTitle, adoptOpts, tag, muskTopic, pexFetch, candidateOffset)
+    researchBeatClipUnifiedInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, beatQueries, scenePersons, primary, videoTitle, adoptOpts, tag, pexFetch, candidateOffset)
   );
 }
 
@@ -22712,7 +22509,6 @@ async function researchBeatClipUnifiedInner(
   videoTitle: string | undefined,
   adoptOpts: VisualAdoptOptions,
   tag: string,
-  muskTopic: boolean,
   pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
   candidateOffset: number
 ): Promise<string | null> {
@@ -22742,7 +22538,6 @@ async function researchBeatClipUnifiedInner(
     powerWord: beat.powerWord,
     personTopicLock: dedup.personTopicLock && !historicalCtx,
     spaceTopic,
-    muskTopic,
   });
 
   const archivalFirst = prefersRealFootageOnly(intent);
@@ -23103,7 +22898,7 @@ async function researchBeatClipUnifiedInner(
           tasks.push({
             provider: "pexels",
             run: async () => {
-              const paths = await pexFetch(q, `${tag}_research`, candidateOffset, muskTopic ? 2 : 1)();
+              const paths = await pexFetch(q, `${tag}_research`, candidateOffset, 1)();
               return toCandidates(paths, q, "pexels", true);
             },
           });
@@ -23223,8 +23018,7 @@ async function researchBeatClipUnifiedInner(
     base +
     scoreBeatNarrationMatch(beat.text, c.query, c.path) * 4 +
     realEntityScore(entityRules, c.query, c.path) +
-    (primary && textMentionsPersonName(`${c.query} ${path.basename(c.path)}`, primary) ? 5 : 0) +
-    (muskTopic ? muskBrandScore(c.query, c.path) : 0);
+    (primary && textMentionsPersonName(`${c.query} ${path.basename(c.path)}`, primary) ? 5 : 0);
 
   let ranked = rankMediaCandidates(allCandidates, intent, enrichScore);
   ranked = await applyAiRelevanceRanking(ranked, intent, {
@@ -23349,8 +23143,7 @@ async function fetchBeatClipFromScript(
   adoptOpts: VisualAdoptOptions,
   pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
   candidateOffset: number,
-  tag: string,
-  muskTopic: boolean
+  tag: string
 ): Promise<string | null> {
   const perf = dedup.perf;
   const scenePersons = resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
@@ -23411,7 +23204,6 @@ async function fetchBeatClipFromScript(
     videoTitle,
     adoptOpts,
     tag,
-    muskTopic,
     pexFetch,
     candidateOffset
   );
@@ -23425,31 +23217,6 @@ async function fetchBeatClipFromScript(
   const legacyEngine = process.env.ENABLE_MEDIA_RESEARCH === "false";
 
   if (!legacyEngine) {
-    if (
-      muskTopic &&
-      perf.enableMuskHeroFetch &&
-      !dedup.muskHeroFetchUsed &&
-      beat.index === 0 &&
-      sceneIndex === 0
-    ) {
-      dedup.muskHeroFetchUsed = true;
-      clip = (await runCentralYoutubeTurn({
-               beat,
-               scene,
-               workDir,
-               sceneIndex,
-               clipFetchDur,
-               dedup,
-               visualNeed: "hero",
-               queries: HERO_YOUTUBE_QUERIES,
-               queryBuilder: "HERO_YOUTUBE_QUERIES",
-               termSource: "hero YouTube",
-               adoptOpts: { ...adoptOpts, requireMuskBrand: false },
-               timeoutMs: ytMs,
-             })).clip;
-      if (clip) return clip;
-    }
-
     if (canUseLicensedStockBeat(dedup)) {
       clip = await fetchBeatStockFallback(
         beat,
@@ -23524,31 +23291,6 @@ async function fetchBeatClipFromScript(
            timeoutMs: ytMs,
          })).clip;
   if (clip) return clip;
-
-  if (
-    muskTopic &&
-    perf.enableMuskHeroFetch &&
-    !dedup.muskHeroFetchUsed &&
-    beat.index === 0 &&
-    sceneIndex === 0
-  ) {
-    dedup.muskHeroFetchUsed = true;
-    clip = (await runCentralYoutubeTurn({
-             beat,
-             scene,
-             workDir,
-             sceneIndex,
-             clipFetchDur,
-             dedup,
-             visualNeed: "hero",
-             queries: HERO_YOUTUBE_QUERIES,
-             queryBuilder: "HERO_YOUTUBE_QUERIES",
-             termSource: "hero YouTube",
-             adoptOpts: { ...adoptOpts, requireMuskBrand: false },
-             timeoutMs: ytMs,
-           })).clip;
-    if (clip) return clip;
-  }
 
   if (primary) {
     clip = await fetchPersonBeatClip(
@@ -23671,17 +23413,14 @@ async function fetchBeatClipInner(
   
   const tag = `b${beat.index}`;
   const candidateOffset = beat.index * 3 + sceneIndex + dedup.globalBeatIndex;
-  const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
   const perf = dedup.perf;
   const adoptOpts: VisualAdoptOptions = {
-    muskTopic,
     personTopic: dedup.personTopicLock,
     primaryPerson: dedup.primaryPerson || personName,
     keywords: beat.keywords,
     sceneText: scene.text,
     videoTitle,
     requireBeatMatch: false,
-    requireMuskBrand: false,
     scriptAnchored: perf.scriptOnlyVisuals,
   };
 
@@ -23692,7 +23431,7 @@ async function fetchBeatClipInner(
     q = stockQueryFromBeatScript(beat.text, scenePersons, scene.text, videoTitle);
   }
 
-  const pexCount = muskTopic ? 4 : 2;
+  const pexCount = 2;
   const pexFetch = (query: string, t: string, off: number, count = pexCount) =>
     () => fetchPexelsClips(
       query, clipFetchDur, workDir, sceneIndex, count, [query], true, t,
@@ -23715,8 +23454,7 @@ async function fetchBeatClipInner(
     adoptOpts,
     pexFetch,
     candidateOffset,
-    tag,
-    muskTopic
+    tag
   );
   if (clip) {
     dedup.globalBeatIndex++;
@@ -23734,7 +23472,6 @@ async function fetchBeatClipInner(
       dedup,
       videoTitle,
       {
-        muskTopic: isMuskTeslaTopic(videoTitle, scene.text),
         personTopic: dedup.personTopicLock,
         primaryPerson: dedup.primaryPerson || personName,
         keywords: beat.keywords,
@@ -23812,57 +23549,6 @@ async function fetchBeatClipInner(
     return turn.candidatePaths;
   };
 
-  // 0a) Hero beat: YouTube CC + NASA for recognizable SpaceX/Tesla (once per video)
-  if (
-    muskTopic &&
-    perf.enableMuskHeroFetch &&
-    !dedup.muskHeroFetchUsed &&
-    beat.index === 0 &&
-    sceneIndex === 0
-  ) {
-    const heroKw = [...MUSK_TOPIC_TOKENS, ...beat.keywords];
-    const heroOpts = { ...adoptOpts, requireMuskBrand: true };
-    clip = await tryStockSources(
-      [
-        {
-          query: "SpaceX Falcon 9 launch",
-          fetch: () =>
-            askYoutubeOnceForThisBeat(
-              "hero", "hero", HERO_YOUTUBE_QUERIES, heroKw, 2, "HERO_YOUTUBE_QUERIES", false
-            ),
-        },
-        ...HERO_MUSK_QUERIES.map((hq, hi) => ({
-          query: hq,
-          fetch: pexFetch(hq, `${tag}_hero`, candidateOffset + hi, 6),
-        })),
-        ...HERO_MUSK_QUERIES.slice(0, 3).map((hq, hi) => ({
-          query: hq,
-          fetch: pixFetch(hq, `${tag}_hero_px`, candidateOffset + hi + 20),
-        })),
-      ],
-      dedup, sceneIndex, beat.index, beat.text, workDir, "hero", heroOpts
-    );
-    if (clip) {
-      dedup.muskHeroFetchUsed = true;
-      dedup.globalBeatIndex++;
-      return clip;
-    }
-    dedup.muskHeroFetchUsed = true;
-  }
-
-  // 0) Opening beat when hero waterfall missed (scene 0 only; hero returns early on success)
-  if (!clip && beat.index === 0 && sceneIndex === 0 && muskTopic) {
-    const heroOpts = { ...adoptOpts, requireMuskBrand: true };
-    clip = await tryStockSources(
-      OPENING_MUSK_QUERIES.map((oq, oi) => ({
-        query: oq,
-        fetch: pexFetch(oq, `${tag}_open`, candidateOffset + oi, 4),
-      })),
-      dedup, sceneIndex, beat.index, beat.text, workDir, "opening", heroOpts
-    );
-    if (clip) { dedup.globalBeatIndex++; return clip; }
-  }
-
   // 1a) Real-world YouTube CC — only when this beat names the entity (capped per video; slow)
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
   if (
@@ -23921,16 +23607,6 @@ async function fetchBeatClipInner(
       dedup.globalBeatIndex++;
       return clip;
     }
-  }
-
-  // 3) Golden pool fallback for Musk when beat-specific search missed
-  if (muskTopic) {
-    const golden = GOLDEN_MUSK_QUERIES[dedup.globalBeatIndex % GOLDEN_MUSK_QUERIES.length];
-    const goldenFetchers: Array<{ query: string; fetch: () => Promise<string[]> }> = [];
-    goldenFetchers.push({ query: golden, fetch: pexFetch(golden, `${tag}_golden`, candidateOffset + 1) });
-    goldenFetchers.push({ query: golden, fetch: pixFetch(golden, `${tag}_golden`, candidateOffset + 1) });
-    clip = await tryStockSources(goldenFetchers, dedup, sceneIndex, beat.index, beat.text, workDir, "golden", adoptOpts);
-    if (clip) { dedup.globalBeatIndex++; return clip; }
   }
 
   // 4) Dedicated B-roll cutaways on odd beats
@@ -24330,7 +24006,6 @@ async function fetchBeatAuthenticVideoInner(
     powerWord: beat.powerWord,
     personTopicLock: dedup.personTopicLock && !historicalDoc,
     spaceTopic: isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, beat.text, scene.text, videoTitle ?? ""),
-    muskTopic: adoptOpts.muskTopic ?? false,
   });
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
 
@@ -24596,7 +24271,6 @@ async function resolveBeatClipTurboInner(
   const person = historicalDoc
     ? ""
     : (scenePersons[0] ?? personName ?? dedup.primaryPerson ?? "").trim();
-  const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
   const maxQ = Math.min(3, dedup.perf.maxStockQueriesPerBeat);
   const beatQueries = buildBeatVisualQueryList(beat.text, scene, videoTitle, scenePersons, maxQ);
   const tag = `b${beat.index}`;
@@ -24663,7 +24337,6 @@ async function resolveBeatClipTurboInner(
     videoTitle,
     turboAdopt,
     tag,
-    muskTopic,
     pexFetch,
     candidateOffset
   );
@@ -24698,7 +24371,6 @@ async function resolveBeatClipTurboInner(
       powerWord: beat.powerWord,
       personTopicLock: dedup.personTopicLock && !historicalDoc,
       spaceTopic: false,
-      muskTopic,
     });
     const turboYtQueries = [
       // RONDE 249: the script's person before the hardcoded table.
@@ -26964,9 +26636,7 @@ async function fetchSceneVisualsInner(
   );
 
 
-  const muskTopic = isMuskTeslaTopic(videoTitle, scene.text);
   const beatAdoptOpts: VisualAdoptOptions = {
-    muskTopic,
     personTopic: dedup.personTopicLock,
     primaryPerson: dedup.primaryPerson || personName,
     keywords: [],
@@ -27014,7 +26684,7 @@ async function fetchSceneVisualsInner(
       clipPath && !isPipelineFallbackClip(clipPath) && !isStillPhotoClip(clipPath) &&
       fs.existsSync(clipPath)
     ) {
-      dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
+      dedup.lastRealClip = clipPath;
       // RONDE 142: a real clip was adopted, so the extension run is over — the picture changed.
       resetExtendHold(dedup.extendHold);
     }
@@ -27667,6 +27337,8 @@ async function _runVideoPipelineInner(
   resetYoutubeFragmentsFetched();
   /** The cloud route's egress latch is render-scoped too — see noteCloudEgressBlocked. */
   resetCloudEgressBlocked();
+  /** VIDEO 623 — the last render's reading of its narration is not this one's. */
+  renderPeopleReading = null;
   /** RONDE 261: the sources it points at live in a work directory this render is about to make. */
   /** VIDEO 618 — and what earlier renders learned for good: the videos YouTube will not give. */
   const writtenOffVideos = await loadUnusableYoutubeVideos();
@@ -27739,7 +27411,6 @@ async function _runVideoPipelineInner(
 
   const videoTitle = scriptTitle(script);
   const topicContext = asVideoTitleString(buildTopicContext(userPrompt ?? videoRow?.prompt, videoTitle));
-  const muskLocked = isMuskTeslaTopic(topicContext, script);
   const primaryPerson = await resolvePrimaryPersonLockByReading({
     prompt: userPrompt ?? videoRow?.prompt ?? "",
     videoTitle,
@@ -27751,7 +27422,6 @@ async function _runVideoPipelineInner(
 
   console.log(
     `[Pipeline] Video ${videoId}: ${maxScenes} scenes for ${videoLength} min` +
-    (muskLocked ? " [Musk/Tesla topic lock]" : "") +
     (personLocked ? ` [person lock: ${primaryPerson}]` : "") +
     ("") +
     (elevenLabsOnlyVoice() ? " [ElevenLabs voice]" : "")
@@ -27794,7 +27464,6 @@ async function _runVideoPipelineInner(
     );
     for (const scene of scenes) {
       sanitizeSceneStockQueries(scene, topicContext ?? videoTitle);
-      if (muskLocked) sanitizeSceneForMuskTopic(scene, scene.index, topicContext ?? videoTitle);
       if (personLocked && primaryPerson) sanitizeSceneForPersonTopic(scene, primaryPerson);
     }
     console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
@@ -27961,7 +27630,7 @@ async function _runVideoPipelineInner(
       }
       if (SERPAPI_KEY) {
         console.log("[Pipeline] SERPAPI_KEY set — celebrity/person image fallback enabled");
-      } else if (/kylie|jenner|celebrity|musk|tesla/i.test(topicContext ?? userPrompt ?? "")) {
+      } else if (primaryPerson) {
         console.warn("[Pipeline] SERPAPI_KEY not set — named-person videos may lack real photos of the subject");
       }
     }

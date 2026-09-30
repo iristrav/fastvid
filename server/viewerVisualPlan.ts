@@ -146,7 +146,7 @@ const LITERAL_VISUAL_RULES: Array<{
     action: "advancing",
   },
   {
-    pattern: /\b(rocket|spacex|starship|launch|satellite|nasa|space)\b/i,
+    pattern: /\b(rocket|launch|satellite|space)\b/i,
     description: "A rocket launching from a pad with fire and smoke at liftoff.",
     searchQuery: "rocket launch liftoff smoke",
     subject: "rocket",

@@ -269,8 +269,9 @@ describe("FASE 7.3 Test 8 — no threshold constant was changed", () => {
 describe("FASE 7.3 Test 9 — no other rejection gate was touched", () => {
   it("the arming condition topicNeedsHistoricalFootage is unchanged", () => {
     expect(localSrc).toContain('if (topic === "wwii" || topic === "cold_war") return true;');
+    /** VIDEO 623 — the same condition without the four subject names (hitler, nazi, berlin, titanic). */
     expect(localSrc).toContain(
-      "/\\b(19\\d{2}|20[0-1]\\d|world war|wwii|ww2|war|historical|archive|ancient|century|hitler|nazi|berlin|titanic)\\b/"
+      "/\\b(19\\d{2}|20[0-1]\\d|world war|wwii|ww2|war|historical|archive|ancient|century)\\b/"
     );
   });
 
