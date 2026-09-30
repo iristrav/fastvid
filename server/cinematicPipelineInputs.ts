@@ -104,6 +104,11 @@ export type AdoptedClipFacts = {
   sourceInSec?: number;
   sourceOutSec?: number;
   kind?: "video" | "image";
+  /**
+   * VIDEO 626 — a photograph the render turned into a video file. It is still a video file to the
+   * renderer; this says only that nothing in it moves, so the timeline gives it a camera move.
+   */
+  still?: boolean;
 };
 
 /**
@@ -159,7 +164,52 @@ export type SceneFacts = {
   beats: ProductionBeat[];
   /** Index-aligned with `beats`. A beat with no adopted clip is simply absent from the plan. */
   clips: Array<{ facts: AdoptedClipFacts; adoption: AdoptionFacts | null } | null>;
+  /**
+   * VIDEO 626 — a beat's further clips, index-aligned with `beats`: the clips the sentence approved
+   * after its first one because that one was shorter than the sentence. They share the sentence's
+   * time with it, each on screen for its own length, instead of the first being stretched.
+   */
+  moreClips?: Array<Array<{ facts: AdoptedClipFacts; adoption: AdoptionFacts | null }>>;
 };
+
+/** VIDEO 626 — below this a further clip is a flash, not a shot; the clip before it keeps the time. */
+export const MIN_SHARED_SHOT_SEC = 1.5;
+
+/**
+ * VIDEO 626 — how a sentence's time is shared by the clips approved for it.
+ *
+ * Each clip in order takes its own measured length, leaving at least `MIN_SHARED_SHOT_SEC` for
+ * every clip after it; the last clip used takes what is left. A clip that would get less than that
+ * is not used, and neither is any clip after the sentence is already covered. A clip with no
+ * measured length takes an equal share. Pure: returns the lengths, one per clip used.
+ */
+export function shareBeatTime(beatSec: number, clipSecs: ReadonlyArray<number | null | undefined>): number[] {
+  const out: number[] = [];
+  if (!(beatSec > 0) || clipSecs.length === 0) return out;
+  let left = beatSec;
+  for (let i = 0; i < clipSecs.length; i++) {
+    const after = clipSecs.length - i - 1;
+    const own = clipSecs[i];
+    const want = own != null && own > 0 ? own : beatSec / clipSecs.length;
+    const room = left - MIN_SHARED_SHOT_SEC * after;
+    if (after === 0 || want >= room - 1e-6) {
+      out.push(Number(left.toFixed(3)));
+      return out;
+    }
+    if (want < MIN_SHARED_SHOT_SEC) {
+      if (out.length === 0) {
+        out.push(Number(want.toFixed(3)));
+        left -= want;
+        continue;
+      }
+      out[out.length - 1] = Number((out[out.length - 1]! + left).toFixed(3));
+      return out;
+    }
+    out.push(Number(want.toFixed(3)));
+    left -= want;
+  }
+  return out;
+}
 
 /* ═══════════════════════ what comes out ═══════════════════════ */
 
@@ -642,60 +692,76 @@ export function candidateFrom(
 
 
 /**
- * WHICH CLIP BELONGS TO WHICH BEAT.
+ * WHICH CLIPS BELONG TO WHICH BEAT.
  *
  * ── Why this is a function and not a `clips[beatIndex]` in the caller ───────────────────────
  *
- * The caller had exactly that: `beats.map((_, beatIndex) => composedUsedClips[i][beatIndex])`. The
- * list it indexes is the set of clips the COMPOSE used, in compose order, and it is not
- * one-clip-per-beat: a beat can adopt two clips, another none, and the salvage paths push whole
- * survivor lists into it at once. Pairing beat N with clip N is a guess.
+ * The list the scene returns is the set of clips it pushed, in push order, and it is not
+ * one-clip-per-beat: a beat can adopt two clips, another none, and the editorial reorder moves
+ * clips around inside the scene. Pairing beat N with clip N is a guess.
  *
- * It went unnoticed because it never ran. Render 562 handed the planner zero beats (see
- * `sceneBeatsBySceneIndex` in videoPipeline.ts), so `beats.map` iterated an empty array on every
- * production render this route has ever taken. Fixing the beats makes this line execute against a
- * real scene for the first time, which is why it is being made correct and testable in the same
- * change rather than left as it was.
+ * ── VIDEO 626: the record this read was gone ────────────────────────────────────────────────
+ *
+ * It used to read the adoption audit, whose only writers were the scene pool and the retrieval
+ * funnel. Those were removed, the audit stayed empty, and every scene fell through to the
+ * positional read: render 626 showed scene 2's second sentence under its first, the first under
+ * the second, and lost scene 1's third sentence's approved picture entirely.
  *
  * ── What it uses instead ────────────────────────────────────────────────────────────────────
  *
- * The render's own adoption record, which names the beat each clip was adopted FOR at the moment of
- * adoption. Walking the compose's order and taking the first surviving clip per beat gives each
- * beat the clip that actually plays for it.
- *
- * ── The all-or-nothing rule ─────────────────────────────────────────────────────────────────
- *
- * Where the audit says nothing at all about a scene, the positional read stands, so no scene is
- * worse off than before this change. Where it DOES speak, it speaks for the whole scene: a beat it
- * does not name gets nothing, and the planner drops that beat with "no clip was adopted for this
- * beat". Mixing the two would hand a beat another sentence's picture on the strength of an index,
- * which is the guess this exists to remove.
+ * `clipBeatIndices`, parallel to `clipPaths`: the sentence each clip was pushed for, written at
+ * the push and carried through every reorder with its clip. Each beat gets ALL its clips, in the
+ * order the scene holds them. A clip with no recorded sentence goes to no sentence, and nothing
+ * is ever handed out by position.
  */
 export function pairClipsToBeats(params: {
-  /** The clips the compose used for this scene, in compose order. */
-  clipPaths: string[];
-  /** This scene's adoption records: which beat each clip was adopted for. */
-  adoptions: ReadonlyArray<{ beatIndex: number; basename: string }>;
+  /** The clips the scene holds, in its order. */
+  clipPaths: readonly string[];
+  /** The sentence each clip was pushed for, parallel to `clipPaths`. */
+  clipBeatIndices: ReadonlyArray<number | null | undefined>;
   /** The scene's beats, in order. `index` is the beat's own id where it has one. */
   beats: ReadonlyArray<{ index?: number }>;
-  /** Injected so this stays a pure function — `path.basename` in the caller. */
-  basenameOf: (clipPath: string) => string;
-}): Array<string | null> {
-  const beatOfClip = new Map<string, number>();
-  for (const a of params.adoptions) {
-    if (!beatOfClip.has(a.basename)) beatOfClip.set(a.basename, a.beatIndex);
-  }
-  const clipForBeat = new Map<number, string>();
-  for (const clipPath of params.clipPaths) {
-    const beatIndex = beatOfClip.get(params.basenameOf(clipPath));
-    if (beatIndex == null || clipForBeat.has(beatIndex)) continue;
-    clipForBeat.set(beatIndex, clipPath);
-  }
-  return params.beats.map((beat, position) =>
-    clipForBeat.size
-      ? clipForBeat.get(beat.index ?? position) ?? null
-      : params.clipPaths[position] ?? null
-  );
+}): string[][] {
+  const clipsForBeat = new Map<number, string[]>();
+  params.clipPaths.forEach((clipPath, i) => {
+    const beatIndex = params.clipBeatIndices[i];
+    if (beatIndex == null || !clipPath) return;
+    const list = clipsForBeat.get(beatIndex) ?? [];
+    if (!list.includes(clipPath)) list.push(clipPath);
+    clipsForBeat.set(beatIndex, list);
+  });
+  return params.beats.map((beat, position) => clipsForBeat.get(beat.index ?? position) ?? []);
+}
+
+/**
+ * VIDEO 626 — WHICH OF A SENTENCE'S FILES A TIMELINE CLIP IS.
+ *
+ * A sentence can now hold two clips, so "the file for scene 1 beat 2" no longer names one file.
+ * The timeline clip carries the identity it was planned from; the file whose adoption has the same
+ * provider and asset id is its file. Two parts of one source are told apart by where each was cut
+ * from it. A clip no file matches gets none — the render job then fetches it by its identity
+ * rather than being handed another clip's picture.
+ */
+export function pickLocalFileForClip(
+  candidates: ReadonlyArray<{ path: string; adoption: AdoptionFacts | null }>,
+  clip: { source?: { provider?: string | null; providerAssetId?: string | null; archiveAssetId?: number | null } | null; sourceIn?: number }
+): string | null {
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0]!.path;
+  const src = clip.source ?? {};
+  const same = candidates.filter((c) => {
+    const a = c.adoption;
+    if (!a) return false;
+    if (src.providerAssetId != null && a.providerAssetId != null) return String(a.providerAssetId) === String(src.providerAssetId);
+    if (src.archiveAssetId != null && a.archiveAssetId != null) return Number(a.archiveAssetId) === Number(src.archiveAssetId);
+    return false;
+  });
+  if (same.length === 0) return null;
+  if (same.length === 1 || clip.sourceIn == null) return same[0]!.path;
+  const at = clip.sourceIn;
+  return [...same].sort(
+    (x, y) => Math.abs(at - (x.adoption?.sourceInSec ?? 0)) - Math.abs(at - (y.adoption?.sourceInSec ?? 0))
+  )[0]!.path;
 }
 
 /**
@@ -742,9 +808,13 @@ export function pairClipsToBeats(params: {
  */
 export function localFilesForTimelineClips(params: {
   /** The plan's video clips, each carrying the beat it illustrates. */
-  clips: ReadonlyArray<{ id: string; sceneIndex?: number; beatIndex?: number }>;
+  clips: ReadonlyArray<{ id: string; sceneIndex?: number; beatIndex?: number; source?: AssetSourceIdentity; sourceIn?: number }>;
   /** What the render used for that beat, or undefined where it used nothing. */
-  localPathFor: (sceneIndex: number, beatIndex: number) => string | null | undefined;
+  localPathFor: (
+    sceneIndex: number,
+    beatIndex: number,
+    clip: { source?: AssetSourceIdentity; sourceIn?: number }
+  ) => string | null | undefined;
   /** Whether that file is on this disk with bytes in it. Defaults to asking the disk. */
   exists?: (localPath: string) => boolean;
 }): Map<string, string> {
@@ -752,7 +822,7 @@ export function localFilesForTimelineClips(params: {
   const byClipId = new Map<string, string>();
   for (const clip of params.clips) {
     if (clip.sceneIndex == null || clip.beatIndex == null) continue;
-    const localPath = params.localPathFor(clip.sceneIndex, clip.beatIndex);
+    const localPath = params.localPathFor(clip.sceneIndex, clip.beatIndex, clip);
     if (!localPath) continue;
     if (!exists(localPath)) continue;
     byClipId.set(clip.id, localPath);
@@ -1014,53 +1084,71 @@ export function buildCinematicSceneInputs(params: {
        * removes. With both lines, `ADOPTED → CINEMATIC_SELECTED` and `ADOPTED → CINEMATIC_DROPPED`
        * are the only two endings, and neither is silent.
        */
-      if (localOnly) stats.localOnlyIdentity++;
-      console.log(
-        `[CinematicSelected] scene=${scene.index} beat=${beatIndex} ` +
-          `${assetLabel(adopted.adoption)} start=${start.toFixed(2)} duration=${durationSec.toFixed(2)}` +
-          /**
-           * F-1 — named on the line that keeps the beat, so the two facts arrive together: this
-           * beat IS in the film, and the timeline it is in may not survive being reopened later.
-           */
-          (localOnly
-            ? ` source=local_only (not rehydratable — kept on the file this render holds)`
-            : "")
-      );
-
-      params.onBeatOutcome?.({
-        stage: "CINEMATIC_SELECTED", clipPath: adopted.facts.localPath,
-        sceneIndex: scene.index, beatIndex,
+      /**
+       * VIDEO 626 — the sentence's further clips share its time, each after the one before it.
+       * One that cannot be fetched again is left out, exactly like a first clip would be.
+       */
+      const parts: Array<{
+        adopted: { facts: AdoptedClipFacts; adoption: AdoptionFacts | null };
+        identity: AssetSourceIdentity;
+        localOnly: boolean;
+      }> = [{ adopted, identity, localOnly: Boolean(localOnly) }];
+      for (const more of sceneFacts.moreClips?.[beatIndex] ?? []) {
+        const moreIdentity =
+          identityFrom(more.adoption) ?? localOnlyIdentityFor(more.adoption, more.facts.localPath);
+        if (!moreIdentity) continue;
+        parts.push({ adopted: more, identity: moreIdentity, localOnly: !identityFrom(more.adoption) });
+      }
+      const shares = shareBeatTime(durationSec, parts.map((p) => p.adopted.facts.durationSec));
+      let partStart = start;
+      shares.forEach((share, k) => {
+        const part = parts[k]!;
+        const partAdopted = part.adopted;
+        if (part.localOnly) stats.localOnlyIdentity++;
+        console.log(
+          `[CinematicSelected] scene=${scene.index} beat=${beatIndex} ` +
+            `${assetLabel(partAdopted.adoption)} start=${partStart.toFixed(2)} duration=${share.toFixed(2)}` +
+            (parts.length > 1 ? ` part=${k + 1}/${shares.length}` : "") +
+            (part.localOnly
+              ? ` source=local_only (not rehydratable — kept on the file this render holds)`
+              : "")
+        );
+        params.onBeatOutcome?.({
+          stage: "CINEMATIC_SELECTED", clipPath: partAdopted.facts.localPath,
+          sceneIndex: scene.index, beatIndex,
+        });
+        if (partAdopted.facts.durationSec != null) stats.withProbe++;
+        if (partAdopted.adoption?.sourceInSec != null) stats.withTrim++;
+        beats.push({
+          input: {
+            scene,
+            intent: intentFrom(beat, scene.index, beatIndex, partAdopted.adoption, extractors),
+            bestCandidate: candidateFrom(partAdopted.facts, partAdopted.adoption, beat, scene.index, beatIndex),
+            beatVoiceStartSec: Number(partStart.toFixed(3)),
+            beatVoiceDurationSec: share,
+          },
+          identity: part.identity,
+          ...(partAdopted.facts.still ? { still: true } : {}),
+          ...(partAdopted.adoption?.sourceInSec != null
+            ? {
+                sourceTrim: {
+                  inSec: partAdopted.adoption.sourceInSec,
+                  ...(partAdopted.adoption.sourceOutSec != null
+                    ? { outSec: partAdopted.adoption.sourceOutSec }
+                    : {}),
+                },
+              }
+            : {}),
+        });
+        stats.planned++;
+        partStart += share;
       });
-
-      if (adopted.facts.durationSec != null) stats.withProbe++;
-      if (adopted.adoption?.sourceInSec != null) stats.withTrim++;
-
-      beats.push({
-        input: {
-          scene,
-          intent: intentFrom(beat, scene.index, beatIndex, adopted.adoption, extractors),
-          bestCandidate: candidateFrom(adopted.facts, adopted.adoption, beat, scene.index, beatIndex),
-          beatVoiceStartSec: start,
-          beatVoiceDurationSec: durationSec,
-        },
-        identity,
-        /**
-         * §7 — only when this render actually measured the cut. An absent trim reaches the
-         * timeline as the planner's own numbers, which is right for a clip nobody pre-trimmed and
-         * is not a claim about one that was.
-         */
-        ...(adopted.adoption?.sourceInSec != null
-          ? {
-              sourceTrim: {
-                inSec: adopted.adoption.sourceInSec,
-                ...(adopted.adoption.sourceOutSec != null
-                  ? { outSec: adopted.adoption.sourceOutSec }
-                  : {}),
-              },
-            }
-          : {}),
-      });
-      stats.planned++;
+      for (const unused of parts.slice(shares.length)) {
+        console.log(
+          `[CinematicUnused] scene=${scene.index} beat=${beatIndex} ${assetLabel(unused.adopted.adoption)} ` +
+            `— the sentence is covered by the clips before it`
+        );
+      }
     });
 
     if (beats.length === 0) {

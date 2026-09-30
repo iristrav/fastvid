@@ -244,102 +244,68 @@ describe("CINEMATIC_NO_PLANNABLE_BEATS says which of the two happened", () => {
 
 /* ═══════════════════════ which clip belongs to which beat ═══════════════════════ */
 
-const base = (p: string) => p.split("/").pop() ?? p;
-
-describe("clips are paired to beats by the adoption record", () => {
+describe("clips are paired to beats by the sentence each was pushed for", () => {
   /**
-   * The compose list is in COMPOSE order and holds however many clips the scene ended up with.
-   * Here beat 0 adopted two clips and beat 1 none, so position and beat disagree from index 1 on.
+   * The scene's list holds however many clips it ended up with. Here beat 0 pushed two clips and
+   * beat 1 none, so position and beat disagree from index 1 on.
    */
-  it("gives each beat the clip adopted for it, not the clip at its index", () => {
+  it("gives each beat the clips pushed for it, not the clip at its index", () => {
     const paired = pairClipsToBeats({
       clipPaths: ["/w/a.mp4", "/w/b.mp4", "/w/c.mp4"],
-      adoptions: [
-        { beatIndex: 0, basename: "a.mp4" },
-        { beatIndex: 0, basename: "b.mp4" },
-        { beatIndex: 2, basename: "c.mp4" },
-      ],
+      clipBeatIndices: [0, 0, 2],
       beats: [{ index: 0 }, { index: 1 }, { index: 2 }],
-      basenameOf: base,
     });
-    expect(paired[0], "the beat's first adopted clip is not the one it plays").toBe("/w/a.mp4");
-    expect(paired[1], "a beat that adopted nothing was handed another beat's picture").toBeNull();
-    expect(paired[2], "the positional read survived: beat 2 got clip 2 by index").toBe("/w/c.mp4");
+    expect(paired[0], "a sentence's second approved clip was lost").toEqual(["/w/a.mp4", "/w/b.mp4"]);
+    expect(paired[1], "a beat that adopted nothing was handed another beat's picture").toEqual([]);
+    expect(paired[2], "the positional read survived: beat 2 got clip 2 by index").toEqual(["/w/c.mp4"]);
   });
 
-  /** A clip the compose discarded is not in the list, so no beat may be given it. */
-  it("never hands over a clip the compose did not use", () => {
+  /** VIDEO 626 — the editorial reorder moves clips; each keeps its sentence. */
+  it("a reordered list still pairs each clip with its own sentence", () => {
     const paired = pairClipsToBeats({
-      clipPaths: ["/w/kept.mp4"],
-      adoptions: [
-        { beatIndex: 0, basename: "kept.mp4" },
-        { beatIndex: 1, basename: "discarded.mp4" },
-      ],
-      beats: [{ index: 0 }, { index: 1 }],
-      basenameOf: base,
+      clipPaths: ["/w/s2b1_a58448.mp4", "/w/s2b0_a58409.mp4", "/w/s2b1_a58470.mp4"],
+      clipBeatIndices: [1, 0, 1],
+      beats: [{ index: 0 }, { index: 1 }, { index: 2 }],
     });
-    expect(paired).toEqual(["/w/kept.mp4", null]);
+    expect(paired).toEqual([["/w/s2b0_a58409.mp4"], ["/w/s2b1_a58448.mp4", "/w/s2b1_a58470.mp4"], []]);
   });
 
-  /** Two clips for one beat: the one the compose plays first, and only that one. */
-  it("takes the first surviving clip per beat, in compose order", () => {
-    const paired = pairClipsToBeats({
-      clipPaths: ["/w/second.mp4", "/w/first.mp4"],
-      adoptions: [
-        { beatIndex: 0, basename: "first.mp4" },
-        { beatIndex: 0, basename: "second.mp4" },
-      ],
-      beats: [{ index: 0 }, { index: 1 }],
-      basenameOf: base,
-    });
-    expect(paired[0], "compose order was ignored in favour of adoption order").toBe("/w/second.mp4");
-    expect(paired[1]).toBeNull();
-  });
-
-  /**
-   * The all-or-nothing rule. A scene the audit knows nothing about keeps the behaviour it had
-   * before this change, so no scene is made worse; a scene it knows something about is decided
-   * entirely by it.
-   */
-  it("falls back to position only when the audit says nothing about the scene", () => {
+  it("never falls back to position: a clip with no recorded sentence goes nowhere", () => {
     expect(
       pairClipsToBeats({
         clipPaths: ["/w/a.mp4", "/w/b.mp4"],
-        adoptions: [],
+        clipBeatIndices: [],
         beats: [{ index: 0 }, { index: 1 }],
-        basenameOf: base,
       })
-    ).toEqual(["/w/a.mp4", "/w/b.mp4"]);
-  });
-
-  it("does not mix the two: one known beat does not make the others positional", () => {
-    const paired = pairClipsToBeats({
-      clipPaths: ["/w/a.mp4", "/w/b.mp4"],
-      adoptions: [{ beatIndex: 1, basename: "a.mp4" }],
-      beats: [{ index: 0 }, { index: 1 }],
-      basenameOf: base,
-    });
-    expect(paired[0], "an unnamed beat fell back to position and took a named beat's clip").toBeNull();
-    expect(paired[1]).toBe("/w/a.mp4");
+    ).toEqual([[], []]);
+    expect(
+      pairClipsToBeats({
+        clipPaths: ["/w/a.mp4", "/w/b.mp4"],
+        clipBeatIndices: [1, undefined],
+        beats: [{ index: 0 }, { index: 1 }],
+      })
+    ).toEqual([[], ["/w/a.mp4"]]);
   });
 
   /** More beats than clips must not throw or wrap around. */
   it("returns one entry per beat, always", () => {
     const paired = pairClipsToBeats({
       clipPaths: ["/w/a.mp4"],
-      adoptions: [],
+      clipBeatIndices: [0],
       beats: [{ index: 0 }, { index: 1 }, { index: 2 }],
-      basenameOf: base,
     });
-    expect(paired).toEqual(["/w/a.mp4", null, null]);
+    expect(paired).toEqual([["/w/a.mp4"], [], []]);
   });
 
   /** The caller must use it — a pure function nothing calls is the R160 failure repeated. */
   it("the pipeline calls it instead of indexing the compose list", () => {
     const at = CODE.indexOf("planAndStoreCinematicTimeline({");
     /* To the end of the scene map rather than a fixed span — comments moved the call further in. */
-    const block = CODE.slice(at, CODE.indexOf("clipForBeat.forEach(", at));
+    const block = CODE.slice(at, CODE.indexOf("planned.forEach(", at));
     expect(block, "the planner does not use the pairing").toContain("pairClipsToBeats({");
+    expect(block, "the pairing is not given the sentence of each clip").toContain(
+      "clipBeatIndices: sceneVisualResults[i]?.clipBeatIndices ?? []"
+    );
     expect(block, "the planner still indexes the compose list by beat position").not.toMatch(
       /clipPaths\[beatIndex\]/
     );

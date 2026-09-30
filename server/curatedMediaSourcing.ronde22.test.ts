@@ -57,6 +57,8 @@ describe("RONDE 22 — every candidate loop honors the filter", () => {
     // Selection-time filtering is an optimisation, not a replacement: an asset that has never
     // been checked must still be caught (and have its verdict cached) when it is adopted.
     expect(src).toContain("has baked edit text — skipped");
-    expect(src).toContain("archiveClipHasBakedEditText(rawPath, asset.mimeType)");
+    /** VIDEO 626 — through the verdict, so a check that could not look is not cached as clean. */
+    expect(src).toContain("const text = await archiveClipBakedEditTextVerdict(rawPath, asset.mimeType);");
+    expect(src).toContain("if (text.verdict === \"not_asked\") {");
   });
 });

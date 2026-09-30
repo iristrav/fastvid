@@ -15,22 +15,35 @@ import { sceneClipsKeptAtDeadline } from "./videoPipeline";
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
 describe("Video 617. a scene still running at the visual deadline keeps what it already approved", () => {
-  it("the approved clips and their holds are kept, in order", () => {
+  it("the approved clips, their holds and their sentences are kept, in order", () => {
     const kept = sceneClipsKeptAtDeadline({
       clips: ["/w/scene_0_b0_curated_a58020.mp4", "/w/scene_0_b1_curated_a58027.mp4"],
       beatDurations: [5.2, 4.1],
+      clipBeatIndices: [0, 1],
     });
     expect(kept).toEqual({
       clips: ["/w/scene_0_b0_curated_a58020.mp4", "/w/scene_0_b1_curated_a58027.mp4"],
       beatDurations: [5.2, 4.1],
+      clipBeatIndices: [0, 1],
     });
   });
 
+  /** VIDEO 626 — a clip whose sentence is unknown would be placed by position; it is placed nowhere. */
+  it("a clip with no recorded sentence is not kept", () => {
+    const kept = sceneClipsKeptAtDeadline({
+      clips: ["/w/scene_0_b0_curated_a58020.mp4", "/w/scene_0_b1_curated_a58027.mp4"],
+      beatDurations: [5.2, 4.1],
+      clipBeatIndices: [0],
+    });
+    expect(kept.clips).toEqual(["/w/scene_0_b0_curated_a58020.mp4"]);
+  });
+
   it("it is a copy: what the scene pushes after the deadline does not reach the result", () => {
-    const soFar = { clips: ["/w/scene_0_b0_curated_a58020.mp4"], beatDurations: [5.2] };
+    const soFar = { clips: ["/w/scene_0_b0_curated_a58020.mp4"], beatDurations: [5.2], clipBeatIndices: [0] };
     const kept = sceneClipsKeptAtDeadline(soFar);
     soFar.clips.push("/w/scene_0_b3_late.mp4");
     soFar.beatDurations.push(3);
+    soFar.clipBeatIndices.push(3);
     expect(kept.clips).toEqual(["/w/scene_0_b0_curated_a58020.mp4"]);
     expect(kept.beatDurations).toEqual([5.2]);
   });
@@ -39,20 +52,23 @@ describe("Video 617. a scene still running at the visual deadline keeps what it 
     const kept = sceneClipsKeptAtDeadline({
       clips: ["/w/scene_0_b0_curated_a58020.mp4", "", "/w/scene_0_b2_curated_a58049.mp4"],
       beatDurations: [5.2, 1, 4],
+      clipBeatIndices: [0, 1, 2],
     });
     expect(kept.clips).toEqual(["/w/scene_0_b0_curated_a58020.mp4", "/w/scene_0_b2_curated_a58049.mp4"]);
     expect(kept.beatDurations).toEqual([5.2, 4]);
+    expect(kept.clipBeatIndices).toEqual([0, 2]);
   });
 
   it("a scene that never started, or approved nothing, is still empty — a gap as before", () => {
-    expect(sceneClipsKeptAtDeadline(undefined)).toEqual({ clips: [], beatDurations: [] });
-    expect(sceneClipsKeptAtDeadline({ clips: [], beatDurations: [] })).toEqual({ clips: [], beatDurations: [] });
+    const empty = { clips: [], beatDurations: [], clipBeatIndices: [] };
+    expect(sceneClipsKeptAtDeadline(undefined)).toEqual(empty);
+    expect(sceneClipsKeptAtDeadline({ clips: [], beatDurations: [], clipBeatIndices: [] })).toEqual(empty);
   });
 
   it("wiring: the scene registers its own lists; the deadline reads a copy of them; a late return still writes nothing", () => {
     const inner = PIPE.slice(PIPE.indexOf("async function fetchSceneVisualsInner("));
     expect(inner).toMatch(
-      /const clips: string\[\] = \[\];\s*const beatDurations: number\[\] = \[\];\s*\(dedup\.sceneClipsSoFar \?\?= new Map\(\)\)\.set\(scene\.index, \{ clips, beatDurations \}\);/
+      /const clips: string\[\] = \[\];\s*const beatDurations: number\[\] = \[\];[\s\S]{0,200}const clipBeatIndices: number\[\] = \[\];\s*\(dedup\.sceneClipsSoFar \?\?= new Map\(\)\)\.set\(scene\.index, \{ clips, beatDurations, clipBeatIndices \}\);/
     );
     expect(PIPE).toContain("const kept = sceneClipsKeptAtDeadline(visualDedup.sceneClipsSoFar?.get(scenes[si]!.index));");
     /** The kept clips fill the slot first; an unfinished scene with nothing approved is still a gap. */

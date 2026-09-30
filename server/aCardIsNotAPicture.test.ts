@@ -207,9 +207,14 @@ describe("§5 — placeholder cannot reach the timeline", () => {
     const block = PIPELINE.slice(at, at + 2200);
     expect(block).toContain("if (placeholderVerdict.placeholder) {");
     expect(block, "the beat must not be given some other picture instead").toContain("return null;");
-    expect(block, "the file must not stay in the render-input map").toContain(
-      "localFileByBeat.delete("
+    /**
+     * VIDEO 626 — the render-input map is filled only from what this check let through, so a
+     * refused file can never be in it: nothing is added first and taken out after.
+     */
+    expect(PIPELINE, "the render-input map is filled from something other than the checked list").toContain(
+      "const c = toPlannerClip(clipPath, beatIndex);\n                return c ? [{ clipPath, c }] : [];"
     );
+    expect(PIPELINE).toMatch(/planned\.forEach\(\(list, beatIndex\) => \{[\s\S]{0,200}localFilesByBeat\.set\(/);
   });
 
   it("the refusal is loud and carries its authority", () => {

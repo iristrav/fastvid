@@ -311,6 +311,17 @@ export const FUNCTION_WORDS: ReadonlySet<string> = new Set([
   "own", "some", "any", "all", "both", "each", "every", "few", "many", "much", "more", "most",
   "other", "others", "another", "same", "such", "there", "here",
   "when", "where", "why", "how", "then", "than", "as", "if", "because",
+  /**
+   * VIDEO 626 — hedges, time fillers and empty nouns. Render 626 sent "perhaps", "minutes" and
+   * "minutes twitter" to image search because each stands in its sentence; none names anything a
+   * picture can show, and "perhaps" on its own returned a Bible page.
+   */
+  "perhaps", "maybe", "probably", "possibly", "apparently", "reportedly", "allegedly",
+  "minute", "minutes", "second", "seconds", "hour", "hours", "moment", "moments",
+  "later", "earlier", "soon", "once", "again", "still", "ever", "never", "always", "often",
+  "part", "parts", "thing", "things", "something", "anything", "everything", "nothing",
+  "someone", "anyone", "everyone", "way", "ways", "lot", "lots", "kind", "sort",
+  "hes", "shes", "its", "theyre", "thats", "whats", "this", "that", "these", "those", "it",
 ]);
 
 export function isPronounToken(token: string): boolean {
@@ -336,7 +347,7 @@ export function isFunctionWord(token: string): boolean {
 export const PRODUCTION_VOCABULARY: ReadonlySet<string> = new Set([
   "archival", "footage", "film", "video", "clip", "clips", "reel", "stock",
   "documentary", "broll", "b-roll", "newsreel", "archive", "archives",
-  "aerial", "wide", "closeup", "close-up", "close", "up", "medium", "shot", "shots",
+  "aerial", "wide", "closeup", "close-up", "close", "up", "medium", "shot", "shots", "detail",
   "establishing", "pan", "tilt", "tracking", "handheld", "static", "overhead", "topdown",
   "timelapse", "time-lapse", "slowmotion", "slow-motion", "montage", "cutaway",
   "colour", "color", "black", "white", "monochrome", "restored",
@@ -2530,9 +2541,42 @@ export function searchGateDecision(
     }
   }
 
+  /** VIDEO 626 — "subject:" with nothing after it asks the archive for everything. */
+  if (isProviderSyntax(sent) && providerFieldIsEmpty(sent)) {
+    searchGateAudit.record("queriesBlocked", provider, ticket.route);
+    console.warn(audit("BLOCKED", "EMPTY_QUERY"));
+    return { admitted: false, text };
+  }
+  /** VIDEO 626 — "Elon Musk Elon Musk": a word said twice is asked once. Only removes words. */
+  if (!isProviderSyntax(sent)) {
+    const once = withoutRepeatedWords(sent);
+    if (once !== sent) {
+      console.log(`[SearchQueryCanonical] provider=${provider} route=${ticket.route} was="${sent}" now="${once}" (repeated word)`);
+      sent = once;
+    }
+  }
+
   searchGateAudit.record("queriesSent", provider, ticket.route);
   if (searchQueryAuditLogEnabled()) console.log(audit("ALLOWED"));
   return { admitted: true, text: sent };
+}
+
+/** VIDEO 626 — every word after its first appearance, case-insensitively, is dropped. */
+export function withoutRepeatedWords(query: string): string {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const word of query.trim().split(/\s+/)) {
+    const key = word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    kept.push(word);
+  }
+  return kept.join(" ");
+}
+
+/** VIDEO 626 — a provider field with no value: `subject:` at the end, before a space or a bracket. */
+export function providerFieldIsEmpty(query: string): boolean {
+  return /\b\w+:\s*(?:$|\)|AND\b|OR\b)/.test(query.trim()) || /\b\w+:\(\s*\)/.test(query);
 }
 
 /* ═══════════════════════ SUBJECT + CONCEPT — the two-concept query policy ═══════════════════════ */

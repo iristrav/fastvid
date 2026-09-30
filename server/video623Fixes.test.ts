@@ -106,7 +106,9 @@ describe("Video 623 — a sentence longer than its clip gets another clip", () =
   });
 
   it("the fill runs for every sentence, is judged like any push, and stops when the scene has no time", () => {
-    expect(SRC).toContain("await fillBeatWithMoreClips();\n    fillFor = { beat, clipsBefore: beatDurations.length };");
+    /** VIDEO 626 — the fill is registered with the sentence's turn, once that turn is known. */
+    expect(SRC).toContain("await fillBeatWithMoreClips();\n    closeBeatLadder?.();");
+    expect(SRC).toContain("fillFor = { beat, clipsBefore: beatDurations.length, deadlineMs: beatDeadlineMs };");
     expect(SRC).toContain('withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, rest, f.beat.index))');
     expect(SRC).toContain("!(remainingScopeMs() > BEAT_FILL_MIN_SCOPE_MS)");
     const loopEnd = SRC.indexOf("    await fillBeatWithMoreClips();\n  } finally {");

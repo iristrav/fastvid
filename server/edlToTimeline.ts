@@ -64,6 +64,17 @@ import { isBackgroundSound } from "./cinematicEditingEngine/soundPlanner";
 import { ambienceGainDb, gainFromDb } from "./cinematicAmbient";
 import { beatIndexFromBeatId } from "./cinematicPipelineInputs";
 import { limitYoutubeShots, type YoutubeSourceFacts } from "./youtubeShotLimit";
+import { MAX_SHOT_SEC, pieceCamera } from "./longShotLimit";
+
+/**
+ * VIDEO 626 — how long a shot may be held past its own end before the hole is filled with another.
+ *
+ * Render 626 held one Unsplash photo 17.4 s over three sentences with no picture, and the long-shot
+ * rule then cut that into five pieces of the same 4.8 s: the viewer saw one photo five times.
+ */
+export const MAX_HOLD_SEC = 1.5;
+/** A filler shorter than this is not placed; the time goes to the shot before it. */
+const MIN_FILL_SEC = 1;
 
 /**
  * The engine's transition vocabulary, mapped to the renderer's.
@@ -154,6 +165,12 @@ export function cameraFor(instruction: CameraInstruction): ClipCamera {
     default:
       return { ...base, startScale: 1, endScale: 1 };
   }
+}
+
+/** VIDEO 626 — whether a camera instruction changes the frame at all. */
+export function cameraMoves(camera: ClipCamera): boolean {
+  const d = (a: number | undefined, b: number | undefined, dflt: number) => Math.abs((a ?? dflt) - (b ?? dflt)) > 1e-3;
+  return d(camera.startScale, camera.endScale, 1) || d(camera.startX, camera.endX, 0.5) || d(camera.startY, camera.endY, 0.5);
 }
 
 /**
@@ -347,6 +364,8 @@ export type EdlTranslationInput = {
    * in the rehydrated file's seconds. Such a shot is held to five seconds; see `youtubeShotLimit`.
    */
   youtubeSource?: YoutubeSourceFacts;
+  /** VIDEO 626 — a photograph: given a camera move when the plan gave it none. */
+  still?: boolean;
 };
 
 export type EdlTranslation = {
@@ -427,27 +446,150 @@ export function holdPictureUnderVoice(params: {
     first.timelineStart = 0;
   }
 
-  for (let i = 0; i < clips.length - 1; i++) {
+  /**
+   * VIDEO 626 — THE FILM'S OTHER SHOTS BEFORE THE SAME SHOT STRETCHED.
+   *
+   * A hole longer than `MAX_HOLD_SEC` is no longer closed by holding the outgoing shot across it.
+   * The outgoing shot is held for at most that, and the rest is filled with the film's other
+   * approved shots — the ones used least as fillers first, moving footage before stills, the same
+   * scene before another — each for at most its own stretch of source and never the shots on
+   * either side of the hole. Only a film with no other shot to offer still holds, as before.
+   */
+  const originals = clips.filter((c) => !c.disabled);
+  const fillerUses = new Map<string, number>();
+  const windowOf = (c: TimelineVideoClip): number | null =>
+    c.sourceIn != null && c.sourceOut != null && c.sourceOut - c.sourceIn > EPS ? c.sourceOut - c.sourceIn : null;
+  const fillHole = (
+    outgoing: TimelineVideoClip,
+    until: number,
+    neighbours: ReadonlyArray<TimelineVideoClip>
+  ): { fillers: TimelineVideoClip[]; heldTo: number } => {
+    /**
+     * The outgoing shot comes back only when the film has a single other shot to take turns with;
+     * it is never the first filler.
+     */
+    const others = originals.filter((c) => !neighbours.includes(c) && c !== outgoing);
+    const candidates = others.length >= 2 ? others : originals.filter((c) => !neighbours.includes(c));
+    /** Held within its own stretch of source only: past it the renderer loops the same frames. */
+    const outgoingWindow = windowOf(outgoing);
+    const holdEnd = Math.max(
+      outgoing.timelineEnd,
+      Math.min(
+        until,
+        outgoing.timelineEnd + MAX_HOLD_SEC,
+        outgoingWindow != null ? outgoing.timelineStart + outgoingWindow : Infinity
+      )
+    );
+    if (!candidates.some((c) => c !== outgoing) || until - holdEnd < MIN_FILL_SEC) {
+      return { fillers: [], heldTo: until };
+    }
+    const fillers: TimelineVideoClip[] = [];
+    let at = holdEnd;
+    let previous: TimelineVideoClip = outgoing;
+    while (until - at > EPS) {
+      const pick = [...candidates]
+        .filter((c) => c !== previous)
+        .sort(
+          (x, y) =>
+            (fillerUses.get(x.id) ?? 0) - (fillerUses.get(y.id) ?? 0) ||
+            (x.kind === "image" ? 1 : 0) - (y.kind === "image" ? 1 : 0) ||
+            (x.sceneIndex === outgoing.sceneIndex ? 0 : 1) - (y.sceneIndex === outgoing.sceneIndex ? 0 : 1) ||
+            Math.abs(x.timelineStart - at) - Math.abs(y.timelineStart - at)
+        )[0];
+      if (!pick) {
+        /** Unreachable while two candidates exist; the last filler then runs to the end. */
+        const lastFiller = fillers[fillers.length - 1];
+        if (lastFiller) lastFiller.timelineEnd = Number(until.toFixed(3));
+        break;
+      }
+      const window = windowOf(pick);
+      let len = Math.min(until - at, MAX_SHOT_SEC, window ?? MAX_SHOT_SEC);
+      if (until - at - len < MIN_FILL_SEC) len = until - at;
+      fillerUses.set(pick.id, (fillerUses.get(pick.id) ?? 0) + 1);
+      const n = fillerUses.get(pick.id)!;
+      fillers.push({
+        ...pick,
+        id: `${pick.id}_fill${n}`,
+        timelineStart: Number(at.toFixed(3)),
+        timelineEnd: Number((at + len).toFixed(3)),
+        ...(pick.sourceIn != null ? { sourceOut: Number((pick.sourceIn + len).toFixed(3)) } : {}),
+        camera: pieceCamera(n),
+        transitionIn: "hard_cut",
+        transitionOut: "hard_cut",
+      });
+      delete fillers[fillers.length - 1]!.transitionInSec;
+      delete fillers[fillers.length - 1]!.transitionOutSec;
+      previous = pick;
+      at += len;
+    }
+    return { fillers, heldTo: holdEnd };
+  };
+
+  /**
+   * A shot planned longer than its own stretch of source would be looped by the renderer — the same
+   * seconds again. When the film has another shot to offer, it ends where its source does and the
+   * rest of its time is a hole like any other.
+   */
+  const shortened: string[] = [];
+  if (originals.length > 1) {
+    for (const c of clips) {
+      const window = windowOf(c);
+      if (c.editedByUser || c.disabled || window == null) continue;
+      if (c.timelineEnd - c.timelineStart > window + MAX_HOLD_SEC + EPS) {
+        shortened.push(`${c.id}: ${say(c.timelineEnd - c.timelineStart)}s planned from ${say(window)}s of source`);
+        c.timelineEnd = Number((c.timelineStart + window).toFixed(3));
+      }
+    }
+  }
+  for (const line of shortened) covered.push(`${line} — ends with its source`);
+
+  const placed: TimelineVideoClip[] = [];
+  for (let i = 0; i < clips.length; i++) {
     const outgoing = clips[i]!;
-    const incoming = clips[i + 1]!;
+    placed.push(outgoing);
+    const incoming = clips[i + 1];
+    if (!incoming) break;
     const gap = incoming.timelineStart - outgoing.timelineEnd;
     if (gap <= EPS) continue;
+    const { fillers, heldTo } = fillHole(outgoing, incoming.timelineStart, [incoming]);
+    if (fillers.length === 0) {
+      covered.push(
+        `${outgoing.id}: held ${say(gap)}s to reach ${incoming.id} — ` +
+          "a beat between them has no usable picture"
+      );
+      outgoing.timelineEnd = incoming.timelineStart;
+      continue;
+    }
     covered.push(
-      `${outgoing.id}: held ${say(gap)}s to reach ${incoming.id} — ` +
-        "a beat between them has no usable picture"
+      `${outgoing.id}: ${say(gap)}s without a picture of its own before ${incoming.id} — held ` +
+        `${say(heldTo - outgoing.timelineEnd)}s, then ${fillers.map((f) => f.id).join(", ")} from elsewhere in the film`
     );
-    outgoing.timelineEnd = incoming.timelineStart;
+    outgoing.timelineEnd = heldTo;
+    placed.push(...fillers);
   }
 
   const voiceEnd = params.voiceDurationSec ?? 0;
-  const last = clips[clips.length - 1]!;
+  const last = placed[placed.length - 1]!;
   if (voiceEnd > last.timelineEnd + EPS) {
-    covered.push(
-      `${last.id}: held ${say(voiceEnd - last.timelineEnd)}s to the end of the narration — ` +
-        "the picture ran out before the voice did"
-    );
-    last.timelineEnd = voiceEnd;
+    const gap = voiceEnd - last.timelineEnd;
+    const { fillers, heldTo } = fillHole(last, voiceEnd, []);
+    if (fillers.length === 0) {
+      covered.push(
+        `${last.id}: held ${say(gap)}s to the end of the narration — ` +
+          "the picture ran out before the voice did"
+      );
+      last.timelineEnd = voiceEnd;
+    } else {
+      covered.push(
+        `${last.id}: the picture ran out ${say(gap)}s before the voice — held ` +
+          `${say(heldTo - last.timelineEnd)}s, then ${fillers.map((f) => f.id).join(", ")} from elsewhere in the film ` +
+          "to the end of the narration"
+      );
+      last.timelineEnd = heldTo;
+      placed.push(...fillers);
+    }
   }
+  clips.splice(0, clips.length, ...placed);
 
   return covered;
 }
@@ -517,9 +659,17 @@ export function translateEdl(params: {
 
   /** RONDE 647 — clip id → its YouTube source, for the five-second rule after the holds. */
   const youtube = new Map<string, YoutubeSourceFacts>();
+  /**
+   * VIDEO 626 — a sentence with two approved clips reaches here as two decisions with one beat id.
+   * The picture is each decision's own; the text, sound and graphics belong to the sentence and are
+   * taken from its first decision only, so nothing is drawn or heard twice.
+   */
+  const dressedBeats = new Set<string>();
 
-  for (const { decision, sceneOffsetSec, identity, sourceTrim, youtubeSource } of params.inputs) {
+  for (const { decision, sceneOffsetSec, identity, sourceTrim, youtubeSource, still } of params.inputs) {
     const clip = decision.clip;
+    const sentenceAlreadyDressed = dressedBeats.has(decision.beatId);
+    dressedBeats.add(decision.beatId);
     const start = sceneOffsetSec + clip.startSec;
     const end = sceneOffsetSec + clip.endSec;
 
@@ -556,6 +706,16 @@ export function translateEdl(params: {
 
     const clipId = timelineElementId("vc", decision.beatId, clip.candidateId, clip.startSec);
     if (youtubeSource) youtube.set(clipId, youtubeSource);
+    /**
+     * VIDEO 626 — A PHOTOGRAPH ALWAYS MOVES.
+     *
+     * The planner gave all twenty clips of render 626 no camera move. For footage that is right —
+     * the footage moves. A photograph with no move is a frozen frame, which is what the viewer saw.
+     * A still whose planned move does not move gets a slow push or pull, alternating.
+     */
+    const plannedCamera = cameraFor(decision.camera);
+    const isStill = still === true || clip.assetType === "image";
+    const stillMove = isStill && !cameraMoves(plannedCamera) ? pieceCamera(clips.length % 2 === 0 ? 1 : 2) : null;
     clips.push({
       id: clipId,
       kind: clip.assetType === "image" ? "image" : "video",
@@ -581,7 +741,7 @@ export function translateEdl(params: {
       sourceOut: composedOut,
       timelineStart: Number(start.toFixed(3)),
       timelineEnd: Number(end.toFixed(3)),
-      motion: CAMERA_MAP[decision.camera.movement] ?? "none",
+      motion: stillMove ? (stillMove.type as MotionKind) : CAMERA_MAP[decision.camera.movement] ?? "none",
       /**
        * RONDE 148 — the camera move, PARAMETERISED, not just labelled.
        *
@@ -589,7 +749,7 @@ export function translateEdl(params: {
        * actually decided — the movement type and how pronounced it should be — so the renderer can
        * execute a 1.00→1.12 push rather than guessing what "slow_push" means.
        */
-      camera: cameraFor(decision.camera),
+      camera: stillMove ?? plannedCamera,
       /**
        * Carried, not dropped. An effect the renderer cannot execute is reported in `unsupported`
        * AND kept here, so the plan survives in the document and a later renderer can run it.
@@ -620,7 +780,7 @@ export function translateEdl(params: {
       beatIndex: beatIndexFromBeatId(decision.beatId)?.beatIndex,
     });
 
-    for (const caption of decision.captions) {
+    for (const caption of sentenceAlreadyDressed ? [] : decision.captions) {
       const start = Number((sceneOffsetSec + caption.startSec).toFixed(3));
       const end = Number((sceneOffsetSec + caption.endSec).toFixed(3));
       /**
@@ -672,7 +832,7 @@ export function translateEdl(params: {
      * effect must be reported and never approximated, so it goes into `unsupported` with
      * SFX_NOT_AVAILABLE and the timeline stays honest about what it can play.
      */
-    for (const sound of decision.sounds) {
+    for (const sound of sentenceAlreadyDressed ? [] : decision.sounds) {
       /**
        * The variant is chosen by SCENE INDEX, matching the ambient track's rule: the catalogue
        * holds several recordings per category, and picking randomly would make one timeline render
@@ -720,7 +880,7 @@ export function translateEdl(params: {
      * whether or not this renderer can draw it: what the renderer cannot do is reported below, and
      * what the planner decided stays in the document.
      */
-    for (const graphic of decision.motionGraphics) {
+    for (const graphic of sentenceAlreadyDressed ? [] : decision.motionGraphics) {
       /**
        * RONDE 160 §7 — translated to the renderer's name, and the planner's name kept in the reason.
        *
@@ -817,6 +977,12 @@ export function translateEdl(params: {
     clips,
     voiceDurationSec: params.voice?.durationSec ?? null,
   });
+  /** VIDEO 626 — a filler taken from a YouTube shot is a YouTube shot: the five-second rule holds it too. */
+  for (const c of clips) {
+    const origin = /^(.*)_fill\d+$/.exec(c.id)?.[1];
+    const facts = origin ? youtube.get(origin) : undefined;
+    if (facts) youtube.set(c.id, facts);
+  }
   /**
    * RONDE 647 — AFTER the holds, because a hold is exactly how a YouTube shot grew to 40 s (video
    * 604). The rule redistributes time inside a scene and never changes the span the clips cover,

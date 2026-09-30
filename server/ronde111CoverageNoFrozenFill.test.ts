@@ -126,17 +126,15 @@ describe("RONDE 111 — a photo keeps moving all the way to its last frame", () 
     expect(old(1)).toBeCloseTo(0, 6);
   });
 
-  it("it is still an ease, not the linear motion that read as machine-made", () => {
-    const share = 0.35;
-    const velocity = (t: number) => share * (Math.PI / 2) * Math.cos((Math.PI / 2) * t) + (1 - share);
-    expect(velocity(0)).toBeGreaterThan(velocity(1));
-    expect(velocity(0)).toBeCloseTo(1.1996, 3);
-  });
-
-  it("the source carries the blend, not a bare sine", () => {
-    expect(DOCSTYLE).toContain("const KEN_BURNS_EASE_SHARE = 0.35;");
-    expect(DOCSTYLE).toContain("`(${eased}*sin(PI/2*${t})+${linear}*${t})`");
-    // The unblended version is gone from the code.
+  /**
+   * VIDEO 626 — "Hij zoomt nu te raar in." The ease put a third of the move in the first second;
+   * with the move now at most 6%, an even velocity from first frame to last is what reads as slow.
+   * It still never stops: the last frame moves as fast as the first.
+   */
+  it("the move is even: the same speed at the first frame as at the last", () => {
+    expect(DOCSTYLE).not.toContain("const KEN_BURNS_EASE_SHARE");
+    expect(DOCSTYLE).toContain("return `min(on/${totalFrames},1)`;");
+    expect(DOCSTYLE).toContain("export const STILL_MAX_ZOOM = 1.06;");
     const code = DOCSTYLE.split("\n")
       .filter((l) => {
         const t = l.trim();

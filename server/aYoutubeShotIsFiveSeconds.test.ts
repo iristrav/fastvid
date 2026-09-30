@@ -255,7 +255,12 @@ describe("§4 — the real timeline builder applies it", () => {
     const ytClips = clips.filter((c) => c.source.archiveAssetId === 57820);
     for (const c of ytClips) expect(c.timelineEnd - c.timelineStart).toBeLessThanOrEqual(5 + 1e-6);
     expect(timeline.durationSec).toBe(30);
-    expect(youtubeShots.length).toBeGreaterThan(0);
+    /**
+     * VIDEO 626 — the hole is no longer closed by stretching the YouTube shot; it is filled with the
+     * film's other shots, and a filler taken from the YouTube shot is held to five seconds as well.
+     */
+    expect(ytClips.length).toBeGreaterThan(0);
+    void youtubeShots;
     const blocking = validateTimeline(timeline).issues.filter((i) => !NON_BLOCKING_ISSUES.has(i.code));
     expect(blocking, JSON.stringify(blocking)).toEqual([]);
   });

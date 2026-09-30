@@ -31,18 +31,24 @@ export const MAX_SHOT_SEC = 6;
 const EPS = 0.001;
 const round = (n: number) => Number(n.toFixed(3));
 
-/** The move a piece makes, by its place in the shot: in, out, in, … around a slightly offset centre. */
+/**
+ * The move a piece makes, by its place in the shot: in, out, in, … around a slightly offset centre.
+ *
+ * VIDEO 626 — slow: 6% over the piece and a drift of 2% of the frame, so a move reads as the camera
+ * breathing rather than as a zoom. It was 10% and 4%.
+ */
+export const PIECE_ZOOM = 1.06;
 export function pieceCamera(k: number): ClipCamera {
   const inward = k % 2 === 1;
-  const drift = k % 4 < 2 ? 0.46 : 0.54;
+  const drift = k % 4 < 2 ? 0.48 : 0.52;
   return {
     type: inward ? "slow_push" : "slow_pull",
-    startScale: inward ? 1.0 : 1.1,
-    endScale: inward ? 1.1 : 1.0,
+    startScale: inward ? 1.0 : PIECE_ZOOM,
+    endScale: inward ? PIECE_ZOOM : 1.0,
     startX: 0.5,
     startY: 0.5,
     endX: drift,
-    endY: 0.48,
+    endY: 0.49,
   };
 }
 

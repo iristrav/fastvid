@@ -88,6 +88,8 @@ export type CinematicBeatInput = {
   sourceTrim?: { inSec: number; outSec?: number };
   /** RONDE 647 — set when this beat's footage came from YouTube; see `youtubeShotLimit`. */
   youtubeSource?: YoutubeSourceFacts;
+  /** VIDEO 626 — a photograph: nothing in it moves, so it is given a camera move. */
+  still?: boolean;
 };
 
 export type CinematicSceneInput = {
@@ -267,6 +269,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
   const identities: AssetSourceIdentity[] = [];
   const trims: Array<{ inSec: number; outSec?: number } | undefined> = [];
   const youtubeSources: Array<YoutubeSourceFacts | undefined> = [];
+  const stills: boolean[] = [];
   const offsets: number[] = [];
   /** RONDE 166 (§3) — index-aligned with `inputs`; null for a beat with no evidence. */
   const attention: Array<PlannedAttention | null> = [];
@@ -293,6 +296,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       identities.push(beat.identity);
       trims.push(beat.sourceTrim);
       youtubeSources.push(beat.youtubeSource);
+      stills.push(beat.still === true);
       /**
        * RONDE 166 (§3) — the beat's attention moment, classified from the beat's OWN TEXT.
        *
@@ -342,6 +346,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       identity: identities[i]!,
       ...(trims[i] ? { sourceTrim: trims[i]! } : {}),
       ...(youtubeSources[i] ? { youtubeSource: youtubeSources[i]! } : {}),
+      ...(stills[i] ? { still: true } : {}),
     })
   );
   const { timeline, unsupported, covered, youtubeShots, youtubeAdjustedClipIds } = translateEdl({

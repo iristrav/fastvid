@@ -245,19 +245,24 @@ describe("§8 — fit, crop, scale, position, opacity", () => {
 /* ═══════════════════════ §14 — camera / Ken Burns ═══════════════════════ */
 
 describe("§14 — camera moves become a zoompan expression", () => {
-  it("a push interpolates from its start scale to its end scale over the clip's frames", () => {
+  /**
+   * VIDEO 626 — per-frame scale and crop instead of zoompan, which on moving footage made every
+   * frame of the shot out of its FIRST frame (see `cameraChain`).
+   */
+  it("a push interpolates from its start scale to its end scale over the clip's own length", () => {
     const s = cameraChain({ type: "slow_push", startScale: 1, endScale: 1.12 }, FMT, 4)!;
-    expect(s).toContain("zoompan=");
-    // 4s at 25fps is 100 frames — the move must be defined over the clip's OWN length.
-    expect(s).toContain("d=100");
-    expect(s).toContain("z='1.0000+(0.1200)*(on/100)'");
-    expect(s).toContain("s=320x180");
+    expect(s).not.toContain("zoompan");
+    // 4 s — the move is defined over the clip's OWN length, by time, per frame.
+    expect(s).toContain("(1.0000+(0.1200)*min(t/4.0000,1))");
+    expect(s).toContain("eval=frame");
+    expect(s).toContain("crop=320:180:");
+    expect(s).toContain("fps=25");
   });
 
-  it("IT UPSCALES FIRST, so zooming crops into real pixels rather than softening them", () => {
+  it("every frame of the footage is its own frame: the time runs from the clip's first frame", () => {
     const s = cameraChain({ type: "slow_push", startScale: 1, endScale: 1.12 }, FMT, 4)!;
-    expect(s.startsWith("scale=640:360")).toBe(true);
-    expect(s.indexOf("scale=640:360")).toBeLessThan(s.indexOf("zoompan"));
+    expect(s.startsWith("setpts=PTS-STARTPTS,")).toBe(true);
+    expect(s).not.toMatch(/\bd=\d+/);
   });
 
   it("a pan moves the centre of interest while the scale stays put", () => {
@@ -265,8 +270,8 @@ describe("§14 — camera moves become a zoompan expression", () => {
       { type: "pan_right", startScale: 1.1, endScale: 1.1, startX: 0.4, endX: 0.6, startY: 0.5, endY: 0.5 },
       FMT, 4
     )!;
-    expect(s).toContain("0.4000+(0.2000)*(on/100)");
-    expect(s).toContain("z='1.1000+(0.0000)*(on/100)'");
+    expect(s).toContain("(0.4000+(0.2000)*min(t/4.0000,1))");
+    expect(s).toContain("(1.1000+(0.0000)*min(t/4.0000,1))");
   });
 
   it("the planner's vocabulary becomes real numbers, and intensity 0 becomes no move", () => {

@@ -121,21 +121,23 @@ export function cropChain(fmt: TimelineFormat, crop: NonNullable<ClipTransform["
 }
 
 /**
- * Ken Burns and pans, as a zoompan expression.
+ * Ken Burns and pans, as a per-frame scale and crop.
  *
- * ── Why zoompan and not scale+crop per frame ────────────────────────────────────────────────
+ * ── VIDEO 626: why not zoompan any more ──────────────────────────────────────────────────────
  *
- * zoompan exists in both the system build and the bundled ffmpeg-static (checked, along with
- * xfade — drawtext is the one that is missing, which is why text goes through libass). It
- * interpolates over `d` frames, so the move is defined by its endpoints and is frame-exact rather
- * than accumulated, which is what makes it deterministic.
+ * zoompan emits `d` output frames for EVERY input frame. This chain gave it `d` = the whole clip,
+ * so on moving footage the clip's first frame alone produced every frame of the shot: a moving
+ * archive or YouTube shot became its first frame, frozen, with a zoom over it. Measured on a test
+ * source whose frame counter runs: zoompan output read frame 0 at 0.5 s and at 3.5 s; this chain
+ * reads frame 15 and frame 105. Every camera move the timeline made — each piece of a long shot,
+ * each photograph given a move — was a still picture that zoomed.
  *
- * ── The upscale in front of it ───────────────────────────────────────────────────────────────
+ * ── What it does instead ─────────────────────────────────────────────────────────────────────
  *
- * zoompan samples from the INPUT resolution, so zooming a frame that is already the output size
- * produces visible softness. Scaling up first (a common documentary trick, and what the old
- * compose path did) means the zoom crops into real pixels. 2× is enough for a 1.12 push with
- * headroom and cheap enough not to matter.
+ * Each frame is scaled to the zoom at its own time and cropped back to the frame around the
+ * centre of interest at that time. The footage keeps playing underneath the move; a photograph
+ * (a looped input) moves the same way. Linear in `t` from the first frame, bounded at the end, so
+ * the same clip always gives the same frames. Scale and crop exist in every ffmpeg build.
  */
 export function cameraChain(
   camera: ClipCamera,
@@ -151,22 +153,23 @@ export function cameraChain(
 
   const still = Math.abs(start - 1) < 0.001 && Math.abs(end - 1) < 0.001;
   const noPan = Math.abs(sx - ex) < 0.001 && Math.abs(sy - ey) < 0.001;
-  // A camera_hold is not a move, and emitting a no-op zoompan would cost a re-encode for nothing —
+  // A camera_hold is not a move, and emitting a no-op pass would cost a re-encode for nothing —
   // and, worse, would change the pixels of every held shot in every existing render.
   if (still && noPan) return null;
 
-  const frames = Math.max(1, Math.round(durationSec * fmt.fps));
-  // Linear in `on` (the output frame index). Deterministic: the same clip yields the same frames.
-  const t = `(on/${frames})`;
-  const zoomExpr = `${start.toFixed(4)}+(${(end - start).toFixed(4)})*${t}`;
-  const cx = `${sx.toFixed(4)}+(${(ex - sx).toFixed(4)})*${t}`;
-  const cy = `${sy.toFixed(4)}+(${(ey - sy).toFixed(4)})*${t}`;
+  const W = fmt.widthPx;
+  const H = fmt.heightPx;
+  const p = `min(t/${Math.max(0.04, durationSec).toFixed(4)},1)`;
+  const z = `(${start.toFixed(4)}+(${(end - start).toFixed(4)})*${p})`;
+  const cx = `(${sx.toFixed(4)}+(${(ex - sx).toFixed(4)})*${p})`;
+  const cy = `(${sy.toFixed(4)}+(${(ey - sy).toFixed(4)})*${p})`;
+  /** A pan with no zoom still needs room to move: at least 4% larger than the frame. */
+  const zoom = still ? `max(${z},1.04)` : `max(${z},1)`;
 
   return (
-    `scale=${fmt.widthPx * 2}:${fmt.heightPx * 2}:force_original_aspect_ratio=decrease,` +
-    `pad=${fmt.widthPx * 2}:${fmt.heightPx * 2}:(ow-iw)/2:(oh-ih)/2:color=black,` +
-    `zoompan=z='${zoomExpr}':x='iw*${cx}-(iw/zoom/2)':y='ih*${cy}-(ih/zoom/2)':` +
-    `d=${frames}:s=${fmt.widthPx}x${fmt.heightPx}:fps=${fmt.fps},` +
+    `setpts=PTS-STARTPTS,fps=${fmt.fps},` +
+    `scale=w='trunc(${W}*${zoom}/2)*2':h='trunc(${H}*${zoom}/2)*2':eval=frame:flags=bicubic,` +
+    `crop=${W}:${H}:x='max(0,min(iw-${W},iw*${cx}-${W / 2}))':y='max(0,min(ih-${H},ih*${cy}-${H / 2}))',` +
     `setsar=1,format=yuv420p`
   );
 }

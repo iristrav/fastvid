@@ -111,7 +111,8 @@ describe("every adopted clip gets a cinematic ending", () => {
     expect(INPUTS).toContain("[CinematicSelected]");
     const at = INPUTS.indexOf("[CinematicSelected]");
     const line = INPUTS.slice(at, at + 300);
-    expect(line).toContain("${assetLabel(adopted.adoption)}");
+    /** VIDEO 626 — one line per clip of the sentence, each naming its own asset. */
+    expect(line).toContain("${assetLabel(partAdopted.adoption)}");
     expect(line).toContain("start=");
     expect(line).toContain("duration=");
   });
@@ -119,7 +120,7 @@ describe("every adopted clip gets a cinematic ending", () => {
   /** Selected must be emitted after the drops, or a dropped beat would also report as selected. */
   it("reports selected only past every drop", () => {
     const fn = INPUTS.indexOf("const adopted = sceneFacts.clips[beatIndex]");
-    const body = INPUTS.slice(fn, fn + 4000);
+    const body = INPUTS.slice(fn, fn + 7000);
     expect(body.lastIndexOf("[CinematicDrop]")).toBeLessThan(body.indexOf("[CinematicSelected]"));
   });
 });

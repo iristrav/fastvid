@@ -612,8 +612,9 @@ describe("RONDE 91 §14 — nothing from the earlier rounds was traded away", ()
   });
 
   it("TEST 40 — the gate still counts what it did", () => {
-    const decision = withStrict(false, () => searchGateDecision("pexels", "anything at all", "r91-count"));
+    /** VIDEO 626 — "anything at all" is now all filler words and has no subject; a query with one. */
+    const decision = withStrict(false, () => searchGateDecision("pexels", "harbour cranes", "r91-count"));
     expect(decision.admitted).toBe(true);
-    expect(withStrict(true, () => searchGateDecision("pexels", "anything at all", "r91-count")).admitted).toBe(false);
+    expect(withStrict(true, () => searchGateDecision("pexels", "harbour cranes", "r91-count")).admitted).toBe(false);
   });
 });

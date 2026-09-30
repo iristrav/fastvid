@@ -186,9 +186,16 @@ export function standardArchiveKenBurnsVariant(sceneIndex = 0, beatIndex = 0): K
 }
 
 /** Slower Ken Burns for documentary B-roll (~15% over clip duration). */
+/**
+ * VIDEO 626 — "Hij zoomt nu te raar in." A photograph moves slowly and evenly: at most
+ * `STILL_MAX_ZOOM` over the whole shot, whatever its length, with no fast start. It was up to 20%
+ * (1 + 0.15 × 8/6) and eased so most of it happened in the first second.
+ */
+export const STILL_MAX_ZOOM = 1.06;
+
 export function standardArchiveKenBurnsZoomEnd(durationSec: number): number {
   const t = Math.min(8, Math.max(3, durationSec));
-  return 1 + 0.15 * (t / 6);
+  return Math.min(STILL_MAX_ZOOM, 1 + 0.06 * (t / 8));
 }
 
 function autoMotionGraphicsKenBurnsLocked(): boolean {
@@ -202,39 +209,17 @@ export function resolveStillKenBurnsVariant(sceneIndex: number, beatIndex: numbe
   return archiveStillKenBurnsVariant(sceneIndex, beatIndex);
 }
 
-/** Sine-based ease-out progress term, embeddable directly in a zoompan expression: 0 at the
- *  first frame, smoothly approaching 1 by the clip's last frame — never linear. `totalFrames`
- *  is a compile-time constant (known from clip duration), so this is plain arithmetic FFmpeg's
- *  expression evaluator accepts, not a runtime variable lookup. Reused verbatim (same formula)
- *  from professionalRenderEngine/cameraRenderer.ts's `easeOutTerm()`, which proved this exact
- *  pattern for the dormant engine's new camera movements (Phase 7) — duplicated here as a
- *  standalone expression rather than imported, since documentaryStyle.ts is live production
- *  code with no dependency on that dormant, feature-flagged directory. */
 /**
- * RONDE 111 — the share of the eased curve that is allowed to decelerate.
+ * The progress term of a still's move, embeddable in a zoompan expression: 0 at the first frame,
+ * 1 at the last.
  *
- * Pure `sin(PI/2 * t)` reaches its target with zero velocity: its derivative at t=1 is
- * cos(PI/2) = 0. On a six-second still that measures as
- *
- *     first second   crop window travels 71.8 px   (2.87 px/frame)
- *     middle         43.8 px                       (1.75 px/frame)
- *     LAST second     7.5 px                       (0.30 px/frame)
- *
- * and under about one pixel per frame the eye reads stillness. So every photo in every video
- * ended on a still — a small freeze, arriving from the opposite direction to the montage one.
- *
- * Blending the eased curve with a linear one fixes the endpoint without giving back the constant
- * velocity that made stills look machine-made in the first place (the Phase 10 finding this
- * easing exists for). With EASE_SHARE = 0.35 the velocity runs from 1.20x the average at the
- * start to 0.65x at the end: still a visible ease, never a stop.
+ * RONDE 111 eased it (a sine blended with a line) so a move would not look machine-made, and
+ * VIDEO 626 found the ease was what looked wrong: a third of the move in the first second, then a
+ * crawl. With the move now at most `STILL_MAX_ZOOM`, even is what reads as slow.
  */
-const KEN_BURNS_EASE_SHARE = 0.35;
-
+/** VIDEO 626 — even from the first frame to the last: an eased start read as a sudden zoom. */
 function easeOutProgress(totalFrames: number): string {
-  const eased = KEN_BURNS_EASE_SHARE.toFixed(2);
-  const linear = (1 - KEN_BURNS_EASE_SHARE).toFixed(2);
-  const t = `min(on/${totalFrames},1)`;
-  return `(${eased}*sin(PI/2*${t})+${linear}*${t})`;
+  return `min(on/${totalFrames},1)`;
 }
 
 /**
@@ -343,7 +328,7 @@ export function buildSimpleKenBurnsVF(
 ): string {
   const fps = 25;
   const totalFrames = stillOutputFrameCount(duration, fps);
-  const zoomEnd = personPortrait ? 1.10 : 1.15;
+  const zoomEnd = personPortrait ? 1.05 : STILL_MAX_ZOOM;
   const yExpr = personPortrait ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
   const cropY = personPortrait ? "0" : `(ih-${DOC_STYLE_VIDEO_HEIGHT})/2`;
   const zExpr = `(1.0+(${(zoomEnd - 1.0).toFixed(7)})*${easeOutProgress(totalFrames)})`;
@@ -368,7 +353,7 @@ export function buildBlurFillStillVF(
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   const fgY = yAnchor === "top" ? "(H-h)/4" : "(H-h)/2";
-  const baseZoom = yAnchor === "top" ? 1.12 : 1.18;
+  const baseZoom = yAnchor === "top" ? 1.05 : STILL_MAX_ZOOM;
   const ken = buildKenBurnsTail(duration, baseZoom, yAnchor, variant);
   const blurFilter =
     blurMode === "boxblur"

@@ -833,7 +833,7 @@ describe("I. a YouTube Short is never downloaded, on any route", () => {
     const vertical = CURATED.indexOf("dims.height > dims.width");
     expect(vertical).toBeGreaterThan(-1);
     /** Before the text check and the picture editor. */
-    expect(vertical).toBeLessThan(CURATED.indexOf("hasBakedText = await archiveClipHasBakedEditText(rawPath, asset.mimeType);"));
+    expect(vertical).toBeLessThan(CURATED.indexOf("const text = await archiveClipBakedEditTextVerdict(rawPath, asset.mimeType);"));
   });
 
   it("the pool measures the archive's YouTube items too, and never triages a Short's thumbnail", async () => {

@@ -25,7 +25,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
-import { archiveClipHasBakedEditText } from "./archiveClipFilter";
+import { archiveClipBakedEditTextVerdict } from "./archiveClipFilter";
 import { buildArchiveStillFilterComplex, buildArchiveStillFilterComplexBoxBlur, buildFitGrayGradedVideoVF, classifyDocGradeSourceKind, buildMatFramedStillVF, buildStillEncodeArgs, resolveStillKenBurnsVariant, standardArchiveKenBurnsZoomEnd, kenBurnsCenterXExpr } from "./documentaryStyle";
 import {
   resolveStillImageFilterComplex,
@@ -2253,12 +2253,29 @@ export async function prepareCuratedArchiveClip(
       // archiveClipHasBakedEditText only needs a handful of extracted frames, so materializing the
       // whole clip in RAM here (and, previously, having the callee write it right back to disk
       // unchanged) was pure overhead.
-      hasBakedText = await archiveClipHasBakedEditText(rawPath, asset.mimeType);
-      try {
-        await updateMediaArchiveAsset(asset.id, { hasBakedEditText: hasBakedText ? 1 : 0 });
-        asset.hasBakedEditText = hasBakedText ? 1 : 0;
-      } catch (err) {
-        console.warn(`[CuratedMedia] Failed to cache overlay verdict for asset ${asset.id}:`, (err as Error).message);
+      const text = await archiveClipBakedEditTextVerdict(rawPath, asset.mimeType);
+      hasBakedText = text.verdict === "has_text";
+      /**
+       * VIDEO 626 — a check that could not look is not written down as "clean".
+       *
+       * This wrote `hasBakedEditText: 0` whenever the detector did not answer (its budget spent, a
+       * timeout, a refused image), and the row then told every later render the clip had been
+       * checked for a broadcaster's logo or burnt-in subtitles and had none. The clip is used
+       * unchecked for this render, as ingestion already does (RONDE 222), and the row stays
+       * unjudged so the next render asks.
+       */
+      if (text.verdict === "not_asked") {
+        console.warn(
+          `[CuratedMedia] asset ${asset.id}: on-screen text not checked (${text.reason ?? "no answer"}) — ` +
+            "used unchecked this render, left unjudged in the archive"
+        );
+      } else {
+        try {
+          await updateMediaArchiveAsset(asset.id, { hasBakedEditText: hasBakedText ? 1 : 0 });
+          asset.hasBakedEditText = hasBakedText ? 1 : 0;
+        } catch (err) {
+          console.warn(`[CuratedMedia] Failed to cache overlay verdict for asset ${asset.id}:`, (err as Error).message);
+        }
       }
     }
     if (hasBakedText) {

@@ -93,9 +93,11 @@ describe("documentaryStyle", () => {
   });
 
   describe("Ken Burns easing (Phase 10)", () => {
-    it("buildKenBurnsTail uses an eased sine progress curve, not a linear zoom+step increment", () => {
+    /** VIDEO 626 — an even progress term from first frame to last: the ease read as a sudden zoom. */
+    it("buildKenBurnsTail runs an even progress term, not a zoom+step increment", () => {
       const vf = buildKenBurnsTail(4, 1.1, "center", "zoom-in");
-      expect(vf).toContain("sin(PI/2*min(on/");
+      expect(vf).toContain("*min(on/100,1))");
+      expect(vf).not.toContain("sin(PI/2");
       expect(vf).not.toContain("min(zoom+");
       expect(vf).not.toContain("max(zoom-");
     });
@@ -111,14 +113,14 @@ describe("documentaryStyle", () => {
      *
      * Start point, end point and total travel are all unchanged, which is what these assert.
      */
-    it("zoom-in starts at 1.0 and eases toward zoomEnd", () => {
+    it("zoom-in starts at 1.0 and moves evenly toward zoomEnd", () => {
       const vf = buildKenBurnsTail(4, 1.2, "center", "zoom-in");
-      expect(vf).toContain("z='(1.0000+(0.2000000)*(0.35*sin(PI/2*min(on/");
+      expect(vf).toContain("z='(1.0000+(0.2000000)*min(on/100,1))'");
     });
 
-    it("zoom-out starts at zoomEnd and eases toward 1.0 (negative delta)", () => {
+    it("zoom-out starts at zoomEnd and moves evenly toward 1.0 (negative delta)", () => {
       const vf = buildKenBurnsTail(4, 1.2, "center", "zoom-out");
-      expect(vf).toContain("z='(1.2000+(-0.2000000)*(0.35*sin(PI/2*min(on/");
+      expect(vf).toContain("z='(1.2000+(-0.2000000)*min(on/100,1))'");
     });
 
     it("RONDE 111 — the progress term still runs exactly 0 → 1, so nothing is reframed", () => {
@@ -149,11 +151,11 @@ describe("documentaryStyle", () => {
     it("pan-left/pan-right ease in opposite directions, bounded by the room the zoom affords", () => {
       const left = buildKenBurnsTail(4, 1.02, "center", "pan-left");
       const right = buildKenBurnsTail(4, 1.02, "center", "pan-right");
-      expect(left).toContain(`-(iw-iw/zoom)/2*${KEN_BURNS_MAX_PAN_SHARE}*(0.35*sin(PI/2*min(on/`);
-      expect(right).toContain(`+(iw-iw/zoom)/2*${KEN_BURNS_MAX_PAN_SHARE}*(0.35*sin(PI/2*min(on/`);
+      expect(left).toContain(`-(iw-iw/zoom)/2*${KEN_BURNS_MAX_PAN_SHARE}*min(on/`);
+      expect(right).toContain(`+(iw-iw/zoom)/2*${KEN_BURNS_MAX_PAN_SHARE}*min(on/`);
       // No raw pixel distance may come back: that is the shape of the bug.
-      expect(left).not.toMatch(/[-+]\d{2,}\*\(0\.35\*sin/);
-      expect(right).not.toMatch(/[-+]\d{2,}\*\(0\.35\*sin/);
+      expect(left).not.toMatch(/[-+]\d{2,}\*min\(on/);
+      expect(right).not.toMatch(/[-+]\d{2,}\*min\(on/);
     });
 
     it("a longer shot does not pan further than a short one", () => {
@@ -170,17 +172,18 @@ describe("documentaryStyle", () => {
       expect(vf).toContain("x='iw/2-(iw/zoom/2)'");
     });
 
-    it("buildSimpleKenBurnsVF fallback also eases instead of using a linear zoom+step", () => {
+    it("buildSimpleKenBurnsVF fallback also runs the even progress term, not a zoom+step", () => {
       const vf = buildSimpleKenBurnsVF(4, false);
-      expect(vf).toContain("sin(PI/2*min(on/");
+      expect(vf).toContain("*min(on/100,1))");
       expect(vf).not.toContain("min(zoom+");
     });
 
     it("buildSimpleKenBurnsVF uses a smaller zoom target for portraits than non-portraits", () => {
       const portrait = buildSimpleKenBurnsVF(4, true);
       const nonPortrait = buildSimpleKenBurnsVF(4, false);
-      expect(portrait).toContain("0.1000000");
-      expect(nonPortrait).toContain("0.1500000");
+      /** VIDEO 626 — slow: 5% and 6% over the shot, where it was 10% and 15%. */
+      expect(portrait).toContain("0.0500000");
+      expect(nonPortrait).toContain("0.0600000");
     });
   });
 

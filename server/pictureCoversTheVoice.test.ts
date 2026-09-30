@@ -29,7 +29,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { holdPictureUnderVoice, translateEdl } from "./edlToTimeline";
+import { holdPictureUnderVoice, MAX_HOLD_SEC, translateEdl } from "./edlToTimeline";
 import { validateTimeline, NON_BLOCKING_ISSUES } from "./timelineValidator";
 import type { TimelineVideoClip } from "./projectTimeline";
 import type { EditDecision } from "./cinematicEditingEngine/types";
@@ -63,12 +63,30 @@ describe("the outgoing shot is held until the next one arrives", () => {
    * The tail is the case that truncated render output. The last shot ends, the narrator keeps
    * talking, and `-shortest` cuts the sentence.
    */
-  it("holds the last shot to the end of the narration", () => {
+  it("covers the tail to the end of the narration", () => {
     const clips = [clip("a", 0, 4), clip("b", 4, 8)];
     const covered = holdPictureUnderVoice({ clips, voiceDurationSec: 21.5 });
 
-    expect(clips[1]!.timelineEnd).toBe(21.5);
-    expect(covered.join(" ")).toContain("held 13.500s to the end of the narration");
+    expect(clips[clips.length - 1]!.timelineEnd).toBe(21.5);
+    expect(covered.join(" ")).toContain("to the end of the narration");
+    /**
+     * VIDEO 626 — the last shot is held for at most MAX_HOLD_SEC; the film's other shot takes turns
+     * with it after that, never the same shot twice in a row.
+     */
+    expect(clips[1]!.timelineEnd).toBe(8 + MAX_HOLD_SEC);
+    for (let i = 1; i < clips.length; i++) {
+      expect(clips[i]!.timelineStart).toBeCloseTo(clips[i - 1]!.timelineEnd, 3);
+      expect(clips[i]!.source.providerAssetId).not.toBe(clips[i - 1]!.source.providerAssetId);
+    }
+  });
+
+  /** A film with one shot has nothing else to show: it is still held, as before. */
+  it("a film with a single shot still holds it to the end of the narration", () => {
+    const clips = [clip("a", 0, 4)];
+    const covered = holdPictureUnderVoice({ clips, voiceDurationSec: 21.5 });
+    expect(clips).toHaveLength(1);
+    expect(clips[0]!.timelineEnd).toBe(21.5);
+    expect(covered.join(" ")).toContain("held 17.500s to the end of the narration");
   });
 
   it("opens on picture rather than on nothing", () => {
@@ -121,14 +139,20 @@ describe("the outgoing shot is held until the next one arrives", () => {
   });
 
   /** Several dropped beats in a row: every hole gets its own hold and its own line. */
-  it("reports one line per hold, so twelve of them read as a sourcing problem", () => {
+  it("reports one line per hole, so twelve of them read as a sourcing problem", () => {
     const clips = [clip("a", 0, 2), clip("b", 6, 8), clip("c", 14, 16)];
     const covered = holdPictureUnderVoice({ clips, voiceDurationSec: 20 });
 
     expect(covered).toHaveLength(3);
-    expect(clips[0]!.timelineEnd).toBe(6);
-    expect(clips[1]!.timelineEnd).toBe(14);
-    expect(clips[2]!.timelineEnd).toBe(20);
+    /** VIDEO 626 — every hole is closed, and no shot is held more than MAX_HOLD_SEC past its end. */
+    for (let i = 1; i < clips.length; i++) {
+      expect(clips[i]!.timelineStart).toBeCloseTo(clips[i - 1]!.timelineEnd, 3);
+    }
+    expect(clips[clips.length - 1]!.timelineEnd).toBe(20);
+    const byId = new Map(clips.map((c) => [c.id, c]));
+    expect(byId.get("a")!.timelineEnd).toBe(2 + MAX_HOLD_SEC);
+    expect(byId.get("b")!.timelineEnd).toBe(8 + MAX_HOLD_SEC);
+    expect(covered.join(" ")).toContain("from elsewhere in the film");
   });
 });
 

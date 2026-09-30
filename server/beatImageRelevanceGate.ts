@@ -602,7 +602,24 @@ function formatAnchors(anchors: BeatSubjectAnchors | undefined): string[] {
  * DOES name ("Adolf Hitler giving a speech, likely during WWII") — is untouched.
  */
 const HEDGE_RE =
-  /\b(appears? to be|seems? to be|looks? like|likely|possibly|probably|presumably|could be|may be|might be|one of the|or associated|suggests?|suggesting|assum\w*)\b/i;
+  /\b(appears? to be|seems? to be|looks? like|likely|possibly|probably|presumably|could be|may be|might be|one of the|or associated|suggests?|suggesting|assum\w*|resembl\w*|similar to|lookalike)\b/i;
+/**
+ * VIDEO 626 — an identity taken from the line rather than from the frame.
+ *
+ *     depicts="A man speaking, likely an interview."  reason="The subject is a person mentioned in the narration"
+ *
+ * Nothing in that reason is hedged, and nothing in it was seen: the judge named no one and then
+ * approved the shot because the line names someone.
+ */
+const IDENTITY_FROM_THE_LINE_RE =
+  /\b(?:mentioned|named|referenced|referred to|described) in the (?:narration|line)\b|\bthe subject of the (?:narration|line)\b/i;
+/** VIDEO 626 — "a man resembling Elon Musk", "possibly Elon Musk": the name is written, not seen. */
+const HEDGE_BEFORE_NAME = "(?:resembl\\w*|similar to|possibly|probably|likely|perhaps|presumably|could be|may be|might be|appears? to be|looks? like|seems? to be)";
+function nameSeenPlainly(depicts: string, token: string): boolean {
+  if (!depicts.includes(token)) return false;
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return !new RegExp(`\\b${HEDGE_BEFORE_NAME}\\s+(?:\\S+\\s+){0,2}${escaped}`, "i").test(depicts);
+}
 const IDENTITY_RE = /\b(person|subject|individual|figure|family|celebrity|someone|woman|man|people)\b/i;
 
 /** Names of people the line (or the shot's resolved subject) writes: runs of two or more capitalised words. */
@@ -620,13 +637,35 @@ export function approvalRestsOnAGuess(
   const people = namedPeople(beatText, subject);
   if (people.length === 0) return false;
   const reason = judgement.reason ?? "";
-  if (!HEDGE_RE.test(reason)) return false;
+  if (!HEDGE_RE.test(reason) && !IDENTITY_FROM_THE_LINE_RE.test(reason)) return false;
   const tokens = people.flatMap((p) => p.toLowerCase().split(/\s+/)).filter((t) => t.length >= 3);
   const reasonLower = reason.toLowerCase();
   const aboutIdentity = IDENTITY_RE.test(reason) || tokens.some((t) => reasonLower.includes(t.replace(/s$/, "")));
   if (!aboutIdentity) return false;
   const depicts = (judgement.depicts ?? "").toLowerCase();
-  return !tokens.some((t) => depicts.includes(t.replace(/s$/, "")));
+  return !tokens.some((t) => nameSeenPlainly(depicts, t.replace(/s$/, "")));
+}
+
+/**
+ * VIDEO 626 — A LOGO IS NOT A PICTURE OF WHAT HAPPENED.
+ *
+ *     s1b4 push fits  depicts="Twitter logo"
+ *          reason="The clip shows the Twitter logo, which is relevant to a line about something that
+ *                  occurred on Twitter"
+ *
+ * The prompt already says a logo does not belong; the judge approved one anyway. A frame whose own
+ * description is a logo and nothing else — a mark, an icon, a wordmark, at most on a plain
+ * background — is refused. A frame with a logo IN it ("a car parked in front of the maker's logo")
+ * is a picture of something else and is untouched.
+ */
+const ONLY_A_LOGO_RE =
+  /^\s*(?:(?:a|an|the|close-?up of(?: a| the)?|image of(?: a| the)?)\s+)*(?:[\p{L}\d'’&.-]+\s+){0,3}(?:logo|logos|icon|icons|wordmark|emblem|brand mark)(?:\s+(?:on|against|in front of|over)\s+(?:a\s+|the\s+)?(?:[\p{L}-]+\s+){0,2}(?:background|wall|screen|sign|surface))?\s*[.!]?\s*$/iu;
+
+export function approvalIsOnlyALogo(judgement: Pick<BeatImageJudgement, "verdict" | "depicts">): boolean {
+  if (judgement.verdict !== "fits") return false;
+  const depicts = (judgement.depicts ?? "").trim();
+  if (!depicts) return false;
+  return depicts.split(/(?<=\.)\s+/).every((sentence) => ONLY_A_LOGO_RE.test(sentence) || /^the frames? (?:are|is) (?:consistent|the same)/i.test(sentence));
 }
 
 /** The judgement a guessed identity becomes: a refusal that says why. */
@@ -635,6 +674,9 @@ function refuseGuessedIdentity<T extends Pick<BeatImageJudgement, "verdict" | "d
   beatText: string,
   subject?: string
 ): T {
+  if (approvalIsOnlyALogo(judgement)) {
+    return { ...judgement, verdict: "does_not_fit", reason: `only a logo: ${judgement.reason}`.slice(0, 160) };
+  }
   if (!approvalRestsOnAGuess(judgement, beatText, subject)) return judgement;
   return { ...judgement, verdict: "does_not_fit", reason: `identity guessed, not seen: ${judgement.reason}`.slice(0, 160) };
 }
@@ -702,7 +744,17 @@ export function buildBeatImagePrompt(
     "It BELONGS when a viewer would accept it under THAT LINE. Any one of these is enough:",
     "  · someone or something the line NAMES is on screen. A documentary about a person shows",
     "    that person: a shot of them belongs under a line about them, even when it was filmed at",
-    "    a different moment than the one being described;",
+    "    a different moment than the one being described — as long as you can SEE it is them, and",
+    /**
+     * VIDEO 626 — the person rule stays; what it does not cover is a line about something that CAN
+     * be filmed. "A tweet from Musk confirming the rumour" was approved over Musk sitting in a car,
+     * "for the person named in the line". A line about a tweet, a product, a launch, a trial or a
+     * building wants that thing; the person somewhere unrelated to it is not that line's picture.
+     */
+    "    unless the line is about a specific thing a camera could show — a message or post, a",
+    "    document, a product, a vehicle, a launch, a trial, a building, an event — and the frame",
+    "    shows the person somewhere that has nothing to do with it: then the person alone is not",
+    "    enough;",
     "  · the place or the period the line describes is what is on screen;",
     "  · it is honest atmospheric footage of the era and setting THAT LINE describes;",
     /**

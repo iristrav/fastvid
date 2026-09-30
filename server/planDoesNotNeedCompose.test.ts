@@ -47,33 +47,22 @@ describe("beats still pair to clips when the list came from retrieval", () => {
   const beat = (index: number) => ({ index });
 
   /**
-   * `pairClipsToBeats` matches on the adoption record, not on position — so it works the same
-   * whichever of the two lists it is handed, as long as those clips were adopted. That is the
-   * property that makes the fallback safe rather than merely non-empty.
+   * `pairClipsToBeats` matches on the sentence each clip was pushed for, not on position — so it
+   * works the same whichever order the list is in.
    */
-  it("pairs by adoption record, so either source works", () => {
+  it("pairs by the recorded sentence, so the list's order does not matter", () => {
     const paired = pairClipsToBeats({
       clipPaths: ["/w/scene_0_a.mp4", "/w/scene_0_b.mp4"],
-      // The record keys on the BASENAME — that is what survives a clip being moved or re-tagged.
-      adoptions: [
-        { beatIndex: 0, basename: "scene_0_b.mp4" },
-        { beatIndex: 1, basename: "scene_0_a.mp4" },
-      ],
+      clipBeatIndices: [1, 0],
       beats: [beat(0), beat(1)],
-      basenameOf: (p: string) => path.basename(p),
     });
     // Not positional: beat 0 took the SECOND path because that is what the record says.
-    expect(paired[0]).toBe("/w/scene_0_b.mp4");
-    expect(paired[1]).toBe("/w/scene_0_a.mp4");
+    expect(paired[0]).toEqual(["/w/scene_0_b.mp4"]);
+    expect(paired[1]).toEqual(["/w/scene_0_a.mp4"]);
   });
 
   it("an empty clip list still produces no clip rather than throwing", () => {
-    const paired = pairClipsToBeats({
-      clipPaths: [],
-      adoptions: [],
-      beats: [beat(0)],
-      basenameOf: (p: string) => path.basename(p),
-    });
-    expect(paired[0] ?? null).toBeNull();
+    const paired = pairClipsToBeats({ clipPaths: [], clipBeatIndices: [], beats: [beat(0)] });
+    expect(paired[0]).toEqual([]);
   });
 });

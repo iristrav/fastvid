@@ -215,6 +215,7 @@ import type { BeatOutcomeAudit } from "./beatOutcomeAudit";
 import { createBeatOutcomeAudit, noteBeatCandidatesOffered, noteBeatVisionVerdict, resolveBeatCoverage, coverageHasRealFootage, noteBeatEligible, noteBeatAdopted, noteBeatVision, renderBeatFunnelReport, formatEligibleNotAdoptedByProvider } from "./beatOutcomeAudit";
 import { beginReplayRecording, recordReplayFact, replayRecordingActive } from "./renderReplay";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
+import type { AdoptionFacts } from "./cinematicPipelineInputs";
 import { bindTasteModelContext, bindLineageLedger, bindRelevanceLedger, bindContentKeyResolver, createClipAdoptAudit, formatUnjudgedAdoptions, formatAdoptionEvidence } from "./clipAdoptAudit";
 import { UNVERIFIED_PROVIDER, VisualSourceLedger, formatAssetLifecycleAudit, formatAssetUsageSummary, formatAuditReport, formatFinalVisualReport, formatRenderManifest, formatSelectedButNotRendered, formatFillerOverAdoptedAsset, formatFunnelReport, formatProviderFunnelInvariant, formatProviderTrace, lifecyclesOf, formatLifecycleInvariants, formatSourceSummary, assertNoSelectedClipWithoutOutcome, recordAssetOutcome, ensureCuratedAssetLineageOn, type VisualLineageRecord } from "./visualSourceLineage";
 import {
@@ -5578,6 +5579,18 @@ export function visualDeadlineForVideoMs(perSceneTotalMs: number, videoSec: numb
 export const BEAT_FILL_MAX_EXTRA_CLIPS = 3;
 export const BEAT_FILL_MIN_SCOPE_MS = 15_000;
 export const BEAT_FILL_FETCH_MS = 12_000;
+/**
+ * VIDEO 626 — A SENTENCE'S TURN IS ITS WHOLE TURN.
+ *
+ * Scene 1 had six sentences. The second was given 30 s; its own search was stopped at 30 s and then
+ * the fallbacks behind it — stock, a forced image, a person still, the fill — ran on with no limit
+ * of their own until 85 s. The third took 60 s of a 19 s turn, and the fourth, fifth and sixth had
+ * 7 s, 3 s and nothing: three sentences without a picture. The sentence's own search now gets
+ * `BEAT_RESOLVE_SHARE` of its turn, and everything after it runs inside what is left of the turn.
+ * A fallback that would start with less than `BEAT_FALLBACK_MIN_MS` left is not started.
+ */
+export const BEAT_RESOLVE_SHARE = 0.75;
+export const BEAT_FALLBACK_MIN_MS = 4_000;
 /** A gap shorter than this is held over by the clip before it; a longer one gets another clip. */
 export const BEAT_FILL_MIN_GAP_SEC = 1.5;
 
@@ -16396,7 +16409,7 @@ export interface VisualDedupState {
    * deadline reads it for a scene that has not returned, so a picture already approved is kept.
    * The lists are the scene's own; the deadline takes a copy.
    */
-  sceneClipsSoFar?: Map<number, { clips: string[]; beatDurations: number[] }>;
+  sceneClipsSoFar?: Map<number, { clips: string[]; beatDurations: number[]; clipBeatIndices: number[] }>;
   usedPaths: Set<string>;
   usedPexelsIds: Set<number>;
   usedPixabayIds: Set<number>;
@@ -26756,7 +26769,9 @@ async function fetchSceneVisualsInner(
   }
   const clips: string[] = [];
   const beatDurations: number[] = [];
-  (dedup.sceneClipsSoFar ??= new Map()).set(scene.index, { clips, beatDurations });
+  /** VIDEO 626 — the sentence each pushed clip was approved for, parallel to `clips`. */
+  const clipBeatIndices: number[] = [];
+  (dedup.sceneClipsSoFar ??= new Map()).set(scene.index, { clips, beatDurations, clipBeatIndices });
   const archiveBeatFilled = new Set<number>();
 
   // ── Editorial Sequence Planner: enrich beats with shot-level visual descriptions ──
@@ -26853,6 +26868,7 @@ async function fetchSceneVisualsInner(
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
+    clipBeatIndices.push(beatIndex);
     notePushedIntoFilm(dedup, clipPath, key);
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
     
@@ -26910,7 +26926,7 @@ async function fetchSceneVisualsInner(
    * scene has time left. Run for the previous sentence at the top of each iteration (a `continue`
    * cannot skip it) and once after the loop.
    */
-  let fillFor: { beat: SceneBeat; clipsBefore: number } | null = null;
+  let fillFor: { beat: SceneBeat; clipsBefore: number; deadlineMs: number } | null = null;
   const fillBeatWithMoreClips = async (): Promise<void> => {
     const f = fillFor;
     fillFor = null;
@@ -26931,11 +26947,14 @@ async function fetchSceneVisualsInner(
       const covered = beatDurations.slice(f.clipsBefore).reduce((sum, d) => sum + d, 0);
       const rest = beatFillSecondsNeeded(f.beat.holdSec, covered);
       if (rest <= 0 || !(remainingScopeMs() > BEAT_FILL_MIN_SCOPE_MS)) return;
+      /** VIDEO 626 — inside the sentence's own turn, never out of the next sentence's. */
+      const turnLeftMs = f.deadlineMs - Date.now();
+      if (turnLeftMs < BEAT_FALLBACK_MIN_MS) return;
       let more: string | null = null;
       try {
         more = await withSceneFetchTimeout(
           () => ownArchiveBeatClip({ ...asked, holdSec: rest }, scene, workDir, scene.index, dedup, videoTitle),
-          BEAT_FILL_FETCH_MS,
+          Math.min(BEAT_FILL_FETCH_MS, turnLeftMs),
           `scene ${scene.index} beat ${f.beat.index} fill`
         );
       } catch {
@@ -26956,7 +26975,6 @@ async function fetchSceneVisualsInner(
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi];
     await fillBeatWithMoreClips();
-    fillFor = { beat, clipsBefore: beatDurations.length };
     closeBeatLadder?.();
     /**
      * The scene's own discovery is carried IN, not re-derived. The funnel and the pool really did
@@ -26989,6 +27007,22 @@ async function fetchSceneVisualsInner(
       beats.slice(bi).reduce((sum, b) => sum + beatSecondsOnScreen(b), 0)
     );
     const beatWallMs = Math.min(beatVisualWallMs(dedup.perf), beatShareMs);
+    /** VIDEO 626 — the turn's end, for everything this sentence does after its own search. */
+    const beatDeadlineMs = Date.now() + beatWallMs;
+    fillFor = { beat, clipsBefore: beatDurations.length, deadlineMs: beatDeadlineMs };
+    const withinBeatTurn = async (label: string, fn: () => Promise<string | null>): Promise<string | null> => {
+      const leftMs = beatDeadlineMs - Date.now();
+      if (!(leftMs >= BEAT_FALLBACK_MIN_MS)) {
+        console.log(`[BeatTime] Scene ${scene.index} beat ${beat.index}: ${label} not started — the sentence's turn is over`);
+        return null;
+      }
+      try {
+        return await withSceneFetchTimeout(fn, leftMs, `scene ${scene.index} beat ${beat.index} ${label}`);
+      } catch (err) {
+        console.warn(`[BeatTime] Scene ${scene.index} beat ${beat.index}: ${label} stopped at the end of the turn: ${(err as Error).message?.slice(0, 100)}`);
+        return null;
+      }
+    };
     if (Number.isFinite(sceneLeftMs) && beats.length > 1) {
       console.log(
         `[BeatTime] Scene ${scene.index} beat ${beat.index}: ${Math.round(beatWallMs / 1000)}s of the scene's ` +
@@ -27008,7 +27042,7 @@ async function fetchSceneVisualsInner(
           spaceTopic, personName, videoTitle, adoptOpts: beatAdoptOpts,
           scenePersons, tag: `b${beat.index}`,
         }),
-        beatWallMs,
+        Math.max(1, Math.round(beatWallMs * BEAT_RESOLVE_SHARE)),
         `scene ${scene.index} beat ${bi} visuals`
       );
     } catch (err) {
@@ -27022,20 +27056,20 @@ async function fetchSceneVisualsInner(
         (!clip || isPipelineFallbackClip(clip)) &&
         canUseLicensedStockBeat(dedup)
       ) {
-        clip = await fetchBeatStockFallback(
+        clip = await withinBeatTurn("stock", () => fetchBeatStockFallback(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "beat cap"
-        );
+        ));
       }
       if (
         !youtubeOnlySourcingEnabled() &&
         (!clip || isPipelineFallbackClip(clip)) &&
         canUseGlobalStillPhoto(dedup)
       ) {
-        clip = dedup.perf.fastStockMode
-          ? await fetchBeatScriptImageForced(
+        clip = await withinBeatTurn("image", () => dedup.perf.fastStockMode
+          ? fetchBeatScriptImageForced(
               beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}_cap`
             )
-          : await fetchBeatScriptImageClip(
+          : fetchBeatScriptImageClip(
               beat,
               scene,
               workDir,
@@ -27046,7 +27080,7 @@ async function fetchSceneVisualsInner(
               videoTitle,
               { ...beatAdoptOpts, scriptImageFallback: true },
               `b${beat.index}_cap`
-            );
+            ));
       }
     } finally {
       clearInterval(beatPulse);
@@ -27070,12 +27104,12 @@ async function fetchSceneVisualsInner(
         (!rescue || isPipelineFallbackClip(rescue)) &&
         canUseLicensedStockBeat(dedup)
       ) {
-        rescue = await fetchBeatStockFallback(
+        rescue = await withinBeatTurn("stock", () => fetchBeatStockFallback(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, "miss"
-        );
+        ));
       }
       if ((!rescue || isPipelineFallbackClip(rescue)) && canUseGlobalStillPhoto(dedup)) {
-        rescue = await fetchBeatScriptImageClip(
+        rescue = await withinBeatTurn("image", () => fetchBeatScriptImageClip(
           beat,
           scene,
           workDir,
@@ -27086,12 +27120,12 @@ async function fetchSceneVisualsInner(
           videoTitle,
           { ...beatAdoptOpts, scriptImageFallback: true },
           `b${beat.index}_miss`
-        );
+        ));
       }
       if ((!rescue || isPipelineFallbackClip(rescue)) && canUseGlobalStillPhoto(dedup)) {
-        rescue = await fetchBeatScriptImageForced(
+        rescue = await withinBeatTurn("forced image", () => fetchBeatScriptImageForced(
           beat, scene, workDir, scene.index, clipFetchDur, dedup, scenePersons, videoTitle, `b${beat.index}_miss`
-        );
+        ));
       }
       if (rescue && !isPipelineFallbackClip(rescue)) {
         const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
@@ -27127,7 +27161,15 @@ async function fetchSceneVisualsInner(
    * `recoverSceneClipsIfEmpty` — the same sources with the same inputs. A beat with no picture is
    * a gap the timeline holds over; a scene with none is reported and left empty.
    */
-  const usable = clips.filter((c) => c && !isPipelineFallbackClip(c));
+  /**
+   * VIDEO 626 — the three lists are filtered together. `beatDurations.slice(0, usable.length)`
+   * paired a clip with another clip's length whenever a fallback sat before it, and the sentence
+   * each clip was approved for was not returned at all: the planner then read clip N as sentence N.
+   */
+  const keep = clips.map((c) => Boolean(c) && !isPipelineFallbackClip(c));
+  const usable = clips.filter((_, i) => keep[i]);
+  const usableDurations = beatDurations.filter((_, i) => keep[i]);
+  const usableBeatIndices = clipBeatIndices.filter((_, i) => keep[i]);
   if (usable.length === 0) {
     console.warn(`[Pipeline] Scene ${scene.index}: no beat clips — the timeline holds the previous shot`);
   }
@@ -27135,8 +27177,8 @@ async function fetchSceneVisualsInner(
   console.log(
     `[Pipeline] Scene ${scene.index}${personLabel}: ${usable.length} beat clip(s) (${videoCount} video, ${photoCount} photo)`
   );
-  await assertSceneVisualInventory(scene, usable, beatDurations.slice(0, usable.length), 0, undefined, videoTitle);
-  return { clips: usable, beatDurations: beatDurations.slice(0, usable.length) };
+  await assertSceneVisualInventory(scene, usable, usableDurations, 0, undefined, videoTitle);
+  return { clips: usable, beatDurations: usableDurations, clipBeatIndices: usableBeatIndices };
 }
 
 /**
@@ -27145,17 +27187,22 @@ async function fetchSceneVisualsInner(
  * with any pipeline fallback left out, exactly as the scene's own return filters it.
  */
 export function sceneClipsKeptAtDeadline(
-  soFar: { clips: readonly string[]; beatDurations: readonly number[] } | undefined
+  soFar: { clips: readonly string[]; beatDurations: readonly number[]; clipBeatIndices?: readonly number[] } | undefined
 ): SceneVisualsResult {
   const clips: string[] = [];
   const beatDurations: number[] = [];
-  if (!soFar) return { clips, beatDurations };
+  const clipBeatIndices: number[] = [];
+  if (!soFar) return { clips, beatDurations, clipBeatIndices };
   soFar.clips.forEach((c, i) => {
     if (!c || isPipelineFallbackClip(c)) return;
+    const beatIndex = soFar.clipBeatIndices?.[i];
+    /** VIDEO 626 — a clip whose sentence is not known is not handed to any sentence. */
+    if (beatIndex == null) return;
     clips.push(c);
     beatDurations.push(soFar.beatDurations[i] ?? 0);
+    clipBeatIndices.push(beatIndex);
   });
-  return { clips, beatDurations };
+  return { clips, beatDurations, clipBeatIndices };
 }
 
 export async function probeVideoDurationSec(filePath: string): Promise<number> {
@@ -30306,7 +30353,7 @@ async function _runVideoPipelineInner(
         enqueueCinematicRender,
         inProcessCinematicRenderBudgetMs,
       } = await import("./cinematicProduction");
-      const { pairClipsToBeats } = await import("./cinematicPipelineInputs");
+      const { pairClipsToBeats, pickLocalFileForClip } = await import("./cinematicPipelineInputs");
       if (cinematicPlanningEnabled()) {
         const lineage = visualDedup.sourcingCache.lineage;
         /**
@@ -30316,8 +30363,16 @@ async function _runVideoPipelineInner(
          * position and the file the render used for it are both in hand. It is handed to the render
          * job below so the job does not re-fetch assets that are already on this disk — the failure
          * that killed render 564. See `localFilesForTimelineClips`.
+         *
+         * VIDEO 626 — every file a sentence holds, with its adoption, so a timeline clip finds its
+         * own file when a sentence has two (`pickLocalFileForClip`).
          */
-        const localFileByBeat = new Map<string, string>();
+        const localFilesByBeat = new Map<string, Array<{ path: string; adoption: AdoptionFacts | null }>>();
+        const localFileForClip = (
+          sceneIndex: number,
+          beatIndex: number,
+          clip: { source?: { provider?: string | null; providerAssetId?: string | null; archiveAssetId?: number | null } | null; sourceIn?: number }
+        ): string | null => pickLocalFileForClip(localFilesByBeat.get(`${sceneIndex}:${beatIndex}`) ?? [], clip);
         /**
          * §10's counter — how many beats reached the planner holding a card this pipeline drew.
          *
@@ -30337,6 +30392,29 @@ async function _runVideoPipelineInner(
          *
          * Nothing is awaited any more, so this is assembled inside the map with everything else.
          */
+        /**
+         * VIDEO 626 — which clips are a still picture, asked of the files themselves: the first and
+         * the last frame compared. A still gets a slow camera move on the timeline; a clip that
+         * already moves gets none, so a photograph with a zoom baked in is never zoomed twice. A file
+         * that cannot be read falls back to what its name says.
+         */
+        const stillClips = new Set<string>();
+        {
+          const { clipLooksStill, ffmpegFrameGrabber } = await import("./stillClipProbe");
+          const grab = ffmpegFrameGrabber(FFMPEG_BIN);
+          const all = [...new Set(sceneVisualResults.flatMap((r) => r?.clips ?? []))];
+          for (let at = 0; at < all.length; at += 4) {
+            await Promise.all(
+              all.slice(at, at + 4).map(async (clipPath) => {
+                const durationSec =
+                  memoisedVideoStreamMeta(clipPath)?.durationSec ?? (await probeVideoDurationSec(clipPath).catch(() => 0));
+                const looked = await clipLooksStill(clipPath, durationSec, grab);
+                if (looked === true || (looked === null && isStillPhotoClip(clipPath))) stillClips.add(clipPath);
+              })
+            );
+          }
+          console.log(`[StillClips] video=${videoId} ${stillClips.size} of ${all.length} clip(s) are a still picture — each gets a slow camera move`);
+        }
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
           /**
@@ -30369,14 +30447,11 @@ async function _runVideoPipelineInner(
             /** RONDE 661 — the scene's selected clips are the only clip list there is. */
             const plannerSource = { clipPaths: sceneVisualResults[i]?.clips ?? [] };
             console.log(`[CinematicPlannerSource] scene=${scene.index} clips=${plannerSource.clipPaths.length}`);
-            const sceneAdoptions = visualDedup.clipAdoptAudit.filter(
-              (e) => e.sceneIndex === scene.index
-            );
-            const clipForBeat = pairClipsToBeats({
+            /** VIDEO 626 — by the sentence each clip was pushed for, never by its place in the list. */
+            const clipsForBeat = pairClipsToBeats({
               clipPaths: plannerSource.clipPaths,
-              adoptions: sceneAdoptions,
+              clipBeatIndices: sceneVisualResults[i]?.clipBeatIndices ?? [],
               beats,
-              basenameOf: (clipPath) => path.basename(clipPath),
             });
             /**
              * §5 — WHY A BEAT HAS NO PICTURE, SAID WHERE IT CAN BE PROVEN.
@@ -30398,22 +30473,15 @@ async function _runVideoPipelineInner(
              */
             beats.forEach((beat, position) => {
               const beatKey = beat.index ?? position;
-              const clipPath = clipForBeat[position];
+              const beatClips = clipsForBeat[position] ?? [];
+              const clipPath = beatClips[0];
               console.log(
                 `[CinematicPlannerBeat] scene=${scene.index} beat=${beatKey} ` +
                   `reason=${clipPath ? "CANONICAL_CLIP_AVAILABLE" : "NO_CANONICAL_CLIP"}` +
-                  (clipPath ? ` file=${path.basename(clipPath)}` : "")
+                  (clipPath ? ` file=${beatClips.map((c) => path.basename(c)).join(",")}` : "")
               );
             });
-            clipForBeat.forEach((clipPath, beatIndex) => {
-              if (clipPath) localFileByBeat.set(`${scene.index}:${beatIndex}`, clipPath);
-            });
-            return {
-              scene,
-              beats,
-              clips: beats.map((_, beatIndex) => {
-                const clipPath = clipForBeat[beatIndex];
-                if (!clipPath) return null;
+            const toPlannerClip = (clipPath: string, beatIndex: number) => {
                 /**
                  * With the content key, like every other resolve in this file — `resolve` reaches
                  * its third rung only when one is supplied. Twenty-six lines above, the divergence
@@ -30489,13 +30557,14 @@ async function _runVideoPipelineInner(
                     "CINEMATIC_DROPPED",
                     { status: "REJECTED", reason: "PLACEHOLDER_NOT_IN_TIMELINE" }
                   );
-                  localFileByBeat.delete(`${scene.index}:${beatIndex}`);
                   return null;
                 }
                 const meta = memoisedVideoStreamMeta(clipPath);
                 return {
                   facts: {
                     localPath: clipPath,
+                    /** VIDEO 626 — a photograph made into a video file gets a camera move. */
+                    ...(stillClips.has(clipPath) ? { still: true } : {}),
                     ...(meta?.width ? { widthPx: meta.width } : {}),
                     ...(meta?.height ? { heightPx: meta.height } : {}),
                     ...(meta && meta.durationSec > 0
@@ -30518,7 +30587,26 @@ async function _runVideoPipelineInner(
                       }
                     : null,
                 };
-              }),
+            };
+            /** Each sentence's clips that can enter the plan, first one first. */
+            const planned = beats.map((_, beatIndex) =>
+              (clipsForBeat[beatIndex] ?? []).flatMap((clipPath) => {
+                const c = toPlannerClip(clipPath, beatIndex);
+                return c ? [{ clipPath, c }] : [];
+              })
+            );
+            planned.forEach((list, beatIndex) => {
+              if (list.length === 0) return;
+              localFilesByBeat.set(
+                `${scene.index}:${beatIndex}`,
+                list.map(({ clipPath, c }) => ({ path: clipPath, adoption: c.adoption }))
+              );
+            });
+            return {
+              scene,
+              beats,
+              clips: planned.map((list) => list[0]?.c ?? null),
+              moreClips: planned.map((list) => list.slice(1).map(({ c }) => c)),
             };
           }),
           /**
@@ -30601,7 +30689,7 @@ async function _runVideoPipelineInner(
           const stillPlaceholder = onTimeline.filter((c) => {
             const local =
               c.sceneIndex != null && c.beatIndex != null
-                ? localFileByBeat.get(`${c.sceneIndex}:${c.beatIndex}`)
+                ? localFileForClip(c.sceneIndex, c.beatIndex, c) ?? undefined
                 : undefined;
             return beatClipIsPlaceholder({
               clipPath: local ?? c.source.title ?? c.id,
@@ -30875,8 +30963,7 @@ async function _runVideoPipelineInner(
                     const timelineClips = videoTrack(outcome.timeline);
                     const localByClipId = localFilesForTimelineClips({
                       clips: timelineClips,
-                      localPathFor: (sceneIndex, beatIndex) =>
-                        localFileByBeat.get(`${sceneIndex}:${beatIndex}`) ?? null,
+                      localPathFor: localFileForClip,
                     });
                     const deliveredPaths: string[] = [];
                     let unattributable = 0;
@@ -30924,8 +31011,7 @@ async function _runVideoPipelineInner(
                 const { videoTrack } = await import("./projectTimeline");
                 const existingByClipId = localFilesForTimelineClips({
                   clips: videoTrack(outcome.timeline),
-                  localPathFor: (sceneIndex, beatIndex) =>
-                    localFileByBeat.get(`${sceneIndex}:${beatIndex}`) ?? null,
+                  localPathFor: localFileForClip,
                 });
                 /**
                  * A beat whose file this render downloaded and no longer has is NAMED.
@@ -30941,7 +31027,7 @@ async function _runVideoPipelineInner(
                     (c) =>
                       c.sceneIndex != null &&
                       c.beatIndex != null &&
-                      localFileByBeat.get(`${c.sceneIndex}:${c.beatIndex}`) &&
+                      localFileForClip(c.sceneIndex, c.beatIndex, c) &&
                       !existingByClipId.has(c.id)
                   )
                   .map((c) => `${c.id}(s${c.sceneIndex}b${c.beatIndex})`);
