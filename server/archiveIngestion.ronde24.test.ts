@@ -56,8 +56,11 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
   );
 
   it("checks for baked-in text before admitting the clip", () => {
-    /** RONDE 222 re-anchor: ingestion asks for the VERDICT now, not the collapsed boolean. */
-    expect(fn).toContain("cachedClipBakedEditTextVerdict(");
+    /**
+     * RONDE 222 re-anchor: ingestion asks for the VERDICT now, not the collapsed boolean. VIDEO 621:
+     * through the archive's own check, which the render's budget can no longer skip.
+     */
+    expect(fn).toContain("archiveClipTextVerdict(");
     expect(fn).toContain("localPath");
     expect(fn).toContain("baked-in on-screen text");
   });
@@ -93,7 +96,7 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
      * preview check) is left real and must never be reached.
      */
     vi.doMock("./archiveClipFilter", () => ({
-      cachedClipBakedEditTextVerdict: async () => ({
+      archiveClipTextVerdict: async () => ({
         verdict: "has_text" as const,
         reason: "a chyron across the lower third",
       }),
@@ -139,7 +142,7 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
   });
 
   it("runs before the upload and the DB insert, so nothing is stored for a rejected clip", () => {
-    const guardAt = fn.indexOf("cachedClipBakedEditTextVerdict(");
+    const guardAt = fn.indexOf("archiveClipTextVerdict(");
     const uploadAt = fn.indexOf("storagePut(");
     expect(guardAt).toBeGreaterThan(-1);
     expect(uploadAt).toBeGreaterThan(-1);

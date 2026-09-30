@@ -128,7 +128,9 @@ describe("every push route records its refusals", () => {
    */
   it("every duplicate refusal is recorded", () => {
     const defs = SRC.match(/const pushSceneClip = async/g) ?? [];
-    const refusals = SRC.match(/if \(dedup\.usedContentKeys\.has\(key\)\)/g) ?? [];
+    /** VIDEO 620 — two duplicate refusals in the push: the same picture, and the same YouTube seconds. */
+    const refusals =
+      SRC.match(/if \(dedup\.usedContentKeys\.has\(key\)\)|if \(youtubeClipSecondsAlreadyUsed\(dedup\.usedContentKeys, clipPath\)\)/g) ?? [];
     /**
      * Matched on the call, not on its argument list. The signature has already grown once — the
      * beat's reject tally needs the scene and beat the ledger call did not — and pinning the exact
@@ -137,7 +139,7 @@ describe("every push route records its refusals", () => {
     const records = SRC.match(/noteDuplicateClipRefused\(\s*dedup,\s*clipPath,\s*key\b/g) ?? [];
     /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
     expect(defs.length, "the number of push routes changed").toBe(1);
-    expect(refusals.length).toBe(1);
+    expect(refusals.length).toBe(2);
     expect(records.length, "a duplicate refusal exists that records nothing").toBe(
       refusals.length
     );

@@ -26596,14 +26596,6 @@ async function fetchSceneVisualsInner(
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
-    /** VIDEO 620 — other seconds of a YouTube video already in the film are a different picture; these are not. */
-    if (youtubeClipSecondsAlreadyUsed(dedup.usedContentKeys, clipPath)) {
-      console.warn(
-        `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping ${path.basename(clipPath)} — these YouTube seconds are already in the film`
-      );
-      noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
-      return false;
-    }
     /** VIDEO 618 — the mark `adoptClip` wrote for THIS beat is not a previous use. */
     if (dedup.usedContentKeys.has(key)) {
       if (!claimAdoptedForBeat(dedup, key, scene.index, beatIndex)) {
@@ -26613,6 +26605,14 @@ async function fetchSceneVisualsInner(
         noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
         return false;
       }
+    }
+    /** VIDEO 620 — other seconds of a YouTube video already in the film are a different picture; these are not. */
+    if (youtubeClipSecondsAlreadyUsed(dedup.usedContentKeys, clipPath)) {
+      console.warn(
+        `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping ${path.basename(clipPath)} — these YouTube seconds are already in the film`
+      );
+      noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
+      return false;
     }
     let actualHold = holdSec;
     if (fs.existsSync(clipPath)) {
@@ -27564,12 +27564,17 @@ async function _runVideoPipelineInner(
      * The state is shared rather than copied, so `[SubjectGate]` at the end of the render reports
      * the same counters the download sites incremented.
      */
+    /**
+     * VIDEO 621 — the text a beat is judged against: its own sentence, or the video's main subject
+     * when the beat belongs to a scene searched on it. One reader for both judging scopes.
+     */
+    const judgedBeatText = (sceneIndex: number, beatIndex: number): string | undefined =>
+      visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ??
+      visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex]?.text;
     if (subjectGateScope) {
       visualDedup.candidateSubjectGate = subjectGateScope.state;
       subjectGateScope.contextFor = (sceneIndex, beatIndex) => {
-        const beatText =
-          visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ??
-          visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex]?.text;
+        const beatText = judgedBeatText(sceneIndex, beatIndex);
         if (!beatText?.trim()) return undefined;
         const scene = scenes.find((s) => s.index === sceneIndex);
         return {
@@ -27670,9 +27675,7 @@ async function _runVideoPipelineInner(
       composeJudgeScope.beatCountFor = (sceneIndex) =>
         visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.length;
       composeJudgeScope.contextFor = (sceneIndex, beatIndex) => {
-        const beat = visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex];
-        /** VIDEO 621 — a beat searched on the main subject is judged on it. */
-        const text = visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ?? beat?.text;
+        const text = judgedBeatText(sceneIndex, beatIndex);
         if (!text?.trim()) return undefined;
         const scene = scenes.find((s) => s.index === sceneIndex);
         return beatVisualContext(

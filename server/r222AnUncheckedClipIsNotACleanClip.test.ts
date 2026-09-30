@@ -162,7 +162,8 @@ describe("R222 §4 — a clip nobody looked at is stored as unjudged", () => {
   });
 
   it("ingestion asks for the verdict, not the boolean", () => {
-    expect(INGEST).toContain("cachedClipBakedEditTextVerdict(");
+    /** VIDEO 621 — through the archive's own check, outside the render's budget. */
+    expect(INGEST).toContain("archiveClipTextVerdict(");
     expect(INGEST).not.toContain("cachedClipHasBakedEditText(");
   });
 

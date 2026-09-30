@@ -63,8 +63,14 @@ const ingestionSrc = readFileSync(path.join(__dirname, "archiveIngestion.ts"), "
 
 describe("RONDE 25 — the cap is wired into both text-check callers", () => {
 
-  it("archive ingestion passes it too", () => {
-    expect(ingestionSrc).toContain("beatClipTextFilterMaxChecks()");
+  /**
+   * VIDEO 621 — no longer: the archive's own check runs outside the render's budget and is never
+   * skipped for it (render 621 spent 185 checks, mostly the archive's, and then let clips through
+   * unchecked). See `archiveClipTextVerdict`.
+   */
+  it("archive ingestion always checks, outside the render's budget", () => {
+    expect(ingestionSrc).toContain("await archiveClipTextVerdict(localPath, metadata.mimeType, overlayKey)");
+    expect(ingestionSrc).not.toContain("beatClipTextFilterMaxChecks()");
   });
 
   it("the budget is reset once per render, right where the watchdog is created", () => {

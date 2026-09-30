@@ -24,7 +24,7 @@ vi.mock("./archiveShotPieces", async (orig) => ({
   queueArchiveShotSplit: () => undefined,
 }));
 vi.mock("./archiveClipFilter", () => ({
-  cachedClipBakedEditTextVerdict: async () => ({ verdict: "clean" }),
+  archiveClipTextVerdict: async () => ({ verdict: "clean" }),
 }));
 
 import { ingestExternalClipToArchiveWithReason, setIngestShotCutterForTests } from "./archiveIngestion";

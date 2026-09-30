@@ -16,6 +16,7 @@ import {
   STOCK_SECTION_SEC,
   type StockDeps,
 } from "./youtubeShotStock";
+import * as pipeline from "./videoPipeline";
 
 const read = (f: string) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
 const FILM = 99_620;
@@ -192,7 +193,7 @@ describe("Video 620 — the render uses the stock", () => {
 });
 
 describe("Video 620 — another shot of the same YouTube video may join the film; the same seconds never", () => {
-  const pipe = () => import("./videoPipeline");
+  const pipe = async () => pipeline;
 
   it("a YouTube clip is known by its seconds, so two shots of one video are two pictures", async () => {
     const { clipContentKey, tagPathWithProviderAsset, youtubeFragmentFileTag } = await pipe();

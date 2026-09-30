@@ -105,8 +105,9 @@ describe("Video 621 — a scene that finds nothing searches on the video's main 
     const src = read("server/videoPipeline.ts");
     expect(src).toContain("for (const b of beats) (dedup.beatJudgeTextOverride ??= new Map()).set(`${scene.index}:${b.index}`, rescue);");
     expect(src).toContain("text: rescue,\n      searchQuery: rescue,\n      powerWord: rescue,\n      keywords: [rescue],");
-    expect(src).toContain("visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ?? beat?.text");
-    expect(src).toContain("visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ??\n          visualDedup.sceneBeatsBySceneIndex");
+    expect(src).toContain("visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ??\n      visualDedup.sceneBeatsBySceneIndex");
+    expect(src).toContain("const beatText = judgedBeatText(sceneIndex, beatIndex);");
+    expect(src).toContain("const text = judgedBeatText(sceneIndex, beatIndex);");
     /** The override is set after the beats are recorded, so the recorded array keeps the narration. */
     const recordAt = src.indexOf("await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration, dedup, scene.index);\n  /**\n   * VIDEO 621");
     expect(recordAt).toBeGreaterThan(0);
