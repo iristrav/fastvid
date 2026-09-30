@@ -71,7 +71,8 @@ describe("RONDE 11B — the surname anchor beats a weak title guess in the lock 
     // Video 612 put the namedByTopic helper between the anchor and the chain, so the window is wider.
     const chain = pipelineSrc.slice(idx, idx + 1500);
     // anchorResolvedPerson appears before extractPrimaryPersonFromText(videoTitle) in the chain.
-    const anchorPos = chain.indexOf("anchorResolvedPerson ||");
+    /** VIDEO 621 — the chain is a list of candidates now, tried in order; the order is unchanged. */
+    const anchorPos = chain.indexOf("anchorResolvedPerson,");
     const titlePos = chain.indexOf("extractPrimaryPersonFromText(input.videoTitle)");
     expect(anchorPos).toBeGreaterThan(-1);
     expect(titlePos).toBeGreaterThan(anchorPos);
@@ -80,10 +81,10 @@ describe("RONDE 11B — the surname anchor beats a weak title guess in the lock 
   it("the prompt extraction still wins first when it finds a real full name", () => {
     // Chain order preserved: userPrompt extraction is still the very first term.
     // Video 612: the chain lives in resolvePrimaryPersonLock; its first term is the prompt.
-    const idx = pipelineSrc.indexOf("const candidate =\n    extractPrimaryPersonFromText(input.prompt)");
+    const idx = pipelineSrc.indexOf("const candidates = [\n    extractPrimaryPersonFromText(input.prompt),");
     const chain = pipelineSrc.slice(idx, idx + 400);
     const promptPos = chain.indexOf("extractPrimaryPersonFromText(input.prompt)");
-    const anchorPos = chain.indexOf("anchorResolvedPerson ||");
+    const anchorPos = chain.indexOf("anchorResolvedPerson,");
     expect(promptPos).toBeGreaterThan(-1);
     expect(anchorPos).toBeGreaterThan(promptPos);
   });

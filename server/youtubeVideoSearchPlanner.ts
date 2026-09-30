@@ -65,6 +65,15 @@ const STOP = new Set(
     "every each any all some one two first new old how's what's it's we you they he she i me us them my"
   ).split(" ")
 );
+/** Words that open a sentence and are never a name — language, not subject matter. */
+const OPENERS = new Set(
+  (
+    "despite however although though yet still meanwhile today now soon later finally instead because since while " +
+    "once even thus therefore perhaps suddenly ultimately eventually recently nevertheless nonetheless moreover " +
+    "furthermore indeed unlike like without amid among inside behind across during within beyond against toward " +
+    "towards upon until unless whether whatever whenever wherever whoever yesterday tomorrow tonight back ago"
+  ).split(" ")
+);
 const PRODUCTION = new Set(["footage", "archival", "archive", "documentary", "newsreel", "film", "video", "b-roll", "broll", "clips", "clip"]);
 const HISTORICAL_MARKERS = /\b(ancient|medieval|world war|ww1|wwi|ww2|wwii|empire|dynasty|century|centuries|cold war|historic|history of|19th|18th|17th)\b/i;
 
@@ -118,10 +127,29 @@ export function analyzeVideo(input: PlannerInput): VideoAnalysis {
   });
   const phrase = /\b(?:[A-Z][\p{L}'’-]+)(?:\s+(?:of\s+|the\s+|de\s+)?[A-Z][\p{L}'’-]+)*|\b(?:1[0-9]|20)\d{2}\b/gu;
   const counts = new Map<string, { beats: Set<number>; scenes: Set<number> }>();
+  const allText = sentences.join(" ");
+  /**
+   * VIDEO 621 — a sentence's first word is capitalised whatever it is, so "Despite Elon Musk" and
+   * "How Elon Musk" were counted as two names and "Elon Musk" as neither. A capitalised run that
+   * opens a sentence loses its first word when that word is not a name: a stop word, a word that
+   * opens sentences (`OPENERS`), or a word the narration also writes in lower case.
+   */
+  const notAName = (word: string): boolean => {
+    const w = word.toLowerCase();
+    if (STOP.has(w) || OPENERS.has(w)) return true;
+    return new RegExp(`(?<![\\p{L}])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "u").test(allText);
+  };
   sentences.forEach((s, i) => {
     const seen = new Set<string>();
-    for (const m of s.match(phrase) ?? []) {
-      const term = m.trim();
+    for (const found of s.matchAll(phrase)) {
+      let term = found[0].trim();
+      if (found.index === s.length - s.trimStart().length) {
+        const parts = term.split(/\s+/);
+        if (notAName(parts[0]!)) {
+          if (parts.length === 1) continue;
+          term = parts.slice(1).join(" ").replace(/^(?:of|the|de)\s+/i, "");
+        }
+      }
       const first = term.split(/\s+/)[0]!.toLowerCase();
       if (STOP.has(first) && term.split(/\s+/).length === 1) continue;
       if (seen.has(term)) continue;

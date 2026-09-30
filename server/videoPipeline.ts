@@ -13370,18 +13370,31 @@ export function resolvePrimaryPersonLock(input: {
     const body = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
     return new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "iu").test(topicText);
   };
-  const candidate =
-    extractPrimaryPersonFromText(input.prompt) ||
-    anchorResolvedPerson ||
-    extractPrimaryPersonFromText(input.videoTitle) ||
-    extractPrimaryPersonFromText(input.topicContext) ||
-    scriptPersonNames.find(namedByTopic) ||
-    "";
-  if (candidate && !nameIsSpokenInNarration(candidate, narration)) {
+  const candidates = [
+    extractPrimaryPersonFromText(input.prompt),
+    anchorResolvedPerson,
+    extractPrimaryPersonFromText(input.videoTitle),
+    extractPrimaryPersonFromText(input.topicContext),
+    scriptPersonNames.find(namedByTopic),
+  ].filter((c): c is string => Boolean(c?.trim()));
+  /**
+   * VIDEO 621 — "Elon Musk Shocks" is not a name the narration says; "Elon Musk" is. A candidate the
+   * narration does not say is tried shorter (never below two words), then the next candidate is
+   * tried, instead of the first refusal ending the lock. Whatever locks is still a name the
+   * narration itself says, in full.
+   */
+  for (const candidate of candidates) {
+    const words = candidate.trim().split(/\s+/);
+    for (let n = words.length; n >= Math.min(2, words.length); n--) {
+      const name = words.slice(0, n).join(" ");
+      if (nameIsSpokenInNarration(name, narration)) {
+        if (n < words.length) console.log(`[Pipeline] person lock: "${candidate}" is not said in the narration — "${name}" is`);
+        return name;
+      }
+    }
     console.log(`[Pipeline] person lock refused: "${candidate}" is not said in the narration`);
-    return "";
   }
-  return candidate;
+  return "";
 }
 
 function isPersonCelebrityTopic(topicContext?: string): boolean {

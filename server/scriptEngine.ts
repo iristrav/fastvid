@@ -818,8 +818,13 @@ export async function runScriptEngineV2(
     const wordCount = countNarrationWords(markdownScript);
     console.log(`[ScriptEngine] Word count: ${wordCount} (target: ${budget.minWords}–${budget.maxWords})`);
 
-    // Expand if too short
-    if (wordCount < budget.minWords) {
+    /**
+     * Expand if too short — and VIDEO 621: trim if too long. Render 621 shipped 167 words against a
+     * budget of 126–154, so a one-minute film narrated for 85 s and its pictures had 40% more time
+     * to fill in the same search budget. The refine prompt always knew how to TRIM; only EXPAND was
+     * ever asked for. A revision is kept only when it lands closer to the target than the draft.
+     */
+    if (wordCount < budget.minWords || wordCount > budget.maxWords) {
       progress("📏 Adjusting script length...", 70);
       try {
         const refineResp = await invokeLLM({
@@ -831,7 +836,14 @@ export async function runScriptEngineV2(
         });
         const refined = refineResp.choices[0]?.message?.content ?? "";
         if (typeof refined === "string" && refined.trim().length > 200 && scriptStillOnTopic(topic, refined)) {
-          markdownScript = stripVisualTagsFromScript(refined.trim());
+          const candidate = stripVisualTagsFromScript(refined.trim());
+          const refinedWords = countNarrationWords(candidate);
+          if (Math.abs(refinedWords - budget.targetWords) < Math.abs(wordCount - budget.targetWords)) {
+            markdownScript = candidate;
+            console.log(`[ScriptEngine] Length adjusted: ${wordCount} → ${refinedWords} words (target ${budget.targetWords})`);
+          } else {
+            console.warn(`[ScriptEngine] Length adjustment kept the draft: ${refinedWords} words is no closer to ${budget.targetWords}`);
+          }
         }
       } catch (err) {
         console.warn("[ScriptEngine] Length refine failed:", err);
