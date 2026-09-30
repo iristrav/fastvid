@@ -52,9 +52,9 @@ describe("the transition graph puts every input on one timebase", () => {
       durations: [3, 3, 3],
       transitions: [cut, dissolve, dissolve],
     })!;
-    expect(g.filter).toContain("[0:v]settb=AVTB[t0]");
-    expect(g.filter).toContain("[1:v]settb=AVTB[t1]");
-    expect(g.filter).toContain("[2:v]settb=AVTB[t2]");
+    expect(g.filter).toContain("[0:v]settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t0]");
+    expect(g.filter).toContain("[1:v]settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t1]");
+    expect(g.filter).toContain("[2:v]settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t2]");
   });
 
   /**
@@ -113,8 +113,8 @@ describe("the transition graph puts every input on one timebase", () => {
       durations: [3, 3],
       transitions: [dissolve, dissolve],
     })!;
-    expect(g.filter).toContain("[0:v]settb=AVTB[t0]");
-    expect(g.filter).toContain("[1:v]settb=AVTB[t1]");
+    expect(g.filter).toContain("[0:v]settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t0]");
+    expect(g.filter).toContain("[1:v]settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t1]");
   });
 });
 

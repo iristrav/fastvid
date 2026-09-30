@@ -211,7 +211,8 @@ describe("§4 — [SegmentSpan]", () => {
      */
     const FILTERS = readFileSync(join(__dirname, "timelineFilters.ts"), "utf8");
     expect(FILTERS).toContain("const maxSec = Math.min(prevDurationSec, nextDurationSec) * 0.5;");
-    expect(FILTERS).toContain("`[${i}:v]settb=AVTB[t${i}]`");
-    expect(FILTERS).toContain("setpts=PTS-STARTPTS,settb=AVTB[t${i}]`");
+    /** VIDEO 622 — and on the same colour tags: see `SAME_COLOUR_TAGS`. */
+    expect(FILTERS).toContain("`[${i}:v]settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`");
+    expect(FILTERS).toContain("setpts=PTS-STARTPTS,settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`");
   });
 });

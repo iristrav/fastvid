@@ -777,6 +777,20 @@ export const TRANSITION_LADDER: readonly TransitionLadderStep[] = ["planned", "s
 /** The transition every `simple` join becomes: the plainest crossfade ffmpeg has. */
 export const SIMPLE_TRANSITION_NAME = "fade";
 
+/**
+ * VIDEO 622 — EVERY INPUT CARRIES THE SAME COLOUR TAGS, BEFORE ANYTHING JOINS THEM.
+ *
+ * Render 622's transitions failed twice ("Failed to configure output pad on auto_scale_12 |
+ * Error reinitializing filters") and the film was joined with plain cuts. Its fourteen segments had
+ * the same size, format, rate and timebase; four of them — the YouTube clip's — were tagged
+ * `color_range=tv`, bt709, and the other ten carried no colour tags. The converter ffmpeg puts in
+ * front of every join is configured from the first frame it sees and cannot be reconfigured when a
+ * later input's frames say something else. Every input now carries the same tags: metadata only,
+ * no pixel is converted. bt709 limited range is what H.264 at 1080p means when nothing says
+ * otherwise, so the untagged segments are described, not changed.
+ */
+export const SAME_COLOUR_TAGS = "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709";
+
 export function buildTransitionGraph(params: {
   durations: readonly number[];
   /** The transition INTO each segment. Index 0 is ignored: nothing precedes the first clip. */
@@ -850,8 +864,8 @@ export function buildTransitionGraph(params: {
     const trimSec = step === "cut" ? (joins[i - 1]?.sec ?? 0) : 0;
     steps.push(
       trimSec > 0
-        ? `[${i}:v]trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,settb=AVTB[t${i}]`
-        : `[${i}:v]settb=AVTB[t${i}]`
+        ? `[${i}:v]trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
+        : `[${i}:v]settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
     );
   }
 

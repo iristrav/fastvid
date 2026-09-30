@@ -110,12 +110,12 @@ describe("§2 — every rung lands on the same length", () => {
      * drift, in the other direction. The trim is what makes the totals above agree.
      */
     const cut = build("cut")!.filter;
-    expect(cut).toContain("trim=start=0.600,setpts=PTS-STARTPTS,settb=AVTB[t1]");
-    expect(cut).toContain("trim=start=0.600,setpts=PTS-STARTPTS,settb=AVTB[t2]");
+    expect(cut).toContain("trim=start=0.600,setpts=PTS-STARTPTS,settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t1]");
+    expect(cut).toContain("trim=start=0.600,setpts=PTS-STARTPTS,settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t2]");
   });
 
   it("the first segment is never trimmed — nothing precedes it, so it carries no handle", () => {
-    expect(build("cut")!.filter).toContain("[0:v]settb=AVTB[t0]");
+    expect(build("cut")!.filter).toContain("[0:v]settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t0]");
     expect(build("cut")!.filter).not.toContain("trim=start=0.000");
   });
 
@@ -125,8 +125,8 @@ describe("§2 — every rung lands on the same length", () => {
       transitions: [{ kind: "hard_cut" }, { kind: "hard_cut" }, { kind: "dissolve", durationSec: 0.5 }],
       step: "cut",
     })!;
-    expect(g.filter).toContain("[1:v]settb=AVTB[t1]");
-    expect(g.filter).toContain("trim=start=0.500,setpts=PTS-STARTPTS,settb=AVTB[t2]");
+    expect(g.filter).toContain("[1:v]settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t1]");
+    expect(g.filter).toContain("trim=start=0.500,setpts=PTS-STARTPTS,settb=AVTB,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[t2]");
   });
 });
 
