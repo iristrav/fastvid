@@ -57,7 +57,7 @@ import {
 } from "./curatedProvenanceRepair";
 import { formatPreparationCache, preparationKey, resetPreparationScope, runPreparation } from "./preparationCache";
 import { BUDGETS, chargeAmbientBudget, createRetrievalBudgetState, formatRetrievalBudgets, setBudgetResolver, type RetrievalBudgetState } from "./retrievalBudget";
-import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, youtubeDownloadRefusal, youtubeServiceRefusalReason } from "./providerFailureClass";
+import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteRepeatedYoutubeRefusal, YOUTUBE_REFUSALS_BEFORE_WRITE_OFF_THIS_RENDER, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, youtubeDownloadRefusal, youtubeServiceRefusalReason } from "./providerFailureClass";
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry } from "./youtubeLookahead";
@@ -10829,6 +10829,54 @@ export function googlevideoLinkLock(url: string): "ip_locked" | "not_ip_locked" 
  */
 const youtubeTransfersByFile = new Map<string, { seconds: string; done: Promise<boolean> }>();
 let youtubeTransferReentry: string | null = null;
+/** VIDEO 622 — fragment key → a kept copy of what was delivered for it, or null when it failed. Cleared per render. */
+const youtubeFragmentsFetched = new Map<string, Promise<string | null>>();
+export function resetYoutubeFragmentsFetched(): void {
+  youtubeFragmentsFetched.clear();
+}
+
+/**
+ * Wait for another call's fetch of these seconds and copy what it delivered to `outPath`. False
+ * when nobody fetched them yet, or the fetch failed — then the caller fetches them itself.
+ */
+export async function copyYoutubeFragmentAlreadyFetched(fragment: string, outPath: string): Promise<boolean> {
+  for (let ahead = youtubeFragmentsFetched.get(fragment); ahead; ahead = youtubeFragmentsFetched.get(fragment)) {
+    const kept = await ahead;
+    if (!kept || !fs.existsSync(kept)) {
+      if (youtubeFragmentsFetched.get(fragment) === ahead) youtubeFragmentsFetched.delete(fragment);
+      return false;
+    }
+    try {
+      fs.copyFileSync(kept, outPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Remember this fetch of these seconds, so the next caller waits for it instead of fetching again.
+ * A copy is kept beside the file, because a beat may re-cut or move its own file.
+ */
+export function keepYoutubeFragmentWhenFetched(fragment: string, outPath: string, done: Promise<boolean>): Promise<string | null> {
+  const kept = done.then(
+    (ok) => {
+      if (!ok || !fs.existsSync(outPath)) return null;
+      const keep = path.join(path.dirname(outPath), `ytfragment_${fragment.replace(/[^A-Za-z0-9_-]/g, "_")}.mp4`);
+      try {
+        fs.copyFileSync(outPath, keep);
+        return keep;
+      } catch {
+        return null;
+      }
+    },
+    () => null
+  );
+  if (!youtubeFragmentsFetched.has(fragment)) youtubeFragmentsFetched.set(fragment, kept);
+  return kept;
+}
 
 /**
  * VIDEO 619 — EVERYTHING YOUTUBE DELIVERS IS KEPT.
@@ -11073,6 +11121,15 @@ export async function downloadYouTubeCCClip(
     return false;
   }
   /**
+   * VIDEO 622 — and one already refused THIS render is not asked for either, whoever asks: the
+   * stock and the beats reached this function past each other's refusals.
+   */
+  const refusedThisRender = youtubeDownloadRefusal(videoId);
+  if (refusedThisRender) {
+    reportDownload("DOWNLOAD_FAILED", `refused_this_render:${refusedThisRender}`);
+    return false;
+  }
+  /**
    * RONDE 647 — ONE TRANSFER PER FILE AT A TIME; see `youtubeTransfersByFile`. Everything above
    * is synchronous, so the re-entry below is recognised as itself and nothing else can be.
    */
@@ -11085,16 +11142,30 @@ export async function downloadYouTubeCCClip(
         return true;
       }
     }
+    /**
+     * VIDEO 622 — THE SAME SECONDS ARE FETCHED ONCE PER RENDER, NOT ONCE PER SCENE.
+     *
+     * The file above is per scene and per beat, so scenes 0, 1 and 2 each fetched
+     * `tnBQmEqBCY0` @5081s for 4 s — three transfers of the same seconds. A fragment another call
+     * is fetching or already delivered is waited for and copied; one that failed is fetched here.
+     */
+    const fragment = youtubeFragmentKeyFor(videoId, clipStart, duration);
+    if (await copyYoutubeFragmentAlreadyFetched(fragment, outPath)) {
+      reportDownload("DOWNLOAD_SUCCESS", "same_seconds_already_fetched");
+      return true;
+    }
     youtubeTransferReentry = outPath;
     const done = downloadYouTubeCCClip(
       videoId, duration, clipStart, outPath, sceneIndex, title, sourcingCache, startIsExact,
       outcome, budgetMs, onlyRoute
     );
     youtubeTransfersByFile.set(outPath, { seconds, done });
+    const kept = keepYoutubeFragmentWhenFetched(fragment, outPath, done);
     try {
       return await done;
     } finally {
       if (youtubeTransfersByFile.get(outPath)?.done === done) youtubeTransfersByFile.delete(outPath);
+      await kept;
     }
   }
 
@@ -11333,6 +11404,12 @@ export async function downloadYouTubeCCClip(
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: ${videoId} written off for this render — the yt-dlp ` +
               `service refused it durably (${cloudReason}); it will not be asked for again`
+          );
+        } else if (noteRepeatedYoutubeRefusal(videoId, cloudReason)) {
+          /** VIDEO 622 — see `noteRepeatedYoutubeRefusal`. */
+          console.warn(
+            `[Pipeline] Scene ${sceneIndex}: ${videoId} written off for this render — the same refusal ` +
+              `(${cloudReason}) ${YOUTUBE_REFUSALS_BEFORE_WRITE_OFF_THIS_RENDER}× in this render; it will not be asked for again`
           );
         }
         /**
@@ -27345,6 +27422,8 @@ async function _runVideoPipelineInner(
    * again rather than written off for the lifetime of the worker.
    */
   resetPermanentDownloadRefusals();
+  /** VIDEO 622 — and which seconds were already fetched: they lived in the last render's work directory. */
+  resetYoutubeFragmentsFetched();
   /** The cloud route's egress latch is render-scoped too — see noteCloudEgressBlocked. */
   resetCloudEgressBlocked();
   /** RONDE 261: the sources it points at live in a work directory this render is about to make. */

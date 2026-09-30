@@ -76,7 +76,7 @@ export function planYoutubePieces(params: {
   durationSec: number;
   facts: YoutubeSourceFacts;
   maxSec?: number;
-}): { pieces: YoutubePiece[]; notes: string[]; refused?: string } {
+}): { pieces: YoutubePiece[]; notes: string[]; refused?: string; distinct?: number } {
   const maxSec = params.maxSec ?? YOUTUBE_MAX_SHOT_SEC;
   const notes: string[] = [];
   const need = Math.max(0, params.durationSec);
@@ -181,7 +181,7 @@ export function planYoutubePieces(params: {
   if (Math.abs(pieces[0]!.inSec - params.inSec) > EPS) {
     notes.push(`in-point moved ${params.inSec.toFixed(2)}s → ${pieces[0]!.inSec.toFixed(2)}s so the piece holds no cut`);
   }
-  return { pieces, notes };
+  return { pieces, notes, distinct: Math.min(count, order.length) };
 }
 
 /**
@@ -279,6 +279,31 @@ export function limitYoutubeShots(params: {
     if (plan.pieces.length === 0) {
       out.push(clip);
       continue;
+    }
+    /**
+     * VIDEO 622 — the same 4 s of a YouTube video played four times in a row: the source held one
+     * window and the slot asked for four. The same seconds are never shown twice; the time the
+     * source cannot fill with different footage goes to the shot beside it in the same scene. Only
+     * when there is none does the repeat stay, and the plan's note says so.
+     */
+    const distinct = plan.distinct ?? plan.pieces.length;
+    if (distinct < plan.pieces.length) {
+      const give = round(plan.pieces.slice(distinct).reduce((sum, p) => sum + p.durationSec, 0));
+      const prevOut = out[out.length - 1];
+      const next = clips[i + 1];
+      const takesTime = (c: TimelineVideoClip | undefined, id?: string) =>
+        !!c && !params.youtube.has(id ?? c.id) && !c.disabled && sameScene(clip, c);
+      if (takesTime(prevOut, prevOut?.id.replace(/_p\d+$/, ""))) {
+        clip.timelineStart = round(clip.timelineStart + give);
+        prevOut!.timelineEnd = clip.timelineStart;
+        notes.push(`${clip.id}: no repeat — ${prevOut!.id} holds ${give.toFixed(2)}s longer instead`);
+        plan.pieces = plan.pieces.slice(0, distinct);
+      } else if (takesTime(next)) {
+        clip.timelineEnd = round(clip.timelineEnd - give);
+        next!.timelineStart = clip.timelineEnd;
+        notes.push(`${clip.id}: no repeat — ${next!.id} starts ${give.toFixed(2)}s earlier instead`);
+        plan.pieces = plan.pieces.slice(0, distinct);
+      }
     }
     if (plan.pieces.length > 1 || Math.abs(plan.pieces[0]!.inSec - (clip.sourceIn ?? 0)) > EPS) {
       adjustedIds.push(clip.id);

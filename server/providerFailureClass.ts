@@ -203,6 +203,7 @@ export function permanentDownloadRefusal(url: string): string | null {
 /** Start of a render: forget what the last one learned. */
 export function resetPermanentDownloadRefusals(): void {
   permanentDownloadRefusals.clear();
+  repeatedYoutubeRefusals.clear();
   permanentRefusalsPrevented = 0;
 }
 
@@ -497,6 +498,35 @@ export function noteYoutubeDownloadRefusal(
     isDurableYoutubeServiceRefusal(reason);
   if (!videoId || !status || !durable) return false;
   notePermanentDownloadRefusal(youtubeRefusalKey(videoId), `${status}${reason ? `:${reason}` : ""}`);
+  return true;
+}
+
+/**
+ * VIDEO 622 — A STREAM YOUTUBE REFUSES TWICE IS NOT ASKED FOR A THIRD TIME THIS RENDER.
+ *
+ * `stream_refused` (googlevideo answered the stream with an HTTP error) is not in the durable set:
+ * one of them can be a passing 429. But render 622 asked `23GzpbNUyI4` again and again — from the
+ * stock and from several beats — and every answer was the same refusal. Two refusals of the same
+ * kind on the same video in one render is the video, not the moment.
+ */
+export const YOUTUBE_REFUSALS_BEFORE_WRITE_OFF_THIS_RENDER = 2;
+const REPEATABLE_YOUTUBE_REFUSALS: ReadonlySet<string> = new Set<string>(["stream_refused"]);
+const repeatedYoutubeRefusals = new Map<string, number>();
+
+/**
+ * Count one refusal the service gave for this video. Returns true when this one wrote the video
+ * off for the rest of the render. Call it once per request to the service.
+ */
+export function noteRepeatedYoutubeRefusal(videoId: string, reason: string | undefined): boolean {
+  if (!videoId || !reason) return false;
+  const cls = reason.includes(":") ? reason.slice(reason.lastIndexOf(":") + 1).trim() : reason.trim();
+  if (!REPEATABLE_YOUTUBE_REFUSALS.has(cls)) return false;
+  const key = youtubeRefusalKey(videoId);
+  if (permanentDownloadRefusals.has(key)) return false;
+  const count = (repeatedYoutubeRefusals.get(key) ?? 0) + 1;
+  repeatedYoutubeRefusals.set(key, count);
+  if (count < YOUTUBE_REFUSALS_BEFORE_WRITE_OFF_THIS_RENDER) return false;
+  notePermanentDownloadRefusal(key, `DOWNLOAD_FAILED:${reason}×${count}`);
   return true;
 }
 
