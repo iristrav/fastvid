@@ -16,6 +16,7 @@
  * requeue after a deploy, a second replica or a user trying again never gets a fresh budget.
  */
 import { youtubeResultIsShort } from "./youtubeNonFootage";
+import { judgeFootageTitle, judgeFootageType } from "./visualJudge";
 import { claimYoutubeSearch, type YoutubeSearchBudgetStore } from "./youtubeSearchBudget";
 import {
   analyzeVideo,
@@ -81,8 +82,6 @@ export type PoolDeps = PlannerDeps & {
   triage: (item: SearchItem, title: string, sentences: string[]) => Promise<Triage | null>;
   /** The archive's own YouTube-origin assets that clear its floor, as items with a thumbnail. */
   archive: (sentences: string[]) => Promise<SearchItem[]>;
-  /** The title genre filter: a parody or reaction is never footage. */
-  notFootage: (title: string) => string | null;
   /** When the official API is in its quota cooldown, a search is not spent on a refusal. */
   inCooldown?: () => boolean;
   concurrency?: number;
@@ -137,11 +136,11 @@ async function judge(
   return mapLimit(items, deps.concurrency ?? 8, async (item) => {
     const d = details?.get(item.videoId) ?? null;
     const it = withYoutubeOwnText(item, d);
-    const genre = deps.notFootage(it.title);
+    const byTitle = judgeFootageTitle(it.title);
     let why = "ok";
     /** Video 613 — a Short is never downloaded: by its hashtag, or by its measured length. */
     const short = youtubeResultIsShort(it.title, it.description, d?.durationSec ?? null);
-    if (genre) why = `title genre ${genre}`;
+    if (byTitle.decision === "REJECT") why = byTitle.reason;
     else if (short) why = `youtube short (${short})`;
     /** A result whose length is unknown could be a Short: it is not looked at. */
     else if (!d) why = "no details — length unknown, may be a Short";
@@ -152,8 +151,12 @@ async function judge(
     const t = why === "ok" ? await deps.triage(it, title, sentences).catch(() => null) : null;
     if (why === "ok") {
       if (!t) why = "not judged";
-      else if (t.footageType !== "real_footage" && t.footageType !== "archival_footage") why = `footage type ${t.footageType}`;
-      else if (!t.servesBeats.length) why = "serves no beat";
+      else if (judgeFootageType(t.footageType).decision === "REJECT") why = judgeFootageType(t.footageType).reason;
+      /**
+       * ONE ROUTE — "serves no beat" is not a refusal any more: whether a picture fits a sentence is
+       * the VisualJudge's question, on the downloaded frames. `serves` stays as the look's ranking
+       * signal (which sentences try this video first, and the order the pool is stocked in).
+       */
     }
     const usable = why === "ok";
     return {
@@ -421,11 +424,6 @@ export function emptyVideoYoutubePool(videoId: number): VideoYoutubePool {
   };
 }
 
-/** RONDE 658 — the switch. `YOUTUBE_SEARCH_MODE=per_beat` restores the old per-beat searches. */
-export function youtubeVideoPoolEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.YOUTUBE_SEARCH_MODE?.trim().toLowerCase() !== "per_beat";
-}
-
 /** Videos whose pool finished WITHOUT a usable YouTube answer — see `poolGaveNoYoutube`. */
 const poolsWithoutYoutube = new Set<number>();
 
@@ -571,17 +569,20 @@ export function poolRowsForBeat(
 ): PoolRow[] {
   const mine = new Set(beatSentences(pool, beatText));
   const rows: PoolRow[] = [];
+  const servesMine = new Set<string>();
   for (const c of pool.candidates) {
     if (!c.usable) continue;
     const hay = `${c.title} ${c.description}`.toLowerCase();
     /**
      * VIDEO 624 — FIRST LOOK, THEN DOWNLOAD. The pool looked at every candidate's thumbnail and said
-     * which sentences it serves; a candidate it did not judge to serve THIS sentence is not
-     * downloaded for it. (Before, any usable candidate whose title carried part of the person's name
-     * was downloaded too, and judged only after the transfer.) RONDE 659's rule still holds: a video
-     * the look judged to serve this beat is never second-guessed by a name string.
+     * which sentences it serves. RONDE 659's rule still holds: a video the look judged to serve this
+     * beat is never second-guessed by a name string.
+     *
+     * ONE ROUTE — the look RANKS, it does not refuse: a usable video it did not assign to this
+     * sentence is still offered, after every one it did. Whether the picture fits is the
+     * VisualJudge's answer on the downloaded frames.
      */
-    if (!c.serves.some((s) => mine.has(s))) continue;
+    if (c.serves.some((s) => mine.has(s))) servesMine.add(c.videoId);
     const text = relevanceKeywords.filter((k) => k.length >= 3 && hay.includes(k.toLowerCase())).length;
     rows.push({
       item: { id: { videoId: c.videoId }, snippet: { title: c.title, description: c.description, channelTitle: c.channel, thumbnails: { high: { url: c.thumb } } } },
@@ -592,5 +593,6 @@ export function poolRowsForBeat(
       durationSec: c.durationSec > 0 ? c.durationSec : 0,
     });
   }
-  return rows.sort((a, b) => b.rel - a.rel);
+  const serving = (r: PoolRow) => (servesMine.has(r.item.id.videoId) ? 1 : 0);
+  return rows.sort((a, b) => serving(b) - serving(a) || b.rel - a.rel);
 }

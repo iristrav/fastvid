@@ -41,7 +41,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { isRejectedStockClip, stockCategoryGateForTest } from "./videoPipeline";
+import { stockCategoryGateForTest } from "./videoPipeline";
+import { isRejectedStockClip } from "./visualJudge";
 
 const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -106,9 +107,12 @@ describe("§3 — a diorama is a diorama on any subject", () => {
 
 describe("§4 — the readers cannot disagree", () => {
   it("every reader of the blocked category asks the same predicate", () => {
-    const at = SRC.indexOf("function categoryIsBlockedContent(");
+    /** ONE ROUTE: the predicate is the VisualJudge's; the pipeline's query-level reader imports it. */
+    const VJ = readFileSync(join(__dirname, "visualJudge.ts"), "utf8");
+    const at = VJ.indexOf("function categoryIsBlockedContent(");
     expect(at, "the shared predicate is gone").toBeGreaterThan(-1);
-    expect(SRC.slice(at, SRC.indexOf("\n}", at))).toContain('return category === "blocked_model";');
+    expect(VJ.slice(at, VJ.indexOf("\n}", at))).toContain('return category === "blocked_model";');
+    expect(SRC).not.toContain("function categoryIsBlockedContent(");
   });
 
   it("RONDE 617's rule still holds — generic does not gate a documentary", () => {

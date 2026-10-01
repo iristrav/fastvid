@@ -121,8 +121,9 @@ describe("what did NOT change", () => {
   it("the guard still asks with finalSay before it judges", () => {
     // RONDE 215's last look is what makes the new ask actually happen at the deciding moment.
     const pipe = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-    /** The ADOPTION GUARD's call — the compose barrier makes its own, without a beat. */
-    const at = pipe.indexOf('route: "adoption_guard"');
+    /** ONE ROUTE: the guard's call is the push judge's one look. */
+    const fn = pipe.indexOf("export async function visualJudgeRefusesPush(");
+    const at = pipe.indexOf('route: "push"', fn);
     expect(at).toBeGreaterThan(0);
     const call = pipe.slice(pipe.lastIndexOf("ensureVerdictBeforeCompose({", at), pipe.indexOf("});", at));
     expect(call).toContain("finalSay: true");

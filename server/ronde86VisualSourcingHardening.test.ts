@@ -15,7 +15,7 @@ import {
   lineageLedgerFor,
   recordClipAdopt,
 } from "./clipAdoptAudit";
-import { createClipRejectAudit, recordClipReject } from "./clipRejectAudit";
+import { createRejectionRegistry, registerRejection } from "./rejectionRegistry";
 import {
   buildBeatRankingContext,
   curatedAssetProviderText,
@@ -29,13 +29,9 @@ import {
   resetVisualSearchMemoryQueue,
   visualSearchMemoryQueueStats,
 } from "./visualSearchMemory";
-import {
-  globalBudgetSnapshot,
-  maxConcurrentRenders,
-  withGlobalMediaFetch,
-  
-} from "./globalResourceBudget";
+import { globalBudgetSnapshot, withGlobalMediaFetch } from "./globalResourceBudget";
 import { composeParallelismForVideo, montageSegmentParallelism } from "./sourcingPolicy";
+import { maxConcurrentRenders } from "./config";
 
 /**
  * RONDE 86 — the render can say where every picture came from, and two of them can run at once.
@@ -293,15 +289,15 @@ describe("RONDE 86 §E — every funnel stage is counted, per provider and in to
   });
 
   it("TEST 27 — every gate in the pipeline reports through one point", () => {
-    const audit = createClipRejectAudit();
+    const audit = createRejectionRegistry();
     const l = ledger87();
     audit.lineage = l;
     const c = candidate(l, "pexels", "pexels:1", "/w/p.mp4");
-    recordClipReject(audit, 1, 2, c.localPath, "vision_gate", "q");
+    registerRejection(audit, 1, 2, c.localPath, "vision_gate", "q");
     expect(l.summary().total.rejected).toBe(1);
     // And an audit with no ledger (tests, tools) behaves exactly as before.
-    const bare = createClipRejectAudit();
-    expect(() => recordClipReject(bare, 1, 2, "/w/x.mp4", "vision_gate", "q")).not.toThrow();
+    const bare = createRejectionRegistry();
+    expect(() => registerRejection(bare, 1, 2, "/w/x.mp4", "vision_gate", "q")).not.toThrow();
     expect(bare.recorded).toBe(1);
   });
 

@@ -296,7 +296,13 @@ describe("RONDE 50 #1 — a cached pool exhausted by exclusions no longer ends t
 describe("RONDE 50 #5 — the same storage file cannot be adopted twice in one render", () => {
   it("resolves the URL from render state and excludes the second attempt", async () => {
     const { curatedStorageUrlForClip } = await import("./videoPipeline");
-    const { markCuratedAssetUsed } = await import("./curatedMediaSourcing");
+    const { curatedClipPathAssetId } = await import("./curatedMediaSourcing");
+    const { markAssetUsedInVideo } = await import("./visualDedupRegistry");
+    const markCuratedAssetUsed = (clipPath: string, ids: Set<number>, urls: Set<string>, storageUrl?: string) =>
+      markAssetUsedInVideo(
+        { usedPaths: new Set(), usedContentKeys: new Set(), usedCuratedAssetIds: ids, usedCuratedStorageUrls: urls },
+        { archiveAssetId: curatedClipPathAssetId(clipPath), storageUrl }
+      );
 
     const dedup = {
       archiveCandidatePool: [{ asset: { id: 55988, storageUrl: "https://cdn/shared.mp4" } }],

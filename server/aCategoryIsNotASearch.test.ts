@@ -51,6 +51,6 @@ describe("this round changed query construction and nothing else", () => {
   /** `ensureSubjectAnchor` and `subjectAnchorForBeat` went with the search-plan builder; the gate stays. */
   it("THE SEARCH GATE IS STILL THE LAST WORD", () => {
     const gate = readFileSync(join(__dirname, "searchQueryContract.ts"), "utf8");
-    expect(gate).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
   });
 });

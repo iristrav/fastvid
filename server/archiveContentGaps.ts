@@ -7,42 +7,10 @@
  * can be targeted at what's actually missing instead of guessed at.
  */
 
-import { createHash } from "crypto";
-import { desc, sql } from "drizzle-orm";
+import { desc } from "drizzle-orm";
 import { getDb } from "./db";
 import { archiveContentGaps, type ArchiveContentGap } from "../drizzle/schema";
 import { gapRowLooksLikePerson } from "./archiveGapNames";
-
-function keywordHash(keyword: string): string {
-  return createHash("sha256").update(keyword).digest("hex");
-}
-
-/** Best-effort — never throws, never blocks the pipeline. */
-export async function recordArchiveContentGap(keyword: string, sampleBeatText?: string): Promise<void> {
-  try {
-    const db = await getDb();
-    if (!db) return;
-    const normalized = keyword.trim().toLowerCase().slice(0, 256);
-    if (!normalized) return;
-    const hash = keywordHash(normalized);
-    await db
-      .insert(archiveContentGaps)
-      .values({
-        keywordHash: hash,
-        keyword: normalized,
-        sampleBeatText: sampleBeatText?.trim().slice(0, 512) || undefined,
-        hitCount: 1,
-      })
-      .onDuplicateKeyUpdate({
-        set: {
-          hitCount: sql`${archiveContentGaps.hitCount} + 1`,
-          lastSeenAt: new Date(),
-        },
-      });
-  } catch (err) {
-    console.warn("[ArchiveContentGaps] record failed:", (err as Error).message?.slice(0, 120));
-  }
-}
 
 /**
  * RONDE 127 — the admin list shows PEOPLE, not search phrases.

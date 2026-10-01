@@ -164,7 +164,7 @@ describe("TEST 6 — the fetch itself is wrapped, not one call site", () => {
 
   it("every REAL_FUNNEL-reaching fetch site goes through it", () => {
     /** Three (definition + two calls) — the rest sat in the deleted curated-only, rescue and backfill routes. */
-    expect(PIPE.split("fetchCuratedArchiveBeatClipWithLineage(").length - 1).toBe(3);
+    expect(PIPE.split("fetchCuratedArchiveBeatClipWithLineage(").length - 1).toBe(2);
   });
 
   it("the wrapper opens the record with the same writer the ranked queue uses", () => {

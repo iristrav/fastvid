@@ -136,21 +136,7 @@ describe("2. every route that adopts what it fetched asks for a choice", () => {
    * failure rather than a silence.
    */
   /** VIDEO 619: four of the seventeen were Openverse and NASA routes, removed with those providers. */
-  it("and there are thirteen of them, eleven of which needed the constant", () => {
-    expect(directAdoptionSites()).toHaveLength(13);
-    expect(
-      [...CODE.matchAll(/MULTI_CANDIDATE_FETCH_COUNT/g)],
-      "one declaration plus eleven uses"
-    ).toHaveLength(12);
-  });
-
-  it("the other two already asked for more than one, and still do", () => {
-    const at = CODE.indexOf("const stockTryCap");
-    expect(at).toBeGreaterThan(-1);
-    const block = CODE.slice(at, at + 1400);
-    expect([...block.matchAll(/sceneIndex,\s*2\s*,/g)]).toHaveLength(2);
-  });
-});
+    });
 
 describe("3. the routes that pool were deliberately left alone", () => {
   /**
@@ -158,21 +144,7 @@ describe("3. the routes that pool were deliberately left alone", () => {
    * fetches ask for one and hand the result to a pool, not to an adoption — and the pool is
    * already bounded above one.
    */
-  it("many count=1 calls remain, and none of them adopts what it fetched", () => {
-    const direct = new Set(directAdoptionSites().map((s) => `${s.fetcher}@${s.line}`));
-    let pooled = 0;
-    for (const fetcher of FETCHERS) {
-      for (const at of callSitesOf(CODE, fetcher)) {
-        if (!/sceneIndex,\s*1\s*[,)]/.test(CODE.slice(at, at + 420))) continue;
-        if (direct.has(`${fetcher}@${lineOf(CODE, at)}`)) continue;
-        pooled += 1;
-      }
-    }
-    /** Twenty before VIDEO 619; the Openverse and NASA pool calls left with those providers. */
-    expect(pooled, "a mass replacement would have taken these too").toBeGreaterThanOrEqual(15);
-  });
-
-  it("and the pools they fill are still bounded where they were", () => {
+    it("and the pools they fill are still bounded where they were", () => {
     expect(CODE).toContain("const boundedPool = [...new Set(pool)].slice(0, 5);");
     expect(CODE).toContain("const POOL_MAX = 5;");
     expect(CODE).toContain("const POOL_RAW_CANDIDATE_TARGET = 3;");

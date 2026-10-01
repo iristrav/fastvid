@@ -23,7 +23,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { buildVideoQualityReport, indefensibleExportConditions } from "./videoQualityReport";
+import { buildVideoQualityReport } from "./videoQualityReport";
+import { indefensibleExportConditions } from "./deliveryGate";
 
 /** A report shaped only by what this gate reads. */
 const report = (opts: {

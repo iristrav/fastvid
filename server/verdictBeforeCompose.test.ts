@@ -269,11 +269,11 @@ describe("both gates ask, and the diagnostic does not", () => {
      * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
      * is about that body, so it is read there. Nothing about what the gate decides changed.
      */
-    const at = CODE.indexOf("async function relevanceGateRefusesClip(");
+    const at = CODE.indexOf("async function visualJudgeRefusesPush(");
     expect(at, "the push gate has moved or is no longer async").toBeGreaterThan(-1);
-    const body = CODE.slice(at, at + 1200);
+    const body = CODE.slice(at, CODE.indexOf("\n}\n", at));
     const ask = body.indexOf("ensureVerdictBeforeCompose({");
-    const decide = body.indexOf("composeBarrierAllows(");
+    const decide = body.indexOf("judgeAtPush({");
     expect(ask, "the push route no longer asks for a missing verdict").toBeGreaterThan(-1);
     expect(ask, "it asks after the barrier has already decided").toBeLessThan(decide);
     expect(body, "the beat it knows is not passed on").toContain("beatIndex,");

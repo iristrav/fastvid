@@ -37,7 +37,7 @@ function stripComments(src: string): string {
 const GATE = (() => {
   const at = PIPELINE.indexOf("export async function beatClipRefusedByRelevanceGate(");
   expect(at, "the universal push gate is gone").toBeGreaterThan(0);
-  const end = PIPELINE.indexOf("async function relevanceGateRefusesClip(", at);
+  const end = PIPELINE.indexOf("\n}\n", at) + 3;
   expect(end).toBeGreaterThan(at);
   return PIPELINE.slice(at, end);
 })();
@@ -81,16 +81,16 @@ describe("the boundary is the one every picture crosses", () => {
      * Storing on the way out would ingest every candidate the picture editor turned away, which
      * is the archive poisoning RONDE 9 exists to prevent, arriving through the back door.
      */
-    const editorialAt = GATE.indexOf("if (await relevanceGateRefusesClip(");
+    const editorialAt = GATE.indexOf("if (await visualJudgeRefusesPush(");
     const archiveAt = GATE.indexOf("await ensureArchiveBackedBeforePush(");
     expect(editorialAt).toBeGreaterThan(0);
     expect(archiveAt).toBeGreaterThan(editorialAt);
   });
 
-  it("the editorial gate itself is untouched — it was renamed, not rewritten", () => {
-    expect(PIPELINE).toContain("async function relevanceGateRefusesClip(");
-    expect(PIPELINE).toContain("const barrier = composeBarrierAllows(");
-    expect(PIPELINE).toContain("if (barrier.allow) return false;");
+  it("the editorial answer is the VisualJudge's — one reader, at the push", () => {
+    expect(PIPELINE).toContain("export async function visualJudgeRefusesPush(");
+    expect(PIPELINE).toContain("const verdict = judgeAtPush({");
+    expect(PIPELINE).not.toContain("composeBarrierAllows(");
   });
 });
 
@@ -189,8 +189,9 @@ describe("Tests 16/17 — an archive failure prevents adoption", () => {
   it("and the refusal is recorded like every other refusal, not swallowed", () => {
     const at = PIPELINE.indexOf("function recordArchivePushRefusal(");
     const body = PIPELINE.slice(at, at + 1200);
-    expect(body).toContain("recordRejection(clipPath, reason, clipContentKey(clipPath))");
-    expect(body).toContain("recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, clipPath, reason)");
+    /** One write through the RejectionRegistry, which also files it on the lineage. */
+    expect(body).toContain("registerRejection(dedup.rejections, sceneIndex, beatIndex, clipPath, reason, undefined, {");
+    expect(body).toContain("contentKey: clipContentKey(clipPath),");
   });
 
   it("the store is AWAITED — 'archive later' is the thing being removed", () => {
@@ -522,8 +523,8 @@ describe("what this round did not touch", () => {
 
   it("the YouTube operator authorisation default is still ON unless literally false", () => {
     const LIC = readFileSync(join(__dirname, "youtubeLicenseStatus.ts"), "utf8");
-    expect(LIC).toContain(
-      'return process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() !== "false";'
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain(
+      'return env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() !== "false";'
     );
   });
 

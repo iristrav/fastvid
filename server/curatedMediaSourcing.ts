@@ -15,7 +15,7 @@ import {
 } from "./sourceFloorMemo";
 import { containCenterFilter, stillImageMaxSec, stillKenBurnsEnabled, stillZoomOutExpr } from "./stillImagePolicy";
 import { preparationKey, runPreparation } from "./preparationCache";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractRequiredVisualTags, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, expandBeatTagsWithTranslations, expandBeatTagsWithSynonyms, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, extractBeatCyclingTags, assetShowsCycling, isCarBeat, extractBeatCarTags, assetShowsCars, isGovernmentBeat, extractBeatGovernmentTags, assetShowsGovernment, isUrbanPlanningBeat, extractBeatUrbanPlanningTags, buildUrbanPlanningVisualQueries, assetShowsUrbanPlanning, isInfrastructureBeat, extractBeatInfrastructureTags, buildInfrastructureVisualQueries, assetShowsInfrastructure, assetIsOffTopicProtest, beatMentionsWwiiContent, isClipTitleIrrelevantToBeat, effectiveArchiveAssetTags, type VideoVisualTopic } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, expandBeatTagsWithTranslations, expandBeatTagsWithSynonyms, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, extractBeatCyclingTags, assetShowsCycling, isCarBeat, extractBeatCarTags, assetShowsCars, isGovernmentBeat, extractBeatGovernmentTags, assetShowsGovernment, isUrbanPlanningBeat, extractBeatUrbanPlanningTags, buildUrbanPlanningVisualQueries, assetShowsUrbanPlanning, isInfrastructureBeat, extractBeatInfrastructureTags, buildInfrastructureVisualQueries, assetShowsInfrastructure, beatMentionsWwiiContent, isClipTitleIrrelevantToBeat, type VideoVisualTopic } from "./visualBeatTags";
 import { promisify } from "util";
 import { pipeline } from "stream/promises";
 import { withForkRetry } from "./_core/execForkRetry";
@@ -25,34 +25,16 @@ import * as fs from "fs";
 import * as path from "path";
 import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
-import { archiveClipBakedEditTextVerdict } from "./archiveClipFilter";
 import { buildArchiveStillFilterComplex, buildArchiveStillFilterComplexBoxBlur, buildFitGrayGradedVideoVF, classifyDocGradeSourceKind, buildMatFramedStillVF, buildStillEncodeArgs, resolveStillKenBurnsVariant, standardArchiveKenBurnsZoomEnd, kenBurnsCenterXExpr } from "./documentaryStyle";
 import {
   resolveStillImageFilterComplex,
   type MotionGraphicsBudget,
   type StillStyleContext,
 } from "./motionGraphicsEngine";
-import { archiveBlurFillStillsEnabled, archiveVisualMinClipSec, archivePreferVideoClips, framedArchiveStillsEnabled, archivePexelsHybridEnabled, vidrushDocumentaryQualityEnabled, maxVisualCandidatesPerBeatTry, visualFootageFocusEnabled, archiveTagsPrimaryMatching, pipelineWallClockLimitEnabled, isFastShortVideoLength, semanticRerankClipSkipMin, metadataVisualBlocksEnabled, ffmpegThreadFlag, literalVisualGateEnabled } from "./sourcingPolicy";
-import {
-  assetHasNlMarkers,
-  assetHasUsMarkers,
-  assetHasForeignMarkers,
-  extractTitleGeoPlaceTags,
-  isComparisonGeoTitle,
-  geoTagsForRegion,
-} from "./worldGeoSlugs";
+import { archiveBlurFillStillsEnabled, archiveVisualMinClipSec, archivePreferVideoClips, framedArchiveStillsEnabled, archivePexelsHybridEnabled, maxVisualCandidatesPerBeatTry, visualFootageFocusEnabled, archiveTagsPrimaryMatching, semanticRerankClipSkipMin, metadataVisualBlocksEnabled, ffmpegThreadFlag, literalVisualGateEnabled } from "./sourcingPolicy";
 import { asVideoTitleString, coerceVisionString } from "./stringCoercion";
 import { hydrateBeatScriptVisuals } from "./scriptVisualKeywords";
-import {
-  isNonDocumentaryVisualHay,
-  isOffTopicGeoUrbanVisual,
-  isWrongRegionForSegmentLock,
-  offTopicVisualAllowedForBeat,
-  inferBeatGeoRegion,
-  vidrushStillPhotoScale,
-  VIDRUSH_MIN_SOURCE_VIDEO_SEC,
-  type BeatGeoRegion,
-} from "./vidrushQuality";
+import { vidrushStillPhotoScale, VIDRUSH_MIN_SOURCE_VIDEO_SEC, type BeatGeoRegion } from "./vidrushQuality";
 import {
   formatBelowQualityBar,
   formatTechnicalReject,
@@ -88,8 +70,20 @@ import {
 } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 import { STOCK_ARCHIVE_SLUG } from "./stockArchive";
-import { seededShuffle } from "./archiveUsageMemory";
+import { preferLessUsed } from "./usageDiversity";
 import { throwIfActiveRenderCancelled } from "./videoGenerationCancel";
+import {
+  countVisualTagHits,
+  isCuratedHistoricalFootage,
+  isCuratedInterviewAsset,
+  isGeographyIncompatibleArchiveAsset,
+  judgeArchiveAsset,
+  judgeArchiveAssetMaterial,
+  judgeArchiveAssetSubject,
+  judgeOnScreenText,
+  hasKnownBakedEditText,
+} from "./visualJudge";
+import { pipelineWallClockLimitEnabled } from "./config";
 
 /** getMediaArchiveAssets() excludes annotationJson from the SQL query (large, no bulk caller
  *  needs it) — this is the real shape flowing through every list/cache/search path in this
@@ -177,7 +171,7 @@ export type BeatMatchTags = {
    *  query from the beat text when the caller doesn't set one explicitly (down to a
    *  last-resort generic default), so in practice this is true for nearly every beat — it's
    *  a defensive gate for the rare case a beat truly has nothing to search on, not a strong
-   *  abstract-vs-literal classifier. Phase 10: feeds assetPassesBeatMinimum's literalVisualTags
+   *  abstract-vs-literal classifier. Phase 10: feeds the VisualJudge's archive literalVisualTags
    *  gate, which was previously always called with an empty array (dead code). */
   hasLiteralVisual: boolean;
   /** Tags extracted from that literal visual description/search query specifically (a subset
@@ -363,22 +357,6 @@ export function buildBeatMatchTags(
   };
 }
 
-/** How strongly an asset matches geo/visual tags from the spoken beat. */
-export function countVisualTagHits(
-  asset: Pick<MediaArchiveAsset, "title" | "tags">,
-  visualTags: string[]
-): number {
-  if (!visualTags.length) return 0;
-  const assetTags = effectiveArchiveAssetTags(asset);
-  let hits = 0;
-  for (const vt of visualTags) {
-    for (const t of assetTags) {
-      if (t === vt || t.includes(vt) || vt.includes(t)) hits++;
-    }
-  }
-  return hits;
-}
-
 /**
  * Archive search priority tiers (internal library only):
  * 1 exact — literal visual tag hits + tier-1/2 semantic
@@ -436,136 +414,6 @@ function hasProductionNotationTitle(asset: Pick<MediaArchiveAsset, "title">): bo
     }
   }
   return false;
-}
-
-/** Archive clip wrong for this beat — beat-driven, all video topics. */
-export function archiveAssetRejectedForBeat(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
-  beatText: string
-): boolean {
-  if (!metadataVisualBlocksEnabled()) return false;
-  if (!beatText?.trim()) return false;
-  if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText)) return true;
-  if (isCuratedInterviewAsset(asset) && !/\b(interview|historicus|expert|talking head|besprek)\b/i.test(beatText.toLowerCase())) {
-    return true;
-  }
-  const beatHistorical =
-    beatMentionsWwiiContent(beatText) ||
-    /\b(18\d{2}|19\d{2}|20[01]\d|histor(y|ical)|archief|archive|war|oorlog|ancient|medieval)\b/i.test(
-      beatText.toLowerCase()
-    );
-  if (!beatHistorical && isGeographyIncompatibleArchiveAsset(asset)) return true;
-  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
-  if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, beatText)) return true;
-  return false;
-}
-
-export function assetPassesBeatMinimum(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
-  beatText: string,
-  score: number,
-  topScore: number,
-  semantic?: SemanticMatchResult,
-  videoVisualTopic: VideoVisualTopic = "general",
-  segmentLock: BeatGeoRegion | null = null,
-  literalVisualTags: string[] = [],
-  videoTitle?: string
-): boolean {
-  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
-  if (isNonDocumentaryVisualHay(hay)) return false;
-  if (!metadataVisualBlocksEnabled()) return true;
-  if (segmentLock && isWrongRegionForSegmentLock(hay, segmentLock)) return false;
-
-  if (archiveAssetRejectedForBeat(asset, beatText)) return false;
-
-  const requiredGeo = resolveRequiredGeoTagsForBeat(beatText, videoTitle, segmentLock);
-  if (requiredGeo.length > 0) {
-    if (isWrongGeoForBeat(asset, requiredGeo)) return false;
-    const geoHits = countVisualTagHits(asset, requiredGeo);
-    if (geoHits === 0) return false;
-  }
-
-  const geoTags = extractBeatGeoPlaceTags(beatText);
-  if (geoTags.length > 0) {
-    if (isWrongGeoForBeat(asset, geoTags)) return false;
-    const geoHits = countVisualTagHits(asset, geoTags);
-    if (geoHits === 0) return false;
-  }
-
-  if (isCyclingBeat(beatText) && !assetShowsCycling(asset)) {
-    return false;
-  }
-
-  if (isCarBeat(beatText) && !assetShowsCars(asset)) {
-    return false;
-  }
-
-  if (isGovernmentBeat(beatText) && !assetShowsGovernment(asset)) {
-    return false;
-  }
-
-  if (isUrbanPlanningBeat(beatText) && !assetShowsUrbanPlanning(asset, beatText)) {
-    if (!isGovernmentBeat(beatText) || !assetShowsGovernment(asset)) {
-      return false;
-    }
-  }
-
-  if (isInfrastructureBeat(beatText) && !assetShowsInfrastructure(asset, beatText)) {
-    if (!isUrbanPlanningBeat(beatText) || !assetShowsUrbanPlanning(asset, beatText)) {
-      return false;
-    }
-  }
-
-  if (assetIsOffTopicProtest(asset, beatText, videoVisualTopic)) {
-    return false;
-  }
-
-  if (isClipTitleIrrelevantToBeat(asset, beatText)) {
-    return false;
-  }
-
-  if (literalVisualTags.length > 0) {
-    const literalHits = countVisualTagHits(asset, literalVisualTags);
-    const semStrong =
-      semantic != null && semantic.tier <= 3 && semantic.relevanceScore >= Math.max(50, semanticMinRelevanceScore());
-    if (literalHits === 0 && !semStrong) {
-      const requiredTags = extractRequiredVisualTags(beatText);
-      const sceneTags = extractSceneSearchTags(beatText);
-      const fallbackHits = countVisualTagHits(asset, [...requiredTags, ...sceneTags, ...literalVisualTags.slice(0, 3)]);
-      if (fallbackHits === 0) return false;
-    }
-  }
-
-  if (semantic && semanticVisualMatchingEnabled()) {
-    if (!assetMeetsSemanticMinimum(semantic)) return false;
-    if (semantic.tier >= 5 && semantic.matchedEntities.length === 0) return false;
-    return true;
-  }
-
-  const requiredTags = extractRequiredVisualTags(beatText);
-  const sceneTags = extractSceneSearchTags(beatText);
-  const entityTags = extractEntitySearchTags(beatText);
-  const visualHits = countVisualTagHits(asset, requiredTags);
-  const sceneEntityHits = countVisualTagHits(asset, [...sceneTags, ...entityTags]);
-
-  const minScore = vidrushDocumentaryQualityEnabled() ? 28 : Math.max(22, Math.round(topScore * 0.32));
-  if (score < minScore && visualHits < 2) return false;
-
-  if ((sceneTags.length > 0 || entityTags.length > 0) && sceneEntityHits === 0 && visualHits < 2) {
-    return false;
-  }
-
-  if (requiredTags.length >= 3 && visualHits === 0 && score < Math.round(topScore * 0.5)) {
-    return false;
-  }
-
-  if (isGenericPeopleAsset(asset)) {
-    const entities = extractEntitySearchTags(beatText);
-    if (entities.length > 0 && countVisualTagHits(asset, entities) === 0) return false;
-    if (visualHits === 0 && (entities.length > 0 || requiredTags.length >= 2)) return false;
-  }
-
-  return true;
 }
 
 export function buildCuratedQueryTags(
@@ -940,7 +788,7 @@ export function scoreCuratedAsset(
 ): number {
   const assetTags = normalizeMediaTags(asset.tags ?? []);
   const assetHay = assetTags.join(" ");
-  if (isNonDocumentaryVisualHay(assetHay)) return 0;
+  if (judgeArchiveAssetMaterial(asset).decision === "REJECT") return 0;
   let score = 0;
   let beatHits = 0;
   const ctx = beatCtx ?? computeBeatScoringContext(beatText);
@@ -1084,7 +932,7 @@ export function scoreCuratedAsset(
 
   score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
   if (metadataVisualBlocksEnabled()) {
-    if (beatText && archiveAssetRejectedForBeat(asset, beatText)) return 0;
+    if (beatText && judgeArchiveAssetSubject(asset, beatText).decision === "REJECT") return 0;
     if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText ?? "") && videoVisualTopic !== "wwii") {
       score = Math.max(0, score - 400);
     }
@@ -1158,25 +1006,6 @@ function curatedOffTopicPenalty(
   return isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic) ? -250 : 0;
 }
 
-/**
- * RONDE 22: an asset already judged to have baked-in edit text (burnt-on subtitles, channel
- * bumpers, hard-coded captions) can never be adopted — adoptCuratedArchiveAsset throws on it.
- *
- * That verdict is cached on the row, but it was only ever read at adoption time, i.e. AFTER the
- * selector had already picked the asset and materialized it to disk. So the selector kept
- * re-choosing assets it already knew were dead: render 526/527 logged 255 "has baked edit text —
- * skipped" failures across just 10 distinct assets, each one paying a download/cache-restore
- * first. With a small archive that is severe — 10 of 17 assets were flagged, so roughly six in
- * ten picks were guaranteed to fail before the beat could reach a usable clip.
- *
- * Treating it as a selection-time filter (like the off-topic/geo/non-documentary checks beside it)
- * points the selector at the assets that can actually be used. Only `=== 1` is filtered: null
- * means "not checked yet" and must still flow through to the adoption-time check that fills it in.
- */
-export function hasKnownBakedEditText(asset: Pick<MediaArchiveAsset, "hasBakedEditText">): boolean {
-  return asset.hasBakedEditText === 1;
-}
-
 export function isCuratedOffTopicAsset(
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
   topicAnchors: string[],
@@ -1217,56 +1046,6 @@ export function isCuratedOffTopicAsset(
   return /\b(middeleeuws|medieval|uithangbord|prehistoric|steentijd|dinosaur|sprookje|fantasy|mytholog)\b/i.test(
     hay
   );
-}
-
-/** B&W / war-era / interview archive — wrong look for modern city/geography documentaries. */
-export function isModernUrbanArchiveAsset(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
-): boolean {
-  const hay = effectiveArchiveAssetTags(asset).join(" ");
-  return /\b(timelapse|time.?lapse|drone|aerial|4k|uhd|hd\b|1080p|contemporary|modern|skyline|street view|kleur|color footage|cityscape|urban scene|stadsmilieu|vandaag|today|current|recent|living city|walkable|bike lane|fietspad|tram|metro|ns trein|train station|gracht|canal tour)\b/i.test(
-    hay
-  );
-}
-
-/** B&W / war-era / interview archive — wrong look for modern city/geography documentaries. */
-export function isGeographyIncompatibleArchiveAsset(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">
-): boolean {
-  if (isWwiiWarArchiveAsset(asset)) return true;
-  if (isCuratedInterviewAsset(asset)) return true;
-  const hay = effectiveArchiveAssetTags(asset).join(" ");
-  if (/\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|picket(?:ing|ers?)?|civil unrest|protest march|street protest)\b/i.test(hay)) {
-    return true;
-  }
-  if (isOffTopicGeoUrbanVisual(hay)) return true;
-  if (isModernUrbanArchiveAsset(asset)) return false;
-  if (isCuratedHistoricalFootage(asset)) return true;
-  return /\b(zwart-wit|black.?white|b&w|monochrome|sepia|archief footage|old footage|1930|1934|1939|1945|propaganda|militair|soldaten|parade|historical archive|newsreel|zwart wit)\b/i.test(
-    hay
-  );
-}
-
-/** Modern talking-head / historian interview clips — poor B-roll for documentaries. */
-export function isCuratedInterviewAsset(asset: Pick<MediaArchiveAsset, "title" | "tags">): boolean {
-  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
-  return /\b(interview|historicus|bespreekt|talking head|woonkamer|bibliotheek|oudere man|man geeft|gesprek met)\b/i.test(
-    hay
-  );
-}
-
-/** Archival parade footage, speeches, period video — not generic stills. */
-export function isCuratedHistoricalFootage(asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">): boolean {
-  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
-  if (asset.mediaType === "video") {
-    return /\b(parade|militair|zwart-wit|archief|1930|1934|1939|1945|hitler|nazi|berlijn|troepen|soldaten|propaganda|rally|march|speech|toespraak|crowd|war|oorlog|wehrmacht|ss|bijeenkomst|sporting|balkon)\b/i.test(
-      hay
-    );
-  }
-  if (asset.mediaType === "image") {
-    return /\b(propaganda poster|poster|portret|propaganda|archief|foto)\b/i.test(hay);
-  }
-  return false;
 }
 
 function curatedVideoFootageBoost(
@@ -1361,7 +1140,6 @@ export async function listCuratedArchiveCandidates(
   topicAnchors: string[] = [],
   filterTags?: string[],
   beatText?: string,
-  crossVideoExcludeIds: Set<number> = new Set(),
   assetsCache?: Map<number, ArchiveAssetRow[]>,
   /** When true, score assets in every active archive (per-sentence search). */
   searchAllArchives = false,
@@ -1404,8 +1182,8 @@ export async function listCuratedArchiveCandidates(
       // RONDE 22: adoption would throw on this asset anyway — don't spend a pick (and a
       // download) rediscovering that. See hasKnownBakedEditText.
       if (hasKnownBakedEditText(asset)) continue;
-      const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
-      if (isNonDocumentaryVisualHay(assetHay)) continue;
+      /** ONE ROUTE: not documentary material is the VisualJudge's rule, asked here before scoring. */
+      if (judgeArchiveAssetMaterial(asset).decision === "REJECT") continue;
       if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
       if (metadataBlocks && geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic, beatCtx);
@@ -1440,62 +1218,30 @@ export async function listCuratedArchiveCandidates(
         if (excludeIds.has(asset.id)) continue;
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
         if (hasKnownBakedEditText(asset)) continue; // RONDE 22 — unadoptable, see above
-        const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
-        if (isNonDocumentaryVisualHay(assetHay)) continue;
+        /** ONE ROUTE: not documentary material is the VisualJudge's rule, asked here before scoring. */
+        if (judgeArchiveAssetMaterial(asset).decision === "REJECT") continue;
         if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
         const score = scoreCuratedAsset(asset, nicheTags, [], [], beatText, videoVisualTopic, beatCtx);
         // RONDE 9: same rule as the primary pool — a negative score is an active mismatch and
-        // never enters the fallback pool either. (The final exhausted-reuse pool below is left
-        // as-is: it only re-offers clips that already passed scoring earlier this render.)
+        // never enters the fallback pool either.
         if (score < 0) continue;
         fallback.push({ asset, score: Math.max(score, 1), archiveName: archive.name, archiveNicheTags: nicheTags });
       }
     }
   }
 
-  let pool = scored.length > 0 ? scored : fallback;
+  const pool = scored.length > 0 ? scored : fallback;
 
-  // Pool exhausted by same-video dedup — allow clip reuse rather than falling back to color
-  if (pool.length === 0 && archives.length > 0 && !blockUniversalFallback) {
-    console.warn("[ArchiveSearch] pool exhausted by dedup — allowing clip reuse");
-    for (const archive of archives) {
-      const assets = await loadArchiveAssetsForSearch(archive.id, assetsCache);
-      const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
-      for (const asset of assets) {
-        if (excludeStorageUrls.has(asset.storageUrl)) continue;
-        // RONDE 22: even this last-resort reuse pool must skip them — re-offering an unadoptable
-        // clip cannot rescue the beat, it only guarantees another failed adoption.
-        if (hasKnownBakedEditText(asset)) continue;
-        const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
-        if (isNonDocumentaryVisualHay(assetHay)) continue;
-        const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic, beatCtx);
-        pool.push({ asset, score: Math.max(score, 1), archiveName: archive.name, archiveNicheTags: nicheTags });
-      }
-    }
-  }
-
+  /**
+   * ONE ROUTE — no "pool exhausted, allow reuse" tier: the same asset twice in one film is the
+   * dedup's hard rule, and the fetch below skips used assets and the push refuses them anyway, so
+   * re-offering them only spent a scan. An empty pool sends the beat to the suppliers.
+   */
   pool.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     const videoBoost = (x: ArchiveAssetRow) => (x.mediaType === "video" ? 2 : 0);
     return videoBoost(b.asset) - videoBoost(a.asset);
   });
-  return applyCrossVideoVarietyDegrade(pool, crossVideoExcludeIds);
-}
-
-/** Prefer clips not used in recent same-topic videos, but degrade gracefully rather than
- *  starving a beat of candidates: keep the cross-video-excluded filter only while it still
- *  leaves a workable pool (>=15%, floor 8); otherwise fall back to the full, unfiltered pool.
- *  Shared (Phase 10) by both the full archive scan and the pre-built video candidate-pool
- *  paths so cross-video variety degrades the same way regardless of which one is in use. */
-export function applyCrossVideoVarietyDegrade(
-  pool: CuratedCandidatePick[],
-  crossVideoExcludeIds: Set<number>
-): CuratedCandidatePick[] {
-  if (crossVideoExcludeIds.size === 0 || pool.length === 0) return pool;
-  const filtered = pool.filter((c) => !crossVideoExcludeIds.has(c.asset.id));
-  const minKeep = Math.max(8, Math.ceil(pool.length * 0.15));
-  if (filtered.length >= minKeep) return filtered;
-  if (filtered.length > 0) return filtered;
   return pool;
 }
 
@@ -2253,8 +1999,8 @@ export async function prepareCuratedArchiveClip(
       // archiveClipHasBakedEditText only needs a handful of extracted frames, so materializing the
       // whole clip in RAM here (and, previously, having the callee write it right back to disk
       // unchanged) was pure overhead.
-      const text = await archiveClipBakedEditTextVerdict(rawPath, asset.mimeType);
-      hasBakedText = text.verdict === "has_text";
+      const text = await judgeOnScreenText({ path: rawPath, mimeType: asset.mimeType });
+      hasBakedText = text.decision === "REJECT";
       /**
        * VIDEO 626 — a check that could not look is not written down as "clean".
        *
@@ -2264,9 +2010,9 @@ export async function prepareCuratedArchiveClip(
        * unchecked for this render, as ingestion already does (RONDE 222), and the row stays
        * unjudged so the next render asks.
        */
-      if (text.verdict === "not_asked") {
+      if (text.evaluated === false) {
         console.warn(
-          `[CuratedMedia] asset ${asset.id}: on-screen text not checked (${text.reason ?? "no answer"}) — ` +
+          `[CuratedMedia] asset ${asset.id}: on-screen text not checked (${text.notAskedReason ?? "no answer"}) — ` +
             "used unchecked this render, left unjudged in the archive"
         );
       } else {
@@ -2387,34 +2133,11 @@ async function loadArchiveAssetsForSearch(
   return assets;
 }
 
-export function hashVarietySeed(input: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-/** Rotate ranked list so different videos start from different archive assets. */
-export function rotateCuratedCandidates<T>(
-  candidates: T[],
-  varietySeed: number,
-  beatIndex: number
-): T[] {
-  if (candidates.length <= 1) return candidates;
-  const start = (varietySeed + beatIndex * 7919 + (varietySeed >>> 13)) % candidates.length;
-  return [...candidates.slice(start), ...candidates.slice(0, start)];
-}
-
 export function rankCuratedCandidatesForBeat(
   pool: CuratedCandidatePick[],
   beatTags: string[],
   topicAnchors: string[] = [],
-  beatText?: string,
-  varietySeed = 0,
-  beatIndex = 0,
-  opts?: { strict?: boolean }
+  beatText?: string
 ): CuratedCandidatePick[] {
   const beatCtx = computeBeatScoringContext(beatText);
   const ranked = pool.map((c) => ({
@@ -2438,27 +2161,8 @@ export function rankCuratedCandidatesForBeat(
     return a.asset.id - b.asset.id;
   });
 
-  if (opts?.strict || ranked.length <= 1) return ranked;
-
-  const topScore = ranked[0]!.score;
-  const secondScore = ranked[1]?.score ?? 0;
-  if (topScore - secondScore >= 12) return ranked;
-
-  const banded: CuratedCandidatePick[] = [];
-  let i = 0;
-  while (i < ranked.length) {
-    const bandTop = ranked[i]!.score;
-    let j = i + 1;
-    while (j < ranked.length && ranked[j]!.score >= bandTop - 2) j++;
-    const band = ranked.slice(i, j);
-    if (band.length === 1 || bandTop - (band[band.length - 1]?.score ?? bandTop) >= 8) {
-      banded.push(...band);
-    } else {
-      banded.push(...seededShuffle(band, varietySeed + beatIndex * 9973 + i * 17));
-    }
-    i = j;
-  }
-  return banded;
+  /** ONE ROUTE: score order only; variety within a score band is `preferLessUsed`'s, applied after. */
+  return ranked;
 }
 
 /** Phase 10: bias which near-tied-score candidate is tried first toward archives used less
@@ -2466,27 +2170,6 @@ export function rankCuratedCandidatesForBeat(
  *  a higher-scoring one — candidates are grouped into descending score bands (bandWidth points
  *  wide) first, and only reordered *within* a band, so this can never lower match quality to
  *  gain diversity. Sort is stable, so ties within a band keep their original relative order. */
-export function reorderForArchiveDiversity(
-  ranked: CuratedCandidatePick[],
-  usedArchiveNames: Map<string, number>,
-  bandWidth = 3
-): CuratedCandidatePick[] {
-  if (ranked.length <= 1 || usedArchiveNames.size === 0) return ranked;
-  const banded: CuratedCandidatePick[] = [];
-  let i = 0;
-  while (i < ranked.length) {
-    const bandTop = ranked[i]!.score;
-    let j = i + 1;
-    while (j < ranked.length && ranked[j]!.score >= bandTop - bandWidth) j++;
-    const band = ranked.slice(i, j);
-    if (band.length > 1) {
-      band.sort((a, b) => (usedArchiveNames.get(a.archiveName) ?? 0) - (usedArchiveNames.get(b.archiveName) ?? 0));
-    }
-    banded.push(...band);
-    i = j;
-  }
-  return banded;
-}
 
 /** Words that are long enough to pass a naive length filter but say nothing about a subject. */
 const STUB_POWER_WORD_STOPWORDS = new Set([
@@ -2562,8 +2245,8 @@ export async function searchCuratedCandidatesForBeat(
   usedStorageUrls: Set<string>,
   videoTitle?: string,
   options?: {
-    varietySeed?: number;
-    crossVideoExcludeIds?: Set<number>;
+    /** Recent same-subject videos' uses per archive asset (usageDiversity.recentUsageCounts). */
+    crossVideoUsage?: ReadonlyMap<number, number>;
     assetsCache?: Map<number, ArchiveAssetRow[]>;
     semanticProfile?: BeatSemanticProfile;
     /** Geo welcome / opening beat — archive images are not allowed. */
@@ -2576,19 +2259,15 @@ export async function searchCuratedCandidatesForBeat(
     skipSemantic?: boolean;
     /** F3-23: per-video count of how many times each archive has already been used this
      *  render (VisualDedupState.usedArchiveNames) — biases near-tied-score candidates toward
-     *  less-recently-used archives via reorderForArchiveDiversity, without ever letting a
+     *  less-recently-used archives via usageDiversity.preferLessUsed, without ever letting a
      *  lower-scoring candidate outrank a genuinely better one. */
     usedArchiveNames?: Map<string, number>;
   }
 ): Promise<CuratedCandidatePick[]> {
   const anchoredBeat = hydrateBeatScriptVisuals(beat);
-  const varietySeed = options?.varietySeed ?? 0;
-  const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
-  const fastShort = isFastShortVideoLength(options?.videoLength);
   const skipLlmSemantic =
     options?.skipSemantic === true ||
-    options?.fastMode === true ||
-    fastShort;
+    options?.fastMode === true;
   const semanticProfile =
     options?.semanticProfile ??
     (skipLlmSemantic
@@ -2622,25 +2301,17 @@ export async function searchCuratedCandidatesForBeat(
 
   let listed: CuratedCandidatePick[];
   if (options?.candidatePool && options.candidatePool.length > 0) {
-    // Tier 1: same-video dedup respected. Cross-video variety degrades gracefully
-    // (applyCrossVideoVarietyDegrade) rather than being an all-or-nothing gate, so a beat
-    // tries every recently-unused-elsewhere clip before ever repeating a clip within THIS
-    // video (Phase 10 — reusing a clip from a different video is far less visible to a
-    // viewer than the same clip appearing twice in one video).
+    // Tier 1: same-video dedup respected. Cross-video use is a PREFERENCE (usageDiversity's
+    // preferLessUsed, applied after scoring), never a filter, so a beat tries every clip that
+    // matches before ever repeating a clip within THIS video.
     const dedupedForVideo = options.candidatePool.filter(
       (p) => !usedAssetIds.has(p.asset.id) && !usedStorageUrls.has(p.asset.storageUrl)
     );
-    if (dedupedForVideo.length > 0) {
-      listed = applyCrossVideoVarietyDegrade(dedupedForVideo, crossVideoExcludeIds);
-    } else {
-      // Tier 2: pool exhausted even after every cross-video-variety relaxation — allow
-      // same-video reuse rather than falling back to color, still preferring clips not
-      // used in other recent videos when there's enough pool left to do so.
-      console.warn(
-        `[ArchiveSearch] zin ${beat.index}: pool exhausted by dedup — hergebruik toegestaan (${options.candidatePool.length} clips)`
-      );
-      listed = applyCrossVideoVarietyDegrade(options.candidatePool, crossVideoExcludeIds);
-    }
+    /**
+     * ONE ROUTE — no reuse tier when the pool is exhausted: the fetch below skips used assets and the
+     * push refuses them, so re-offering them adopted nothing. An empty list sends the beat on.
+     */
+    listed = dedupedForVideo;
   } else {
     listed = await listCuratedArchiveCandidates(
       beatTags,
@@ -2649,7 +2320,6 @@ export async function searchCuratedCandidatesForBeat(
       topicAnchors,
       allTags,
       anchoredBeat.text,
-      crossVideoExcludeIds,
       options?.assetsCache,
       true,
       true,
@@ -2661,10 +2331,7 @@ export async function searchCuratedCandidatesForBeat(
     orderCuratedCandidatesForBeat(listed),
     beatTags,
     topicAnchors,
-    beat.text,
-    varietySeed,
-    beat.index,
-    { strict: true }
+    beat.text
   );
 
   ranked = ranked.map((p) => ({
@@ -2745,7 +2412,6 @@ export async function searchCuratedCandidatesForBeat(
     const skipSemanticRerank =
       process.env.ENABLE_SEMANTIC_AI_RERANK === "false" ||
       options?.fastMode === true ||
-      isFastShortVideoLength(options?.videoLength) ||
       (ranked[0]?.clipVisionScore10 != null && ranked[0].clipVisionScore10 >= semanticRerankClipSkipMin());
     if (!skipSemanticRerank) {
       ranked = await applySemanticAiRerank(ranked, semanticProfile, videoTitle);
@@ -2763,14 +2429,15 @@ export async function searchCuratedCandidatesForBeat(
     const semanticOk = ranked.filter(
       (p) => p.semantic && assetMeetsSemanticMinimum(p.semantic)
     );
-    if (semanticOk.length > 0) {
-      ranked = [...semanticOk, ...ranked.filter((p) => !semanticOk.includes(p))];
-    } else {
-      const relaxedSem = ranked.filter(
-        (p) => (p.semantic?.relevanceScore ?? 0) >= Math.max(28, minSem - 12)
-      );
-      if (relaxedSem.length > 0) ranked = relaxedSem;
-    }
+    /**
+     * ONE ROUTE — the semantic minimum ORDERS, it does not remove: candidates that meet it first,
+     * then those within the relaxed band, then the rest. Refusing below the minimum is the
+     * VisualJudge's rule (`below_semantic_minimum` in `judgeArchiveAsset`).
+     */
+    const relaxedSem = ranked.filter(
+      (p) => !semanticOk.includes(p) && (p.semantic?.relevanceScore ?? 0) >= Math.max(28, minSem - 12)
+    );
+    ranked = [...semanticOk, ...relaxedSem, ...ranked.filter((p) => !semanticOk.includes(p) && !relaxedSem.includes(p))];
 
     console.log(
       `[SemanticVisual] zin ${beat.index}: "${beat.text.slice(0, 50)}…" → top tier ${ranked[0]?.semantic?.tier ?? "?"} ` +
@@ -2781,7 +2448,7 @@ export async function searchCuratedCandidatesForBeat(
 
   if (clipEmbeddingIndexEnabled() && !clipPreRankDone) {
     const visionCtx = beatVisionContextForSearch(beat, videoTitle, semanticProfile);
-    const clipFast = options?.fastMode === true || fastShort || pipelineWallClockLimitEnabled();
+    const clipFast = options?.fastMode === true || pipelineWallClockLimitEnabled();
     const { ranked: clipRanked } = await preRankCuratedCandidatesByClipEmbedding(
       ranked,
       visionCtx,
@@ -2798,19 +2465,23 @@ export async function searchCuratedCandidatesForBeat(
     }
   }
 
-  // F3-23: bias near-tied-score candidates toward archives used less often so far this video —
-  // reorders only within score bands (see reorderForArchiveDiversity), so a genuinely best-scoring
+  // F3-23 / ONE ROUTE: prefer the less-used — fewer recent same-subject videos, then archives drawn
+  // on less this render — within score bands only (usageDiversity.preferLessUsed), so a genuinely best-scoring
   // candidate can never be displaced by a lower-scoring one just for the sake of variety. Applied
   // after every scoring pass above (tag boosts, semantic, CLIP) so it sees each candidate's final
   // score, and before the selection cascade below so a fresher-archive pick is actually tried first.
-  if (options?.usedArchiveNames && options.usedArchiveNames.size > 0) {
-    ranked = reorderForArchiveDiversity(ranked, options.usedArchiveNames);
-  }
+  ranked = preferLessUsed(ranked, {
+    recentVideoUses: options?.crossVideoUsage,
+    archiveUsesThisRender: options?.usedArchiveNames,
+  });
 
   const topScore = ranked[0]?.score ?? 0;
   const segmentLock = options?.segmentLock ?? null;
   let filtered = ranked.filter((p) =>
-    assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, literalGateTags, videoTitle)
+    judgeArchiveAsset({
+      asset: p.asset, beatText: beat.text, videoTitle, score: p.score, topScore, semantic: p.semantic,
+      videoVisualTopic, segmentLock, literalVisualTags: literalGateTags,
+    }).decision === "ACCEPT"
   );
   if (options?.videosOnly) {
     filtered = filtered.filter((p) => p.asset.mediaType === "video");
@@ -2822,7 +2493,10 @@ export async function searchCuratedCandidatesForBeat(
     const medium = ranked.filter(
       (p) =>
         p.score >= Math.max(40, Math.round(topScore * 0.5)) &&
-        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, literalGateTags, videoTitle)
+        judgeArchiveAsset({
+      asset: p.asset, beatText: beat.text, videoTitle, score: p.score, topScore, semantic: p.semantic,
+      videoVisualTopic, segmentLock, literalVisualTags: literalGateTags,
+    }).decision === "ACCEPT"
     );
     if (medium.length > 0) return medium;
   }
@@ -2833,7 +2507,10 @@ export async function searchCuratedCandidatesForBeat(
         p.score >= Math.max(18, Math.round(topScore * 0.28)) &&
         countVisualTagHits(p.asset, matchTags.length > 0 ? matchTags : beatTags) > 0 &&
         !isGenericPeopleAsset(p.asset) &&
-        assetPassesBeatMinimum(p.asset, beat.text, p.score, topScore, p.semantic, videoVisualTopic, segmentLock, literalGateTags, videoTitle)
+        judgeArchiveAsset({
+      asset: p.asset, beatText: beat.text, videoTitle, score: p.score, topScore, semantic: p.semantic,
+      videoVisualTopic, segmentLock, literalVisualTags: literalGateTags,
+    }).decision === "ACCEPT"
     );
     if (relaxed.length > 0) return relaxed;
   }
@@ -2848,61 +2525,6 @@ export async function searchCuratedCandidatesForBeat(
   // No match at all — return empty so the pipeline falls back to Pexels/Pixabay stock.
   // We must never pick a random archive clip that has nothing to do with this sentence.
   return [];
-}
-
-/** Required geo tags for archive acceptance — beat text, title, or sticky segment lock. */
-export function resolveRequiredGeoTagsForBeat(
-  beatText: string,
-  videoTitle?: string,
-  segmentLock?: BeatGeoRegion | null
-): string[] {
-  const beatGeo = extractBeatGeoPlaceTags(beatText);
-  if (beatGeo.length > 0) return beatGeo;
-
-  if (isComparisonGeoTitle(videoTitle)) {
-    let lock = segmentLock ?? inferBeatGeoRegion(beatText, videoTitle);
-    if (lock === "both" || lock === "neutral") {
-      if (segmentLock === "nl" || segmentLock === "us") {
-        lock = segmentLock;
-      } else {
-        const beatRegion = inferBeatGeoRegion(beatText, videoTitle);
-        lock = beatRegion === "nl" || beatRegion === "us" ? beatRegion : "nl";
-      }
-    }
-    if (lock === "nl") return geoTagsForRegion("nl", videoTitle);
-    if (lock === "us") return geoTagsForRegion("us", videoTitle);
-    return [];
-  }
-
-  const titleGeo = extractTitleGeoPlaceTags(videoTitle);
-  if (titleGeo.length > 0) return titleGeo;
-
-  const region = inferBeatGeoRegion(beatText, videoTitle);
-  if (region === "nl") return geoTagsForRegion("nl", videoTitle);
-  if (region === "us") return geoTagsForRegion("us", videoTitle);
-  return [];
-}
-
-/** Hard reject archive assets that are clearly from the wrong country for this beat. */
-export function isArchiveGeoBlockedForBeat(
-  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
-  beatText: string,
-  videoTitle?: string,
-  segmentLock?: BeatGeoRegion | null
-): boolean {
-  if (!metadataVisualBlocksEnabled()) return false;
-  const required = resolveRequiredGeoTagsForBeat(beatText, videoTitle, segmentLock);
-  if (required.length > 0) return isWrongGeoForBeat(asset, required);
-
-  const beatRegion = inferBeatGeoRegion(beatText, videoTitle);
-  if (beatRegion === "us" || beatRegion === "both") return false;
-  if (beatRegion !== "nl") return false;
-
-  const hasNl = assetHasNlMarkers(asset);
-  const hasUs = assetHasUsMarkers(asset);
-  const hasForeign = assetHasForeignMarkers(asset);
-  if ((hasUs || hasForeign) && !hasNl) return true;
-  return false;
 }
 
 /**
@@ -2950,8 +2572,8 @@ export async function fetchCuratedArchiveBeatClip(
   motionGraphicsBudget?: MotionGraphicsBudget,
   options?: {
     relaxed?: boolean;
-    varietySeed?: number;
-    crossVideoExcludeIds?: Set<number>;
+    /** Recent same-subject videos' uses per archive asset (usageDiversity.recentUsageCounts). */
+    crossVideoUsage?: ReadonlyMap<number, number>;
     assetsCache?: Map<number, ArchiveAssetRow[]>;
     videosOnly?: boolean;
     segmentLock?: BeatGeoRegion | null;
@@ -2995,8 +2617,6 @@ export async function fetchCuratedArchiveBeatClip(
   }
 ): Promise<string | null> {
   const relaxed = options?.relaxed === true;
-  const varietySeed = options?.varietySeed ?? 0;
-  const crossVideoExcludeIds = options?.crossVideoExcludeIds ?? new Set<number>();
   const { beatTags, videoVisualTopic, hasLiteralVisual, literalVisualTags } = buildBeatMatchTags(beat, scene, videoTitle);
   const literalGateTags = literalVisualGateEnabled() && hasLiteralVisual ? literalVisualTags : [];
   const candidates = await searchCuratedCandidatesForBeat(
@@ -3006,13 +2626,12 @@ export async function fetchCuratedArchiveBeatClip(
     usedStorageUrls,
     videoTitle,
     {
-      varietySeed,
-      crossVideoExcludeIds,
+      crossVideoUsage: options?.crossVideoUsage,
       assetsCache: options?.assetsCache,
       segmentLock: options?.segmentLock,
       videosOnly: options?.videosOnly,
       videoLength: options?.videoLength,
-      fastMode: isFastShortVideoLength(options?.videoLength),
+      fastMode: false,
       usedArchiveNames: options?.usedArchiveNames,
     }
   );
@@ -3026,35 +2645,25 @@ export async function fetchCuratedArchiveBeatClip(
 
   const topScore = candidates[0]?.score ?? 0;
   const minAcceptScore = relaxed ? Math.max(12, Math.round(topScore * 0.25)) : Math.max(28, Math.round(topScore * 0.4));
-  const tryOrder = relaxed ? rotateCuratedCandidates(candidates, varietySeed, beat.index) : candidates;
-  const maxTries = maxVisualCandidatesPerBeatTry(options?.videoLength);
+  /** ONE ROUTE: the ranked order, never rotated for variety — variety is `preferLessUsed`, applied in the search. */
+  const tryOrder = candidates;
+  const maxTries = maxVisualCandidatesPerBeatTry();
 
   const eligible: CuratedCandidatePick[] = [];
   for (const picked of tryOrder) {
     if (eligible.length >= maxTries) break;
-    if (
-      isArchiveGeoBlockedForBeat(
-        picked.asset,
-        beat.text,
-        videoTitle,
-        options?.segmentLock ?? null
-      )
-    ) {
-      continue;
-    }
-    if (
-      !assetPassesBeatMinimum(
-        picked.asset,
-        beat.text,
-        picked.score,
-        topScore,
-        undefined,
-        videoVisualTopic,
-        options?.segmentLock ?? null,
-        literalGateTags,
-        videoTitle
-      )
-    ) {
+    const judged = judgeArchiveAsset({
+      asset: picked.asset,
+      beatText: beat.text,
+      videoTitle,
+      score: picked.score,
+      topScore,
+      videoVisualTopic,
+      segmentLock: options?.segmentLock ?? null,
+      literalVisualTags: literalGateTags,
+      checkCountry: true,
+    });
+    if (judged.decision === "REJECT") {
       continue;
     }
     if (!relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
@@ -3229,18 +2838,6 @@ export async function prepareInScoreOrder<T extends { score: number }>(
   return successes;
 }
 
-/** Mark a curated asset as used after it is adopted into the montage. */
-export function markCuratedAssetUsed(
-  clipPath: string,
-  usedAssetIds: Set<number>,
-  usedStorageUrls: Set<string>,
-  storageUrl?: string
-): void {
-  const assetId = curatedClipPathAssetId(clipPath);
-  if (assetId != null) usedAssetIds.add(assetId);
-  if (storageUrl) usedStorageUrls.add(storageUrl);
-}
-
 /** Geo beats (Netherlands, US, Berlin…) — Pexels has better location B-roll than a mismatched archive clip. */
 export function shouldTryPexelsFirstForBeat(
   beatText: string,
@@ -3279,7 +2876,12 @@ export function shouldPreferPexelsOverArchive(
     if (isWrongGeoForBeat(top.asset, geoTags)) return true;
     if (countVisualTagHits(top.asset, geoTags) < 2) return true;
   }
-  if (!assetPassesBeatMinimum(top.asset, beatText, top.score, top.score, top.semantic, videoVisualTopic, segmentLock, [], videoTitle)) {
+  if (
+    judgeArchiveAsset({
+      asset: top.asset, beatText, videoTitle, score: top.score, topScore: top.score, semantic: top.semantic,
+      videoVisualTopic, segmentLock,
+    }).decision === "REJECT"
+  ) {
     return true;
   }
   const minScore = 45;

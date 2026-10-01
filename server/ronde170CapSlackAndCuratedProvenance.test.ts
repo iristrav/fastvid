@@ -51,23 +51,8 @@ import { join } from "path";
 import { describe, expect, it } from "vitest";
 
 import { createArchiveSourcingAudit } from "./archiveSourcingAudit";
-import {
-  MAX_FUNNEL_CANDIDATES_TO_SCORE,
-  buildDownloadShortlist,
-  type FunnelCandidate,
-  type FunnelCandidateSource,
-} from "./retrievalFunnel";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-
-const cand = (id: string, source: FunnelCandidateSource, rankingScore: number): FunnelCandidate =>
-  ({ id, source, rankingScore, mediaType: "video" }) as FunnelCandidate;
-
-/** Render 555's s2b0: many archive candidates, one other source, a six-slot budget. */
-const s2b0 = (): FunnelCandidate[] => [
-  ...Array.from({ length: 14 }, (_, i) => cand(`archive:${i}`, "archive", 0.87 - i * 0.01)),
-  cand("openverse:0", "openverse", 0.5),
-];
 
 describe("RONDE 170 #2 — the funnel's curated clips carry their provenance", () => {
 

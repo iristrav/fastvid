@@ -48,16 +48,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  MAX_RECALLED_ASSETS_PER_BEAT,
-  RECALLED_ASSET_BASE_SCORE,
-  createSearchMemoryRecallMetrics,
-  formatSearchMemoryLine,
-  formatSearchMemorySummary,
-  mergeRecalledIntoArchivePicks,
-  recallProvenAssetsForEntity,
-  searchMemoryCacheHitRate,
-} from "./searchMemoryRecall";
+import { createSearchMemoryRecallMetrics, formatSearchMemoryLine, formatSearchMemorySummary, searchMemoryCacheHitRate } from "./searchMemoryRecall";
 import {
   CURATED_ARCHIVE_MEMORY_SOURCE,
   adoptedClipMemoryRow,
@@ -164,90 +155,6 @@ const GORING = "Hermann Göring";
 /* ═══════════════════════ §8/§9 — the multi-video flow ═══════════════════════ */
 
 describe("RONDE 131 — Video A, Video B, Video C", () => {
-  it("VIDEO A: a new subject searches the network, and what worked is remembered", async () => {
-    const world = makeWorld();
-
-    // Nothing known yet.
-    const before = await recallProvenAssetsForEntity(GORING, {
-      readMemory: world.readMemory,
-      loadAssets: world.loadAssets,
-      resolveArchiveName: world.resolveArchiveName,
-    });
-    expect(before).toEqual([]);
-
-    // So the beat goes to the providers, and two clips are adopted and archived.
-    world.providerSearch([
-      { id: 101, title: "Göring at the Nuremberg rally, 1936" },
-      { id: 102, title: "Göring inspecting Luftwaffe aircraft" },
-    ]);
-    expect(world.networkSearches).toBe(1);
-
-    // Two beats, two queries, two adopted clips — which is how a render really produces rows.
-    world.remember(GORING, "Hermann Göring Berlin archival footage", "curated:asset:101", 8.2);
-    world.remember(GORING, "Hermann Göring Luftwaffe inspection", "curated:asset:102", 7.6);
-
-    // Two rows, both naming a real file — which is what was never written before.
-    expect(world.memoryRows).toHaveLength(2);
-    expect(world.memoryRows.every((r) => r.assetId > 0)).toBe(true);
-  });
-
-  it("VIDEO B: the same question costs no network search at all", async () => {
-    const world = makeWorld();
-    world.providerSearch([
-      { id: 101, title: "Göring at the Nuremberg rally, 1936" },
-      { id: 102, title: "Göring inspecting Luftwaffe aircraft" },
-    ]);
-    world.remember(GORING, "Hermann Göring Berlin archival footage", "curated:asset:101", 8.2);
-    world.remember(GORING, "Hermann Göring Luftwaffe inspection", "curated:asset:102", 7.6);
-    const afterVideoA = world.networkSearches;
-
-    // ── Video B. A separate render. It shares only the two stores.
-    const recalled = await recallProvenAssetsForEntity(GORING, {
-      readMemory: world.readMemory,
-      loadAssets: world.loadAssets,
-      resolveArchiveName: world.resolveArchiveName,
-    });
-
-    expect(recalled).toHaveLength(2);
-    expect(recalled.map((r) => r.pick.asset.id).sort()).toEqual([101, 102]);
-    // THE measurement: Video B's beat got candidates without asking anyone anything.
-    expect(world.networkSearches).toBe(afterVideoA);
-    expect(world.networkSearches).toBe(1);
-  });
-
-  it("VIDEO C: a semantically related question finds the same footage", async () => {
-    /**
-     * The brief's own example. "Berlin archival footage" and "Munich historical footage" share not
-     * one content word beyond the name — no query cache, exact or normalised, can bridge them.
-     *
-     * The memory is keyed on the canonical ENTITY rather than on the query string, so both resolve
-     * to `hermann göring` and read the same rows. That is the semantic bridge, and it is the
-     * existing schema's own design rather than anything added here.
-     */
-    const world = makeWorld();
-    world.providerSearch([{ id: 101, title: "Göring at the Nuremberg rally, 1936" }]);
-    world.remember(GORING, "Hermann Göring Berlin archival footage", "curated:asset:101", 8.2);
-    const afterVideoA = world.networkSearches;
-
-    const recalled = await recallProvenAssetsForEntity(GORING, {
-      readMemory: world.readMemory,
-      loadAssets: world.loadAssets,
-      resolveArchiveName: world.resolveArchiveName,
-    });
-    expect(recalled.map((r) => r.pick.asset.id)).toEqual([101]);
-    expect(world.networkSearches).toBe(afterVideoA);
-
-    // The two queries really are unrelated as strings — nothing but the entity connects them.
-    const a = "Hermann Göring Berlin archival footage";
-    const c = "Hermann Göring Munich historical footage";
-    const words = (s: string) => new Set(s.toLowerCase().split(/\s+/));
-    const shared = [...words(a)].filter((w) => words(c).has(w));
-    // Only the name and one generic noun. "Berlin"/"Munich" and "archival"/"historical" — the
-    // words that carry the actual question — have nothing in common.
-    expect(shared.sort()).toEqual(["footage", "göring", "hermann"]);
-    expect(shared).not.toContain("berlin");
-    expect(shared).not.toContain("munich");
-  });
 
   it("one query remembers one asset — the table's unique key is (entity, source, query)", () => {
     /**
@@ -281,109 +188,6 @@ describe("RONDE 131 — Video A, Video B, Video C", () => {
     // RONDE 28's lesson, re-checked because this round adds a second reader on the same key.
     expect(canonicalEntityKey("Hermann  Göring ")).toBe(canonicalEntityKey("hermann göring"));
     expect(canonicalEntityKey("HERMANN GÖRING")).toBe("hermann göring");
-  });
-});
-
-/* ═══════════════════════ §4/§5 — quality may not drop ═══════════════════════ */
-
-describe("RONDE 131 — a remembered asset is a candidate, never a verdict", () => {
-  const pick = (id: number): CuratedCandidatePick =>
-    ({ asset: { id } as ArchiveAssetRow, archiveName: "Bundesarchiv", score: 40 });
-
-  it("recalled assets are ADDED to the beat's own matches, never substituted for them", () => {
-    /**
-     * The structural guarantee behind "memory hits go through the same gates": they arrive in the
-     * same array as every other archive candidate, so there is no separate path they could take
-     * around a gate.
-     */
-    const scanned = [pick(1), pick(2)];
-    const recalled = [
-      { pick: pick(101), memory: {} as ProvenAssetMemory },
-      { pick: pick(102), memory: {} as ProvenAssetMemory },
-    ];
-    const { picks, added } = mergeRecalledIntoArchivePicks(scanned, recalled);
-    expect(added).toBe(2);
-    expect(picks.map((p) => p.asset.id)).toEqual([1, 2, 101, 102]);
-    // The beat's own keyword matches keep their places at the front — direct evidence about THIS
-    // beat outranks "it worked for this subject once".
-    expect(picks.slice(0, 2)).toEqual(scanned);
-  });
-
-  it("an asset the beat already found is not duplicated by the memory", () => {
-    const scanned = [pick(101)];
-    const { picks, added } = mergeRecalledIntoArchivePicks(scanned, [
-      { pick: pick(101), memory: {} as ProvenAssetMemory },
-    ]);
-    expect(added).toBe(0);
-    expect(picks).toHaveLength(1);
-  });
-
-  it("the recall score is a starting position, not a trump card", () => {
-    // Deliberately mid-range: a genuinely better keyword match for this beat still outranks a
-    // remembered asset, because being remembered is evidence and not a decision.
-    expect(RECALLED_ASSET_BASE_SCORE).toBeGreaterThan(0);
-    expect(RECALLED_ASSET_BASE_SCORE).toBeLessThan(100);
-  });
-
-  it("a beat can never be filled from memory alone", () => {
-    // A learning loop that supplied the whole shortlist would be a rut. Four against a six-wide
-    // shortlist leaves room for the beat's own matches and for the providers.
-    expect(MAX_RECALLED_ASSETS_PER_BEAT).toBe(4);
-    expect(MAX_RECALLED_ASSETS_PER_BEAT).toBeLessThan(6);
-  });
-
-  it("VIDEO C (failure case): a remembered asset that no longer exists is simply not recalled", async () => {
-    /**
-     * RONDE 127's archive-deletion rule, holding without a second mechanism. The asset load is
-     * `isActive`-filtered, so a deleted or disabled asset cannot come back — and the beat falls
-     * through to the providers exactly as it would for an unknown subject.
-     */
-    const world = makeWorld();
-    world.providerSearch([{ id: 101, title: "Göring at Nuremberg" }]);
-    world.remember(GORING, "Hermann Göring Berlin archival footage", "curated:asset:101");
-    world.archive.delete(101); // the admin deleted it between videos
-
-    const recalled = await recallProvenAssetsForEntity(GORING, {
-      readMemory: world.readMemory,
-      loadAssets: world.loadAssets,
-      resolveArchiveName: world.resolveArchiveName,
-    });
-    expect(recalled).toEqual([]);
-  });
-
-  it("an asset already used THIS render is not re-served by the memory", async () => {
-    // Duplicate prevention, at the recall rather than after a wasted download.
-    const world = makeWorld();
-    world.providerSearch([
-      { id: 101, title: "Göring at Nuremberg" },
-      { id: 102, title: "Göring and the Luftwaffe" },
-    ]);
-    world.remember(GORING, "q", "curated:asset:101");
-    world.remember(GORING, "q2", "curated:asset:102");
-
-    const recalled = await recallProvenAssetsForEntity(GORING, {
-      excludeAssetIds: new Set([101]),
-      readMemory: world.readMemory,
-      loadAssets: world.loadAssets,
-      resolveArchiveName: world.resolveArchiveName,
-    });
-    expect(recalled.map((r) => r.pick.asset.id)).toEqual([102]);
-  });
-
-  it("a recall that cannot answer leaves the render exactly as it was", async () => {
-    // Every failure path returns []: no entity, no memory, a database that threw.
-    expect(await recallProvenAssetsForEntity(undefined)).toEqual([]);
-    expect(await recallProvenAssetsForEntity("   ")).toEqual([]);
-    expect(
-      await recallProvenAssetsForEntity(GORING, {
-        readMemory: async () => {
-          throw new Error("db down");
-        },
-      })
-    ).toEqual([]);
-    expect(
-      await recallProvenAssetsForEntity(GORING, { limit: 0, readMemory: async () => [] })
-    ).toEqual([]);
   });
 });
 
@@ -592,16 +396,6 @@ describe("RONDE 131 — nothing earlier was traded for this", () => {
     const { join } = require("path") as typeof import("path");
     return readFileSync(join(__dirname, file), "utf8");
   };
-
-  it("a render with no memory behaves exactly as it did before", async () => {
-    // The default path. `memoryEntity` absent → no recall, no merge, no change of any kind.
-    const scanned = [
-      { asset: { id: 1 } as ArchiveAssetRow, archiveName: "A", score: 10 },
-    ];
-    const { picks, added } = mergeRecalledIntoArchivePicks(scanned, []);
-    expect(added).toBe(0);
-    expect(picks).toBe(scanned); // the same array, untouched
-  });
 
   it("the gates this round is forbidden to touch are all still there", () => {
     const pipe = read("videoPipeline.ts");

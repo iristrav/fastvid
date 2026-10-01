@@ -22,7 +22,8 @@ import {
   updateVideoStatus,
 } from "./db";
 import { activeJobsCount, decrementActiveJobs, incrementActiveJobs } from "./queue/activeJobsCounter";
-import { formatGlobalBudget, maxConcurrentRenders } from "./globalResourceBudget";
+import { formatGlobalBudget } from "./globalResourceBudget";
+import { maxConcurrentRenders } from "./config";
 
 export type EnqueueCheckResult =
   | { ok: true; inFlight: number; limit: number }

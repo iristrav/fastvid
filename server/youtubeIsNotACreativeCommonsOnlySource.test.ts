@@ -42,10 +42,11 @@
 import { describe, expect, it } from "vitest";
 
 import { youtubeLicenseParam } from "./videoPipeline";
-import { youtubeOperatorAuthorized } from "./sourcingPolicy";
+
 import { stripComments } from "./sourceScan.test.support";
 import fs from "fs";
 import path from "path";
+import { allowOperatorLicensedYoutube } from "./config";
 
 const PIPE = stripComments(fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8"));
 
@@ -86,7 +87,7 @@ describe("R268 §2 — the general route is built, not just available", () => {
   });
 
   it("and the unfiltered pass runs FIRST when the operator is authorised", () => {
-    expect(block).toContain("const recallFirst = youtubeOperatorAuthorized();");
+    expect(block).toContain("const recallFirst = allowOperatorLicensedYoutube();");
     expect(block).toContain("if (recallFirst && youtubeFairUseEnabled()) licensePasses.push(anyPass);");
     const anyFirst = block.indexOf("if (recallFirst && youtubeFairUseEnabled()) licensePasses.push(anyPass);");
     const cc = block.indexOf("licensePasses.push(ccPass);");
@@ -111,7 +112,7 @@ describe("R268 §3 — on by default, not behind a flag nobody set", () => {
     const before = process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
     try {
       delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
-      expect(youtubeOperatorAuthorized()).toBe(true);
+      expect(allowOperatorLicensedYoutube()).toBe(true);
     } finally {
       if (before === undefined) delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
       else process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = before;
@@ -122,7 +123,7 @@ describe("R268 §3 — on by default, not behind a flag nobody set", () => {
     const before = process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
     try {
       process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = "false";
-      expect(youtubeOperatorAuthorized()).toBe(false);
+      expect(allowOperatorLicensedYoutube()).toBe(false);
     } finally {
       if (before === undefined) delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
       else process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = before;
@@ -130,12 +131,12 @@ describe("R268 §3 — on by default, not behind a flag nobody set", () => {
   });
 
   it("the unfiltered pass is opt-OUT, not opt-in", () => {
-    expect(PIPE).toContain('return envFlagIsNotOff("ENABLE_YOUTUBE_FAIR_USE");');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('return envFlagIsNotOff("ENABLE_YOUTUBE_FAIR_USE");');
   });
 
   it("and so is the standard-licence pass, once the operator is authorised", () => {
-    expect(PIPE).toContain('? envFlagIsNotOff("ENABLE_YOUTUBE_STANDARD_LICENSE")');
-    expect(PIPE).toContain(': envFlagIsOn("ENABLE_YOUTUBE_STANDARD_LICENSE")');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('? envFlagIsNotOff("ENABLE_YOUTUBE_STANDARD_LICENSE")');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain(': envFlagIsOn("ENABLE_YOUTUBE_STANDARD_LICENSE")');
   });
 });
 

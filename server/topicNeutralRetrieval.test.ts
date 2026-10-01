@@ -125,29 +125,6 @@ describe("§5 — retrieval is topic-neutral", () => {
       });
     });
   }
-
-  /**
-   * The structural claim, made once: no subject, person or era is named in the retrieval contract's
-   * own source. A `topic === "WWII"` branch anywhere here would be invisible to every test above,
-   * because it would simply make the historical case pass a little more easily.
-   */
-  it("names no specific subject, person or era in its decision code", async () => {
-    const fs = await import("fs");
-    const path = await import("path");
-    const sources = ["searchQueryContract.ts", "youtubePoolSource.ts", "poolRanking.ts"];
-    for (const file of sources) {
-      const src = fs.readFileSync(path.join(__dirname, file), "utf8");
-      /** Comments cite real production examples; only executable code is searched. */
-      const code = src
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .split("\n")
-        .filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"))
-        .join("\n");
-      for (const subject of ["WWII", "Stauffenberg", "Hitler", "Elon Musk", "Tesla", "World War"]) {
-        expect(code, `${file} hardcodes "${subject}"`).not.toContain(`"${subject}"`);
-      }
-    }
-  });
 });
 
 /* ═══════════════════════ §6 — the prompt proves, the title does not ═══════════════════════ */

@@ -61,12 +61,7 @@ import {
   RESEARCH_ESTIMATED_COST_MS,
 } from "./mismatchResearch";
 import { classifyMismatch, mismatchFault } from "./visualMismatchFeedback";
-import {
-  buildPrioritisedQueries,
-  searchGateStrict,
-  validateSearchQuery,
-  type VerifiedQueryContext,
-} from "./searchQueryContract";
+import { buildPrioritisedQueries, validateSearchQuery, type VerifiedQueryContext } from "./searchQueryContract";
 import {
   buildVerifiedQueryContextForBeat,
   createVisualDedupState,
@@ -75,6 +70,7 @@ import {
 } from "./videoPipeline";
 import { buildMediaSearchIntent } from "./mediaResearchEngine";
 import { resetYoutubeSearchQuotaState } from "./youtubeSearchQuota";
+import { searchGateStrict } from "./config";
 
 const mockedFetch = vi.mocked(fetchModule);
 
@@ -130,14 +126,7 @@ const researchIntent = () =>
     muskTopic: false,
   });
 
-
-
-
-
 describe("RONDE 134 — entity integrity survives the widening", () => {
-
-
-
 
   it("27. the SearchGate is still strict", () => {
     expect(process.env.SEARCH_GATE_STRICT).not.toBe("false");
@@ -260,16 +249,11 @@ describe("RONDE 134 — mutation guards", () => {
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
   const MOD = readFileSync(join(__dirname, "mismatchResearch.ts"), "utf8");
 
-
-
-
   it("M5. leadQueries lead inside the existing cap", () => {
     const idx = PIPE.indexOf("const allQueries = uniqueQueryStrings([...(opts.leadQueries ?? [])");
     expect(idx).toBeGreaterThan(0);
     expect(PIPE.slice(idx, idx + 260)).toContain("queryCap");
   });
-
-
 
   it("M8. the existing cache and dedup are what the pass uses", () => {
     const idx = PIPE.indexOf("const fetchTierPaths = async (tier: HistoricalSourceTier, q: string)");

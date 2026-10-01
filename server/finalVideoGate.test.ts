@@ -1,17 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  absoluteMinDurationSec,
-  expectedDurationBoundsSec,
-} from "./finalVideoGate";
-import { isInformationalSpotWarning } from "./postRenderSpotCheck";
 
-describe("finalVideoGate", () => {
-  it("expectedDurationBoundsSec covers all length buckets", () => {
-    expect(expectedDurationBoundsSec("1")).toEqual({ min: 35, max: 100 });
-    expect(expectedDurationBoundsSec("8-10").min).toBeLessThan(expectedDurationBoundsSec("8-10").max);
-    expect(absoluteMinDurationSec("1")).toBe(28);
-  });
-});
+import { isInformationalSpotWarning } from "./postRenderSpotCheck";
+import { absoluteMinDurationSec } from "./deliveryGate";
 
 describe("isInformationalSpotWarning", () => {
   it("treats dark archive and detector warnings as non-blocking", () => {

@@ -161,7 +161,6 @@ describe("RONDE 26b — only formats the vision models accept ever reach them", 
 });
 
 const filterSrc = readFileSync(path.join(__dirname, "archiveClipFilter.ts"), "utf8");
-const relevanceSrc = readFileSync(path.join(__dirname, "archiveClipRelevance.ts"), "utf8");
 
 describe("RONDE 26b — both image call sites are guarded, and both still fail open", () => {
   it("the overlay filter prepares before it asks", () => {
@@ -180,11 +179,6 @@ describe("RONDE 26b — both image call sites are guarded, and both still fail o
     expect(filterSrc).toContain(
       `return (await archiveClipBakedEditTextVerdict(media, mimeType, opts)).verdict === "has_text";`
     );
-  });
-
-  it("the subject filter does too, degrading to keep-the-candidate", () => {
-    expect(relevanceSrc).toContain("prepareImageForVision(mediaBuffer, mimeType)");
-    expect(relevanceSrc).toContain("if (!prepared) return true;");
   });
 });
 

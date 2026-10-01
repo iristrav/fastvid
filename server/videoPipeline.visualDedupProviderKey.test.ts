@@ -1,6 +1,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
+ * Each test re-imports `videoPipeline` fresh (`vi.resetModules`). That import alone takes about
+ * 5.6 s on a cold transform, past vitest's 5 s default, so the first test timed out on the import
+ * and left its calls running into the next. The assertions are unchanged; only the clock is.
+ */
+vi.setConfig({ testTimeout: 30_000 });
+
+/**
  * RONDE 90 — this file calls provider fetchers directly, outside any beat.
  *
  * In production every provider search runs inside a beat's provenance scope

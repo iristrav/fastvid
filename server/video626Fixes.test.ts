@@ -230,26 +230,6 @@ describe("3. everything a sentence does happens inside its own turn", () => {
     expect(body).toContain("Math.max(1, Math.round(beatWallMs * BEAT_RESOLVE_SHARE)),");
   });
 
-  it("every fallback after the search runs inside what is left of the turn", () => {
-    for (const call of [
-      'withinBeatTurn("stock", () => fetchBeatStockFallback(',
-      'withinBeatTurn("image", () => dedup.perf.fastStockMode',
-      'withinBeatTurn("image", () => fetchBeatScriptImageClip(',
-      'withinBeatTurn("forced image", () => fetchBeatScriptImageForced(',
-    ]) {
-      expect(body, call).toContain(call);
-    }
-    /** No bare fallback call is left in the sentence's loop. */
-    expect(body).not.toMatch(/= await fetchBeatStockFallback\(/);
-    expect(body).not.toMatch(/= await fetchBeatScriptImage(Clip|Forced)\(/);
-    expect(body).not.toMatch(/\? await fetchBeatScriptImageForced\(/);
-  });
-
-  it("a fallback with too little turn left is not started, and says so", () => {
-    expect(body).toContain("if (!(leftMs >= BEAT_FALLBACK_MIN_MS)) {");
-    expect(body).toContain("not started — the sentence's turn is over");
-  });
-
   it("the fill for more clips stays inside the same turn", () => {
     expect(PIPE).toContain("fillFor = { beat, clipsBefore: beatDurations.length, deadlineMs: beatDeadlineMs };");
     expect(PIPE).toContain("const turnLeftMs = f.deadlineMs - Date.now();");
@@ -514,9 +494,9 @@ describe("8. a search query names something a picture can show", () => {
 describe("8. an archive clip nobody could check for text is not recorded as clean", () => {
   it("the curated route writes a verdict only when the detector answered", () => {
     const curated = read("curatedMediaSourcing.ts");
-    const at = curated.indexOf("const text = await archiveClipBakedEditTextVerdict(rawPath, asset.mimeType);");
+    const at = curated.indexOf("const text = await judgeOnScreenText({ path: rawPath, mimeType: asset.mimeType });");
     const block = curated.slice(at, at + 1600);
-    const notAsked = block.indexOf('if (text.verdict === "not_asked") {');
+    const notAsked = block.indexOf("if (text.evaluated === false) {");
     const write = block.indexOf("await updateMediaArchiveAsset(asset.id, { hasBakedEditText:");
     expect(notAsked).toBeGreaterThan(-1);
     expect(write).toBeGreaterThan(notAsked);

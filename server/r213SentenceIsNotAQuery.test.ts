@@ -103,7 +103,7 @@ describe("R213 §4 — no builder sends a raw sentence any more", () => {
 describe("R213 §5 — the gate is untouched", () => {
   it("STRICT MODE IS STILL THE DEFAULT", () => {
     const src = fs.readFileSync(path.join(__dirname, "searchQueryContract.ts"), "utf8");
-    expect(src).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
   });
 
   it("the validator still refuses a query with no subject", () => {

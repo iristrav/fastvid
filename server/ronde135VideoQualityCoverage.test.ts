@@ -57,11 +57,10 @@ const read = (rel: string) => {
 
 function emptySets(): UsedAssetSets {
   return {
+    usedPaths: new Set(),
     usedContentKeys: new Set(),
     usedCuratedAssetIds: new Set(),
     usedCuratedStorageUrls: new Set(),
-    usedProviderKeys: new Set(),
-    usedFunnelCandidateIds: new Set(),
   };
 }
 
@@ -80,7 +79,7 @@ describe("RONDE 135 §4 — the used-asset Set is written and read with the same
       providerAssetId: "File:Bundesarchiv_Bild_183-S33882.webm",
     });
     expect(
-      sets.usedProviderKeys.has(providerAssetKey("wikimedia", "File:Bundesarchiv_Bild_183-S33882.webm")),
+      sets.usedContentKeys.has(providerAssetKey("wikimedia", "File:Bundesarchiv_Bild_183-S33882.webm")),
       "the funnel's write is invisible to every provider route's pre-download check"
     ).toBe(true);
   });
@@ -93,16 +92,16 @@ describe("RONDE 135 §4 — the used-asset Set is written and read with the same
     const sets = emptySets();
     markAssetUsedInVideo(sets, { provider: "internet_archive", providerAssetId: "white-lives-matter-montana" });
     expect(
-      providerAssetAlreadyUsed(sets.usedProviderKeys, undefined, "internet_archive", "white-lives-matter-montana")
+      providerAssetAlreadyUsed(sets.usedContentKeys, undefined, "internet_archive", "white-lives-matter-montana")
     ).toBe(true);
   });
 
   it("an asset that was never used is still not excluded", () => {
     const sets = emptySets();
     markAssetUsedInVideo(sets, { provider: "wikimedia", providerAssetId: "File:A.webm" });
-    expect(providerAssetAlreadyUsed(sets.usedProviderKeys, undefined, "wikimedia", "File:B.webm")).toBe(false);
+    expect(providerAssetAlreadyUsed(sets.usedContentKeys, undefined, "wikimedia", "File:B.webm")).toBe(false);
     // ...and a different provider with the same id is a different asset.
-    expect(providerAssetAlreadyUsed(sets.usedProviderKeys, undefined, "flickr", "File:A.webm")).toBe(false);
+    expect(providerAssetAlreadyUsed(sets.usedContentKeys, undefined, "flickr", "File:A.webm")).toBe(false);
   });
 
   it("there is now ONE definition, and the pipeline's name still resolves to it", () => {

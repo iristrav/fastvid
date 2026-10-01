@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { pickBestFunnelCandidate } from "./retrievalFunnel";
+
 import {
   createBeatImageGateState,
   maxYoutubeBeatImageJudgements,
@@ -35,28 +35,6 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-// ── A scored funnel candidate, minimal but real in the fields the picker reads ────────────────
-const cand = (id: string, source: string, score: number) =>
-  ({
-    candidate: { id, source, title: id },
-    clipPath: `/tmp/${id}.mp4`,
-    visionResult: { pass: true, worstScore10: score },
-  }) as unknown as Parameters<typeof pickBestFunnelCandidate>[0][number];
-
-
-describe("RONDE 61 — the pipeline records and honours the refusal", () => {
-  const SRC = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-
-  it("the refusal set is render-scoped, like the gate's own budget", () => {
-    const src = SRC();
-    expect(src).toContain("beatImageRejectedIds: Set<string>;");
-    expect(src).toContain("beatImageRejectedIds: new Set<string>(),");
-  });
-
-
-
-});
-
 /**
  * RONDE 61 — YOUTUBE EATING THE RENDER'S JUDGEMENTS, AND WHY THE SLICE IS GONE.
  *
@@ -74,7 +52,6 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
  * youtubeIsJudgedWhereItIsUsed.test.ts, which carries render 532's measurement and asserts both
  * that the slice has no definition left and that the two real budgets are untouched.
  */
-
 
 describe("RONDE 61 — the watch page gets a budget it can finish in", () => {
   it("it no longer inherits the 3.5s transcript timeout", () => {

@@ -5,7 +5,7 @@ import {
   cosineSimilarityRaw,
   scoreEmbeddingSimilarity,
 } from "./localClipVision";
-import { findBestArchiveScoreForBeat } from "./retrievalFunnel";
+
 import { cosineSimilarityVectors } from "./semanticVisualMatching";
 
 // FASE 7.2 — embedding-space separation on the Retrieval Funnel path.

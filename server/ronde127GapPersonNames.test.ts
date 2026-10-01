@@ -52,12 +52,6 @@ describe("RONDE 127 — the existing rows are filtered, not deleted", () => {
 
 describe("RONDE 127 — both recording routes are filtered", () => {
 
-  it("the low-coverage route only records a person-shaped entity", () => {
-    expect(src("archiveCoverageWarning.ts")).toContain(
-      "if (decision.shouldWarnAdmin && gapRowLooksLikePerson(input.entity)) {"
-    );
-  });
-
   it("the admin line says what it means", () => {
     expect(formatGapPersonLine("low-coverage:Hermann Göring", 7)).toBe(
       "Hermann Göring (7x gevraagd, geen beeld in archief)"

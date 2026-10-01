@@ -173,10 +173,7 @@ describe("RONDE 135 — QUESTION and MATERIAL stay distinct", () => {
     }
   });
 
-
 });
-
-
 
 describe("RONDE 135 — the render can finally say which provider failed it", () => {
   function tallyWithSources(): ReturnType<typeof createMismatchTally> {
@@ -186,12 +183,6 @@ describe("RONDE 135 — the render can finally say which provider failed it", ()
     for (let i = 0; i < 2; i++) recordMismatch(t, { kind: "WRONG_SUBJECT", source: "wikimedia" });
     return t;
   }
-
-
-
-
-
-
 
   it("31. an empty render produces a block with no invented rows", () => {
     const out = formatVisualSourcingAudit({
@@ -213,7 +204,6 @@ describe("RONDE 135 — regressions this round must not touch", () => {
     expect(PIPE).toContain("tally: visualDedup.mismatchTally");
   });
 
-
   it("36. the still-image rules are untouched (RONDE 128/130)", () => {
     const still = readFileSync(join(__dirname, "stillImagePolicy.ts"), "utf8");
     expect(still).toContain("export const MAX_STILL_IMAGE_DURATION_SEC = 5");
@@ -225,7 +215,6 @@ describe("RONDE 135 — regressions this round must not touch", () => {
 describe("RONDE 135 — mutation guards", () => {
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
   const FEEDBACK = readFileSync(join(__dirname, "visualMismatchFeedback.ts"), "utf8");
-
 
   it("M11. the five-second cap is a constant, not a threshold this round can move", () => {
     const still = readFileSync(join(__dirname, "stillImagePolicy.ts"), "utf8");

@@ -20,17 +20,19 @@ import {
   videoYoutubePoolGaveNoYoutube,
   type PoolDeps,
 } from "./youtubeVideoPool";
-import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, isRejectedStockClip, buildBeatYoutubeQueries, youtubeQueriesForSentence, youtubeQueryPlanForSentence } from "./videoPipeline";
+import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, buildBeatYoutubeQueries, youtubeQueriesForSentence, youtubeQueryPlanForSentence } from "./videoPipeline";
 import { sentenceOnlyYoutubeQueries, neighbourSentences, namesInSentence, youtubeResultIsShort, YOUTUBE_SHORT_MAX_SEC, sentenceNameWords } from "./youtubeNonFootage";
 import { youtubeSearchDurationForPass } from "./sourcingPolicy";
 import { extractVisualSearchTags, extractBeatGeoPlaceTags, inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
-import { searchGateStrict, withSearchProvenance } from "./searchQueryContract";
+import { withSearchProvenance } from "./searchQueryContract";
 import { youtubeVideoIdsForArchiveAssets } from "./youtubeFootageInFilm";
-import { countVisualTagHits } from "./curatedMediaSourcing";
+
 import { holdPictureUnderVoice } from "./edlToTimeline";
-import { finalTimelineFootageRefusal, type FinalTimelineClip } from "./deliveredScreenTime";
-import { deliveryGate } from "./deliveryGate";
+
+import { deliveryGate, finalTimelineFootageRefusal, type FinalTimelineClip } from "./deliveryGate";
 import type { TimelineVideoClip } from "./projectTimeline";
+import { isRejectedStockClip, countVisualTagHits } from "./visualJudge";
+import { searchGateStrict } from "./config";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -77,7 +79,6 @@ describe("A. the central planner finds no query → the beats search YouTube the
     details: async () => new Map(),
     triage: async () => ({ footageType: "real_footage", servesBeats: [], depicts: "" }),
     archive: async () => [],
-    notFootage: () => null,
     log: () => {},
   });
 
@@ -310,7 +311,6 @@ describe("A2. a pool whose search failed or found nothing usable lets the beats 
       details: async (ids) => new Map(ids.map((id) => [id, { durationSec: 300, embeddable: true, live: false }])),
       triage: async () => ({ footageType: "real_footage", servesBeats: [0], depicts: "" }),
       archive: async () => [],
-      notFootage: () => null,
       log: () => {},
       ...over,
     };
@@ -394,7 +394,6 @@ describe("A3. pool gave no YouTube + per-beat fallback + SEARCH_GATE_STRICT = th
       details: async () => new Map(),
       triage: async () => null,
       archive: async () => [],
-      notFootage: () => null,
       log: () => {},
     };
     const p = buildVideoYoutubePool(failing, { ...roman, videoId: 612_201 });
@@ -520,7 +519,10 @@ describe("E. the stock filter does not refuse a clip for the words FastVid added
   });
 
   it("the adoption loop still asks the same filter with the clip's own query", () => {
-    expect(PIPE).toContain('if (isRejectedStockClip(p, sourceQuery) && refuse("rejected_stock")) continue;');
+    /** ONE ROUTE: the VisualJudge asks it, with the clip's own query, for every adopted candidate. */
+    const VJ = fs.readFileSync(path.join(__dirname, "visualJudge.ts"), "utf8");
+    expect(VJ).toContain('if (isRejectedStockClip(p, sourceQuery)) return reject("metadata", "rejected_stock");');
+    expect(PIPE).toContain("const judgedOnMetadata = judgeCandidateMetadata({");
   });
 });
 
@@ -734,7 +736,6 @@ describe("I. a YouTube Short is never downloaded, on any route", () => {
         for (const q of [undefined, 0, 1, 2, 3]) expect(youtubeSearchDurationForPass(pass, count, q)).toBe("medium");
   });
 
-
   const poolDeps = (store = memoryYoutubeSearchBudgetStore(), details?: () => Promise<Map<string, { durationSec: number; embeddable: boolean; live: boolean }>>): PoolDeps => ({
     store,
     llm: async () => ({ choices: [{ message: { content: JSON.stringify({ mainSubject: "Rome", recurringSubjects: [], query: "Rome Carthage" }) } }] }),
@@ -757,7 +758,6 @@ describe("I. a YouTube Short is never downloaded, on any route", () => {
         ])),
     triage: async () => ({ footageType: "real_footage", servesBeats: [0], depicts: "" }),
     archive: async () => [],
-    notFootage: () => null,
     log: () => {},
   });
 
@@ -833,7 +833,7 @@ describe("I. a YouTube Short is never downloaded, on any route", () => {
     const vertical = CURATED.indexOf("dims.height > dims.width");
     expect(vertical).toBeGreaterThan(-1);
     /** Before the text check and the picture editor. */
-    expect(vertical).toBeLessThan(CURATED.indexOf("const text = await archiveClipBakedEditTextVerdict(rawPath, asset.mimeType);"));
+    expect(vertical).toBeLessThan(CURATED.indexOf("const text = await judgeOnScreenText({ path: rawPath, mimeType: asset.mimeType });"));
   });
 
   it("the pool measures the archive's YouTube items too, and never triages a Short's thumbnail", async () => {
@@ -1062,7 +1062,6 @@ describe("L. an approval that rests on a guess about who is on screen is refused
 });
 
 describe("M. video 615 — the cloud cut is waited for, a sentence starts two downloads, the service says where the time goes", () => {
-
 
   it("a YouTube turn starts at most `count` downloads, counted when the slot is claimed", () => {
     const fn = PIPE.slice(PIPE.indexOf("export async function fetchYouTubeCCClips("));

@@ -152,7 +152,7 @@ describe("the per-beat route reads the router — the half that was missing", ()
       "the candidate lister can take every archive without asking the router again"
     ).not.toContain("const archives = searchAllArchives");
     const at = SOURCING.indexOf("export async function listCuratedArchiveCandidates");
-    const body = SOURCING.slice(at, SOURCING.indexOf("\n}", SOURCING.indexOf("return applyCrossVideoVarietyDegrade", at)));
+    const body = SOURCING.slice(at, SOURCING.indexOf("\n  return pool;\n}", at));
     expect(body).toContain("await resolveArchivesForVisualQuery(queryTags, topicAnchors, {");
     expect(body).toContain("allRelevant: searchAllArchives");
   });
@@ -289,7 +289,7 @@ describe("`transferReserve=3s` inside `granted=2s` is RONDE 259 WORKING, not a d
 describe("the invariants this round may not have touched", () => {
 
   it("the gates, the reprieve and the evidence rule are unchanged", () => {
-    expect(readFileSync(join(__dirname, "searchQueryContract.ts"), "utf8")).toContain(
+    expect(readFileSync(join(__dirname, "config.ts"), "utf8")).toContain(
       'return process.env.SEARCH_GATE_STRICT !== "false";'
     );
     expect(readFileSync(join(__dirname, "adoptionPolicy.ts"), "utf8")).toContain(

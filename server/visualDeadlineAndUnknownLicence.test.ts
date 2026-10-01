@@ -17,6 +17,7 @@ import { youtubeLicenseDecision } from "./youtubeLicenseStatus";
 import { withSceneFetchTimeout, isScopeAbortError, fetchWithTimeout } from "./videoPipeline";
 import { holdPictureUnderVoice } from "./edlToTimeline";
 import type { TimelineVideoClip } from "./projectTimeline";
+import { filmWithoutPictureRefusal } from "./deliveryGate";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -127,8 +128,13 @@ describe("one hard deadline for the visual phase", () => {
 
   it("an empty scene is a gap the timeline holds over; only a film with no picture at all is refused", () => {
     expect(PIPE).toContain("no picture found — the timeline holds the previous shot");
-    const refusal = PIPE.indexOf("if (noSceneHasPicture && firstEmptySi >= 0) {");
+    /** ONE ROUTE: the rule lives in the DeliveryGate; the pipeline asks it and throws its sentence. */
+    const refusal = PIPE.indexOf("if (firstEmptySi !== null) {");
     expect(refusal).toBeGreaterThan(0);
+    expect(PIPE).toContain("const firstEmptySi = filmWithoutPictureRefusal(");
+    expect(filmWithoutPictureRefusal([[], ["fallback.mp4"]], (c) => c === "fallback.mp4")).toBe(0);
+    expect(filmWithoutPictureRefusal([[], ["real.mp4"]], (c) => c === "fallback.mp4")).toBeNull();
+    expect(filmWithoutPictureRefusal([], () => false)).toBeNull();
     expect(PIPE.indexOf("no picture was found for any of its beats — export geblokkeerd")).toBeGreaterThan(refusal);
   });
 

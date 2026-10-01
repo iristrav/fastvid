@@ -38,32 +38,8 @@ import {
   summarizeArchiveSourcing,
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
-import {
-  MAX_FUNNEL_CANDIDATES_TO_SCORE,
-  buildDownloadShortlist,
-  type FunnelCandidate,
-  type FunnelCandidateSource,
-} from "./retrievalFunnel";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-
-const cand = (id: string, source: FunnelCandidateSource, rankingScore: number): FunnelCandidate => ({
-  id,
-  source,
-  title: `${source} ${id}`,
-  thumbnailUrl: null,
-  mediaType: "video",
-  embeddingSimilarity: null,
-  archiveKeywordScore: null,
-  clipSimilarity: null,
-  rankingScore,
-});
-
-/** Render 553's beat s1b6: a deep archive result set beside one external candidate. */
-const beatS1B6 = (): FunnelCandidate[] => [
-  ...Array.from({ length: 25 }, (_, i) => cand(`archive:${i}`, "archive", 5 - i * 0.05)),
-  cand("openverse:1", "openverse", 3.0),
-];
 
 describe("RONDE 164 — the chain is counted end to end", () => {
 

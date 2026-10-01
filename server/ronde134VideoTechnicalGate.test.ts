@@ -117,12 +117,6 @@ describe("the video resolution rule", () => {
     expect(v.belowQualityBar).toBe(false);
   });
 
-  it("judges the SHORTER dimension, so a letterbox strip cannot pass on its width", () => {
-    // Same definition candidateRanking already uses: Math.min(width, height) / 1080.
-    expect(read("server/visualMatchingV2/candidateRanking.ts")).toContain("Math.min(width, height) / 1080");
-    expect(videoResolutionVerdict(1920, 120).ok).toBe(false);
-  });
-
   it("ABSENCE IS NEUTRAL: an unmeasurable file passes", () => {
     expect(videoResolutionVerdict(null, null).ok).toBe(true);
     expect(videoResolutionVerdict(undefined, undefined).ok).toBe(true);

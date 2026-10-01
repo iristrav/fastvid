@@ -65,7 +65,7 @@ const withYoutube = <T>(fn: () => T): T => {
     process.env.ENABLE_YOUTUBE_SOURCING = "true";
     process.env.YOUTUBE_API_KEY = "test-key-present";
     process.env.YOUTUBE_CC_DL_SERVICE = "https://example.invalid/dl";
-    delete process.env.YOUTUBE_ONLY_SOURCING;
+    
     return fn();
   } finally {
     process.env = saved;
@@ -99,7 +99,7 @@ describe("§1 — the wall that could never pay", () => {
     const saved = { ...process.env };
     try {
       delete process.env.YOUTUBE_API_KEY;
-      delete process.env.YOUTUBE_ONLY_SOURCING;
+      
       for (const base of [15_000, 20_000, 25_000]) {
         expect(beatWallWithYoutubeTurn(base)).toBe(base);
       }
@@ -272,8 +272,8 @@ describe("§2 — every scope that can reach a turn is sized for one", () => {
     const repaired = scopes.filter(
       (s) => s.ms.includes("beatWallWithYoutubeTurn(") && s.callees.some((c) => reachesTurn(c))
     );
-    /** RONDE 661: two remain — the third sat in the deleted compose-readiness sweep. */
-    expect(repaired.length, "the repaired walls are no longer recognised").toBeGreaterThanOrEqual(2);
+    /** One remains: the others sat in the deleted compose-readiness sweep and the deleted turbo route. */
+    expect(repaired.length, "the repaired walls are no longer recognised").toBeGreaterThanOrEqual(1);
   });
 });
 

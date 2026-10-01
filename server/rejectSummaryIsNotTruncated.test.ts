@@ -21,10 +21,10 @@
  *
  * RONDE 70 already built the answer. Its note is explicit that the DETAIL is expensive and stays
  * bounded while the COUNT per beat and per reason "is a handful of integers … and is now never
- * dropped", and `summarizeClipRejectAudit` has two branches for exactly that: given the audit
+ * dropped", and `summarizeRejections` has two branches for exactly that: given the audit
  * OBJECT it reads the uncapped `perBeat` tally, given a plain ENTRY ARRAY it counts entries.
  *
- * The report was declared as `rejectAudit?: ClipRejectEntry[]` and both call sites passed
+ * The report was declared as `rejectAudit?: RejectionEntry[]` and both call sites passed
  * `.entries`, so it always took the counting branch. The per-beat counts were moved onto the
  * uncapped tally when RONDE 70 fixed this; the render-wide summary was not. One route short of
  * the rule — the same seam this file's neighbours keep finding.
@@ -35,22 +35,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createClipRejectAudit,
-  recordClipReject,
-  summarizeClipRejectAudit,
-} from "./clipRejectAudit";
+  createRejectionRegistry,
+  registerRejection,
+  summarizeRejections,
+} from "./rejectionRegistry";
 import { buildVideoQualityReport } from "./videoQualityReport";
 
 /** Render 569's shape in miniature: a cap of 4, and 10 refusals that do not fit in it. */
 function overflowingAudit() {
-  const audit = createClipRejectAudit(4);
+  const audit = createRejectionRegistry(4);
   /** The first four — the only ones the DETAIL can hold. */
   for (let i = 0; i < 4; i++) {
-    recordClipReject(audit, 0, i, `/tmp/early_${i}.mp4`, "shortlist_full");
+    registerRejection(audit, 0, i, `/tmp/early_${i}.mp4`, "shortlist_full");
   }
   /** And six more, on later beats, whose detail is dropped. */
   for (let i = 0; i < 6; i++) {
-    recordClipReject(audit, 2, i, `/tmp/late_${i}.mp4`, "beat_image_gate");
+    registerRejection(audit, 2, i, `/tmp/late_${i}.mp4`, "beat_image_gate");
   }
   return audit;
 }
@@ -62,7 +62,7 @@ describe("the render-wide reason breakdown", () => {
     expect(audit.dropped).toBe(6);
     expect(audit.entries).toHaveLength(4);
 
-    const complete = summarizeClipRejectAudit(audit);
+    const complete = summarizeRejections(audit);
     expect(complete).toEqual({ shortlist_full: 4, beat_image_gate: 6 });
   });
 
@@ -71,7 +71,7 @@ describe("the render-wide reason breakdown", () => {
    * asserted about. Six of ten refusals — every one on a late beat — are simply absent.
    */
   it("the entries array alone loses the late beats entirely", () => {
-    const truncated = summarizeClipRejectAudit(overflowingAudit().entries);
+    const truncated = summarizeRejections(overflowingAudit().entries);
     expect(truncated).toEqual({ shortlist_full: 4 });
     expect(truncated.beat_image_gate).toBeUndefined();
   });
@@ -112,12 +112,12 @@ describe("the quality report reads the complete tally", () => {
    * 515 changes what an operator does next, and only the complete tally can say.
    */
   it("does not let a cap decide which reason looks dominant", () => {
-    const audit = createClipRejectAudit(4);
-    for (let i = 0; i < 4; i++) recordClipReject(audit, 0, i, `/tmp/a${i}.mp4`, "baked_text");
-    for (let i = 0; i < 20; i++) recordClipReject(audit, 1, i, `/tmp/b${i}.mp4`, "shortlist_full");
+    const audit = createRejectionRegistry(4);
+    for (let i = 0; i < 4; i++) registerRejection(audit, 0, i, `/tmp/a${i}.mp4`, "baked_text");
+    for (let i = 0; i < 20; i++) registerRejection(audit, 1, i, `/tmp/b${i}.mp4`, "shortlist_full");
 
-    const truncated = summarizeClipRejectAudit(audit.entries);
-    const complete = summarizeClipRejectAudit(audit);
+    const truncated = summarizeRejections(audit.entries);
+    const complete = summarizeRejections(audit);
     expect(truncated, "the cap made the rarer reason look like the only one").toEqual({ baked_text: 4 });
     expect(complete).toEqual({ baked_text: 4, shortlist_full: 20 });
   });

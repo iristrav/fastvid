@@ -69,9 +69,14 @@ describe("§1 — ONE TIMELINE SOURCE", () => {
   it("the pipeline itself never builds a timeline — it asks the planner for one", () => {
     expect(PIPELINE).toContain("planAndStoreCinematicTimeline({");
     expect(PIPELINE, "the pipeline grew its own translator").not.toContain("translateEdl(");
-    expect(PIPELINE, "the pipeline grew its own manifest builder").not.toContain(
-      "timelineFromEditorScenes("
-    );
+    /**
+     * ONE ROUTE: the render no longer stores a manifest, so when NO plan was stored the manifest
+     * adapter is used once, at the end of the render, to store a timeline — only into a row that
+     * has none, never beside or over a real one. Everywhere else the planner is the only source.
+     */
+    expect(PIPELINE.match(/timelineFromEditorScenes\(/g) ?? []).toHaveLength(1);
+    const at = PIPELINE.indexOf("timelineFromEditorScenes(");
+    expect(PIPELINE.slice(Math.max(0, at - 600), at)).toContain("if (expectedVersion !== 0) return;");
   });
 });
 

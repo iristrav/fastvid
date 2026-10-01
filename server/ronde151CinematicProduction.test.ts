@@ -8,14 +8,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  CINEMATIC_PLAN_ERROR,
-  cinematicPlanningEnabled,
-  cinematicRenderPathEnabled,
-  planAndStoreCinematicTimeline,
-} from "./cinematicProduction";
+import { CINEMATIC_PLAN_ERROR, cinematicPlanningEnabled, planAndStoreCinematicTimeline } from "./cinematicProduction";
 import type { SceneFacts } from "./cinematicPipelineInputs";
 import type { Scene } from "./pipeline/types";
+import { cinematicRenderPathEnabled } from "./config";
 
 /* ═══════════════════════ fixtures ═══════════════════════ */
 

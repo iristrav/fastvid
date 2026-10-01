@@ -62,6 +62,8 @@ export type BeatVisualIntent = {
   forbidden: string[];
   /** Every content term above, folded once, so a scorer never has to fold in a loop. */
   foldedTerms: readonly string[];
+  /** True when subject (and shot, if given) came from the stored VisualDirector plan. */
+  fromPlan?: boolean;
 };
 
 export type BeatVisualIntentState = {
@@ -95,8 +97,10 @@ export function buildBeatVisualIntent(input: {
   ctx?: VerifiedQueryContext | null;
   contract?: RetrievalContract | null;
   narrativePurpose?: string;
+  /** STAP 1 — the stored VisualDirector plan for this beat. Its subject and shot lead. */
+  plan?: { search_query?: string; visual_description?: string; camera_shot?: string } | null;
 }): BeatVisualIntent {
-  const { sceneIndex, beatIndex, ctx, contract } = input;
+  const { sceneIndex, beatIndex, ctx, contract, plan } = input;
 
   const people = terms(ctx?.persons);
   const event = terms(ctx?.events);
@@ -138,8 +142,9 @@ export function buildBeatVisualIntent(input: {
   const words = (t: string) => t.trim().split(/\s+/).filter(Boolean).length;
   const namedEvent = event.find((e) => words(e) > 1);
   const eventCue = event.find((e) => words(e) === 1);
+  const planned = (plan?.search_query || plan?.visual_description || "").trim();
   const subject =
-    [mustContain[0], namedEvent, people[0], location[0], eventCue, objects[0], action[0]].find(
+    [planned, mustContain[0], namedEvent, people[0], location[0], eventCue, objects[0], action[0]].find(
       (t) => Boolean(t?.trim())
     ) ?? "";
 
@@ -156,8 +161,9 @@ export function buildBeatVisualIntent(input: {
     people,
     objects,
     evidenceRequirement: mustContain.length > 0 ? "hard" : subject ? "soft" : "none",
-    preferredShot: contract?.preferredShot ?? "",
+    preferredShot: plan?.camera_shot?.trim() || contract?.preferredShot || "",
     fallbackClass: contract?.fallbackShot ?? "",
+    fromPlan: Boolean(planned),
     narrativePurpose: (input.narrativePurpose ?? contract?.visualGoal ?? "").toString(),
     forbidden: (contract?.forbiddenContent ?? []).map((t) => t.trim()).filter(Boolean),
     foldedTerms: content.map((t) => foldSearchText(t)).filter(Boolean),
@@ -379,6 +385,7 @@ export function formatVisualIntent(intent: BeatVisualIntent): string {
     `s${intent.sceneIndex}b${intent.beatIndex}`,
     `subject=${intent.subject || "NONE"}`,
     `evidence=${intent.evidenceRequirement}`,
+    `intent=${intent.fromPlan ? "plan" : "rules"}`,
   ];
   const add = (label: string, list: string[]) => {
     if (list.length > 0) parts.push(`${label}=${list.slice(0, 4).join("|")}`);

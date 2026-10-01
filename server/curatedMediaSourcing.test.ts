@@ -1,37 +1,30 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { isClipTitleIrrelevantToBeat } from "./visualBeatTags";
-import {
-  buildBeatMatchTags,
-  buildCuratedQueryTags,
-  buildGeoStockSearchQueries,
-  curatedAssetContentKey,
-  curatedClipPathAssetId,
-  extractTopicAnchorTags,
-  isCuratedInterviewAsset,
-  scoreArchiveMetadata,
-  scoreCuratedAsset,
-  assetPassesBeatMinimum,
-  isGeographyIncompatibleArchiveAsset,
-  isModernUrbanArchiveAsset,
-  countVisualTagHits,
-  resolvePrefetchedArchiveCandidates,
-  isCuratedOffTopicAsset,
-  isCuratedStaticInteriorAsset,
-  isCuratedPreparedStillClip,
-  isCuratedPreparedVideoClip,
-  isPipelineBlurFillStillClip,
-  rotateCuratedCandidates,
-  
-  isArchiveGeoBlockedForBeat,
-  resolveRequiredGeoTagsForBeat,
-  shouldPreferPexelsOverArchive,
-  shouldTryPexelsFirstForBeat,
-  applyCrossVideoVarietyDegrade,
-  reorderForArchiveDiversity,
-  type CuratedCandidatePick,
-} from "./curatedMediaSourcing";
+import { buildBeatMatchTags, buildCuratedQueryTags, buildGeoStockSearchQueries, curatedAssetContentKey, curatedClipPathAssetId, extractTopicAnchorTags, scoreArchiveMetadata, scoreCuratedAsset, resolvePrefetchedArchiveCandidates, isCuratedOffTopicAsset, isCuratedStaticInteriorAsset, isCuratedPreparedStillClip, isCuratedPreparedVideoClip, isPipelineBlurFillStillClip, shouldPreferPexelsOverArchive, shouldTryPexelsFirstForBeat, type CuratedCandidatePick } from "./curatedMediaSourcing";
 import { isGenericPeopleAsset } from "./visualBeatTags";
 import type { MediaArchiveAsset } from "./db";
+import { isCuratedInterviewAsset, isGeographyIncompatibleArchiveAsset, isModernUrbanArchiveAsset, countVisualTagHits, resolveRequiredGeoTagsForBeat, judgeArchiveAsset, judgeArchiveAssetCountry } from "./visualJudge";
+
+/** The archive judge's yes/no, in the shape these cases were written against. */
+const assetPassesBeatMinimum = (
+  asset: Parameters<typeof judgeArchiveAsset>[0]["asset"],
+  beatText: string,
+  score: number,
+  topScore: number,
+  semantic?: Parameters<typeof judgeArchiveAsset>[0]["semantic"],
+  videoVisualTopic?: Parameters<typeof judgeArchiveAsset>[0]["videoVisualTopic"],
+  segmentLock?: Parameters<typeof judgeArchiveAsset>[0]["segmentLock"],
+  literalVisualTags?: string[],
+  videoTitle?: string
+): boolean =>
+  judgeArchiveAsset({ asset, beatText, score, topScore, semantic, videoVisualTopic, segmentLock, literalVisualTags, videoTitle })
+    .decision === "ACCEPT";
+const isArchiveGeoBlockedForBeat = (
+  asset: Parameters<typeof judgeArchiveAssetCountry>[0],
+  beatText: string,
+  videoTitle?: string,
+  segmentLock?: Parameters<typeof judgeArchiveAssetCountry>[3]
+): boolean => judgeArchiveAssetCountry(asset, beatText, videoTitle, segmentLock).decision === "REJECT";
 
 describe("curatedMediaSourcing", () => {
   beforeEach(() => {
@@ -727,13 +720,6 @@ describe("curatedMediaSourcing", () => {
     expect(isCuratedStaticInteriorAsset({ title: "", tags: ["parade", "berlijn"] })).toBe(false);
   });
 
-  it("rotateCuratedCandidates shifts start per video seed", () => {
-    const pool = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
-    const rotated = rotateCuratedCandidates(pool, 100, 1).map((x) => x.id);
-    expect(rotated).not.toEqual([1, 2, 3, 4]);
-    expect(rotated.sort()).toEqual([1, 2, 3, 4]);
-  });
-
   it("assetPassesBeatMinimum rejects generic man for bunker sentence", () => {
     const beatText = "Hitler zat diep ondergronds in zijn bunker en gaf orders.";
     const genericMan: MediaArchiveAsset = {
@@ -1244,87 +1230,7 @@ describe("curatedMediaSourcing", () => {
     );
   });
 
-  it("applyCrossVideoVarietyDegrade (Phase 10) keeps the cross-video filter when enough candidates survive", () => {
-    const pool: CuratedCandidatePick[] = Array.from({ length: 10 }, (_, i) => ({
-      asset: { id: i } as MediaArchiveAsset,
-      score: 10 - i,
-      archiveName: "test",
-      archiveNicheTags: [],
-    }));
-    const crossVideoExcludeIds = new Set([0, 1]); // excluding 2/10 still leaves >= minKeep (8)
-    const result = applyCrossVideoVarietyDegrade(pool, crossVideoExcludeIds);
-    expect(result.map((p) => p.asset.id)).not.toContain(0);
-    expect(result.map((p) => p.asset.id)).not.toContain(1);
-    expect(result).toHaveLength(8);
-  });
-
-  it("applyCrossVideoVarietyDegrade keeps a partial filtered pool when some candidates survive, even below the minKeep floor", () => {
-    const pool: CuratedCandidatePick[] = Array.from({ length: 10 }, (_, i) => ({
-      asset: { id: i } as MediaArchiveAsset,
-      score: 10 - i,
-      archiveName: "test",
-      archiveNicheTags: [],
-    }));
-    // Excluding 9/10 candidates leaves only 1 — below the minKeep floor (8) — but since
-    // that's still a non-empty pool, it's preferred over reintroducing cross-video-stale clips.
-    const crossVideoExcludeIds = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-    const result = applyCrossVideoVarietyDegrade(pool, crossVideoExcludeIds);
-    expect(result).toHaveLength(1);
-    expect(result[0]!.asset.id).toBe(9);
-  });
-
-  it("applyCrossVideoVarietyDegrade falls back to the full pool only when the filter would leave nothing", () => {
-    const pool: CuratedCandidatePick[] = Array.from({ length: 10 }, (_, i) => ({
-      asset: { id: i } as MediaArchiveAsset,
-      score: 10 - i,
-      archiveName: "test",
-      archiveNicheTags: [],
-    }));
-    const crossVideoExcludeIds = new Set(Array.from({ length: 10 }, (_, i) => i));
-    const result = applyCrossVideoVarietyDegrade(pool, crossVideoExcludeIds);
-    expect(result).toHaveLength(10);
-  });
-
-  it("applyCrossVideoVarietyDegrade returns the pool unchanged when there's nothing to exclude", () => {
-    const pool: CuratedCandidatePick[] = [
-      { asset: { id: 1 } as MediaArchiveAsset, score: 5, archiveName: "test", archiveNicheTags: [] },
-    ];
-    expect(applyCrossVideoVarietyDegrade(pool, new Set())).toBe(pool);
-  });
-
-  it("reorderForArchiveDiversity (Phase 10) prefers a less-used archive within a tied score band", () => {
-    const ranked: CuratedCandidatePick[] = [
-      { asset: { id: 1 } as MediaArchiveAsset, score: 50, archiveName: "Overused Archive", archiveNicheTags: [] },
-      { asset: { id: 2 } as MediaArchiveAsset, score: 49, archiveName: "Fresh Archive", archiveNicheTags: [] },
-      { asset: { id: 3 } as MediaArchiveAsset, score: 48, archiveName: "Overused Archive", archiveNicheTags: [] },
-    ];
-    const usedArchiveNames = new Map([["Overused Archive", 5]]);
-    const result = reorderForArchiveDiversity(ranked, usedArchiveNames);
-    // All three are within the default 3-point band, so "Fresh Archive" (id 2) moves first
-    // even though its raw score (49) was second — but never above what its score allows.
-    expect(result[0]!.asset.id).toBe(2);
-  });
-
-  it("reorderForArchiveDiversity never lets a lower-scoring candidate outrank a much higher one", () => {
-    const ranked: CuratedCandidatePick[] = [
-      { asset: { id: 1 } as MediaArchiveAsset, score: 90, archiveName: "Overused Archive", archiveNicheTags: [] },
-      { asset: { id: 2 } as MediaArchiveAsset, score: 10, archiveName: "Fresh Archive", archiveNicheTags: [] },
-    ];
-    const usedArchiveNames = new Map([["Overused Archive", 20]]);
-    const result = reorderForArchiveDiversity(ranked, usedArchiveNames);
-    // Score gap (80) far exceeds the band width — the top scorer always stays first.
-    expect(result[0]!.asset.id).toBe(1);
-  });
-
-  it("reorderForArchiveDiversity is a no-op when nothing has been used yet or the pool is trivial", () => {
-    const ranked: CuratedCandidatePick[] = [
-      { asset: { id: 1 } as MediaArchiveAsset, score: 50, archiveName: "A", archiveNicheTags: [] },
-      { asset: { id: 2 } as MediaArchiveAsset, score: 49, archiveName: "B", archiveNicheTags: [] },
-    ];
-    expect(reorderForArchiveDiversity(ranked, new Map())).toBe(ranked);
-    expect(reorderForArchiveDiversity([ranked[0]!], new Map([["A", 3]]))).toEqual([ranked[0]]);
-  });
-
+  /** ONE ROUTE: cross-video and per-render variety are a preference now — see usageDiversity.test.ts. */
   it("assetPassesBeatMinimum allows any documentary clip when metadata blocks off", () => {
     delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
     const beatText = "In Amsterdam fietsen duizenden mensen.";

@@ -103,7 +103,8 @@ describe("a downloaded asset gets its provider the same way", () => {
 
 describe("the export gate itself is untouched", () => {
   const SRC = require("fs").readFileSync(
-    path.join(__dirname, "videoQualityReport.ts"),
+    /** ONE ROUTE: the export gate lives in the DeliveryGate. */
+    path.join(__dirname, "deliveryGate.ts"),
     "utf8"
   ) as string;
 

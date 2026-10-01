@@ -5,7 +5,7 @@ import fs from "fs";
 import { recordVisionAsk } from "./visionCensus";
 import path from "path";
 import { curatedClipPathAssetId } from "./curatedMediaSourcing";
-import { strictVoiceVisualMatchEnabled, isFastShortVideoLength } from "./sourcingPolicy";
+import { strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
 import { loadStoredFrameEmbeddings, prefetchArchiveClipEmbeddings } from "./archiveClipEmbedding";
 import { loadStoredStockFrameEmbeddingsFromPath } from "./stockClipEmbedding";
 import {
@@ -128,8 +128,7 @@ export function cascadeVisionExpandBelow(minScore: number): number {
 const CASCADE_PRIMARY_FRAME_FRAC = 0.38;
 
 /** Critical per-clip voice/visual QA — skipped on 1-min fast path for speed. */
-export function sceneCriticalReviewEnabled(videoLength?: string | null): boolean {
-  if (isFastShortVideoLength(videoLength)) return false;
+export function sceneCriticalReviewEnabled(): boolean {
   if (process.env.ENABLE_SCENE_CRITICAL_REVIEW === "false") return false;
   return process.env.ENABLE_VIDRUSH_QUALITY !== "false";
 }

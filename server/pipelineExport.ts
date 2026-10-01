@@ -9,7 +9,7 @@
  * usefully copy nine collapsible panels out of a browser.
  *
  * So this turns the same stored record into one plain-text file. It re-derives nothing: every line
- * below came out of the render itself, through `renderPipelineReport.ts`, and is reproduced in the
+ * below came out of the render itself, through `renderReport.ts`, and is reproduced in the
  * order the render wrote it.
  *
  * ── Why text and not JSON ───────────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@
  * DID leave behind (its status and its error). An empty download that looks like a broken feature
  * is worse than a file that explains itself.
  */
-import { PIPELINE_SECTIONS, type PipelineGlance, type RenderPipelineReport } from "./renderPipelineReport";
+import { PIPELINE_SECTIONS, type PipelineGlance, type RenderPipelineReport } from "./renderReport";
 
 /** Human titles for the section keys, in the order the render writes them. */
 export const SECTION_TITLES: Record<(typeof PIPELINE_SECTIONS)[number], string> = {

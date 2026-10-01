@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertVisualCoverageExportGate, type VideoQualityReport } from "./videoQualityReport";
+import { type VideoQualityReport } from "./videoQualityReport";
 import { parseAppErrorCode, PIPELINE_ERROR } from "@shared/appErrors";
+import { assertVisualCoverageExportGate } from "./deliveryGate";
 
 // FASTVID — PRODUCTION RENDER FAILURE FIX
 //

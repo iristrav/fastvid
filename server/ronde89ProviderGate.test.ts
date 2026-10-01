@@ -1,17 +1,9 @@
 import fs from "fs";
 import path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  SearchGateAudit,
-  emptyQueryContext,
-  isVerifiedSearchQuery,
-  legacyQueryTicket,
-  mintVerifiedQuery,
-  provenToken,
-  searchGateStrict,
-  formatSearchGateReport,
-} from "./searchQueryContract";
+import { SearchGateAudit, emptyQueryContext, isVerifiedSearchQuery, legacyQueryTicket, mintVerifiedQuery, provenToken, formatSearchGateReport } from "./searchQueryContract";
 import { admitProviderQuery, buildVerifiedQueryContextForBeat, typedQueryPrefix } from "./videoPipeline";
+import { searchGateStrict } from "./config";
 
 /**
  * RONDE 89 — no content query reaches a provider except through the gate.

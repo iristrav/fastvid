@@ -3,14 +3,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  judgeBeatImage,
-  createBeatImageGateState,
-  beatImageRelevanceGateEnabled,
-  maxBeatImageJudgementsPerRender,
-  MAX_JUDGEMENTS_PER_BEAT,
-} from "./beatImageRelevanceGate";
-import { MAX_FUNNEL_CANDIDATES_TO_SCORE } from "./retrievalFunnel";
+import { judgeBeatImage, createBeatImageGateState, maxBeatImageJudgementsPerRender, MAX_JUDGEMENTS_PER_BEAT } from "./beatImageRelevanceGate";
+import { beatImageRelevanceGateEnabled } from "./config";
 
 /**
  * RONDE 58 — the gate that actually looks at the frame.

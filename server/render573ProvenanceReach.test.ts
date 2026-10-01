@@ -46,7 +46,7 @@ import {
   bindLineageLedger,
   bindContentKeyResolver,
 } from "./clipAdoptAudit";
-import { createClipRejectAudit, noteRepeatedRefusal } from "./clipRejectAudit";
+import { createRejectionRegistry, noteRepeatedRefusal } from "./rejectionRegistry";
 
 describe("a provider download opens a lineage record even when the caller had no cache", () => {
   it("uses the render's own cache when one is published and none is passed", async () => {
@@ -155,7 +155,8 @@ describe("the archive segment fetch names a container, and its failure names its
     expect(region).toContain('archivePrepFailure("archive_over_size_cap")');
     expect(region).toContain("archivePrepFailure(`archive_http_${dlResp.status || \"no_bytes\"}`)");
     /** ...and the single handler turns whichever one arrived into the rejection it always was. */
-    expect(region).toContain("sourcingCache?.lineage?.recordRejection(");
+    /** ONE ROUTE: filed through the render's RejectionRegistry, which writes the lineage. */
+    expect(region).toContain("registerRejection(\n              sourcingCache.rejections,");
     expect(region).toContain('archiveRejectionReason(prepared.error) ?? "archive_preparation_failed"');
     /** A throw that carried no reason still ends the record — it cannot vanish. */
     expect(SRC).toContain("function archiveRejectionReason(err: unknown): string | null {");
@@ -201,14 +202,14 @@ describe("a repeated refusal is counted, never hidden and never re-printed as ne
    * The guard is a pure function of four inputs, none of which moved between the calls.
    */
   it("says how many times before, starting at zero", () => {
-    const audit = createClipRejectAudit();
+    const audit = createRejectionRegistry();
     expect(noteRepeatedRefusal(audit, 2, 2, "curated:asset:57465", "FUNNEL_WITHOUT_EVIDENCE")).toBe(0);
     expect(noteRepeatedRefusal(audit, 2, 2, "curated:asset:57465", "FUNNEL_WITHOUT_EVIDENCE")).toBe(1);
     expect(noteRepeatedRefusal(audit, 2, 2, "curated:asset:57465", "FUNNEL_WITHOUT_EVIDENCE")).toBe(2);
   });
 
   it("a different beat, asset or reason is a different question", () => {
-    const audit = createClipRejectAudit();
+    const audit = createRejectionRegistry();
     noteRepeatedRefusal(audit, 2, 2, "a", "R");
     expect(noteRepeatedRefusal(audit, 2, 3, "a", "R")).toBe(0);
     expect(noteRepeatedRefusal(audit, 2, 2, "b", "R")).toBe(0);
@@ -216,7 +217,7 @@ describe("a repeated refusal is counted, never hidden and never re-printed as ne
   });
 
   it("it changes no tally — a failure must never be made to look smaller than it was", () => {
-    const audit = createClipRejectAudit();
+    const audit = createRejectionRegistry();
     for (let i = 0; i < 9; i++) noteRepeatedRefusal(audit, 2, 2, "a", "R");
     expect(audit.recorded).toBe(0);
     expect(audit.perBeat.size).toBe(0);

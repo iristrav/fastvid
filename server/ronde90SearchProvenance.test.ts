@@ -18,23 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "fs";
 import path from "path";
 
-import {
-  PRODUCTION_VOCABULARY,
-  buildPrioritisedQueries,
-  emptyQueryContext,
-  evidenceStem,
-  formatSearchQueryAudit,
-  isProductionWord,
-  legacyQueryTicket,
-  mintVerifiedQuery,
-  provenToken,
-  queryProper,
-  rebuildFromVerifiedTokens,
-  searchGateStrict,
-  tokenEvidenceHolds,
-  validateSearchQuery,
-  type VerifiedQueryContext,
-} from "./searchQueryContract";
+import { PRODUCTION_VOCABULARY, buildPrioritisedQueries, emptyQueryContext, evidenceStem, formatSearchQueryAudit, isProductionWord, legacyQueryTicket, mintVerifiedQuery, provenToken, queryProper, rebuildFromVerifiedTokens, tokenEvidenceHolds, validateSearchQuery, type VerifiedQueryContext } from "./searchQueryContract";
 import {
   admitProviderQuery,
   buildVerifiedQueryContextForBeat,
@@ -42,6 +26,7 @@ import {
   getSearchProvenance,
   withSearchProvenance,
 } from "./videoPipeline";
+import { searchGateStrict } from "./config";
 
 const PIPELINE_SRC = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const CONTRACT_SRC = readFileSync(path.join(__dirname, "searchQueryContract.ts"), "utf8");
@@ -500,7 +485,7 @@ describe("RONDE 90 §18 — NO UNPROVEN CONTENT MAY REACH A SEARCH PROVIDER", ()
 
 describe("RONDE 90 §16 — M1–M15, each pinned to one thing that must not be undone", () => {
   it("M1 — strict mode defaulting back to off is caught", () => {
-    expect(CONTRACT_SRC).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
     expect(CONTRACT_SRC).not.toContain('return process.env.SEARCH_GATE_STRICT === "true";');
   });
 

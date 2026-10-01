@@ -3,7 +3,7 @@ import path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { youtubeDownloadTimeoutMs, youtubeMinFormatHeight } from "./sourcingPolicy";
 import { looksLikeSentenceFragment } from "./mediaResearchEngine";
-import { mergeCandidates } from "./retrievalFunnel";
+
 import type { PoolCandidate } from "./scenePool";
 
 // RONDE 27 — render 528 looked better but the montage was carried by Ken Burns stills and generic
@@ -51,58 +51,6 @@ describe("RONDE 27a — the format picker optimises for download time", () => {
     expect(picker).not.toContain("Math.abs(heightA - 720)");
   });
 
-});
-
-// RONDE 27b (the Library of Congress pool budget) left with Library of Congress itself: VIDEO 619
-// removed the sources that delivered nothing to any film across renders 597–619.
-
-const funnelSrc = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
-
-describe("RONDE 27c — moving footage gets a nudge, not a veto", () => {
-  // RONDE 29 gave movingFootageBonus a second argument (the render's shortfall against its
-  // moving-footage target), so the two cases below no longer match the old source text
-  // verbatim. They assert the same two properties through mergeCandidates instead, which is
-  // what actually has to hold — and does not have to be rewritten again the next time the
-  // bonus is reshaped.
-  const poolItem = (mediaType: "video" | "image"): PoolCandidate =>
-    ({ id: `x:${mediaType}`, source: "pexels", title: "t", thumbnailUrl: null, mediaType }) as PoolCandidate;
-
-  it("bonuses video on both archive and external candidates", () => {
-    const external = mergeCandidates([], [], [poolItem("video"), poolItem("image")], 1, 1, 10);
-    const video = external.find((c) => c.mediaType === "video")!;
-    const image = external.find((c) => c.mediaType === "image")!;
-    expect(video.rankingScore).toBeGreaterThan(image.rankingScore);
-    // Archive path: same call, same bonus — asserted at the source level because building a
-    // real CuratedCandidatePick here would pull in the whole archive schema for one number.
-    expect(funnelSrc).toContain("movingFootageBonus(archiveMediaType");
-    expect(funnelSrc).toContain("movingFootageBonus(c.mediaType");
-  });
-
-  it("gives stills nothing rather than penalising them", () => {
-    // An image candidate must score exactly the flat internetWeight * (0.7 + tier) — Pexels'
-    // tier bonus is 0 — i.e. the bonus adds nothing rather than subtracting.
-    const [image] = mergeCandidates([], [], [poolItem("image")], 1, 1, 10);
-    expect(image.rankingScore).toBeCloseTo(0.7, 10);
-  });
-
-  it("stays smaller than a full source-tier step", () => {
-    // The tier bonuses span 0–0.15. Anything larger would let a Pexels clip outrank a genuine
-    // Internet Archive still on media type alone — trading "everything matches" for "more video".
-    const match = funnelSrc.match(/const MOVING_FOOTAGE_BONUS = ([0-9.]+);/);
-    expect(match).not.toBeNull();
-    expect(parseFloat(match![1]!)).toBeGreaterThan(0);
-    expect(parseFloat(match![1]!)).toBeLessThan(0.15);
-  });
-
-  it("only moves the shortlist — the winner is still decided on vision scores", () => {
-    // rankingScore governs which candidates get downloaded and CLIP-scored at all.
-    expect(funnelSrc).toContain("pickBestFunnelCandidate");
-    const doc = funnelSrc.slice(
-      funnelSrc.indexOf("RONDE 27: nudge toward footage"),
-      funnelSrc.indexOf("const MOVING_FOOTAGE_BONUS"),
-    );
-    expect(doc).toContain("not a veto");
-  });
 });
 
 describe("RONDE 27d — clause fragments are not search anchors", () => {

@@ -61,7 +61,7 @@ const bodyOf = (name: string): string => {
 /* ═══════════ 1. the guard obtains what it demands ═══════════ */
 
 describe("R215 §1 — the guard asks for the evidence it refuses adoptions over", () => {
-  const guard = bodyOf("adoptionGuardRefusesPush");
+  const guard = bodyOf("visualJudgeRefusesPush");
 
   it("THE ASK IS INSIDE THE GUARD, so no caller can forget it", () => {
     expect(guard, "the guard still only reads a verdict it never obtains").toContain(
@@ -82,21 +82,15 @@ describe("R215 §1 — the guard asks for the evidence it refuses adoptions over
     expect(asks, "the guard reads the ledger before it has asked anything").toBeLessThan(reads);
   });
 
-  it("EVERY CALL SITE IS NOW COVERED — the count that made this a production outage", () => {
+  it("EVERY CALL SITE IS NOW COVERED — the one push door asks for itself", () => {
     /**
-     * The original fault in one number: 17 places call the guard, 5 of them asked. Pinning the
-     * exact ratio would break on any new route; what must hold is that coverage no longer depends
-     * on the caller at all, so a site that does not call the judge itself is still covered.
+     * The original fault in one number: 17 places called the guard, 5 of them asked. Since ONE
+     * ROUTE the barrier and the route rule are one function, reached through the one push boundary,
+     * so no caller can consult one without the other or without the ask.
      */
-    const callers = [...PIPE.matchAll(/adoptionGuardRefusesPush\(/g)].length;
-    const judges = [...PIPE.matchAll(/beatClipRefusedByRelevanceGate\(/g)].length;
-    /**
-     * One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes.
-     * It judges before it consults the guard, so callers and judges are now equal; the guard still
-     * carries the rule itself, which is what the line below checks.
-     */
-    expect(callers, "the guard has no callers — the sweep is measuring nothing").toBeGreaterThanOrEqual(2);
-    expect(judges).toBeGreaterThanOrEqual(1);
+    const doors = [...PIPE.matchAll(/visualJudgeRefusesPush\(/g)].length;
+    expect(doors, "the push judge has no caller — the sweep is measuring nothing").toBeGreaterThanOrEqual(2);
+    expect(PIPE).not.toContain("adoptionGuardRefusesPush(");
     expect(guard).toContain("ensureVerdictBeforeCompose({");
   });
 });
@@ -104,7 +98,7 @@ describe("R215 §1 — the guard asks for the evidence it refuses adoptions over
 /* ═══════════ 2. the two silences stay different ═══════════ */
 
 describe("R215 §2 — 'nobody tried' and 'nothing to try against' are not the same answer", () => {
-  const guard = bodyOf("adoptionGuardRefusesPush");
+  const guard = bodyOf("visualJudgeRefusesPush");
 
   /**
    * RENDER 592-B — THE SAME CLAIM, ASKED OF THE CODE INSTEAD OF THE TEXT.
@@ -122,7 +116,7 @@ describe("R215 §2 — 'nobody tried' and 'nothing to try against' are not the s
    * route that stops consulting it still fails here.
    */
   it("only the three outcomes that mean NO NARRATION EXISTS suspend the requirement", () => {
-    const at = guard.indexOf("askWasPossible = false;\n      console.warn");
+    const at = guard.indexOf("const nothingToJudge =");
     expect(at, "the suspension is not conditional on the outcome any more").toBeGreaterThan(0);
 
     for (const outcome of ["no_scope", "beat_unknown", "no_narration"] as ComposeJudgeOutcome[]) {
@@ -140,23 +134,20 @@ describe("R215 §2 — 'nobody tried' and 'nothing to try against' are not the s
         `${outcome} must never suspend the requirement`
       ).toBe(false);
     }
-    /** And the guard must still take its answer from that one predicate. */
-    const test = guard.slice(guard.indexOf("const ensured = await"), at);
-    expect(test, "the guard decides the suspension on something of its own again").toContain(
-      "nothingToJudgeAgainst(ensured.outcome)"
+    /** And the push judge must still take its answer from that one predicate. */
+    expect(guard.slice(at, at + 200), "the suspension is decided on something of its own again").toContain(
+      "nothingToJudgeAgainst(lastLook)"
     );
   });
 
   it("A MISSING BEAT INDEX IS NOT AN ANSWER EITHER", () => {
-    expect(guard).toContain("if (beatIndex == null) {");
-    const at = guard.indexOf("if (beatIndex == null) {");
-    expect(guard.slice(at, at + 90)).toContain("askWasPossible = false");
+    expect(guard).toContain("const nothingToJudge = beatIndex == null ||");
   });
 
   it("the suspension reaches the verdict through visionAvailable, beside the other two latches", () => {
     expect(guard).toContain("!visionPipelineIsUnavailable()");
     expect(guard).toContain("!dedup.beatImageGate?.askImpossible");
-    expect(guard).toContain("askWasPossible");
+    expect(guard).toContain("!nothingToJudge");
   });
 
   it("IT IS NEVER SILENT — a suspended requirement is printed with its reason", () => {
@@ -167,9 +158,12 @@ describe("R215 §2 — 'nobody tried' and 'nothing to try against' are not the s
   it("the guard still refuses when the editor was asked and said no", () => {
     /**
      * The point of RONDE 199 must survive: this round widens who gets ASKED, never what counts as
-     * a pass. `adoptionGuardVerdict` is untouched and remains the only place that decides.
+     * a pass. `adoptionGuardVerdict` is untouched and reached only through `judgeAtPush`.
      */
-    expect(guard).toContain("adoptionGuardVerdict({ source, eligible, vision, visionAvailable })");
+    expect(guard).toContain("const route = source ? { source, eligible, vision, visionAvailable } : null;");
+    expect(guard).toContain("judgeAtPush({");
+    const vj = fs.readFileSync(path.join(__dirname, "visualJudge.ts"), "utf8");
+    expect(vj).toContain("const guard = adoptionGuardVerdict(input.route);");
   });
 });
 
@@ -194,7 +188,7 @@ describe("R215 §3 — the tightening itself is unchanged", () => {
 
   it("SEARCH_GATE_STRICT and the export blocks are untouched by this round", () => {
     const contract = fs.readFileSync(path.join(__dirname, "searchQueryContract.ts"), "utf8");
-    expect(contract).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
     // RONDE 89's two export blocks live where the quality report is assembled, not in the pipeline.
     const report = fs.readFileSync(path.join(__dirname, "videoQualityReport.ts"), "utf8");
     expect(report).toContain("NO_VERIFIED_OWN_VISUAL");

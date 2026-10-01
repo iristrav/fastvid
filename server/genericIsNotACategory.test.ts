@@ -41,7 +41,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { isRejectedStockClip, stockCategoryGateForTest } from "./videoPipeline";
+import { stockCategoryGateForTest } from "./videoPipeline";
+import { isRejectedStockClip } from "./visualJudge";
 
 const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 

@@ -37,15 +37,12 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  assertVisionCoverageExportGate,
-  type VisionCoverageBeat,
-} from "./videoQualityReport";
 import { PIPELINE_ERROR } from "@shared/appErrors";
 import {
   createBeatImageGateState,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
+import { assertVisionCoverageExportGate, type VisionCoverageBeat } from "./deliveryGate";
 
 const judged = (s: number, b: number): VisionCoverageBeat => ({
   sceneIndex: s, beatIndex: b, verdicts: 2, hasRealFootage: true,
@@ -261,9 +258,9 @@ describe("the gate still fails open per clip", () => {
     const path = await import("path");
     const gate = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
     expect(gate, "the gate no longer fails open").toContain("Fail open, always.");
-    expect(gate).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
 
-    const quality = fs.readFileSync(path.join(__dirname, "videoQualityReport.ts"), "utf8");
+    const quality = fs.readFileSync(path.join(__dirname, "deliveryGate.ts"), "utf8");
     expect(quality, "the export gate is missing").toContain("assertVisionCoverageExportGate");
 
     const pipe = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");

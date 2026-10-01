@@ -202,7 +202,7 @@ describe("Points 12/13 — provider suitability signals stay topic-conditional (
 
 describe("Points 15/16 — quality gate and fallback cadence stay unchanged (reused from prior hardening rounds)", () => {
   it("Test 15 — assertVisualCoverageExportGate still blocks a scene that fell back entirely to the placeholder", async () => {
-    const { assertVisualCoverageExportGate } = await import("./videoQualityReport");
+    const { assertVisualCoverageExportGate } = await import("./deliveryGate");
     const report = {
       generatedAt: new Date().toISOString(),
       videoTitle: "test",

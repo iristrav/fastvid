@@ -237,20 +237,29 @@ describe("P0-C: a refused push is an ending on the asset, not only on the beat",
      * below is the one that matters and it covers the new path unchanged — every refusal still
      * files a rejection on the lineage before it traces the outcome.
      */
-    expect(refusalSites()).toHaveLength(4);
+    /** ONE ROUTE: the barrier and the guard refused in two places; the push judge refuses in one. */
+    expect(refusalSites()).toHaveLength(3);
   });
 
+  /**
+   * ONE ROUTE: through the RejectionRegistry, the one writer, which files the refusal on the
+   * lineage itself — so a caller can neither forget the lineage nor write it twice.
+   */
   it("EVERY ONE of them files a rejection on the lineage first", () => {
+    const REG = fsSync.readFileSync(pathSync.join(__dirname, "rejectionRegistry.ts"), "utf8");
+    expect(REG).toContain("registry.lineage?.recordRejection(clipPath, reason, detail.contentKey);");
     for (const before of refusalSites()) {
-      expect(before, "a refusal that leaves the asset unaccounted").toContain("recordRejection(");
+      expect(before, "a refusal that leaves the asset unaccounted").toContain("registerRejection(");
     }
   });
 
-  /** One write per refusal — the duplicate this round briefly added would fail here. */
+  /** One write per refusal — the duplicate a caller's own lineage write used to add would fail here. */
   it("and files it exactly once", () => {
-    const barrier = refusalSites().find((s) => s.includes("barrier.reason"));
-    expect(barrier).toBeDefined();
-    expect((barrier!.match(/recordRejection\(clipPath, barrier\.reason/g) ?? []).length).toBe(1);
+    for (const before of refusalSites()) {
+      const tail = before.slice(before.lastIndexOf("registerRejection("));
+      expect(tail, "a refusal writes the lineage beside the registry again").not.toContain("recordRejection(");
+    }
+    expect(PIPE).not.toMatch(/lineage\?\.recordRejection\(clipPath/);
   });
 
   /** The status filed has to be one the invariant accepts, or the write buys nothing. */

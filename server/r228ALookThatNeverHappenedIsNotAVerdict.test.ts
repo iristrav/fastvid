@@ -54,7 +54,7 @@ import {
   type ComposeJudgeScope,
 } from "./beatVisualRelevance";
 import { createBeatImageGateState } from "./beatImageRelevanceGate";
-import { indefensibleExportConditions } from "./videoQualityReport";
+import { indefensibleExportConditions } from "./deliveryGate";
 
 const SRC = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
 
@@ -274,9 +274,12 @@ describe("R228 §3 — the export blocks stand", () => {
   const POLICY = fs.readFileSync(path.join(__dirname, "adoptionPolicy.ts"), "utf8");
 
   it("RONDE 215's last look still passes finalSay", () => {
-    const at = PIPE.indexOf('route: "adoption_guard",');
+    /** ONE ROUTE: the guard's look is the push judge's one look. */
+    const at = PIPE.indexOf("export async function visualJudgeRefusesPush(");
     expect(at).toBeGreaterThan(0);
-    expect(PIPE.slice(at, at + 260)).toContain("finalSay: true");
+    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
+    const ask = body.indexOf("ensureVerdictBeforeCompose({");
+    expect(body.slice(ask, ask + 260)).toContain("finalSay: true");
   });
 
   it("FUNNEL_WITHOUT_EVIDENCE still refuses a route that claims without a verdict", () => {
@@ -284,8 +287,8 @@ describe("R228 §3 — the export blocks stand", () => {
   });
 
   it("RONDE 89's export blocks are untouched", () => {
-    /** They live in the quality report, which is what actually refuses to ship the film. */
-    const REPORT = fs.readFileSync(path.join(__dirname, "videoQualityReport.ts"), "utf8");
+    /** They live in the DeliveryGate, which is what actually refuses to ship the film. */
+    const REPORT = fs.readFileSync(path.join(__dirname, "deliveryGate.ts"), "utf8");
     for (const block of ["NO_VERIFIED_OWN_VISUAL", "MOSTLY_UNVERIFIED_CLIPS"]) {
       expect(REPORT, `${block} was removed`).toContain(block);
       /**

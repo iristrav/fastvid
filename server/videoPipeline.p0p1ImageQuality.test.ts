@@ -37,7 +37,8 @@ vi.mock("node-fetch", async (importOriginal) => {
 
 async function freshPipeline() {
   vi.resetModules();
-  return import("./videoPipeline");
+  /** The content rules live in the VisualJudge; the rest of what these cases read is the pipeline's. */
+  return { ...(await import("./videoPipeline")), ...(await import("./visualJudge")) };
 }
 
 describe("Fix 1 — entity gate requires reliable evidence, not query/filename self-reference", () => {

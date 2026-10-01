@@ -127,7 +127,8 @@ describe("a delivery says which render's lineage it joined against", () => {
 
 describe("render-scoped state is per render by construction", () => {
   it("the ledger is built inside the render, not fetched by video", () => {
-    expect(PIPELINE).toContain("sourcingCache: createSourcingCache(");
+    /** ONE ROUTE: built once per render, before the state that shares its registry. */
+    expect(PIPELINE).toContain("const sourcingCache = createSourcingCache(topic?.videoId);");
     expect(PIPELINE).toContain("lineage: new VisualSourceLedger({");
   });
 

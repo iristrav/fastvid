@@ -70,7 +70,7 @@ const MEASUREMENT_MODULES = [
   "beatShortlist.ts",
   "beatOutcomeAudit.ts",
   "clipAdoptAudit.ts",
-  "clipRejectAudit.ts",
+  "rejectionRegistry.ts",
   "visualSourceLineage.ts",
   "beatVisualRelevance.ts",
 ];

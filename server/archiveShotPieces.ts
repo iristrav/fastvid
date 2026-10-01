@@ -234,12 +234,12 @@ export function pieceSourceUrl(parentUrl: string | null | undefined, parentId: n
 }
 
 export async function productionShotPieceDeps(): Promise<ShotPieceDeps> {
-  const [{ productionShotCutDeps }, splitter, db, storage, filter, tagRule] = await Promise.all([
+  const [{ productionShotCutDeps }, splitter, db, storage, { judgeOnScreenText }, tagRule] = await Promise.all([
     import("./youtubeShotCuts"),
     import("./archiveVideoSplitter"),
     import("./db"),
     import("./storage"),
-    import("./archiveClipFilter"),
+    import("./visualJudge"),
     import("./archiveTagRule"),
   ]);
   const cutDeps = productionShotCutDeps();
@@ -252,7 +252,10 @@ export async function productionShotPieceDeps(): Promise<ShotPieceDeps> {
     detect: cutDeps.detect,
     extract: (input, output, startSec, endSec) => splitter.extractVideoSegment(input, output, startSec, endSec),
     /** VIDEO 621 — the archive's own check, never on a render's budget. */
-    textVerdict: async (piecePath, key) => (await filter.archiveClipTextVerdict(piecePath, "video/mp4", key)).verdict as TextVerdict,
+    textVerdict: async (piecePath, key) => {
+      const judged = await judgeOnScreenText({ path: piecePath, mimeType: "video/mp4", memoKey: key });
+      return (judged.decision === "REJECT" ? "has_text" : judged.evaluated ? "clean" : "not_asked") as TextVerdict;
+    },
     storePiece: async (parent, piecePath, piece) => {
       const data = await fs.promises.readFile(piecePath);
       const { key, url } = await storage.storagePut(

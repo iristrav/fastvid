@@ -42,16 +42,12 @@ import { readFileSync } from "fs";
 import { join } from "path";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-const FUNNEL = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
 
 /* ═══════════ §1 — the two readers now agree ═══════════ */
 
-
 /* ═══════════ §2 — the archive is what this protects ═══════════ */
 
-
 /* ═══════════ §3 — the claim the log makes is now true ═══════════ */
-
 
 /* ═══════════ §4 — nothing was loosened ═══════════ */
 

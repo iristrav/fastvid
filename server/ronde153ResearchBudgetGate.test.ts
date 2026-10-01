@@ -76,12 +76,8 @@ describe("RONDE 153 — a short render gets more than one topical query", () => 
   });
 });
 
-describe("RONDE 153 — fastStockMode still does everything else it did", () => {
-  it("the preset is unchanged as a performance profile", () => {
-    // This round removed ONE use of the flag — the research gate. The timeouts, query caps and
-    // provider switches it drives are deliberate and stay.
-    expect(PIPE).toContain("const queryCap = historicalDoc ? 3 : dedup.perf.fastStockMode ? 2 : 4;");
-    expect(PIPE).toContain("const trySerp = SERPAPI_KEY && (historicalDoc || !dedup.perf.fastStockMode);");
-    expect(PIPE).toContain("fastStockMode: IS_RAILWAY,");
+describe("one route for every length", () => {
+  it("there is no fast-stock profile left to choose a different route", () => {
+    expect(PIPE).not.toContain("fastStockMode");
   });
 });

@@ -106,7 +106,7 @@ describe("§3 — a second transfer fits the scope that exists", () => {
       process.env.ENABLE_YOUTUBE_SOURCING = "true";
       process.env.YOUTUBE_API_KEY = "test-key-present";
       process.env.YOUTUBE_CC_DL_SERVICE = "https://example.invalid/dl";
-      delete process.env.YOUTUBE_ONLY_SOURCING;
+      
       return fn();
     } finally {
       process.env = saved;
@@ -117,10 +117,9 @@ describe("§3 — a second transfer fits the scope that exists", () => {
     const needed = YOUTUBE_SEARCH_TIMEOUT_MS + 2 * DOWNLOAD_FLOOR_MS;
     withYoutube(() => {
       /** The narrowest scope of the nest a turn opens under — see RONDE 615 §6. */
-      const slice = youtubeBeatFetchTimeoutMs(true);
+      const slice = youtubeBeatFetchTimeoutMs();
       const beat = beatWallWithYoutubeTurn(22_000);
       const scene = beatVisualWallMs({
-        fastStockMode: true,
         beatClipTimeoutMs: 22_000,
         transformTimeoutMs: 25_000,
       } as never);

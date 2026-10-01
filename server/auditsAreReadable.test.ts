@@ -39,7 +39,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import { PIPELINE_SECTION_TITLES } from "./renderPipelineReport";
+import { PIPELINE_SECTION_TITLES } from "./renderReport";
 
 const read = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");
 
@@ -47,7 +47,7 @@ const read = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");
 
 describe("the glance figure is named after what it counts", () => {
   it("is uniqueClips, not finalClips", () => {
-    const report = read("renderPipelineReport.ts");
+    const report = read("renderReport.ts");
     expect(report).toContain("uniqueClips?: number;");
     expect(report).not.toContain("finalClips?: number;");
   });
@@ -58,7 +58,7 @@ describe("the glance figure is named after what it counts", () => {
 
   /** Renaming the field and leaving the reader is half a fix. The four counts are set out once. */
   it("says what the other three counts are, and why they differ", () => {
-    const report = read("renderPipelineReport.ts");
+    const report = read("renderReport.ts");
     expect(report).toContain("four questions");
     expect(report).toContain("clips PROVEN in the delivered file");
     expect(report).toContain("[RenderAsset]");

@@ -26,11 +26,8 @@
  */
 import { describe, expect, it, vi, afterEach } from "vitest";
 
-import {
-  indefensibleExportConditions,
-  type VideoQualityReport,
-} from "./videoQualityReport";
-import { enforceQualityExportGate } from "./pipelineSelfHeal";
+import { type VideoQualityReport } from "./videoQualityReport";
+import { indefensibleExportConditions, enforceQualityExportGate } from "./deliveryGate";
 
 /** A report with nothing wrong with it; each test breaks exactly one thing. */
 function healthyReport(over: Partial<VideoQualityReport> = {}): VideoQualityReport {
@@ -250,7 +247,7 @@ describe("the export gate refuses, with every switch off", () => {
 describe("the check runs before any flag is read", () => {
   const SRC = () =>
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    require("fs").readFileSync(require("path").join(__dirname, "pipelineSelfHeal.ts"), "utf8") as string;
+    require("fs").readFileSync(require("path").join(__dirname, "deliveryGate.ts"), "utf8") as string;
 
   it("is the first thing enforceQualityExportGate does", () => {
     const src = SRC();

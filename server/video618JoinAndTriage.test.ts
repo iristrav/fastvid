@@ -160,9 +160,17 @@ describe("Video 618 (4) — the pool's look on the route that runs without a poo
     expect(look).toHaveBeenCalledTimes(5);
   });
 
-  it("real footage the look says does not serve this sentence is not downloaded", async () => {
-    const look = vi.fn(async () => ({ footageType: "real_footage", servesBeats: [] as number[] }));
-    expect(await youtubeRowsWithoutNonFootage([row("eeeeeeeeee1", "a street")], beat, 0, look)).toEqual([]);
+  /**
+   * ONE ROUTE — the look's "does not serve this sentence" ranks the row after the ones that do; it is
+   * no longer a refusal. Whether the picture fits is the VisualJudge's answer on the frames.
+   */
+  it("real footage the look says does not serve this sentence is ranked after the rows that do", async () => {
+    const look = vi.fn(async (item: { videoId: string }) => ({
+      footageType: "real_footage",
+      servesBeats: item.videoId === "eeeeeeeeee2" ? [0] : ([] as number[]),
+    }));
+    const kept = await youtubeRowsWithoutNonFootage([row("eeeeeeeeee1", "a street"), row("eeeeeeeeee2", "the square")], beat, 0, look);
+    expect(kept.map((r) => r.item.id?.videoId)).toEqual(["eeeeeeeeee2", "eeeeeeeeee1"]);
   });
 
   it("the same video is looked at once per process, whichever beat asks", async () => {

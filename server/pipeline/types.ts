@@ -143,7 +143,6 @@ export type MediaSearchRequest = {
   usedAssetIds: Set<number>;
   usedStorageUrls: Set<string>;
   videoTitle?: string;
-  varietySeed?: number;
   videoLength?: string | null;
 };
 export type MediaSearchResult = { candidates: CuratedCandidatePick[] };

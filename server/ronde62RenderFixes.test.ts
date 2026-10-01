@@ -57,7 +57,7 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
   it("it is wired at the single acceptance point every non-funnel route passes through", () => {
     const src = PIPELINE();
     // Three call sites share that line; the adoption path is the one preceded by the gate.
-    const accept = src.indexOf("dedup.usedPaths.add(p);", src.indexOf("async function adoptClip("));
+    const accept = src.indexOf("markAssetUsedInVideo(dedup, {", src.indexOf("async function adoptClip("));
     expect(accept).toBeGreaterThan(-1);
     /**
      * The gate runs BEFORE the clip is marked used, so a refusal costs it its place.

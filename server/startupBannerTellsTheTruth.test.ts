@@ -122,7 +122,9 @@ describe("the pipeline banner reports the cinematic flags", () => {
     const line = src.slice(at, at + 900);
     expect(line).toContain("cinematicPlans");
     expect(line).toContain("cinematicDelivers");
-    expect(src).toContain("cinematicPlanningEnabled, cinematicRenderPathEnabled");
+    /** ONE ROUTE: the render-path flag is read from config.ts; planning still from its own module. */
+    expect(src).toContain('const { cinematicPlanningEnabled } = await import("../cinematicProduction");');
+    expect(src).toContain('const { cinematicRenderPathEnabled } = await import("../config");');
   });
 
   /**
@@ -148,7 +150,7 @@ describe("the pipeline banner reports the cinematic flags", () => {
    */
   it("loads the flags without dragging the editing chain into boot", () => {
     const src = banner();
-    expect(src).toContain('await import(\n    "../cinematicProduction"\n  )');
+    expect(src).toContain('await import("../cinematicProduction")');
     expect(src, "a static import would pull the editing chain into the web process").not.toContain(
       'from "../cinematicProduction"'
     );

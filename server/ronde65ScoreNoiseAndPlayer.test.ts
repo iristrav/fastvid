@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { pickBestFunnelCandidate } from "./retrievalFunnel";
+
 import { clipSimToScore } from "./localClipVision";
 import { fetchYoutubeVideoContext, _resetYoutubeVideoContextCache } from "./youtubeVideoContext";
 
@@ -26,13 +26,6 @@ afterEach(() => {
   _resetYoutubeVideoContextCache();
 });
 
-const cand = (id: string, source: string, score: number) =>
-  ({
-    candidate: { id, source, title: id },
-    clipPath: `/tmp/${id}.mp4`,
-    visionResult: { pass: true, worstScore10: score },
-  }) as unknown as Parameters<typeof pickBestFunnelCandidate>[0][number];
-
 describe("RONDE 65 — the measurement that started it", () => {
   it("render 531's four similarities really do collapse to two scores", () => {
     expect(clipSimToScore(0.2226)).toBe(9); // sticker      — wrong
@@ -43,7 +36,6 @@ describe("RONDE 65 — the measurement that started it", () => {
     expect(clipSimToScore(0.2226) - clipSimToScore(0.2077)).toBe(1);
   });
 });
-
 
 describe("RONDE 65 — the player API, tried before the page", () => {
   const playerResponse = (lengthSeconds = 2400, tracks = 1) =>

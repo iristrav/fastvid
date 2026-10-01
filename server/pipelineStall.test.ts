@@ -1,10 +1,6 @@
 import { describe, expect, it, afterEach } from "vitest";
-import {
-  pipelineProgressStallRecoveryEnabled,
-  pipelineProgressStallThresholdMs,
-  pipelineMaxStallRecoveries,
-  pipelineWallClockLimitEnabled,
-} from "./sourcingPolicy";
+import { pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries } from "./sourcingPolicy";
+import { pipelineWallClockLimitEnabled } from "./config";
 
 describe("pipelineProgressStall", () => {
   afterEach(() => {

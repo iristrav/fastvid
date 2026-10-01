@@ -1,22 +1,8 @@
 import { readFileSync } from "fs";
 import path from "path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-/**
- * The one-minute length no longer takes a different path by default — see
- * `isFastShortVideoLength`. The fast-short tuning still EXISTS and is still what this file is
- * about, so these tests enable it explicitly rather than being loosened: the behaviour is
- * unchanged, only its default is.
- */
-beforeEach(() => { vi.stubEnv("FAST_SHORT_PATH", "true"); });
-afterEach(() => { vi.unstubAllEnvs(); });
-
-import {
-  isFastShortVideoLength,
-  pipelineEmergencyFinishMs,
-  pipelineRushModeMs,
-  
-} from "./sourcingPolicy";
+import { pipelineEmergencyFinishMs, pipelineRushModeMs } from "./sourcingPolicy";
 
 // RONDE 8 — the residual defects renders 517/518 proved after RONDE 5-7:
 //
@@ -36,13 +22,9 @@ const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8
 
 // ─── 8A: sourcing-ladder thresholds for the 1-min fast path ──────────────────────────────────
 
-describe("RONDE 8A — fast-short sourcing ladder widened to 5/7/9 minutes", () => {
-  it("sanity: '1' is the fast-short video length", () => {
-    expect(isFastShortVideoLength("1")).toBe(true);
-    expect(isFastShortVideoLength("8-10")).toBe(false);
-  });
+describe("RONDE 8A — one-minute sourcing ladder at 5/7/9 minutes", () => {
 
-  it("emergency finish is 9 minutes on the fast-short path", () => {
+  it("emergency finish for a one-minute video is 9 minutes", () => {
     expect(pipelineEmergencyFinishMs("1")).toBe(9 * 60_000);
   });
 });

@@ -31,47 +31,56 @@
  *
  * ── What this module is ──────────────────────────────────────────────────────────────────────
  *
- * A reader and a writer over the sets that already exist. It stores nothing, owns nothing, and
- * replaces nothing: `used()` asks all of them and says which one matched, `mark()` writes to all
- * of them so no route can record a picture under one identity and miss another.
+ * ONE ROUTE — the one owner of "has this video already used this picture?". The asset identities
+ * (path, content key, archive row, stored file, provider id) and the segment identity (which
+ * seconds of a source) are written only by `markAssetUsedInVideo` and asked only through
+ * `assetUsedInVideo`, so no route can record a picture under one identity and miss another.
+ * Usage DIVERSITY — preferring what was used less — is a different question, owned by
+ * `usageDiversity.ts`.
  */
 
 /** Every identity one picture can be known by. All optional — a route supplies what it has. */
 export type AssetIdentity = {
+  /** The local file. The cheapest identity, and the weakest: a copy has another path. */
+  path?: string | null;
+  /** `clipContentKey(path)` — the identity the adopt point already dedups on. */
+  contentKey?: string | null;
   /** Curated archive row id. */
   archiveAssetId?: number | null;
+  /** The stored file behind an archive row; two rows can share one. */
+  storageUrl?: string | null;
   /** Provider name, e.g. "wikimedia". Meaningful only with providerAssetId. */
   provider?: string | null;
   providerAssetId?: string | null;
-  /** `clipContentKey(path)` — the identity the adopt point already dedups on. */
-  contentKey?: string | null;
-  /** The stored file behind an archive row; two rows can share one. */
-  storageUrl?: string | null;
-  /** `archive:123` / a pool candidate id. */
-  funnelCandidateId?: string | null;
 };
 
 /**
- * The render-wide sets, as the caller already holds them.
+ * ONE ROUTE — the render-wide sets, as the caller already holds them. This module is their one
+ * writer (`markAssetUsedInVideo`) and their one reader (`assetUsedInVideo`).
+ *
+ * A provider identity is stored in `usedContentKeys`, in the `provider:hash` form clipContentKey
+ * recovers from a downloaded file's name — the one set the suppliers' own pre-download check
+ * (`providerAssetAlreadyUsed`) reads. The separate provider/funnel/fingerprint sets that used to
+ * sit beside it had no writer left and are gone.
  *
  * Structural typing on purpose: `VisualDedupState` satisfies this without importing anything from
  * videoPipeline, which must not become a dependency of a module videoPipeline imports.
  */
 export type UsedAssetSets = {
+  usedPaths: Set<string>;
   usedContentKeys: Set<string>;
   usedCuratedAssetIds: Set<number>;
   usedCuratedStorageUrls: Set<string>;
-  usedProviderKeys: Set<string>;
-  usedFunnelCandidateIds: Set<string>;
 };
 
 /** Which identity matched, so a log line can say WHY rather than only that it was a duplicate. */
 export type DedupMatch =
+  | "path"
   | "archive_asset_id"
   | "provider_asset_id"
   | "content_key"
-  | "storage_url"
-  | "funnel_candidate_id";
+  | "segment_overlap"
+  | "storage_url";
 
 import { createHash } from "crypto";
 
@@ -131,20 +140,88 @@ function providerKey(provider: string, id: string): string {
  * Record every identity this picture has, so no later route can miss one.
  *
  * Writing all of them from one place is the whole point: the leak this fixes was a route that
- * wrote one identity and left the other four empty.
+ * wrote one identity and left the others empty.
  */
 export function markAssetUsedInVideo(sets: UsedAssetSets, identity: AssetIdentity): void {
-  const { archiveAssetId, provider, providerAssetId, contentKey, storageUrl, funnelCandidateId } =
-    identity;
+  const { path, contentKey, archiveAssetId, storageUrl, provider, providerAssetId } = identity;
+  const key = contentKey?.trim();
+  if (path?.trim()) sets.usedPaths.add(path);
+  if (key) sets.usedContentKeys.add(key);
   if (archiveAssetId != null && Number.isInteger(archiveAssetId)) {
     sets.usedCuratedAssetIds.add(archiveAssetId);
   }
-  if (provider?.trim() && providerAssetId?.trim()) {
-    sets.usedProviderKeys.add(providerKey(provider, providerAssetId));
-  }
-  if (contentKey?.trim()) sets.usedContentKeys.add(contentKey.trim());
   if (storageUrl?.trim()) sets.usedCuratedStorageUrls.add(storageUrl.trim());
-  if (funnelCandidateId?.trim()) sets.usedFunnelCandidateIds.add(funnelCandidateId.trim());
+  if (provider?.trim() && providerAssetId?.trim()) {
+    sets.usedContentKeys.add(providerKey(provider, providerAssetId));
+  }
+}
+
+/**
+ * Has this video already used this picture — under ANY identity it has? null when not; otherwise
+ * which identity matched. Asking counts nothing: the caller counts a duplicate it actually refuses
+ * (`noteDuplicateAttempt`), because a beat may still claim the mark its own adoption just wrote.
+ *
+ * The segment rule is part of the question: a YouTube fragment whose seconds overlap a fragment
+ * this video already used is the same picture, whatever its file is called.
+ */
+export function assetUsedInVideo(sets: UsedAssetSets, identity: AssetIdentity): DedupMatch | null {
+  const { path, contentKey, archiveAssetId, storageUrl, provider, providerAssetId } = identity;
+  if (path && sets.usedPaths.has(path)) return "path";
+  const key = contentKey?.trim();
+  if (key && sets.usedContentKeys.has(key)) return "content_key";
+  if (archiveAssetId != null && sets.usedCuratedAssetIds.has(archiveAssetId)) return "archive_asset_id";
+  if (storageUrl?.trim() && sets.usedCuratedStorageUrls.has(storageUrl.trim())) return "storage_url";
+  if (provider?.trim() && providerAssetId?.trim() && sets.usedContentKeys.has(providerKey(provider, providerAssetId))) {
+    return "provider_asset_id";
+  }
+  if (key && youtubeFragmentSecondsUsed(sets.usedContentKeys, key)) return "segment_overlap";
+  return null;
+}
+
+/* ═══════════════════════ segment identity: the seconds of a source ═══════════════════════ */
+
+/** Two fragments of one YouTube source that overlap by more than this are the same picture. */
+export const YOUTUBE_SECONDS_OVERLAP_TOLERANCE_SEC = 0.25;
+
+const FRAGMENT_KEY_RE = /^(youtube_cc:[0-9a-f]{16})@t(\d+)d(\d+)$/;
+
+/** Would seconds [start, start+duration) of this YouTube video repeat seconds already used? */
+export function youtubeSecondsAlreadyUsed(
+  usedKeys: ReadonlySet<string> | undefined,
+  videoId: string,
+  startSec: number,
+  durationSec: number
+): boolean {
+  if (!videoId) return false;
+  return secondsOverlapUsed(usedKeys, providerKey("youtube_cc", videoId), startSec, startSec + durationSec);
+}
+
+/** The same question for a fragment key (`youtube_cc:<hash>@t<start>d<dur>`), excluding itself. */
+export function youtubeFragmentSecondsUsed(usedKeys: ReadonlySet<string> | undefined, fragmentKey: string): boolean {
+  const m = FRAGMENT_KEY_RE.exec(fragmentKey);
+  if (!m) return false;
+  const startSec = Number(m[2]) / 10;
+  return secondsOverlapUsed(usedKeys, m[1]!, startSec, startSec + Number(m[3]) / 10, fragmentKey);
+}
+
+function secondsOverlapUsed(
+  usedKeys: ReadonlySet<string> | undefined,
+  videoKey: string,
+  startSec: number,
+  endSec: number,
+  exceptKey?: string
+): boolean {
+  if (!usedKeys?.size) return false;
+  if (usedKeys.has(videoKey)) return true;
+  for (const k of usedKeys) {
+    if (k === exceptKey || !k.startsWith(`${videoKey}@t`)) continue;
+    const m = /@t(\d+)d(\d+)$/.exec(k);
+    if (!m) continue;
+    const s = Number(m[1]) / 10;
+    const e = s + Number(m[2]) / 10;
+    if (Math.min(endSec, e) - Math.max(startSec, s) > YOUTUBE_SECONDS_OVERLAP_TOLERANCE_SEC) return true;
+  }
+  return false;
 }
 
 /* ═══════════════════════ counting, so the next render can be compared ═══════════════════════ */
@@ -166,11 +243,12 @@ export function createVisualDedupStats(): VisualDedupStats {
     reusedAssets: 0,
     duplicateAttempts: 0,
     byMatch: {
+      path: 0,
       archive_asset_id: 0,
       provider_asset_id: 0,
       content_key: 0,
+      segment_overlap: 0,
       storage_url: 0,
-      funnel_candidate_id: 0,
     },
   };
 }

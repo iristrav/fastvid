@@ -40,7 +40,6 @@ import {
 } from "./cinematicPipeline";
 import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./timelineValidator";
 import { repairTimelineForRender, formatTimelineRepairs } from "./timelineRepair";
-import { envFlagIsOn } from "./envFlag";
 import { formatCinematicAudio } from "./cinematicAmbient";
 import { EMPTY_MUSIC_CATALOGUE, formatCueSheet, type CurvePoint, type MusicCatalogue } from "./musicDirector";
 import { productionMusicCatalogue } from "./freesoundMusicCatalogue";
@@ -60,8 +59,9 @@ import type { TtsWordTiming } from "./voiceTtsAlignment";
  */
 import { formatYoutubeReadiness } from "./sourcingPolicy";
 import { aiDirectorEnabled } from "./aiDirector/featureFlags";
-import { searchGateStrict } from "./searchQueryContract";
+
 import { formatTextDirection } from "./onScreenTextDirector";
+import { cinematicRenderPathEnabled, searchGateStrict } from "./config";
 
 /* ═══════════════════════ §19/§20 — the two switches ═══════════════════════ */
 
@@ -74,43 +74,6 @@ import { formatTextDirection } from "./onScreenTextDirector";
  */
 export function cinematicPlanningEnabled(): boolean {
   return cinematicRouteEnabled();
-}
-
-/**
- * Should the cinematic timeline PRODUCE the delivered video?
- *
- * A second switch beside the editing engine. Since RONDE 661 the timeline is the only render path,
- * so with this off a render is refused at the start of its outputs rather than falling back.
- *
- * ── RONDE 124 — THE ONE FLAG THAT DECIDES WHAT THE VIEWER GETS WAS READ TWO WAYS ────────────
- *
- * This was `process.env.CINEMATIC_RENDER_PATH === "true"`, a bare comparison, while
- * `productionPreflight` reads the SAME variable through `envFlagIsOn`, which trims and lowercases.
- * So a worker with `CINEMATIC_RENDER_PATH=TRUE`, or with a trailing space after the value, gets:
- *
- *     [Preflight]  ON   CINEMATIC_RENDER_PATH
- *     [RenderJob]  route=legacy_compose RENDER_FALLBACK_USED
- *                  reason=CINEMATIC_RENDER_PATH is not enabled
- *
- * — the preflight reporting the route the pipeline is not taking, about a variable the operator
- * has set. That is not a hypothetical: `envFlag.ts`'s own header records exactly this contradiction
- * from render 569's log, on `ENABLE_YOUTUBE_SOURCING`, and RONDE 18 established the tolerant
- * reading as the rule for every deployment flag. This was one of the last places still on the
- * strict form, and it happened to be the switch that decides whether the delivered MP4 is the
- * cinematic film or the compose montage.
- *
- * Renders 568, 571 and 572 all printed `reason=CINEMATIC_RENDER_PATH is not enabled` after the
- * operator reported setting it on the worker. This is a candidate explanation for that and NOT a
- * proven one — a variable set on the wrong service produces the identical line, and this sandbox
- * cannot read the worker's environment. What is proven is that two readers of one flag disagreed,
- * and they no longer can.
- *
- * NOTHING IS LOOSENED. The flag stays opt-in and off by default; `false`, `0`, an empty value and
- * an unset variable are all still off. What changed is only that the operator's `TRUE` now means
- * what the operator meant, in the same way it already did everywhere else.
- */
-export function cinematicRenderPathEnabled(): boolean {
-  return envFlagIsOn("CINEMATIC_RENDER_PATH");
 }
 
 /**

@@ -248,9 +248,9 @@ describe("Test 13/17 — candidate pool stays bounded, no new unbounded download
 });
 
 describe("Test 14 — existing provider gating stays active", () => {
-  it("fetchBeatAuthenticStills still gates SerpAPI behind the same SERPAPI_KEY/historicalDoc/fastStockMode conditions as before", () => {
+  it("fetchBeatAuthenticStills still gates SerpAPI behind SERPAPI_KEY", () => {
     const src = extractFunctionSource("fetchBeatAuthenticStills");
-    expect(src).toContain("SERPAPI_KEY && (historicalDoc || !dedup.perf.fastStockMode)");
+    expect(src).toContain("const trySerp = Boolean(SERPAPI_KEY);");
   });
 });
 

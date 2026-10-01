@@ -107,7 +107,6 @@ describe("§1 — a window handed to a turn is never below what a turn needs", (
     try {
       for (const mode of [true, false]) {
         /** The default configuration. */
-        delete process.env.YOUTUBE_ONLY_SOURCING;
         delete process.env.REAL_FOOTAGE_FIRST;
         expect(youtubeBeatFetchTimeoutMs(mode)).toBeGreaterThanOrEqual(YOUTUBE_TURN_WINDOW_MS);
 
@@ -122,7 +121,6 @@ describe("§1 — a window handed to a turn is never below what a turn needs", (
          * The operator trap: `YOUTUBE_BEAT_BUDGET_MS` accepts 15_000, which switched YouTube off
          * through a setting whose name says nothing about switching YouTube off.
          */
-        process.env.YOUTUBE_ONLY_SOURCING = "true";
         process.env.ENABLE_YOUTUBE_SOURCING = "true";
         process.env.YOUTUBE_BEAT_BUDGET_MS = "15000";
         expect(youtubeBeatFetchTimeoutMs(mode)).toBeGreaterThanOrEqual(YOUTUBE_TURN_WINDOW_MS);
@@ -135,14 +133,11 @@ describe("§1 — a window handed to a turn is never below what a turn needs", (
   it("a window that could already pay is untouched — this is a floor, not a raise", () => {
     const saved = { ...process.env };
     try {
-      delete process.env.YOUTUBE_ONLY_SOURCING;
       delete process.env.REAL_FOOTAGE_FIRST; // REAL_FOOTAGE_FIRST defaults ON
-      /** 55s on Railway, 70s elsewhere, and 80s for the non-fast default: all above the floor. */
-      expect(youtubeBeatFetchTimeoutMs(true)).toBeGreaterThanOrEqual(55_000);
-      expect(youtubeBeatFetchTimeoutMs(false)).toBeGreaterThanOrEqual(55_000);
+      /** 55s on Railway, 70s elsewhere, and 80s by default: all above the floor. */
+      expect(youtubeBeatFetchTimeoutMs()).toBeGreaterThanOrEqual(55_000);
       /** The asks themselves are the ones that were always there. */
       expect(PIPELINE).toContain("if (realFootageFirstEnabled()) return IS_RAILWAY ? 55_000 : 70_000;");
-      expect(PIPELINE).toContain("if (fastStockMode) return IS_RAILWAY ? 22_000 : 35_000;");
       expect(PIPELINE).toContain("return 80_000;");
     } finally {
       process.env = saved;
@@ -169,7 +164,7 @@ describe("§2 — a turn opened three scopes deep still has a window", () => {
               async () => {
                 innermost = remainingScopeMs();
               },
-              youtubeBeatFetchTimeoutMs(true),
+              youtubeBeatFetchTimeoutMs(),
               "the turn"
             );
           },

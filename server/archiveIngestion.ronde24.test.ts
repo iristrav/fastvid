@@ -58,9 +58,10 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
   it("checks for baked-in text before admitting the clip", () => {
     /**
      * RONDE 222 re-anchor: ingestion asks for the VERDICT now, not the collapsed boolean. VIDEO 621:
-     * through the archive's own check, which the render's budget can no longer skip.
+     * through the VisualJudge's on-screen-text question with a memo key and no budget, so the
+     * render's budget can never skip it.
      */
-    expect(fn).toContain("archiveClipTextVerdict(");
+    expect(fn).toContain("judgeOnScreenText({");
     expect(fn).toContain("localPath");
     expect(fn).toContain("baked-in on-screen text");
   });
@@ -142,7 +143,7 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
   });
 
   it("runs before the upload and the DB insert, so nothing is stored for a rejected clip", () => {
-    const guardAt = fn.indexOf("archiveClipTextVerdict(");
+    const guardAt = fn.indexOf("judgeOnScreenText({");
     const uploadAt = fn.indexOf("storagePut(");
     expect(guardAt).toBeGreaterThan(-1);
     expect(uploadAt).toBeGreaterThan(-1);
@@ -158,7 +159,7 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
      * re-analysed, which is what RONDE 24 was protecting; what it may no longer do is record a
      * clearance that nobody issued.
      */
-    expect(ingestionSrc).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : overlay.verdict === "has_text" ? 1 : null,`);
+    expect(ingestionSrc).toContain(`hasBakedEditText: hasText ? 1 : overlay?.evaluated ? 0 : null,`);
     expect(ingestionSrc, "a clip nobody judged is stored as cleared again").not.toContain(
       "hasBakedEditText: 0,"
     );

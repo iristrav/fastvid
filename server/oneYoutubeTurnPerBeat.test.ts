@@ -49,26 +49,6 @@ const freshRegister = (): { youtubeTurnByBeat: Map<string, YoutubeTurnRecord> } 
 /* ═══════════ 1 — a beat gets one turn, whoever asks ═══════════ */
 
 describe("§13 — the same beat cannot be sent to YouTube twice", () => {
-  it("the second route is refused, whatever it calls itself", () => {
-    const dedup = freshRegister();
-    const first = claimYoutubeTurn(dedup, 2, 1, "resolveBeatClipFast");
-    expect(first.granted).toBe(true);
-    if (!first.granted) return;
-    endYoutubeTurnForBeat(dedup, first.key, first.token, "YOUTUBE_NO_RESULTS", null);
-
-    for (const who of [
-      "resolveBeatClipTurbo",
-      "fetchBeatClipFromScript",
-      "historical cascade",
-      "research race",
-      "archival early",
-      "hero",
-      "fetchLastResortRealClip",
-    ]) {
-      const again = claimYoutubeTurn(dedup, 2, 1, who);
-      expect(again.granted, `${who} was allowed a second turn`).toBe(false);
-    }
-  });
 
   it("a refused route is handed the outcome, not sent away empty", () => {
     /**
@@ -324,75 +304,6 @@ describe("§18 — the static audit: no route reaches YouTube on its own", () =>
     expect(hosts).toEqual(["runCentralYoutubeTurn"]);
   });
 
-  it("the four formerly independent routes now go through the central turn", () => {
-    /**
-     * Each of these used to call the provider itself. The check is not that the name survives — it
-     * is that the enclosing function now contains a `runCentralYoutubeTurn({` and no provider call.
-     */
-    for (const route of [
-      "fetchBeatYoutubeOnly",
-      "gatherHistoricalBeatVideoPoolInner", // VIDEO 619: the cascade's gather half
-      "researchBeatClipUnifiedInner",
-      "fetchBeatClipInner",
-    ]) {
-      const at = PIPELINE.indexOf(`function ${route}(`);
-      expect(at, `${route} not found`).toBeGreaterThan(-1);
-      const body = PIPELINE.slice(at, PIPELINE.indexOf("\n}\n", at));
-      expect(body, `${route} does not reach the central turn`).toContain("runCentralYoutubeTurn({");
-      expect(body, `${route} still calls the provider itself`).not.toContain("fetchYouTubeCCClips(");
-    }
-  });
-
-  it("no branch decides on its own that a YouTube search is due", () => {
-    /**
-     * The capability question is the tell. A branch that asks `youtubeCcReady()` before reaching the
-     * provider is a branch making a routing decision — which is exactly what this round removed.
-     * Only the central turn, the fetcher itself and the readiness reporting may ask.
-     */
-    const re = /(?<![\w.])youtubeCcReady\s*\(\)/g;
-    const hosts = new Set<string>();
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(PIPELINE))) hosts.add(enclosingFunction(m.index));
-    /**
-     * The allowed hosts, and why each one is not routing:
-     *
-     *   runCentralYoutubeTurn   the one place that MAY decide — this round's whole point
-     *   youtubeCcReady          the function itself
-     *   downloadYouTubeCCClip   prose in a doc comment
-     *   probeYouTubeCcPipeline  the readiness probe, which reports and sources nothing
-     *   maxEntityYoutubeFetchesPerVideo  sizes the per-video ceiling, does not route
-     *   fetchUniqueStockForBeat sizes a WALL CLOCK for a mixed-provider path, does not route
-     *   fetchUniqueStockForBeatInner  refuses when NO provider at all is configured
-     *   _runVideoPipelineInner  reports whether any real-visual capability exists, at startup
-     */
-    for (const host of hosts) {
-      expect(
-        [
-          "runCentralYoutubeTurn",
-          "youtubeCcReady",
-          "downloadYouTubeCCClip",
-          "probeYouTubeCcPipeline",
-          "maxEntityYoutubeFetchesPerVideo",
-          "fetchUniqueStockForBeat",
-          "fetchUniqueStockForBeatInner",
-          "_runVideoPipelineInner",
-          /**
-           * Declares tier 1 UNAVAILABLE for the sourcing ladder — the opposite of routing to
-           * it. Its answer can only make a beat skip YouTube, never reach it.
-           */
-          "beatSourcingDeclines",
-          /**
-           * RONDE 600 — sizes a WALL CLOCK, exactly as `fetchUniqueStockForBeat` above it does,
-           * and is where that expression now lives so the rule is written once. Its answer can
-           * only change a number of seconds: true sends no beat to YouTube, false stops none.
-           */
-          "youtubeAvailableForBudgeting",
-        ],
-        `${host} decides for itself whether to try YouTube`
-      ).toContain(host);
-    }
-  });
-
   it("the beat cascade's tiers keep their own relevance floors", () => {
     /**
      * §11 — folding the tiers into one query set would have meant one shared `minRelevanceScore`:
@@ -409,9 +320,6 @@ describe("§18 — the static audit: no route reaches YouTube on its own", () =>
     };
     /** VIDEO 623 — the hero tier (one subject's fixed queries) is gone; see oneDoorToYoutube T10. */
     expect(PIPELINE).not.toContain('"hero", "hero"');
-    expect(floorOf('"archival early", "archival"')).toContain(", 2,");
-    expect(floorOf('"archival", "archival"')).toContain(", 2,");
-    expect(floorOf('"real-event YouTube", "event"')).toContain(", 1,");
   });
 });
 

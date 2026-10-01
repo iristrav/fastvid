@@ -1,19 +1,9 @@
 import fs from "fs";
 import path from "path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-/**
- * The one-minute length no longer takes a different path by default — see
- * `isFastShortVideoLength`. The fast-short tuning still EXISTS and is still what this file is
- * about, so these tests enable it explicitly rather than being loosened: the behaviour is
- * unchanged, only its default is.
- */
-beforeEach(() => { vi.stubEnv("FAST_SHORT_PATH", "true"); });
-afterEach(() => { vi.unstubAllEnvs(); });
+import { describe, expect, it } from "vitest";
 
 import { computeRenderBudget } from "./renderBudget";
 import {
-  isFastShortVideoLength,
   maxPipelineWallClockHardMin,
   maxPipelineWallClockMin,
   pipelineEmergencyFinishMs,
@@ -201,7 +191,7 @@ describe("RONDE 81 §D — a chunk deadline is never below what its scenes may t
     for (const len of LENGTHS) {
       const scenes = scenesFor(len);
       const chunks = groupScenesIntoChunks(scenes, 60);
-      const total = isFastShortVideoLength(len) ? 20 * 60_000 : Math.round(90 * 60_000 * 1.15);
+      const total = Math.round(90 * 60_000 * 1.15);
       for (const c of chunks) {
         const size = c.end - c.start;
         const deadline = chunkStageTimeoutMs(total, size, scenes.length, 20_000, perSceneVisual[len]);
@@ -213,12 +203,10 @@ describe("RONDE 81 §D — a chunk deadline is never below what its scenes may t
   it("the compose chunk deadline covers a slot that may compose the scene twice", () => {
     for (const len of LENGTHS) {
       const b = budgetFor(len);
-      const slot = isFastShortVideoLength(len)
-        ? Math.round(b.basePerSceneComposeMs * 1.5)
-        : Math.round(b.basePerSceneComposeMs * 3);
+      const slot = Math.round(b.basePerSceneComposeMs * 3);
       const scenes = scenesFor(len);
       const chunks = groupScenesIntoChunks(scenes, 60);
-      const total = isFastShortVideoLength(len) ? 9 * 60_000 : 2_400_000;
+      const total = 2_400_000;
       for (const c of chunks) {
         const size = c.end - c.start;
         const deadline = chunkStageTimeoutMs(total, size, scenes.length, 20_000, slot);
@@ -265,8 +253,9 @@ describe("RONDE 81 §J — the sync-audit remontage", () => {
   it("the declared worst case actually covers two composes", () => {
     for (const len of LENGTHS) {
       const compose = budgetFor(len).basePerSceneComposeMs;
-      const slot = isFastShortVideoLength(len) ? compose * 1.5 : compose * 3;
-      if (!isFastShortVideoLength(len)) expect(slot, len).toBeGreaterThanOrEqual(compose * 2);
+      const slot = compose * 3;
+      expect(slot, len).toBeGreaterThanOrEqual(compose * 2);
+
     }
   });
 });

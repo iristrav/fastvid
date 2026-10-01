@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
-import { hasKnownBakedEditText } from "./curatedMediaSourcing";
+import { hasKnownBakedEditText } from "./visualJudge";
 
 // RONDE 22 — renders 526/527 logged 255 of these across only 10 distinct assets:
 //
@@ -37,9 +37,12 @@ describe("RONDE 22 — hasKnownBakedEditText", () => {
 });
 
 describe("RONDE 22 — every candidate loop honors the filter", () => {
-  it("applies it in all three loops", () => {
+  it("applies it in every candidate loop", () => {
+    /** ONE ROUTE — the third loop was the exhausted-reuse pool, which is gone; every loop left filters. */
     const hits = src.match(/hasKnownBakedEditText\(asset\)\) continue/g) ?? [];
-    expect(hits).toHaveLength(3);
+    const loops = src.split("for (const asset of assets)").length - 1;
+    expect(loops).toBe(2);
+    expect(hits).toHaveLength(loops);
   });
 
   it("filters before scoring, not after selection", () => {
@@ -58,7 +61,7 @@ describe("RONDE 22 — every candidate loop honors the filter", () => {
     // been checked must still be caught (and have its verdict cached) when it is adopted.
     expect(src).toContain("has baked edit text — skipped");
     /** VIDEO 626 — through the verdict, so a check that could not look is not cached as clean. */
-    expect(src).toContain("const text = await archiveClipBakedEditTextVerdict(rawPath, asset.mimeType);");
-    expect(src).toContain("if (text.verdict === \"not_asked\") {");
+    expect(src).toContain("const text = await judgeOnScreenText({ path: rawPath, mimeType: asset.mimeType });");
+    expect(src).toContain("if (text.evaluated === false) {");
   });
 });

@@ -1,11 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  buildEmergencyGeoStockQueries,
-  enforceQualityExportGate,
-  healQualityReportForExport,
-} from "./pipelineSelfHeal";
-import { isArchiveGeoBlockedForBeat } from "./curatedMediaSourcing";
+import { buildEmergencyGeoStockQueries, healQualityReportForExport } from "./pipelineSelfHeal";
 import { buildVideoQualityReport, qualityStatusCeiling } from "./videoQualityReport";
+import { judgeArchiveAsset, judgeArchiveAssetCountry } from "./visualJudge";
+import { enforceQualityExportGate } from "./deliveryGate";
+
+/** The archive judge's yes/no, in the shape these cases were written against. */
+const assetPassesBeatMinimum = (
+  asset: Parameters<typeof judgeArchiveAsset>[0]["asset"],
+  beatText: string,
+  score: number,
+  topScore: number,
+  semantic?: Parameters<typeof judgeArchiveAsset>[0]["semantic"],
+  videoVisualTopic?: Parameters<typeof judgeArchiveAsset>[0]["videoVisualTopic"],
+  segmentLock?: Parameters<typeof judgeArchiveAsset>[0]["segmentLock"],
+  literalVisualTags?: string[],
+  videoTitle?: string
+): boolean =>
+  judgeArchiveAsset({ asset, beatText, score, topScore, semantic, videoVisualTopic, segmentLock, literalVisualTags, videoTitle })
+    .decision === "ACCEPT";
+const isArchiveGeoBlockedForBeat = (
+  asset: Parameters<typeof judgeArchiveAssetCountry>[0],
+  beatText: string,
+  videoTitle?: string,
+  segmentLock?: Parameters<typeof judgeArchiveAssetCountry>[3]
+): boolean => judgeArchiveAssetCountry(asset, beatText, videoTitle, segmentLock).decision === "REJECT";
 
 describe("pipelineSelfHeal", () => {
 

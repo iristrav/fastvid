@@ -109,14 +109,7 @@ describe("4. nothing here raises what a route may fetch", () => {
    *
    * What is pinned here is only that the two stock routes which already asked for more still do.
    */
-  it("the last-resort stock routes still ask for the two they were asking for", () => {
-    const at = CODE.indexOf("const stockTryCap");
-    expect(at).toBeGreaterThan(-1);
-    const block = CODE.slice(at, at + 1400);
-    expect([...block.matchAll(/sceneIndex,\s*2\s*,/g)].length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("and the per-beat shortlist cap is unchanged", () => {
+    it("and the per-beat shortlist cap is unchanged", () => {
     const shortlist = readFileSync(path.join(__dirname, "beatShortlist.ts"), "utf8");
     expect(shortlist).toContain("export function maxShortlistPerBeat(): number {");
     expect(CODE).not.toContain("MAX_VISION_REVIEW_CANDIDATES = 16");

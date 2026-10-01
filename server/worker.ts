@@ -245,6 +245,11 @@ async function main() {
   }, 60_000);
   const { getStorageBackend } = await import("./storageBackend");
   console.log("[Worker] Object storage:", getStorageBackend());
+  /** ONE ROUTE — the operator's settings, from `config.ts`: SET or MISSING, never a value. */
+  {
+    const { formatConfigPresence } = await import("./config");
+    for (const line of formatConfigPresence()) console.log(line);
+  }
   await runMigrations();
   await recoverAllStuckVideos(() => { /* nudge happens after startVideoQueueWorker below */ });
   // A render killed from outside the process (redeploy, OOM, crash) never reaches its own

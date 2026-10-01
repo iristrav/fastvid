@@ -46,6 +46,7 @@
  * unmeasurable file passes exactly as it did before this module existed. That is the same rule
  * prepareCuratedArchiveClip has always used (`width > 0 && width < MIN`), preserved verbatim.
  */
+import * as fs from "fs";
 import { VIDRUSH_MIN_STILL_WIDTH } from "./vidrushQuality";
 
 /**
@@ -297,4 +298,48 @@ export function formatTechnicalReject(params: {
     `actual=${params.verdict.actual} required=${params.verdict.required} ` +
     `detail=${params.verdict.detail}`
   );
+}
+
+/* ═══════════════════════ ONE ROUTE — the file checks every adopted candidate passes ═══════════════════════ */
+
+/**
+ * The smallest file a candidate may be. Render 610's YouTube trace refused `btHJYt5YE9s` (168 512
+ * bytes) on every one of nine downloads here: below this, a "clip" is a truncated download or a
+ * placeholder, never a shot.
+ */
+export const ADOPT_MIN_FILE_BYTES = 180_000;
+
+/**
+ * The checks that need only the file system — asked first, before anything is spawned, so a
+ * missing or truncated file never costs an ffprobe.
+ */
+export function technicalFileRefusal(filePath: string): string | null {
+  let size: number;
+  try {
+    size = fs.statSync(filePath).size;
+  } catch {
+    return "file_missing";
+  }
+  if (size < ADOPT_MIN_FILE_BYTES) return `below_size_floor_${size}_bytes`;
+  return null;
+}
+
+/**
+ * The measuring is the caller's (see the note at the top of this module: each route probes with
+ * the wrapper it already has, inside its own semaphore and cancellation check). The RULE — which
+ * checks, in which order, refused under which name — is this module's.
+ */
+export type MediaProbes = {
+  isValidVideo(filePath: string): Promise<boolean>;
+  /** Our own drawn placeholder: not a source picture, whatever it looks like. */
+  isPipelineFallback(filePath: string): boolean;
+  isMostlyBlack(filePath: string): Promise<boolean>;
+};
+
+/** The probed checks, cheapest first. null means the file is technically usable. */
+export async function technicalMediaRefusal(filePath: string, probes: MediaProbes): Promise<string | null> {
+  if (!(await probes.isValidVideo(filePath))) return "not_a_valid_video";
+  if (probes.isPipelineFallback(filePath)) return "pipeline_fallback";
+  if (await probes.isMostlyBlack(filePath)) return "mostly_black";
+  return null;
 }

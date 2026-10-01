@@ -38,7 +38,7 @@ import { readFileSync } from "fs";
 
 import { seedExistingProvenSceneClips, clipContentKey } from "./videoPipeline";
 import { VisualSourceLedger } from "./visualSourceLineage";
-import { createClipRejectAudit } from "./clipRejectAudit";
+import { createRejectionRegistry } from "./rejectionRegistry";
 
 const PIPELINE = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -102,7 +102,7 @@ function worldWith(
     })),
     usedContentKeys: new Set<string>(),
     usedPaths: new Set<string>(),
-    clipRejectAudit: createClipRejectAudit(),
+    rejections: createRejectionRegistry(),
     sourcingCache: { lineage, assets: new Map(), metrics: new Map(), totals: {}, providers: new Map() },
   } as never;
   return { lineage, dedup };

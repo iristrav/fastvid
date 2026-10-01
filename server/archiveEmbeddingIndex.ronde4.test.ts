@@ -341,7 +341,6 @@ describe("scoreBeatAgainstStoredEmbedding", () => {
 // ── Downstream contracts + RONDE 1/2/3 integrity ─────────────────────────────
 
 describe("downstream contracts and earlier rounds are untouched", () => {
-  const funnelSrc = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
   const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
   const poolSrc = readFileSync(path.join(__dirname, "scenePool.ts"), "utf8");
 

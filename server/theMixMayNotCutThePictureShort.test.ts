@@ -47,8 +47,6 @@ import {
   formatMuxSpan,
 } from "./timelineRenderer";
 import type { MixInput } from "./timelineFilters";
-
-const FUNNEL = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
 const PIPELINE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 const POOL = readFileSync(join(__dirname, "scenePool.ts"), "utf8");
 const RENDERER = readFileSync(join(__dirname, "timelineRenderer.ts"), "utf8");
@@ -157,17 +155,4 @@ describe("§3 — the measurement reaches the log", () => {
     const body = RENDERER.slice(at, RENDERER.indexOf("\n}", RENDERER.indexOf("return (", at)));
     expect(body, "a measurement that alters the render is not a measurement").not.toContain("args.push");
   });
-});
-
-/* ═══════════ §4 — the two providers the funnel never asked ═══════════ */
-
-describe("§4 — the funnel asks YouTube and the archive", () => {
-
-  it("the funnel holds no key and opens no client — they are injected", () => {
-    const at = FUNNEL.indexOf("export async function buildRetrievalFunnel(");
-    const body = FUNNEL.slice(at, at + 4000);
-    expect(body, "the funnel grew its own YouTube client").not.toContain("searchYoutubeVideoCandidates(");
-    expect(body, "the funnel grew its own archive selection").not.toContain("listCuratedArchiveCandidates(");
-  });
-
 });

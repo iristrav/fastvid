@@ -18,7 +18,7 @@
  *      — watermark heuristic from title/tags
  *
  *   3. Scene detection enhancement
- *      — histogram change detection (ARCHIVE_HISTOGRAM_DETECT=true)
+ *      — (histogram change detection was never called and is removed)
  *
  *   4. Near-duplicate detection
  *      — cosine similarity against recently indexed clips
@@ -1840,60 +1840,3 @@ export async function runArchiveIntelligencePipelineForAssetId(
   }
 }
 
-// ─── Scene detection enhancement: histogram-based cuts ───────────────────────
-
-/**
- * Run FFmpeg histogram-change detection on a video file.
- * Returns timestamps (in seconds) where a significant colour histogram shift occurs.
- * This is complementary to scdet + scene filter.
- *
- * Enabled via ARCHIVE_HISTOGRAM_DETECT=true.
- */
-export async function detectHistogramChangeCutTimes(
-  inputPath: string,
-  totalDur: number,
-  timeoutMs = 60_000
-): Promise<number[]> {
-  if (process.env.ARCHIVE_HISTOGRAM_DETECT !== "true") return [];
-  if (!fs.existsSync(inputPath)) return [];
-
-  try {
-    // Use the `signalstats` filter with `select` to find frames where the
-    // total signal deviation (TOUT) changes sharply — a colour histogram signal.
-    const threshold = 0.12; // fraction of pixel range change that counts as a cut
-    const { stderr } = await execPromise(
-      `${ffmpegBin()} -i "${inputPath}" ` +
-      `-vf "fps=2,signalstats=stat=tout,metadata=mode=print:file=-" -an -f null -`,
-      { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }
-    );
-
-    // Parse frame-level TOUT values and detect large jumps
-    const lines = String(stderr).split(/\r?\n/);
-    const frames: Array<{ t: number; tout: number }> = [];
-    let curTime = 0;
-
-    for (const line of lines) {
-      const timeMatch = /pts_time:([0-9.]+)/i.exec(line);
-      if (timeMatch) curTime = parseFloat(timeMatch[1]);
-
-      const toutMatch = /lavfi\.signalstats\.TOUT=([0-9.]+)/i.exec(line);
-      if (toutMatch) {
-        frames.push({ t: curTime, tout: parseFloat(toutMatch[1]) });
-      }
-    }
-
-    const cuts: number[] = [];
-    for (let i = 1; i < frames.length; i++) {
-      const prev = frames[i - 1]!;
-      const curr = frames[i]!;
-      const delta = Math.abs(curr.tout - prev.tout) / 255;
-      if (delta >= threshold && curr.t > 0.5 && curr.t < totalDur - 0.5) {
-        cuts.push(curr.t);
-      }
-    }
-
-    return cuts;
-  } catch {
-    return [];
-  }
-}

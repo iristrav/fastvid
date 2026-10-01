@@ -44,19 +44,9 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 
-import {
-  MAX_JUDGEMENTS_PER_BEAT,
-  type VisionDeclineCause,
-  BEAT_JUDGE_RULES,
-  beatImageRelevanceGateEnabled,
-  judgeBeatImage,
-  judgementTally,
-  noteJudgementSkipped,
-  type BeatImageGateState,
-  type BeatImageVerdict,
-  type BeatSubjectAnchors,
-} from "./beatImageRelevanceGate";
+import { MAX_JUDGEMENTS_PER_BEAT, type VisionDeclineCause, BEAT_JUDGE_RULES, judgeBeatImage, judgementTally, noteJudgementSkipped, type BeatImageGateState, type BeatImageVerdict, type BeatSubjectAnchors } from "./beatImageRelevanceGate";
 import { extractFrameAtFraction } from "./localClipVision";
+import { storedVisualIntentForBeat } from "./scriptVisualKeywords";
 import type { ShotType } from "./cinematicEditingEngine/types";
 /**
  * RONDE 166 — the severity vocabulary, read from the kind this decision's own words already imply.
@@ -71,6 +61,7 @@ import {
   reprieveAllowedFor,
 } from "./visualMismatchFeedback";
 import { JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
+import { beatImageRelevanceGateEnabled } from "./config";
 
 /**
  * Everything the judge needs to know about the beat a clip is being cut under.
@@ -98,6 +89,12 @@ export type BeatVisualContext = {
    * re-ask questions that were already answered.
    */
   anchors?: BeatSubjectAnchors;
+  /**
+   * ONE ROUTE — the VisualIntent plan's description of the shot planned for this line. Read from
+   * the render's plan when the caller leaves it out, so every look gets it whichever route asks.
+   * Like the anchors, not part of `beatIdentityKey`.
+   */
+  plannedVisual?: string;
 };
 
 /** What was decided about one clip on one beat. */
@@ -703,6 +700,7 @@ export async function checkBeatRelevance(
     // RONDE 175 §3: what the pipeline already established this beat is about. Absent on a caller
     // that has none, in which case the prompt prints nothing rather than an empty placeholder.
     anchors: ctx.anchors,
+    plannedVisual: ctx.plannedVisual ?? storedVisualIntentForBeat(ctx.beatText)?.visual_description,
     contentKey,
     beatIdentity: identity,
     state,
@@ -1171,7 +1169,6 @@ export function lookupBeatRelevance(
   return ledger.byClipPath.get(clipPath) ?? null;
 }
 
-
 /**
  * RONDE 103 phase 17 — the last barrier before a clip is composed into a scene.
  *
@@ -1217,49 +1214,7 @@ export function composeBarrierAllows(
    * Omitted by the four compose call sites that are handed bare paths and have no beat. They keep
    * the behaviour they had.
    */
-  beat?: { sceneIndex: number; beatIndex: number },
-  /**
-   * WHAT THIS CALLER NEEDS BEFORE THE CLIP MAY BE COMPOSED.
-   *
-   * ── What render 579 delivered ───────────────────────────────────────────────────────────────
-   *
-   *     [ProviderFunnel] provider=ww2 judged=43 fits=0 refused=39 unclear=4 accepted=0%
-   *     [ProviderFunnel] ww2 supplied 43 judged clips and NOT ONE was accepted
-   *     ww2   judged= 18 accepted= 0 refused= 18 ( 0%)  mostly=UNRELATED
-   *
-   * The editor refused every single one, and the render printed an ERROR saying so. Two of them
-   * were in the delivered film anyway, for 8.9s of a 56.9s documentary about Kylie Jenner:
-   *
-   *     [VisualFunnel] ww2 retrieved=0 eligible=89 ranked=0 selected=0 adopted=2 finalVideo=2
-   *     [RenderAsset] provider=ww2 providerAssetId=57502 scene=1 beat=1
-   *                   verdict=unknown route=backfill rendered=true
-   *
-   * `ranked=0 selected=0` with `adopted=2`: they never entered the funnel. The compose backfill
-   * took them straight out of the operator's own archive by asset id, and this function let them
-   * through — because `unknown` is not `does_not_fit`, and the line below returns `allow: true`
-   * for everything that is not an explicit no.
-   *
-   * ── The two demands ─────────────────────────────────────────────────────────────────────────
-   *
-   *   "no_refusal" (default)  Exactly what this function has always done, unchanged, for every
-   *                           existing caller: refuse a `does_not_fit` nobody reprieved.
-   *
-   *   "approval"              Also requires a POSITIVE verdict, EARNED AT THIS BEAT. Only the
-   *                           backfill routes ask for it, and only because of what they are: a
-   *                           backfill places a picture under a sentence nobody chose it for. For
-   *                           that, "nobody objected" is not a reason — an `unknown` there means
-   *                           the editor looked and could not say, and a clip the editor could not
-   *                           vouch for is exactly the one that must not fill a hole.
-   *
-   * ── Why fail-open is preserved where it matters ─────────────────────────────────────────────
-   *
-   * "A vision outage must never be able to empty a montage" is older than this function and is NOT
-   * weakened: the primary routes, the rescue paths and the extension path all keep "no_refusal".
-   * Only the last rung is strict, and the consequence of a vision outage there is a held frame
-   * instead of unrelated archive footage — which is a fault a viewer reads as a fault, rather than
-   * one they read as an editorial choice.
-   */
-  demand: "no_refusal" | "approval" = "no_refusal"
+  beat?: { sceneIndex: number; beatIndex: number }
 ): { allow: boolean; reason: string } {
   const ownVerdict = beat
     ? ledger.byBeat.get(
@@ -1276,18 +1231,6 @@ export function composeBarrierAllows(
     ledger.byClipPath.get(clipPath) ??
     (contentKey ? ledger.byContentKey.get(contentKey) : undefined);
   if (!entry) {
-    /**
-     * A backfill clip nobody judged at all. Under the default demand this is the documented pass —
-     * the barrier cannot refuse what it has never seen. Under "approval" it is the whole point.
-     */
-    if (demand === "approval") {
-      return {
-        allow: false,
-        reason: beat
-          ? `backfill needs an approval for s${beat.sceneIndex}b${beat.beatIndex} and this clip was never judged`
-          : "backfill needs an approval and this clip was never judged",
-      };
-    }
     return { allow: true, reason: "never judged — no beat context at this path" };
   }
   const d = entry.decision;
@@ -1300,66 +1243,8 @@ export function composeBarrierAllows(
         : `refused on ${beatSlotKey(entry.ctx)}`;
     return { allow: false, reason: `${where}: ${d.reason}` };
   }
-  /**
-   * A reprieve survives the stricter demand, deliberately. RONDE 200's `reprieveAllowedFor` is a
-   * decision to overrule the judge on purpose and on the record — that is a positive act about
-   * this picture, not the absence of one, which is the thing "approval" exists to require.
-   */
+  /** RONDE 200: a reprieve is a decision to overrule the judge on purpose and on the record. */
   if (d.reprieved) return { allow: true, reason: "refused but reprieved deliberately" };
-  if (demand === "approval") {
-    /**
-     * `fits` EARNED AT THIS BEAT, or nothing. The fallback lookups above find a verdict filed under
-     * the clip path or its content key from ANY beat, and an approval for one sentence is not an
-     * approval for another — that asymmetry is the same one this function's `beat` parameter was
-     * added to fix, read from the other side. `unknown` is refused here — but see below for the
-     * two very different things that word covers.
-     */
-    if (!ownVerdict) {
-      return {
-        allow: false,
-        reason: beat
-          ? `backfill needs an approval for s${beat.sceneIndex}b${beat.beatIndex}; the only verdict is ${d.verdict} on ${beatSlotKey(entry.ctx)}`
-          : `backfill needs an approval and this clip has no verdict for the beat it would fill`,
-      };
-    }
-    if (d.verdict !== "fits") {
-      /**
-       * RONDE 232 — "THE EDITOR ANSWERED UNKNOWN" WAS NOT TRUE.
-       *
-       * ── What render 581 printed, fifty times ────────────────────────────────────────────────
-       *
-       *     [BeatRelevance] s2b1: refusing to push scene_2_slot1_guaranteed.mp4 —
-       *     backfill needs an approval; the editor answered unknown on s2b1
-       *
-       * The editor answered nothing. That render's own summary:
-       *
-       *     beat image gate — attempts=194 answered=194 (fits=17 does_not_fit=177)
-       *                       failed=0 never_asked=433
-       *
-       * 194 asked, 194 answered, zero failures. The picture editor does not hedge; it says fits or
-       * does_not_fit. Every `unknown` in this system comes from one of three places, and not one of
-       * them is doubt: the gate is switched off, there is no narration to judge against, or the
-       * per-beat look budget is spent. All three mean NOBODY LOOKED — and `evaluated` is the field
-       * that has said so all along, carried on the decision and read nowhere near this message.
-       *
-       * ── Why the wording is the fix and not a cosmetic ───────────────────────────────────────
-       *
-       * The refusal is correct either way: a picture nobody vouched for must not fill a hole, and
-       * that is deliberately unchanged here. What was wrong is that the render could not tell a
-       * beat whose footage was JUDGED AND REJECTED from one whose footage was never seen. Those ask
-       * for opposite responses — the first means look harder for better footage, the second means
-       * the budget ran out before the work was done — and for as long as they shared one sentence,
-       * 433 unasked candidates read as 433 editorial refusals.
-       */
-      return {
-        allow: false,
-        reason:
-          d.evaluated === false
-            ? `backfill needs an approval; nobody looked at this clip for ${beatSlotKey(entry.ctx)} (${d.reason})`
-            : `backfill needs an approval; the editor answered ${d.verdict} on ${beatSlotKey(entry.ctx)}`,
-      };
-    }
-  }
   return { allow: true, reason: d.verdict };
 }
 
@@ -1515,7 +1400,7 @@ export type ComposeJudgeOutcome =
  *
  * ── Why this is a function and not three literals at each call site ──────────────────────────
  *
- * `adoptionGuardRefusesPush` has carried this triple inline since RONDE 215, with the reasoning
+ * The adoption guard (now `visualJudgeRefusesPush`) has carried this triple inline since RONDE 215, with the reasoning
  * beside it: no scope, no beat and no narration each mean there is no sentence behind the slot, so
  * no amount of asking can produce a verdict, and demanding one "does not raise the standard, it
  * empties the film". That reasoning is right and it is unchanged here.

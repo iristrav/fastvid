@@ -9,7 +9,6 @@ import {
   enrichArchiveAssetFields,
   inferArchiveMediaMime,
 } from "./archiveAssetTagging";
-import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
   ArchiveSplitError,
   archiveStoredDurationSec,
@@ -226,11 +225,6 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const mixKind = input.mixKind ?? (isVideo ? "real_video" : "photo");
   const userTags = normalizeMediaTags(input.tags ?? []);
   const archiveNicheTags = normalizeMediaTags(archive.nicheTags ?? []);
-  const subjectContext: ArchiveSubjectContext = {
-    archiveName: archive.name,
-    archiveDescription: archive.description ?? null,
-    nicheTags: archiveNicheTags,
-  };
   const parentSource = input.filename?.trim() || input.sourceNote?.trim() || null;
   const autoSplitScenes = input.autoSplitScenes ?? true;
   const autoGenerateTags = input.autoGenerateTags ?? true;
@@ -467,7 +461,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
         mimeType,
         onSplitProgress,
         uploadShouldContinue(jobId),
-        { subjectContext, onSegment }
+        { onSegment }
       );
       segments = splitResult.segments;
       splitCleanup = splitResult.cleanup;

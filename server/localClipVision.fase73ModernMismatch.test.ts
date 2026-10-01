@@ -278,7 +278,7 @@ describe("FASE 7.3 Test 9 — no other rejection gate was touched", () => {
   it("the adopt-time gates are unchanged", () => {
     expect(pipelineSrc).toContain("export function scriptImageFallbackPassesRelevanceFloor(");
     expect(pipelineSrc).toContain("if (!providerTitle || !providerTitle.trim()) return true;");
-    expect(pipelineSrc).toContain("export function isOffTopicVisualForPersonTopic(");
+    expect(readFileSync(path.join(__dirname, "visualJudge.ts"), "utf8")).toContain("export function isOffTopicVisualForPersonTopic(");
     expect(pipelineSrc).toContain("export function historicalDateAlignmentScore(");
   });
 

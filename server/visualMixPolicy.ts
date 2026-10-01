@@ -42,11 +42,6 @@ const MIX_KINDS: VisualMixKind[] = [
   "motion_graphics",
 ];
 
-/** Off until ENABLE_VISUAL_MIX=true — keeps current pipeline during setup. */
-export function visualMixEnabled(): boolean {
-  return process.env.ENABLE_VISUAL_MIX === "true";
-}
-
 function parseMixPercent(raw: string | undefined, kind: VisualMixKind): number {
   if (!raw?.trim()) return DEFAULT_VISUAL_MIX_PERCENT[kind];
   const n = parseFloat(raw);

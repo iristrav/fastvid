@@ -108,15 +108,6 @@ describe("§1 — affordsYoutubeTurn", () => {
 /* ═══════════ §2 — the wall that starved it ═══════════ */
 
 describe("§2 — a wall that may host a turn is wide enough to hold one", () => {
-  it("the stock wall now carries the supplement", () => {
-    const at = PIPELINE.indexOf("async function runBeatClipFetch(");
-    const body = PIPELINE.slice(at, PIPELINE.indexOf("\n/** Quick script-ordered rescue", at));
-    expect(body).toContain("beatWallWithYoutubeTurn(beatClipTimeoutMs)");
-    expect(
-      body,
-      "the profile's raw number still opens the scope, so the supplement never arrives"
-    ).not.toMatch(/withSceneFetchTimeout\([\s\S]{0,400}?\n\s*beatClipTimeoutMs,/);
-  });
 
   it("the supplement is zero when there is no YouTube, so other builds keep their wall", () => {
     const saved = { ...process.env };
@@ -258,7 +249,6 @@ describe("§5 — every wall a YouTube turn can open under", () => {
       process.env.ENABLE_YOUTUBE_SOURCING = "true";
       process.env.YOUTUBE_API_KEY = "test-key-present";
       process.env.YOUTUBE_CC_DL_SERVICE = "https://example.invalid/dl";
-      delete process.env.YOUTUBE_ONLY_SOURCING;
       return fn();
     } finally {
       process.env = saved;
@@ -266,7 +256,7 @@ describe("§5 — every wall a YouTube turn can open under", () => {
   };
 
   /** The fast/Railway profile, which is the one render 597 ran and the narrowest of them. */
-  const FAST_PERF = { fastStockMode: true, beatClipTimeoutMs: 22_000, transformTimeoutMs: 25_000 };
+  const FAST_PERF = { beatClipTimeoutMs: 22_000, transformTimeoutMs: 25_000 };
 
   it("THE DEFECT: the outer wall used to clamp the inner one RONDE 604 had just widened", () => {
     /**
@@ -311,21 +301,11 @@ describe("§5 — every wall a YouTube turn can open under", () => {
     ).toHaveLength(0);
   });
 
-  it("the YouTube-only branch is left alone — it already budgets a turn by name", () => {
-    const at = PIPELINE.indexOf("export function beatVisualWallMs(");
-    const body = PIPELINE.slice(at, PIPELINE.indexOf("\n}", at));
-    expect(body).toContain("youtubeBeatSearchBudgetMs()");
-    /** Paying twice for one turn is the mirror image of the defect being fixed. */
-    const onlyBranch = body.slice(body.indexOf("if (youtubeOnlySourcingEnabled())"), body.indexOf("return beatWallWithYoutubeTurn("));
-    expect(onlyBranch).not.toContain("beatWallWithYoutubeTurn(");
-  });
-
   it("a build without YouTube keeps every wall exactly as it is today", () => {
     const saved = { ...process.env };
     try {
       delete process.env.YOUTUBE_API_KEY;
-      delete process.env.YOUTUBE_ONLY_SOURCING;
-      expect(beatVisualWallMs(FAST_PERF as never)).toBe(12_000 + 6_000 + 5_000);
+      expect(beatVisualWallMs(FAST_PERF as never)).toBe(35_000 + 20_000 + 5_000);
       expect(beatWallWithYoutubeTurn(22_000)).toBe(22_000);
     } finally {
       process.env = saved;
@@ -366,14 +346,13 @@ describe("§6 — the nest render 597 declined in, opened for real", () => {
       process.env.ENABLE_YOUTUBE_SOURCING = "true";
       process.env.YOUTUBE_API_KEY = "test-key-present";
       process.env.YOUTUBE_CC_DL_SERVICE = "https://example.invalid/dl";
-      delete process.env.YOUTUBE_ONLY_SOURCING;
       await fn();
     } finally {
       process.env = saved;
     }
   };
 
-  const PERF = { fastStockMode: true, beatClipTimeoutMs: 22_000, transformTimeoutMs: 25_000 };
+  const PERF = { beatClipTimeoutMs: 22_000, transformTimeoutMs: 25_000 };
 
   it("THE DOOR OPENS at the innermost point of scene -> beat -> youtube-first", async () => {
     await withYoutubeEnv(async () => {
@@ -387,7 +366,7 @@ describe("§6 — the nest render 597 declined in, opened for real", () => {
                   verdict = { left: remainingScopeMs(), ok: canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS) };
                   return null;
                 },
-                youtubeBeatFetchTimeoutMs(true),
+                youtubeBeatFetchTimeoutMs(),
                 "b3_fastyt-first s1 b3"
               ),
             beatWallWithYoutubeTurn(PERF.beatClipTimeoutMs),
@@ -421,7 +400,7 @@ describe("§6 — the nest render 597 declined in, opened for real", () => {
                   ok = canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS);
                   return null;
                 },
-                youtubeBeatFetchTimeoutMs(true),
+                youtubeBeatFetchTimeoutMs(),
                 "b3_fastyt-first s1 b3"
               ),
             20_000,

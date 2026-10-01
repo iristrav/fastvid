@@ -13,17 +13,7 @@
 import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
-import {
-  claimAdoptedForBeat,
-  finishStartedYoutubeAdoption,
-  noteAdoptedForBeat,
-  openYoutubeAdoptionHandle,
-  remainingScopeMs,
-  runYoutubeAdoptionWindow,
-  withSceneFetchTimeout,
-  YOUTUBE_ADOPTION_WINDOW_MS,
-  type YoutubeAdoptionHandle,
-} from "./videoPipeline";
+import { claimAdoptedForBeat, noteAdoptedForBeat, remainingScopeMs, withSceneFetchTimeout, type YoutubeAdoptionHandle } from "./videoPipeline";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const KEY = "youtube_cc:93a96618594e5786";
@@ -77,127 +67,40 @@ describe("Video 618 fix 1 — a picture is not a duplicate of its own approval",
   it("wiring: adoptClip notes the beat right where it marks the picture used", () => {
     const body = bodyOf("async function adoptClip(");
     expect(body).toMatch(
-      /dedup\.usedContentKeys\.add\(contentKey\);\s*\/\*\*[^\n]*\*\/\s*noteAdoptedForBeat\(dedup, contentKey, sceneIndex, beatIndex\);/
+      /markAssetUsedInVideo\(dedup, \{[\s\S]{0,200}?\}\);\s*\/\*\*[^\n]*\*\/\s*noteAdoptedForBeat\(dedup, contentKey, sceneIndex, beatIndex\);/
     );
   });
 
   it("wiring: the push asks for the pass only when the picture is already marked, and still refuses otherwise", () => {
     const at = PIPE.indexOf("const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number)");
     const body = PIPE.slice(at, PIPE.indexOf("clips.push(clipPath);", at));
-    const check = body.indexOf("if (dedup.usedContentKeys.has(key)) {");
-    const claim = body.indexOf("if (!claimAdoptedForBeat(dedup, key, scene.index, beatIndex)) {");
+    const check = body.indexOf("const used = assetUsedInVideo(dedup, identity);");
+    const claim = body.indexOf("!claimAdoptedForBeat(dedup, key, scene.index, beatIndex)");
     const refuse = body.indexOf("noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);");
     expect(check).toBeGreaterThan(-1);
     expect(claim).toBeGreaterThan(check);
     expect(refuse).toBeGreaterThan(claim);
-    /** The gates in front of it are unchanged and still come first. */
+    /** The VisualJudge gate in front of it still comes first. */
     expect(body.indexOf("beatClipRefusedByRelevanceGate(")).toBeLessThan(check);
-    expect(body.indexOf("adoptionGuardRefusesPush(")).toBeLessThan(check);
     /** Still one writer of the mark per path: adoptClip and the push itself. */
-    expect(body).toContain("dedup.usedContentKeys.add(key);");
+    expect(body).toContain("markAssetUsedInVideo(dedup, identity);");
   });
 });
 
 describe("Video 618 fix 2 — a picture being judged when the slice ends is judged to the end", () => {
-  it("the 618 case: the slice times out mid-judgement, the approval still arrives and is kept", async () => {
-    let late: string | null = "unset";
-    await withSceneFetchTimeout(async () => {
-      const adoption = openYoutubeAdoptionHandle();
-      try {
-        await withSceneFetchTimeout(
-          async () => {
-            await sleep(20); // the downloads — most of the slice
-            adoption.running = runYoutubeAdoptionWindow(
-              adoption,
-              async () => {
-                await sleep(120); // the editor, finishing after the slice's timer
-                return CLIP;
-              },
-              1,
-              0
-            );
-            return adoption.running;
-          },
-          60,
-          "youtube-first s1 b0"
-        );
-        throw new Error("the slice should have timed out");
-      } catch (err) {
-        expect((err as Error).message).toContain("youtube-first s1 b0");
-        late = await finishStartedYoutubeAdoption(adoption);
-      }
-    }, 5_000, "scene 1 beat 0 visuals");
-    expect(late).toBe(CLIP);
-  });
 
-  it("the judgement's own checks can still open their scopes after the slice has ended", async () => {
-    const opened: string[] = [];
-    await withSceneFetchTimeout(async () => {
-      const adoption = openYoutubeAdoptionHandle();
-      await withSceneFetchTimeout(
-        async () => {
-          adoption.running = runYoutubeAdoptionWindow(
-            adoption,
-            async () => {
-              await sleep(100); // past the slice's 40 ms
-              /** On 618 this was "luma …_transformed.mp4" — SCOPE_EXPIRED. */
-              opened.push(await withSceneFetchTimeout(async () => "luma ok", 1_000, "luma check"));
-              expect(remainingScopeMs()).toBeGreaterThan(0);
-              return CLIP;
-            },
-            1,
-            0
-          );
-          return adoption.running;
-        },
-        40,
-        "youtube-first s1 b0"
-      ).catch(() => null);
-      await finishStartedYoutubeAdoption(adoption);
-    }, 5_000, "scene 1 beat 0 visuals");
-    expect(opened).toEqual(["luma ok"]);
-  });
-
-  it("the window is bounded and clamped to the beat: a beat with little time left gives little", async () => {
-    let seen = Number.POSITIVE_INFINITY;
-    await withSceneFetchTimeout(async () => {
-      const adoption = openYoutubeAdoptionHandle();
-      await runYoutubeAdoptionWindow(adoption, async () => {
-        seen = remainingScopeMs();
-        return null;
-      }, 0, 0);
-    }, 300, "a beat nearly out of time");
-    expect(seen).toBeLessThanOrEqual(300);
-    expect(YOUTUBE_ADOPTION_WINDOW_MS).toBeLessThanOrEqual(60_000);
-  });
-
-  it("a judgement that refuses, fails, or never started keeps nothing", async () => {
-    const none: YoutubeAdoptionHandle = { outerScope: undefined };
-    expect(await finishStartedYoutubeAdoption(none)).toBeNull();
-    expect(await finishStartedYoutubeAdoption({ outerScope: undefined, running: Promise.resolve(null) })).toBeNull();
-    expect(
-      await finishStartedYoutubeAdoption({ outerScope: undefined, running: Promise.reject(new Error("editor refused")) })
-    ).toBeNull();
-    /** A pipeline fallback card is not a picture, exactly as `fetchBeatYoutubeOnly` already says. */
-    expect(
-      await finishStartedYoutubeAdoption({ outerScope: undefined, running: Promise.resolve("/w/scene_1_b0_fallback.mp4") })
-    ).toBeNull();
-    /** A real picture does come back. */
-    expect(await finishStartedYoutubeAdoption({ outerScope: undefined, running: Promise.resolve(CLIP) })).toBe(CLIP);
-  });
-
-  it("wiring: only the YouTube-first slice opens the handle; the slice still has its own bound and log lines", () => {
+  /**
+   * ONE ROUTE — the 618 race cannot happen any more: the YouTube slice only searches and downloads;
+   * its candidates are judged afterwards, together with the cascade's, in the beat's own scope.
+   */
+  it("wiring: the YouTube slice judges nothing; its candidates are judged with the cascade's", () => {
     const slice = bodyOf("async function youtubeFirstBeatSlice(");
-    expect(slice).toContain("const adoption = openYoutubeAdoptionHandle();");
-    expect(slice).toContain("`${tag}yt-first`,\n        adoption\n");
-    expect(slice).toContain("const late = await finishStartedYoutubeAdoption(adoption);");
+    expect(slice).not.toContain("adoptClip(");
     expect(slice).toContain("`youtube-first s${sceneIndex} b${beat.index}`");
     expect(slice).toContain("YouTube-first slice spent");
     const only = bodyOf("async function fetchBeatYoutubeOnly(");
-    /** The same adoption flow, now inside its own window when a handle is given; unchanged without one. */
-    expect(only).toContain("const adopt = () => adoptClip(");
-    expect(only).toContain("runYoutubeAdoptionWindow(adoption, adopt, sceneIndex, beat.index)");
-    expect(only).toContain(": await adopt();");
     expect(only).toContain("runCentralYoutubeTurn({");
+    expect(only).not.toContain("adoptClip(");
+    expect(only).toContain("return { completed: null, candidates: turn.candidatePaths };");
   });
 });

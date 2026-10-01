@@ -14,10 +14,7 @@ import {
 } from "./searchQueryContract";
 import { foldSearchText } from "./searchTextNormalize";
 import { getPlannedShot, shotSearchTerms } from "./shotVocabulary";
-import path from "path";
-import { invokeLLM } from "./_core/llm";
-import { ENV } from "./_core/env";
-import { asVideoTitleString, coerceVisionString, coercePersonName, queryStringsMinLen, toQueryString, uniqueQueryStrings } from "./stringCoercion";
+import { asVideoTitleString, coercePersonName, queryStringsMinLen, toQueryString, uniqueQueryStrings } from "./stringCoercion";
 
 export type MediaTopicKind = "person" | "historical" | "space" | "news" | "general";
 
@@ -251,14 +248,6 @@ export function scoreMediaCandidate(candidate: MediaCandidate, intent: MediaSear
 
   return score;
 }
-
-const STOCK_ONLY_SOURCES: MediaSourceKind[] = ["pexels", "pixabay"];
-const STILL_ONLY_SOURCES: MediaSourceKind[] = [
-  "serpapi",
-  "unsplash",
-  "openverse",
-  "wikimedia_image",
-];
 
 /**
  * Canonical clip order: Archive/Wikimedia video → real stills (vision-gated) → Pexels → AI.
@@ -1115,82 +1104,6 @@ export function buildHistoricalArchivalQueries(
   return asked.slice(0, 12);
 }
 
-/** Split ranked pool: authentic video → stills → licensed stock (last). */
-export function partitionCandidatesForIntent(
-  ranked: MediaCandidate[],
-  intent: MediaSearchIntent
-): {
-  videoFirst: MediaCandidate[];
-  stillFallback: MediaCandidate[];
-  stockFallback: MediaCandidate[];
-} {
-  if (!prefersRealFootageOnly(intent)) {
-    return { videoFirst: ranked, stillFallback: [], stockFallback: [] };
-  }
-  const stockFallback = ranked.filter((c) => STOCK_ONLY_SOURCES.includes(c.source));
-  const videoFirst = ranked.filter(
-    (c) =>
-      c.isVideo &&
-      !STOCK_ONLY_SOURCES.includes(c.source) &&
-      !STILL_ONLY_SOURCES.includes(c.source)
-  );
-  const stillFallback = ranked.filter(
-    (c) => !videoFirst.includes(c) && !stockFallback.includes(c)
-  );
-  return { videoFirst, stillFallback, stockFallback };
-}
-
-/** Rank candidates best-first (Laag 3). */
-export function rankMediaCandidates(
-  candidates: MediaCandidate[],
-  intent: MediaSearchIntent,
-  enrichScore?: (candidate: MediaCandidate, baseScore: number) => number
-): MediaCandidate[] {
-  const seen = new Set<string>();
-  const unique: MediaCandidate[] = [];
-
-  for (const c of candidates) {
-    if (!c.path?.trim() || seen.has(c.path)) continue;
-    seen.add(c.path);
-    unique.push(c);
-  }
-
-  return unique
-    .map((c) => {
-      const base = scoreMediaCandidate(c, intent);
-      const score = enrichScore ? enrichScore(c, base) : base;
-      return { ...c, score };
-    })
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-}
-
-const AI_RANK_JSON_SCHEMA = {
-  type: "json_schema" as const,
-  json_schema: {
-    name: "media_relevance_rank",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: {
-        rankings: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "number" },
-              relevance: { type: "number" },
-            },
-            required: ["id", "relevance"],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ["rankings"],
-      additionalProperties: false,
-    },
-  },
-};
-
 /** Merge LLM relevance scores (0–10) into candidate scores. Exported for tests. */
 export function mergeAiRelevanceScores(
   candidates: MediaCandidate[],
@@ -1205,93 +1118,3 @@ export function mergeAiRelevanceScores(
   });
 }
 
-function parseAiRankResponse(content: string, count: number): Map<number, number> {
-  const out = new Map<number, number>();
-  try {
-    const parsed = JSON.parse(content) as { rankings?: Array<{ id?: number; relevance?: number }> };
-    for (const row of parsed.rankings ?? []) {
-      if (typeof row.id !== "number" || typeof row.relevance !== "number") continue;
-      if (row.id < 0 || row.id >= count) continue;
-      out.set(row.id, row.relevance);
-    }
-  } catch {
-    // ignore malformed LLM output
-  }
-  return out;
-}
-
-/**
- * Re-rank top keyword-scored candidates with one LLM call (Laag 3 — semantic).
- * Skips silently when no LLM key or ENABLE_MEDIA_AI_RANK=false.
- */
-export async function applyAiRelevanceRanking(
-  candidates: MediaCandidate[],
-  intent: MediaSearchIntent,
-  options: { maxCandidates?: number; timeoutMs?: number; fastMode?: boolean } = {}
-): Promise<MediaCandidate[]> {
-  if (process.env.ENABLE_MEDIA_AI_RANK === "false" || !ENV.forgeApiKey) {
-    return candidates;
-  }
-  const maxCandidates = options.maxCandidates ?? (options.fastMode ? 6 : 10);
-  const pool = candidates.slice(0, maxCandidates);
-  if (pool.length < 2) return candidates;
-
-  const lines = pool.map((c, idx) => {
-    const file = path.basename(c.path);
-    return `${idx}: source=${c.source} query="${c.query}" file="${file}" video=${c.isVideo}`;
-  });
-
-  const prompt = `You rank stock/archival media for a documentary video beat.
-
-Narration beat: "${intent.beatText}"
-Topic kind: ${intent.topicKind}
-${intent.primaryPerson ? `Primary person: ${intent.primaryPerson}` : ""}
-${intent.videoTitle ? `Video title: ${intent.videoTitle}` : ""}
-
-Candidates:
-${lines.join("\n")}
-
-Score each candidate id 0–10 for visual relevance to the narration.
-10 = perfect match (real footage of the exact subject/event).
-0 = completely unrelated generic b-roll.
-
-Prefer authentic archival/real footage over generic stock when the beat names a specific person, place, date, or event.`;
-
-  try {
-    const response = await Promise.race([
-      invokeLLM({
-        messages: [
-          { role: "system", content: "You are a documentary footage researcher. Return JSON only." },
-          { role: "user", content: prompt },
-        ],
-        preferProvider: "groq",
-        response_format: AI_RANK_JSON_SCHEMA,
-        maxTokens: 1024,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("AI rank timeout")), options.timeoutMs ?? 12_000)
-      ),
-    ]);
-
-    const content = coerceVisionString(response.choices[0]?.message?.content);
-    if (!content) return candidates;
-
-    const aiScores = parseAiRankResponse(content, pool.length);
-    if (!aiScores.size) return candidates;
-
-    const boosted = mergeAiRelevanceScores(pool, aiScores);
-    const boostedByPath = new Map(boosted.map((c) => [c.path, c.score ?? 0]));
-    const reranked = candidates
-      .map((c) => ({
-        ...c,
-        score: boostedByPath.get(c.path) ?? c.score,
-      }))
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-
-    console.log(`[MediaResearch] AI re-ranked ${aiScores.size} candidates for beat`);
-    return reranked;
-  } catch (err) {
-    console.warn(`[MediaResearch] AI ranking skipped:`, (err as Error).message);
-    return candidates;
-  }
-}

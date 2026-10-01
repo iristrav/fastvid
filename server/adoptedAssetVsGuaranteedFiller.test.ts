@@ -46,11 +46,11 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 
 import {
-  createClipRejectAudit,
-  recordClipReject,
+  createRejectionRegistry,
+  registerRejection,
   beatRejectCount,
   beatRejectReasons,
-} from "./clipRejectAudit";
+} from "./rejectionRegistry";
 import { VisualSourceLedger } from "./visualSourceLineage";
 
 const SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
@@ -63,11 +63,11 @@ describe("a refused adopted asset is visible to the placeholder decision", () =>
    * push refusal is recorded. Before, they could not — nothing wrote them from that gate.
    */
   it("turns rejected=0 into a real count with a real reason", () => {
-    const audit = createClipRejectAudit();
+    const audit = createRejectionRegistry();
     expect(beatRejectCount(audit, 0, 0)).toBe(0);
     expect(beatRejectReasons(audit, 0, 0)).toEqual([]);
 
-    recordClipReject(audit, 0, 0, "/w/scene_0_ytcc_0__pid_youtube_cc-d5d161a4db2fca58_transformed.mp4", "off_subject");
+    registerRejection(audit, 0, 0, "/w/scene_0_ytcc_0__pid_youtube_cc-d5d161a4db2fca58_transformed.mp4", "off_subject");
 
     expect(beatRejectCount(audit, 0, 0)).toBe(1);
     const [top] = beatRejectReasons(audit, 0, 0);
@@ -77,8 +77,8 @@ describe("a refused adopted asset is visible to the placeholder decision", () =>
 
   /** The tally is per beat, so one refused beat cannot explain away a different one. */
   it("does not leak a refusal onto a neighbouring beat", () => {
-    const audit = createClipRejectAudit();
-    recordClipReject(audit, 0, 0, "/w/a.mp4", "off_subject");
+    const audit = createRejectionRegistry();
+    registerRejection(audit, 0, 0, "/w/a.mp4", "off_subject");
     expect(beatRejectCount(audit, 0, 0)).toBe(1);
     expect(beatRejectCount(audit, 0, 1)).toBe(0);
     expect(beatRejectCount(audit, 1, 0)).toBe(0);
@@ -145,10 +145,10 @@ describe("the guaranteed filler is still reached the way this audit traced it", 
      * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
      * is about that body, so it is read there. Nothing about what the gate decides changed.
      */
-    const at = SRC.indexOf("async function relevanceGateRefusesClip(");
+    const at = SRC.indexOf("async function visualJudgeRefusesPush(");
     const body = SRC.slice(at, SRC.indexOf("\n}", SRC.indexOf("return true;", at)));
-    expect(body).toContain("recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, clipPath, barrier.reason)");
+    expect(body).toContain("registerRejection(dedup.rejections, sceneIndex, beatIndex, clipPath, why, undefined, {");
     const dup = SRC.indexOf("function noteDuplicateClipRefused(");
-    expect(SRC.slice(dup, dup + 800)).toContain("recordClipReject(");
+    expect(SRC.slice(dup, dup + 800)).toContain("registerRejection(");
   });
 });

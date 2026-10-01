@@ -1,12 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
-import {
-  indefensibleExportConditions,
-  exportGateReadiness,
-  type VideoQualityReport,
-} from "./videoQualityReport";
-import { blankPictureFinding, isInformationalSpotWarning } from "./postRenderSpotCheck";
+import { exportGateReadiness, type VideoQualityReport } from "./videoQualityReport";
+import { isInformationalSpotWarning } from "./postRenderSpotCheck";
+import { indefensibleExportConditions, blankPictureFinding } from "./deliveryGate";
 
 /**
  * A BLANK FILM MAY NOT BE PUBLISHED.
@@ -180,7 +177,8 @@ describe("the readiness list never reports an unsampled film as a pass", () => {
 });
 
 describe("nothing was loosened to make room for it", () => {
-  const QR = readFileSync(join(__dirname, "videoQualityReport.ts"), "utf8");
+  /** ONE ROUTE: the export conditions live in the DeliveryGate. */
+  const QR = readFileSync(join(__dirname, "deliveryGate.ts"), "utf8");
   const SPOT = readFileSync(join(__dirname, "postRenderSpotCheck.ts"), "utf8");
 
   it("the two existing indefensible conditions are untouched", () => {
@@ -244,20 +242,24 @@ describe("the render job refuses a blank film before it is published", () => {
   });
 
   it("THE EXPORT GATE AND THE RENDER JOB ASK THE SAME QUESTION", () => {
-    const qr = readFileSync(join(__dirname, "videoQualityReport.ts"), "utf8");
-    expect(qr).toContain("blankPictureFinding(report.postRenderSpotCheck)");
-    expect(WORKER).toContain("const blank = blankPictureFinding(spotCheck);");
+    const gate = readFileSync(join(__dirname, "deliveryGate.ts"), "utf8");
+    expect(gate).toContain("blankPictureFinding(report.postRenderSpotCheck)");
+    /** ONE ROUTE: the render job hands the finding to its one delivery gate instead of failing on its own. */
+    expect(WORKER).toContain("blankPicture: blankPictureFinding(spotCheck),");
+    expect(gate).toContain('failures.push({ code: "FINAL_PICTURE_IS_BLACK", detail: input.blankPicture });');
   });
 
   it("THE JOB FAILS AFTER MEASURING AND BEFORE THE DELIVERY GATE AND THE UPLOAD", () => {
     const measured = WORKER.indexOf("spotCheck = await spotCheckFinalVideo(outputPath)");
-    const refused = WORKER.indexOf("return await fail(RENDER_ERROR.RENDER_FAILED, `FINAL_PICTURE_IS_BLACK: ${blank}`);");
     const gate = WORKER.indexOf("const gate = deliveryGate({");
+    const refused = WORKER.indexOf("blankPicture: blankPictureFinding(spotCheck),");
+    const blocked = WORKER.indexOf("return await fail(RENDER_ERROR.RENDER_FAILED, formatDeliveryBlock(gate, job.videoId));");
     const upload = WORKER.indexOf("const put = await deps.upload(");
     expect(measured).toBeGreaterThan(-1);
-    expect(refused).toBeGreaterThan(measured);
-    expect(gate).toBeGreaterThan(refused);
-    expect(upload).toBeGreaterThan(refused);
+    expect(gate).toBeGreaterThan(measured);
+    expect(refused).toBeGreaterThan(gate);
+    expect(blocked).toBeGreaterThan(refused);
+    expect(upload).toBeGreaterThan(blocked);
   });
 
   it("the pipeline keeps no second copy of the question", () => {

@@ -86,7 +86,7 @@ describe("nobody else's text in the picture either", () => {
    */
   it("the archive never offers a clip with text, and no caller can wave it through", () => {
     const INGEST = readFileSync(join(__dirname, "archiveIngestion.ts"), "utf8");
-    expect(INGEST).toContain('if (overlay.verdict === "has_text" && !articleScreenshot) {');
+    expect(INGEST).toContain('if (overlay?.decision === "REJECT") {');
     expect(INGEST).toContain("const asShots = await ingestAsSingleShots(localPath, metadata);");
     expect(INGEST).not.toContain("approvedForBeat");
   });

@@ -115,7 +115,7 @@ export type AdoptionPolicy = {
    * refusing that emptied render 569. What changed is only the difference between looking and not.
    *
    * This is a tightening, and it is only affordable because the guard now ASKS instead of merely
-   * checking: `adoptionGuardRefusesPush` puts an unjudged picture to the editor at the moment of
+   * checking: `visualJudgeRefusesPush` puts an unjudged picture to the editor at the moment of
    * adoption, past the per-beat look ceiling, because a picture about to become the beat's actual
    * picture is exactly where a judgement decides something. The ceiling bounds competition between
    * candidates; it was never meant to decide what ships unseen.

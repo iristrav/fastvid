@@ -36,7 +36,6 @@ import { type UsageLedger } from "./duplicateGuard";
 import { type YoutubeRowLike } from "./youtubePoolSource";
 
 
-import { tierTasksByNeed, describeTierChanges } from "./providerCapability";
 import { SOURCING_TIERS, providerTier, tierNumber } from "./sourcingTiers";
 import type { YoutubeLicenseMode } from "./videoPipeline";
 import type { VisualIntent as RankingIntent } from "./visualMatchingV2/types";

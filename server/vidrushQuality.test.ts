@@ -1,24 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildVidrushOpeningQueries,
-  clampVidrushClipDuration,
-  clipPassesVidrushOpeningGate,
-  clipPassesDocumentaryBeatGate,
-  clipPassesGeoUrbanBeatGate,
-  enforceMontageDurationFloors,
-  inferBeatGeoRegion,
-  inferPrimaryGeoFromTitle,
-  isNonDocumentaryVisualHay,
-  isOffTopicGeoUrbanOpeningVisual,
-  isOffTopicGeoUrbanVisual,
-  isWrongRegionForSegmentLock,
-  maxDirectorBeatsForSceneDuration,
-  maxMontageClipsForVoiceSec,
-  resolveSegmentGeoLock,
-  vidrushMinClipSec,
-  vidrushOpeningClipSec,
-} from "./vidrushQuality";
-import { mergeDirectorScenesForPacing } from "./visualDirector";
+import { judgeDocumentaryBeatGate } from "./visualJudge";
+import { buildVidrushOpeningQueries, clampVidrushClipDuration, enforceMontageDurationFloors, inferBeatGeoRegion, inferPrimaryGeoFromTitle, isNonDocumentaryVisualHay, isOffTopicGeoUrbanOpeningVisual, isOffTopicGeoUrbanVisual, isWrongRegionForSegmentLock, maxMontageClipsForVoiceSec, resolveSegmentGeoLock, vidrushMinClipSec, vidrushOpeningClipSec } from "./vidrushQuality";
 
 describe("vidrushQuality", () => {
   it("enforces 3.5s opening and 3.5s minimum clip floor", () => {
@@ -27,17 +9,6 @@ describe("vidrushQuality", () => {
     const durs = enforceMontageDurationFloors([0.4, 1.2, 2.0], 0);
     expect(durs[0]).toBeGreaterThanOrEqual(vidrushOpeningClipSec());
     expect(durs[1]).toBeGreaterThanOrEqual(vidrushMinClipSec());
-  });
-
-  it("caps director beats to scene duration", () => {
-    // RONDE 30: these were hardcoded to 6 and 2, which matched a smaller minimum clip length
-    // than the current one. Derived from vidrushMinClipSec() now, so raising the floor again
-    // changes the expectation with it instead of silently reddening this file.
-    const floor = vidrushMinClipSec();
-    expect(maxDirectorBeatsForSceneDuration(23)).toBe(Math.floor(23 / floor));
-    expect(maxDirectorBeatsForSceneDuration(8)).toBe(Math.floor(8 / floor));
-    // The relationship that actually matters: a longer scene never yields fewer beats.
-    expect(maxDirectorBeatsForSceneDuration(23)).toBeGreaterThan(maxDirectorBeatsForSceneDuration(8));
   });
 
   it("never returns below floor when scaling down", () => {
@@ -75,46 +46,22 @@ describe("vidrushQuality", () => {
         inferPrimaryGeoFromTitle("Why the Netherlands is the Opposite of the U.S.")
       )
     ).toBe(true);
+    /** ONE ROUTE: the per-clip question is the VisualJudge's documentary rule (unused wrappers removed). */
     expect(
-      clipPassesVidrushOpeningGate(
-        "/tmp/open_ford_dealer.mp4",
-        "ford dealership",
-        "Welcome to the Netherlands",
-        "Why the Netherlands is the Opposite of the U.S."
-      )
-    ).toBe(false);
-    expect(
-      clipPassesDocumentaryBeatGate(
+      judgeDocumentaryBeatGate(
         "/tmp/columbus_city_council.mp4",
         "city council meeting",
         "American downtown planning",
         "Netherlands vs United States cities"
-      )
+      ).passes
     ).toBe(false);
     expect(
-      clipPassesDocumentaryBeatGate(
+      judgeDocumentaryBeatGate(
         "/tmp/amsterdam_canal_bikes.mp4",
         "amsterdam canal",
         "Dutch cycling infrastructure",
         "Netherlands vs United States cities"
-      )
+      ).passes
     ).toBe(true);
-    expect(clipPassesGeoUrbanBeatGate).toBe(clipPassesDocumentaryBeatGate);
-  });
-});
-
-describe("mergeDirectorScenesForPacing", () => {
-  it("merges excess director scenes to fit max beats", () => {
-    const scenes = Array.from({ length: 8 }, (_, i) => ({
-      source_sentence_index: i,
-      spoken_text: `Line ${i}`,
-      visual_description: `Visual ${i}`,
-      camera_shot: "wide shot",
-      emotion: "calm",
-      search_query: `query ${i}`,
-    }));
-    const merged = mergeDirectorScenesForPacing(scenes, 4);
-    expect(merged.length).toBeLessThanOrEqual(4);
-    expect(merged[0]?.spoken_text).toContain("Line 0");
   });
 });

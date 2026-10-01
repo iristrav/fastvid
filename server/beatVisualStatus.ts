@@ -61,7 +61,7 @@ export type BeatCoverage =
    *     s0b0  cov=own_footage  ver=never_asked  src=rescue_archive  scene_0_b0_curated_a57692_still.mp4
    *     s1b1  cov=own_footage  ver=unknown      src=rescue_archive  scene_1_b1_curated_a57446.mp4
    *
-   * They did not get past the picture editor. They never met it. `adoptionGuardRefusesPush`
+   * They did not get past the picture editor. They never met it. `visualJudgeRefusesPush`
    * SUSPENDS the vision requirement when there is no sentence to judge a picture against — a
    * deliberate rule with its own log line — and the adoption is then recorded under the beat it
    * was fetched for. Real footage plus a suspended check arrived at the report wearing the label

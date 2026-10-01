@@ -34,16 +34,10 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import {
-  YOUTUBE_META_PROBE_TIMEOUT_MS,
-  formatYoutubeProbeSkip,
-  shouldProbeYoutubeDuration,
-  youtubeDownloadTimeoutMs,
-  youtubeMaxDownloadsPerRender,
-  youtubeOperatorAuthorized,
-} from "./sourcingPolicy";
-import { allowUnverifiedYoutube } from "./youtubeLicenseStatus";
+import { YOUTUBE_META_PROBE_TIMEOUT_MS, formatYoutubeProbeSkip, shouldProbeYoutubeDuration, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender } from "./sourcingPolicy";
+
 import { CAPABILITIES } from "./productionPreflight";
+import { allowOperatorLicensedYoutube, allowUnverifiedYoutube } from "./config";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const POLICY = fs.readFileSync(path.join(__dirname, "sourcingPolicy.ts"), "utf8");
@@ -57,7 +51,6 @@ const FLOOR = (() => {
 
 /* ═══════════ 1. the probe no longer spends what the download needs ═══════════ */
 
-
 /* ═══════════ 2. the pipeline actually asks, before it probes ═══════════ */
 
 describe("YT-REPAIR §2 — wired into the route that lost the downloads", () => {
@@ -66,12 +59,6 @@ describe("YT-REPAIR §2 — wired into the route that lost the downloads", () =>
     expect(at, "the YouTube loop never asks").toBeGreaterThan(0);
     return PIPE.slice(at, at + 900);
   };
-
-
-
-
-
-
 
   it("THE START OFFSET STILL HAS ITS EXISTING FALLBACK — nothing new was invented", () => {
     /** Exactly the path a video RapidAPI knows nothing about has always taken. */
@@ -112,7 +99,7 @@ describe("YT-REPAIR §3 — primary, fallback and rights are separate answers", 
      * stops the restatement from drifting: the operator flag defaults ON, the unverified flag
      * defaults OFF, and the production functions are the reference.
      */
-    expect(rights.satisfiedBy!({} as NodeJS.ProcessEnv).available).toBe(youtubeOperatorAuthorized());
+    expect(rights.satisfiedBy!({} as NodeJS.ProcessEnv).available).toBe(allowOperatorLicensedYoutube());
     expect(allowUnverifiedYoutube()).toBe(false);
     const off = { ALLOW_OPERATOR_LICENSED_YOUTUBE: "false" } as NodeJS.ProcessEnv;
     expect(rights.satisfiedBy!(off).available).toBe(false);

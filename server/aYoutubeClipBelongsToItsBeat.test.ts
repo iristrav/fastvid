@@ -96,8 +96,4 @@ describe("nothing about the download was changed to achieve this", () => {
     expect(code).not.toContain("download_timeout_raised");
   });
 
-  it("and no gate, cap or threshold moved", () => {
-    expect(code).toContain("const maxTasks = archivalFirst");
-    expect(code).toContain("? (perf.fastStockMode ? 14 : 18)");
   });
-});

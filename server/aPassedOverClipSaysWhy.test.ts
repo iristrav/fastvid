@@ -4,7 +4,7 @@ import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
 import { adoptClipForTest, createVisualDedupState, getPipelinePerfProfile } from "./videoPipeline";
-import { beatRejectReasons } from "./clipRejectAudit";
+import { beatRejectReasons } from "./rejectionRegistry";
 
 /**
  * RONDE 647 — render 610 downloaded `btHJYt5YE9s` nine times, 168 512 bytes each, and it never
@@ -34,7 +34,7 @@ describe("a candidate the adoption loop passes over says why", () => {
     const adopted = await adoptClipForTest([small], dedup, 0, 0, "Berlin in 1945", dir, "berlin 1945");
 
     expect(adopted).toBeNull();
-    const reasons = beatRejectReasons(dedup.clipRejectAudit, 0, 0).map(([reason]) => reason);
+    const reasons = beatRejectReasons(dedup.rejections, 0, 0).map(([reason]) => reason);
     expect(reasons).toContain(`below_size_floor_${bytes}_bytes`);
   });
 
@@ -44,6 +44,6 @@ describe("a candidate the adoption loop passes over says why", () => {
     const adopted = await adoptClipForTest([path.join(dir, "gone.mp4")], dedup, 0, 1, "Berlin", dir, "berlin");
 
     expect(adopted).toBeNull();
-    expect(beatRejectReasons(dedup.clipRejectAudit, 0, 1).map(([r]) => r)).toEqual(["file_missing"]);
+    expect(beatRejectReasons(dedup.rejections, 0, 1).map(([r]) => r)).toEqual(["file_missing"]);
   });
 });

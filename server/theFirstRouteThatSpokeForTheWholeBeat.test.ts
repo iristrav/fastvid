@@ -191,7 +191,7 @@ describe("6. nothing was loosened to achieve this", () => {
   it("and the vision gate still has its own per-beat judgement ceiling", () => {
     const gate = readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
     expect(gate).toContain("MAX_JUDGEMENTS_PER_BEAT");
-    expect(gate).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
   });
 
   /** The two intentional single-winner routes are untouched — they ask for one and take one. */

@@ -285,7 +285,9 @@ describe("R230-B §4 — the same bytes, for the same reasons", () => {
 
   it("a failure still ends the opened lineage record", () => {
     const f = PIPE.slice(PIPE.indexOf('if (prepared.status === "FAILED")'));
-    expect(f.slice(0, 400)).toContain("sourcingCache?.lineage?.recordRejection(");
+    /** ONE ROUTE: through the render's RejectionRegistry, which ends the lineage record. */
+    expect(f.slice(0, 400)).toContain("registerRejection(");
+    expect(f.slice(0, 400)).toContain("sourcingCache.rejections,");
     expect(f.slice(0, 400)).toContain("archiveRejectionReason(prepared.error)");
   });
 

@@ -1,4 +1,12 @@
 /**
+ * ONE ROUTE — THE RENDERREPORT: everything a render can say about itself, stored with the video.
+ *
+ * It is the one owner of the per-video report: the collector below gathers the lines, and
+ * `storeRenderReport` is the only writer of the stored report (the quality report, the step
+ * timings, the collected lines, the glance and the render budget). It reports; it never decides —
+ * deliver or block is the DeliveryGate's alone. The stored keys are the ones every video has always
+ * had, so a video rendered before this module existed opens exactly as it did.
+ *
  * RONDE 106 — the render's own account of itself, kept instead of thrown away.
  *
  * The pipeline already explains what it did. It prints a [FinalVisualReport] block, a
@@ -182,3 +190,26 @@ export type PipelineGlance = {
   gateAnswered?: number;
   warnings?: number;
 };
+
+/** What one store of the RenderReport writes, under the keys `videos.metadata` has always used. */
+export type StoredRenderReport = {
+  qualityReport: unknown;
+  pipelineStepTiming: unknown;
+  pipelineReport: RenderPipelineReport;
+  pipelineGlance: PipelineGlance;
+  renderBudget?: unknown;
+};
+
+/**
+ * The one writer of the stored report. A render stores it twice on purpose — once before the export
+ * gates, so a refused render still leaves its numbers, and once at the end with every line — and
+ * both go through here, so the two can never write different keys.
+ */
+export async function storeRenderReport(
+  videoId: number,
+  report: StoredRenderReport,
+  merge: (videoId: number, patch: Record<string, unknown>) => Promise<void>
+): Promise<void> {
+  const { renderBudget, ...rest } = report;
+  await merge(videoId, { ...rest, ...(renderBudget ? { renderBudget } : {}) });
+}

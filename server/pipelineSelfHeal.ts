@@ -1,7 +1,6 @@
 /**
  * Geo stock queries, script expansion, and the pre-render refusal of an indefensible render.
  */
-import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import { hasContentAnchor } from "./searchQueryContract";
 import {
   checkScriptMeetsBudget,
@@ -11,8 +10,6 @@ import {
   countNarrationWords,
   type ScriptLengthBudget,
 } from "./scriptWriter";
-import type { VideoQualityReport } from "./videoQualityReport";
-import { indefensibleExportConditions } from "./videoQualityReport";
 
 /** Pexels/Pixabay queries anchored to beat + title geography (wrong-country stock avoided). */
 export function buildDocumentaryShotQueries(baseQuery: string, beatIndex: number): string[] {
@@ -93,18 +90,4 @@ export async function ensureScriptMeetsBudgetWithRetry(
     return { script: current, ok: true, words };
   }
   return { script: current, ok: false, words };
-}
-
-/** Refuses a render whose pictures cannot be traced or were never approved — see `indefensibleExportConditions`. */
-export function enforceQualityExportGate(videoId: number, report: VideoQualityReport): void {
-  const indefensible = indefensibleExportConditions(report);
-  if (indefensible.length === 0) return;
-  for (const c of indefensible) {
-    console.error(`[Quality] Video ${videoId}: EXPORT BLOCKED ${c.code} — ${c.detail}`);
-  }
-  throw pipelineError(
-    PIPELINE_ERROR.QUALITY_GATE,
-    `Export blocked — this render cannot say what it is showing: ` +
-      indefensible.map((c) => `${c.code}: ${c.detail}`).join(" | ")
-  );
 }

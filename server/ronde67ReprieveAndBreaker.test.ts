@@ -94,7 +94,7 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
      */
     const fnAt = src.indexOf("async function adoptClip(");
     const block = src.slice(idx, src.indexOf("\n}\n", fnAt));
-    expect(block).toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');
+    expect(block).toContain('registerRejection(dedup.rejections, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');
   });
 
 

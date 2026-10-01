@@ -26,51 +26,28 @@ import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
 
-import {
-  bindTasteModelContext,
-  createClipAdoptAudit,
-  recordClipAdopt,
-} from "./clipAdoptAudit";
-import type { TasteModelContext } from "./documentaryTasteModel";
-import type { CandidateMeta } from "./assetDirector";
-
-/** The render's own shape, as `createVisualDedupState` builds it. */
-const emptyTasteContext = (): TasteModelContext => ({
-  clipUsageCount: new Map(),
-  recentShotHistory: [],
-  recentEmotions: [],
-  activeEntity: null,
-  activeEra: null,
-  beatText: "",
-});
-
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+const AUDIT = fs.readFileSync(path.join(__dirname, "clipAdoptAudit.ts"), "utf8");
+const TASTE = fs.readFileSync(path.join(__dirname, "documentaryTasteModel.ts"), "utf8");
 
-/* ═══════════ 1. every route enters the montage's memory ═══════════ */
+/* ═══════════ 1. one owner for shot variety and for usage ═══════════ */
 
-describe("R201 §1 — the memory is written where every route passes", () => {
-  const withMemory = () => {
-    const audit = createClipAdoptAudit();
-    const ctx = emptyTasteContext();
-    const meta = new Map<string, CandidateMeta>();
-    bindTasteModelContext(audit, ctx, meta);
-    return { audit, ctx, meta };
-  };
-
-  it("adoptClip no longer records it a second time", () => {
-    /**
-     * The two calls it used to make are gone. Keeping them would double this route's pictures in
-     * the fatigue count and the shot history the NEXT beat is scored against — the same picture
-     * would read as two, and a progression step as a repeat.
-     */
-    expect(PIPE).not.toContain("recordTasteModelAdoption(p, dedup.tasteModelCtx");
-    expect(PIPE).not.toContain("recordTasteModelAdoption(transformed, dedup.tasteModelCtx");
+describe("R201 §1 — the montage memory nobody wrote is gone, its questions have one owner each", () => {
+  /**
+   * The memory was written only by `recordClipAdopt`, whose two callers went with the scene pool.
+   * From then on clip fatigue and shot progression scored every candidate alike. Shot variety is
+   * the AssetDirector's; how often an asset was used is the usage history's.
+   */
+  it("the taste model no longer scores clip fatigue or shot progression", () => {
+    expect(TASTE).not.toContain("clipFatigueScore");
+    expect(TASTE).not.toContain("scoreShotProgression");
+    expect(TASTE).not.toContain("clipUsageCount");
+    expect(TASTE).not.toContain("export function recordTasteModelAdoption");
   });
 
-  it("and it is bound once, beside the other three render bindings", () => {
-    expect(PIPE).toContain(
-      "bindTasteModelContext(state.clipAdoptAudit, state.tasteModelCtx, state.clipAnnotationMeta)"
-    );
+  it("no binding for a memory that is never read", () => {
+    expect(PIPE).not.toContain("bindTasteModelContext(");
+    expect(AUDIT).not.toContain("tasteByAudit");
   });
 });
 

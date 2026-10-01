@@ -1,11 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
-import {
-  visionCoverageRefusal,
-  assertVisionCoverageExportGate,
-  type VisionCoverageBeat,
-} from "./videoQualityReport";
+import { visionCoverageRefusal, assertVisionCoverageExportGate, type VisionCoverageBeat } from "./deliveryGate";
 
 /**
  * REFUSING TO PUBLISH A FILM AND DESTROYING IT ARE NOT THE SAME ACT.
@@ -130,7 +126,8 @@ describe("the refused film is kept where the operator can see it", () => {
 });
 
 describe("nothing was weakened to stop losing the film", () => {
-  const REPORT = readFileSync(join(__dirname, "videoQualityReport.ts"), "utf8");
+  /** ONE ROUTE: every delivery rule lives in the DeliveryGate. */
+  const REPORT = readFileSync(join(__dirname, "deliveryGate.ts"), "utf8");
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
   it("A BLOCKED EXPORT IS STILL failed, NEVER completed", () => {

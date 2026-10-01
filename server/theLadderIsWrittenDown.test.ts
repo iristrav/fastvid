@@ -49,7 +49,6 @@ import {
 } from "./sourcingTiers";
 
 const PIPELINE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-const FUNNEL = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
 const POOL = readFileSync(join(__dirname, "scenePool.ts"), "utf8");
 
 /* ═══════════ 1 — the ladder itself ═══════════ */
@@ -164,46 +163,6 @@ describe("§22 — every provider the code searches has a tier", () => {
      */
     const untiered = gatedProviders().filter((p) => providerTier(p) === null);
     expect(untiered, "a provider is searched and belongs to no tier").toEqual([]);
-  });
-
-  it("the ranking bonus agrees with the ladder — no source outranks a better tier", () => {
-    /**
-     * `EXTERNAL_SOURCE_TIER_BONUS` expresses the same order as a number. The two are allowed to
-     * disagree about the spacing between sources; they may not disagree about which comes first,
-     * because then a render's ranking and its routing would be pulling in opposite directions.
-     */
-    const bonuses = new Map<string, number>();
-    const re = /^\s{2}([a-z_]+):\s*(0(?:\.\d+)?),?$/gm;
-    const table = FUNNEL.slice(
-      FUNNEL.indexOf("const EXTERNAL_SOURCE_TIER_BONUS"),
-      FUNNEL.indexOf("};", FUNNEL.indexOf("const EXTERNAL_SOURCE_TIER_BONUS"))
-    );
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(table))) bonuses.set(m[1], Number(m[2]));
-    expect(bonuses.size, "the bonus table could not be read").toBeGreaterThanOrEqual(6);
-
-    for (const [a, aBonus] of bonuses) {
-      for (const [b, bBonus] of bonuses) {
-        const ta = providerTier(a);
-        const tb = providerTier(b);
-        if (!ta || !tb) continue;
-        if (tierNumber(ta) >= tierNumber(tb)) continue;
-        expect(
-          aBonus,
-          `${a} is tier ${tierNumber(ta)} and ${b} is tier ${tierNumber(tb)}, ` +
-            `but ${a} ranks ${aBonus} against ${b}'s ${bBonus}`
-        ).toBeGreaterThanOrEqual(bBonus);
-      }
-    }
-  });
-
-  it("stock carries no ranking bonus, which is what being last means", () => {
-    for (const provider of providersInTier("STOCK")) {
-      const at = FUNNEL.indexOf(`\n  ${provider}: `);
-      if (at < 0) continue; // not every stock source is in the ranking table
-      const value = /:\s*([\d.]+)/.exec(FUNNEL.slice(at, at + 40))?.[1];
-      expect(Number(value), `${provider} has a tier bonus`).toBe(0);
-    }
   });
 });
 

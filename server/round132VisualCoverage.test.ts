@@ -41,7 +41,7 @@ import {
   noteDuplicateAttempt,
   type UsedAssetSets,
 } from "./visualDedupRegistry";
-import { orderForDiversity, recallProvenAssetsForEntity } from "./searchMemoryRecall";
+
 import type { ProvenAssetMemory } from "./visualSearchMemory";
 import type { ArchiveAssetRow } from "./curatedMediaSourcing";
 import { buildBeatVisualStatuses, neverAskedReason } from "./beatVisualStatus";
@@ -59,11 +59,10 @@ const adopt = (
   ({ sceneIndex, beatIndex, basename, source }) as unknown as ClipAdoptEntry;
 
 const sets = (): UsedAssetSets => ({
+  usedPaths: new Set(),
   usedContentKeys: new Set(),
   usedCuratedAssetIds: new Set(),
   usedCuratedStorageUrls: new Set(),
-  usedProviderKeys: new Set(),
-  usedFunnelCandidateIds: new Set(),
 });
 
 /* ═══════════════════════ A–F: the brief's dedup cases ═══════════════════════ */
@@ -140,108 +139,6 @@ describe("RONDE 132 §2 — the refusal is visible", () => {
   });
 });
 
-/* ═══════════════════════ P/Q: memory obeys the video ═══════════════════════ */
-
-describe("RONDE 132 §11 — the used-asset set outranks the memory", () => {
-  const memory = (assetId: number, usageCount = 1): ProvenAssetMemory => ({
-    assetId,
-    query: `q${assetId}`,
-    source: "curated_archive",
-    usageCount,
-    qualityScore: 80,
-  });
-  const archiveRow = (id: number) =>
-    ({ id, archiveId: 1, title: `asset ${id}`, mediaType: "video" }) as unknown as ArchiveAssetRow;
-
-  it("P. a proven memory asset is offered when the video has not used it", async () => {
-    const out = await recallProvenAssetsForEntity("Hermann Göring", {
-      readMemory: async () => [memory(101), memory(102)],
-      loadAssets: async (ids) => ids.map(archiveRow),
-      resolveArchiveName: async () => "Bundesarchiv",
-    });
-    expect(out.map((r) => r.pick.asset.id)).toEqual([101, 102]);
-  });
-
-  it("Q. a memory asset already used is skipped and the NEXT one is offered", async () => {
-    const excluded: number[] = [];
-    const out = await recallProvenAssetsForEntity("Hermann Göring", {
-      excludeAssetIds: new Set([101]),
-      onExcluded: (m) => excluded.push(m.assetId),
-      readMemory: async () => [memory(101), memory(102)],
-      loadAssets: async (ids) => ids.map(archiveRow),
-      resolveArchiveName: async () => "Bundesarchiv",
-    });
-    expect(out.map((r) => r.pick.asset.id)).toEqual([102]);
-    // And the refusal is reported rather than filtered away in silence: a working exclude set
-    // must not look identical to an empty memory.
-    expect(excluded).toEqual([101]);
-  });
-
-  it("every memory asset already used yields nothing, loudly", async () => {
-    const excluded: number[] = [];
-    const out = await recallProvenAssetsForEntity("Hermann Göring", {
-      excludeAssetIds: new Set([101, 102]),
-      onExcluded: (m) => excluded.push(m.assetId),
-      readMemory: async () => [memory(101), memory(102)],
-      loadAssets: async (ids) => ids.map(archiveRow),
-      resolveArchiveName: async () => "Bundesarchiv",
-    });
-    expect(out).toEqual([]);
-    expect(excluded.sort()).toEqual([101, 102]);
-  });
-});
-
-/* ═══════════════════════ §11/§12: diversity without losing evidence ═══════════════════════ */
-
-describe("RONDE 132 §11 — ten proven assets do not always yield asset #1", () => {
-  const m = (assetId: number, usageCount: number): ProvenAssetMemory => ({
-    assetId,
-    query: "q",
-    source: "curated_archive",
-    usageCount,
-    qualityScore: 80,
-  });
-
-  it("rotates WITHIN a usage tier, so the evidence ordering is untouched", () => {
-    /**
-     * The constraint that keeps this from being a quality regression: a less-proven asset must
-     * never be offered over a better-proven one. Only the order among EQUALLY proven assets moves.
-     */
-    const pool = [m(1, 5), m(2, 5), m(3, 5), m(4, 2), m(5, 2)];
-    for (const seed of [0, 1, 2, 3, 7]) {
-      const ordered = orderForDiversity(pool, seed);
-      const usages = ordered.map((x) => x.usageCount);
-      // Still descending by usage: tier 5 first, then tier 2, every time.
-      expect(usages, `seed=${seed}`).toEqual([5, 5, 5, 2, 2]);
-    }
-  });
-
-  it("a different seed leads with a different asset", () => {
-    const pool = [m(1, 5), m(2, 5), m(3, 5)];
-    expect(orderForDiversity(pool, 1).map((x) => x.assetId)).toEqual([2, 3, 1]);
-    expect(orderForDiversity(pool, 2).map((x) => x.assetId)).toEqual([3, 1, 2]);
-    // ...and every asset is still offered, none dropped.
-    expect(orderForDiversity(pool, 2).map((x) => x.assetId).sort()).toEqual([1, 2, 3]);
-  });
-
-  it("seed 0 changes nothing at all", () => {
-    // A caller that does not ask for variety must not get any.
-    const pool = [m(1, 5), m(2, 5)];
-    expect(orderForDiversity(pool, 0)).toBe(pool);
-  });
-
-  it("a single asset and an empty memory are left alone", () => {
-    expect(orderForDiversity([], 3)).toEqual([]);
-    const one = [m(1, 5)];
-    expect(orderForDiversity(one, 3)).toBe(one);
-  });
-
-  it("a negative seed still lands inside the tier", () => {
-    const pool = [m(1, 5), m(2, 5), m(3, 5)];
-    expect(orderForDiversity(pool, -1).map((x) => x.assetId).sort()).toEqual([1, 2, 3]);
-  });
-});
-
 /* ═══════════════════════ wired into the real path ═══════════════════════ */
 
 describe("RONDE 132 §2 — wired where the pictures are actually adopted", () => {
@@ -250,8 +147,6 @@ describe("RONDE 132 §2 — wired where the pictures are actually adopted", () =
     const { join } = require("path") as typeof import("path");
     return readFileSync(join(__dirname, file), "utf8");
   };
-
-
 
   it("the render report prints the dedup summary", () => {
     expect(read("videoPipeline.ts")).toContain("formatVisualDedupSummary(getActiveVideoId()");
@@ -268,15 +163,14 @@ describe("RONDE 132 §2 — wired where the pictures are actually adopted", () =
   });
 
   it("RONDE 34's dedup scopes are still the ones being used", () => {
-    // Not replaced — extended. Every set named in RONDE 34's comment is still the storage.
+    // ONE ROUTE: the sets with a writer are the storage; the ones nothing wrote (funnel ids,
+    // provider keys, fingerprints) are gone — a provider identity lives in usedContentKeys.
     const pipe = read("videoPipeline.ts");
-    for (const set of [
-      "usedContentKeys",
-      "usedCuratedAssetIds",
-      "usedCuratedStorageUrls",
-      "usedFunnelCandidateIds",
-    ]) {
+    for (const set of ["usedPaths", "usedContentKeys", "usedCuratedAssetIds", "usedCuratedStorageUrls"]) {
       expect(pipe, set).toContain(`${set}:`);
+    }
+    for (const gone of ["usedFunnelCandidateIds", "  usedProviderKeys: Set<string>;", "usedFingerprints"]) {
+      expect(pipe, gone).not.toContain(gone);
     }
   });
 });

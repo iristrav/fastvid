@@ -285,12 +285,12 @@ describe("an unreachable picture editor suspends one requirement and excuses not
     expect(IMAGE_GATE).toContain("function noteAskImpossible(");
 
     /** Both are read in the guard, in one expression, and never inverted to SKIP eligibility. */
-    const guardAt = PIPE.indexOf("async function adoptionGuardRefusesPush(");
+    const guardAt = PIPE.indexOf("async function visualJudgeRefusesPush(");
     const guard = PIPE.slice(guardAt, PIPE.indexOf("\n}", guardAt));
     expect(guard).toContain("const visionAvailable =");
     expect(guard).toContain("!visionPipelineIsUnavailable()");
     expect(guard).toContain("!dedup.beatImageGate?.askImpossible");
-    expect(guard).toContain("isEligible(clipPath, clipContentKey(clipPath))");
+    expect(guard).toContain("isEligible(clipPath, contentKey)");
     /** Eligibility is computed from the ledger alone — availability may not reach it. */
     const eligibleAt = guard.indexOf("const eligible =");
     expect(guard.slice(eligibleAt, eligibleAt + 160)).not.toContain("visionAvailable");

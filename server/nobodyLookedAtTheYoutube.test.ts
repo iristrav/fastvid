@@ -41,7 +41,9 @@ describe("1. backfill may not fill a beat nobody was asked about", () => {
      * has no beat. Removing that branch would be a different change and a worse one — the point
      * is that a caller which HAS a beat must not reach it.
      */
-    expect(SRC).toContain("if (beatIndex != null) {");
+    /** ONE ROUTE: the push judge asks only with a beat; a beat-less refusal still reaches the registry. */
+    expect(SRC).toContain("if (beatIndex != null && dedup.beatRelevance) {");
+    expect(SRC).toContain("const nothingToJudge = beatIndex == null ||");
   });
 });
 

@@ -21,15 +21,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  assertVisualCoverageExportGate,
-  buildVideoQualityReport,
-  exportGateReadiness,
-  formatExportGateReadiness,
-  indefensibleExportConditions,
-  type VideoQualityReport,
-} from "./videoQualityReport";
+import { buildVideoQualityReport, exportGateReadiness, formatExportGateReadiness, type VideoQualityReport } from "./videoQualityReport";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
+import { assertVisualCoverageExportGate, indefensibleExportConditions } from "./deliveryGate";
 
 const POLICY = { hardTier: false, blockVisualMismatch: true, strictQuality: true, minScore: 45 };
 

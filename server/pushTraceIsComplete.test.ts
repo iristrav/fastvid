@@ -82,9 +82,9 @@ describe("both outcomes are traced at every door", () => {
      * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
      * is about that body, so it is read there. Nothing about what the gate decides changed.
      */
-    const at = SRC.indexOf("async function relevanceGateRefusesClip(");
+    const at = SRC.indexOf("async function visualJudgeRefusesPush(");
     const body = SRC.slice(at, SRC.indexOf("\n}", SRC.indexOf("return true;", at)));
-    expect(body).toContain("tracePushOutcome(dedup, clipPath, sceneIndex, beatIndex, false, barrier.reason)");
+    expect(body).toContain("tracePushOutcome(dedup, clipPath, sceneIndex, beatIndex, false, why)");
   });
 
   it("traces the duplicate refusal", () => {

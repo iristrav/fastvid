@@ -19,7 +19,7 @@ import {
   createClipAdoptAudit,
   recordClipAdopt,
 } from "./clipAdoptAudit";
-import { createClipRejectAudit, recordClipReject } from "./clipRejectAudit";
+import { createRejectionRegistry, registerRejection } from "./rejectionRegistry";
 import { buildVideoQualityReport } from "./videoQualityReport";
 import { buildEditorClipFromPath } from "./editorClips";
 import {
@@ -311,11 +311,11 @@ describe("RONDE 87 §E — every refusal names the asset and the gate", () => {
   });
 
   it("TEST 19 — every gate in the pipeline reports through the one reject point", () => {
-    const audit = createClipRejectAudit();
+    const audit = createRejectionRegistry();
     const l = ledger();
     audit.lineage = l;
     const r = provenCandidate(l);
-    recordClipReject(audit, 7, 3, r.localPath, "vision_gate", "q");
+    registerRejection(audit, 7, 3, r.localPath, "vision_gate", "q");
     expect(l.summary().total.rejected).toBe(1);
     expect(l.summary().failureReasons.vision_gate).toBe(1);
 
@@ -591,7 +591,9 @@ describe("RONDE 87 §K — concurrent renders never contaminate each other", () 
   it("TEST 42 — each render's ledger is created with the render, and bound to its own audits", () => {
     expect(PIPELINE_SRC).toContain("lineage: new VisualSourceLedger({");
     expect(PIPELINE_SRC).toContain("bindLineageLedger(state.clipAdoptAudit, state.sourcingCache.lineage);");
-    expect(PIPELINE_SRC).toContain("state.clipRejectAudit.lineage = state.sourcingCache.lineage;");
+    /** ONE ROUTE: the registry is created with the render's cache and bound to its ledger there. */
+    expect(PIPELINE_SRC).toContain("cache.rejections.lineage = cache.lineage;");
+    expect(PIPELINE_SRC).toContain("rejections: sourcingCache.rejections,");
   });
 });
 
@@ -620,8 +622,8 @@ describe("RONDE 88 — the external providers are wired, not just the archive", 
     const calls = [...PIPELINE_SRC.matchAll(/tagPathWithProviderAsset\(\s*([\s\S]*?)\n\s*\);/g)]
       .map((m) => m[1]!)
       .filter((body) => !body.includes("export function"));
-    /** Twelve before VIDEO 619; the removed providers' download sites left with them. */
-    expect(calls.length, "expected the eleven download sites").toBeGreaterThanOrEqual(11);
+    /** Twelve before VIDEO 619; the removed providers' download sites left with them (Unsplash last). */
+    expect(calls.length, "expected the ten download sites").toBeGreaterThanOrEqual(10);
     for (const body of calls) {
       expect(body, `a download site records nothing:\n${body}`).toContain("sourcingCache");
     }

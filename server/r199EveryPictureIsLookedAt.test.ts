@@ -193,29 +193,23 @@ describe("R199 §4 — the refusal and the evidence line cannot disagree", () =>
 describe("R199 §5 — tightening the rule without starving the render", () => {
   it("the push route asks before the guard reads, and says this one is the picture", () => {
     /**
-     * ARCHIVE-FIRST ROUND — `beatClipRefusedByRelevanceGate` became a two-part answer.
-     *
-     * The exported function now asks the editorial question first and the archive question second;
-     * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
-     * is about that body, so it is read there. Nothing about what the gate decides changed.
+     * ONE ROUTE — the barrier and the route rule are one push judge now (`visualJudgeRefusesPush`),
+     * and it asks for the look itself, as the beat's final say, before it reads the answer.
      */
-    const at = PIPE.indexOf("async function relevanceGateRefusesClip(");
+    const at = PIPE.indexOf("export async function visualJudgeRefusesPush(");
     expect(at).toBeGreaterThan(0);
     const body = PIPE.slice(at, at + 2600);
     expect(body).toContain("ensureVerdictBeforeCompose({");
     expect(body).toContain("finalSay: true");
+    expect(body.indexOf("ensureVerdictBeforeCompose({")).toBeLessThan(body.indexOf("relevanceVerdictForRenderedAsset("));
   });
 
-  it("every push closure asks first and only then consults the guard", () => {
+  it("every push closure goes through the one push judge", () => {
     const asks = [...PIPE.matchAll(/beatClipRefusedByRelevanceGate\(dedup, clipPath/g)];
-    /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
     expect(asks.length).toBeGreaterThanOrEqual(1);
-    for (const m of asks) {
-      const after = PIPE.slice(m.index!, m.index! + 400);
-      expect(after, "a push route consults the guard without obtaining a verdict first").toContain(
-        "adoptionGuardRefusesPush(dedup, clipPath"
-      );
-    }
+    expect(PIPE).not.toContain("adoptionGuardRefusesPush(");
+    const gate = PIPE.slice(PIPE.indexOf("export async function beatClipRefusedByRelevanceGate("));
+    expect(gate.slice(0, 1200)).toContain("await visualJudgeRefusesPush(dedup, clipPath");
   });
 
   it("the final say passes the per-beat look ceiling, and nothing else does", () => {

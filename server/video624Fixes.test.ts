@@ -76,7 +76,6 @@ describe("1. an archive item carries YouTube's own title", () => {
       details: async (ids) => new Map(ids.map((id) => [id, own])),
       triage: async () => ({ footageType: "real_footage", servesBeats: [0], depicts: "" }),
       archive: async () => [archived("tnBQmEqBCY0", "")],
-      notFootage: () => null,
       log: () => {},
     };
     const pool = await buildVideoYoutubePool(deps, input);
@@ -318,7 +317,8 @@ describe("8. look ahead for every sentence; first look, then download; archive o
     expect(registry.stats().cancelled).toBe(0);
   });
 
-  it("the pool hands a sentence only the videos the look judged to serve it", () => {
+  /** ONE ROUTE — the look ranks: the videos it judged to serve a sentence come first, the others after. */
+  it("the pool hands a sentence the videos the look judged to serve it first", () => {
     const pool = {
       videoId: 1, sentences: ["Elon Musk speaks at the meeting.", "The factory floor at night."],
       query1: "Elon Musk", query2: null, searches: 1,
@@ -328,8 +328,8 @@ describe("8. look ahead for every sentence; first look, then download; archive o
       ],
       coverage1: 1, archiveUsable: 0, search2Needed: false, search2Reason: "", finalCoverage: 1, decided: true,
     } as unknown as VideoYoutubePool;
-    expect(poolRowsForBeat(pool, "Elon Musk speaks at the meeting.", ["musk"], "Elon Musk").map((r) => r.item.id.videoId)).toEqual(["aaaaaaaaaaa"]);
-    expect(poolRowsForBeat(pool, "The factory floor at night.", ["factory"], "Elon Musk").map((r) => r.item.id.videoId)).toEqual(["bbbbbbbbbbb"]);
+    expect(poolRowsForBeat(pool, "Elon Musk speaks at the meeting.", ["musk"], "Elon Musk").map((r) => r.item.id.videoId)).toEqual(["aaaaaaaaaaa", "bbbbbbbbbbb"]);
+    expect(poolRowsForBeat(pool, "The factory floor at night.", ["factory"], "Elon Musk").map((r) => r.item.id.videoId)).toEqual(["bbbbbbbbbbb", "aaaaaaaaaaa"]);
   });
 
   it("whether a picture serves a sentence is asked per sentence, not once per video", async () => {
@@ -338,8 +338,9 @@ describe("8. look ahead for every sentence; first look, then download; archive o
       ({ footageType: "real_footage", servesBeats: sentences[0]?.includes("speech") ? [0] : [] });
     const a = { beatText: "He gave a speech.", beatIndex: 0, videoTitle: "x" } as never;
     const b = { beatText: "The rocket lifted off.", beatIndex: 1, videoTitle: "x" } as never;
+    /** Asked per sentence, and (ONE ROUTE) used to rank: both sentences keep the row. */
     expect(await youtubeRowsWithoutNonFootage([row], a, 0, look)).toHaveLength(1);
-    expect(await youtubeRowsWithoutNonFootage([row], b, 0, look)).toHaveLength(0);
+    expect(await youtubeRowsWithoutNonFootage([row], b, 0, look)).toHaveLength(1);
   });
 
   it("the background fetch archives its segments itself; the download does not do it again", () => {

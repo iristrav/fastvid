@@ -9,7 +9,7 @@ import {
   resolveTargetMovingShare,
   summarizeMovingShare,
 } from "./visualMixPolicy";
-import { mergeCandidates, type FunnelCandidate } from "./retrievalFunnel";
+
 import type { PoolCandidate } from "./scenePool";
 import {
   createGateFiringStats,
@@ -115,28 +115,6 @@ describe("RONDE 29b — the moving-footage target the ranking leans on", () => {
   it("summarises the mix for the quality report", () => {
     expect(summarizeMovingShare(7, 11)).toBe("7/18 moving (39%), 11 still");
     expect(summarizeMovingShare(0, 0)).toBe("no clips adopted");
-  });
-
-  it("ranks a video candidate higher when the render is behind on moving footage", () => {
-    const neutral = mergeCandidates([], [], [poolVideo()], 1, 1, 10, 0);
-    const behind = mergeCandidates([], [], [poolVideo()], 1, 1, 10, 1);
-    expect(behind[0].rankingScore).toBeGreaterThan(neutral[0].rankingScore);
-    // Bounded: at most one extra base bonus (0.08), which is under a single source-tier step.
-    expect(behind[0].rankingScore - neutral[0].rankingScore).toBeCloseTo(0.08, 5);
-  });
-
-  it("leaves still candidates untouched no matter how large the deficit", () => {
-    const neutral = mergeCandidates([], [], [poolImage()], 1, 1, 10, 0);
-    const behind = mergeCandidates([], [], [poolImage()], 1, 1, 10, 1);
-    expect(behind[0].rankingScore).toBe(neutral[0].rankingScore);
-  });
-
-  it("behaves exactly as RONDE 27 did when no deficit is supplied", () => {
-    // The parameter defaults to 0, so every caller that does not track the mix — including the
-    // TTS-time prefetch, where no clip has been adopted yet — is unaffected.
-    const explicitZero = mergeCandidates([], [], [poolVideo()], 1, 1, 10, 0);
-    const omitted = mergeCandidates([], [], [poolVideo()], 1, 1, 10);
-    expect(omitted[0].rankingScore).toBe(explicitZero[0].rankingScore);
   });
 
   it("documents that the slot planner is deliberately left unwired", () => {
@@ -274,7 +252,3 @@ function poolImage(): PoolCandidate {
     mediaType: "image",
   } as PoolCandidate;
 }
-
-// Keeps the FunnelCandidate import honest — mergeCandidates' return type is what these tests
-// assert against.
-export type _FunnelCandidateShape = FunnelCandidate;

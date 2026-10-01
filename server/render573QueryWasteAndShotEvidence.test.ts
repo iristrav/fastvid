@@ -77,42 +77,6 @@ describe("an unchecked clip is not counted as a cleared one", () => {
   });
 });
 
-describe("the director's variety findings are about the film, not the script", () => {
-  const DIR = fs.readFileSync(path.join(__dirname, "globalDocumentaryDirector.ts"), "utf8");
-  const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-
-  it("observed framings decide when any clip was judged", () => {
-    const at = DIR.indexOf("const observed = clips");
-    expect(at).toBeGreaterThan(-1);
-    const region = DIR.slice(at, at + 900);
-    expect(region).toContain("shotTypeOf?.(c)");
-    expect(region).toContain('observed.length > 0 ? "observed_frames" : "narration_text"');
-  });
-
-  it("the narration reading survives as the fallback, unchanged", () => {
-    const at = DIR.indexOf("const observed = clips");
-    const region = DIR.slice(at, at + 900);
-    expect(region).toContain("WIDE_TEXT_TOKENS.test(allText)");
-    expect(region).toContain("CLOSE_TEXT_TOKENS.test(allText)");
-  });
-
-  it("the finding states which of the two it was built on", () => {
-    const at = DIR.indexOf("const observedScenes = profiles.filter");
-    expect(at).toBeGreaterThan(-1);
-    const region = DIR.slice(at, at + 900);
-    expect(region).toContain("no clip was judged — read from the narration's own words");
-    expect(region).toContain("observed framings in ");
-  });
-
-  it("the pipeline hands it the same resolver assetDirector gets", () => {
-    const at = PIPE.indexOf("analyzeVideoStructure(");
-    expect(at).toBeGreaterThan(-1);
-    const region = PIPE.slice(at, at + 900);
-    expect(region).toContain("observedShotType");
-    expect(region).toContain("cinematography?.shotType");
-  });
-});
-
 describe("an expected refusal is a sentence, not a stack trace", () => {
   const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 

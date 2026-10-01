@@ -9,8 +9,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { youtubeSearchDurationForPass, youtubeSearchPassesPerQuery } from "./sourcingPolicy";
+import { youtubeSearchDurationForPass } from "./sourcingPolicy";
 import { queriesThatNameSomething, queryNamesSomething } from "./youtubeNonFootage";
+import { youtubeSearchPassesPerQuery } from "./config";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 

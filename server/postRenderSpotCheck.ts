@@ -2,14 +2,13 @@
  * Post-render quality spot-check — ffprobe + 4-frame luma + FFmpeg blackdetect/freezedetect/silencedetect.
  */
 import fs from "fs";
-import { envFlagIsNotOff, envFlagIsOn } from "./envFlag";
+import { envFlagIsNotOff } from "./envFlag";
 import path from "path";
 import { spawn } from "child_process";
 import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { exec as execCb } from "child_process";
-import { isFastShortVideoLength } from "./sourcingPolicy";
 
 // Routed through ffmpegSemaphore (previously ungated) — postRenderSpotCheckEnabledForVideo()
 // defaults ON for the 10-20min target length and runs at the tail of every long render.
@@ -31,35 +30,6 @@ export type PostRenderSpotCheckResult = {
   silentSegments: number;
   warnings: string[];
 };
-
-/**
- * How many of the spot check's four samples must be dark before the film is called blank.
- *
- * `spotCheckFinalVideo` samples the delivered file at 12%, 38%, 62% and 88% — never at the very
- * start or the very end, so an opening or closing fade cannot produce a dark sample. ALL of them
- * is the bar: a documentary may legitimately hold on black once, and two of four dark is a night
- * sequence, not an empty render. Four of four is a film with no picture anywhere it was looked.
- */
-const BLANK_PICTURE_MIN_SAMPLES = 2;
-
-/**
- * A BLANK FILM, AS ONE RULE — the export gate and the render job ask the same question here.
- *
- * Null when the picture is not blank, and also when nothing was measured: "nothing was sampled"
- * is not evidence of a bad render, so an unsampled film is reported as unsampled, not convicted.
- */
-export function blankPictureFinding(
-  spot: Pick<PostRenderSpotCheckResult, "framesChecked" | "blackFrameCount" | "worstMeanLuma"> | null | undefined
-): string | null {
-  if (!spot || spot.framesChecked < BLANK_PICTURE_MIN_SAMPLES || spot.blackFrameCount !== spot.framesChecked) {
-    return null;
-  }
-  return (
-    `all ${spot.framesChecked} sampled frame(s) of the delivered file are black ` +
-    `(worst mean luma ${spot.worstMeanLuma?.toFixed(0) ?? "?"}) — ` +
-    `the film has no picture at any point that was looked at`
-  );
-}
 
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN?.trim() || "ffmpeg";
@@ -304,9 +274,3 @@ export function postRenderSpotCheckEnabled(): boolean {
   return envFlagIsNotOff("ENABLE_POST_RENDER_SPOT_CHECK");
 }
 
-/** Per-video gate — fast 1-min Railway skips by default (see sourcingPolicy). */
-export function postRenderSpotCheckEnabledForVideo(videoLength?: string | null): boolean {
-  if (!envFlagIsNotOff("ENABLE_POST_RENDER_SPOT_CHECK")) return false;
-  if (envFlagIsOn("ENABLE_POST_RENDER_SPOT_CHECK")) return true;
-  return !isFastShortVideoLength(videoLength);
-}

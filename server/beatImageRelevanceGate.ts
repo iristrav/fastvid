@@ -46,6 +46,7 @@ import { recordVisionAsk, type VisionCaller } from "./visionCensus";
 import { normaliseShotType } from "./shotVocabulary";
 import type { ShotType } from "./cinematicEditingEngine/types";
 import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
+import { beatImageRelevanceGateEnabled } from "./config";
 
 export type BeatImageVerdict = "fits" | "does_not_fit" | "unknown";
 
@@ -244,11 +245,6 @@ export const MAX_JUDGEMENTS_PER_BEAT = envInt("MAX_BEAT_IMAGE_JUDGEMENTS_PER_BEA
  */
 export function maxBeatImageJudgementsPerRender(): number {
   return envInt("MAX_BEAT_IMAGE_JUDGEMENTS", 120, 0, 500);
-}
-
-
-export function beatImageRelevanceGateEnabled(): boolean {
-  return process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false";
 }
 
 /**
@@ -540,7 +536,7 @@ export type BeatSubjectAnchors = {
  * verdict's key (`beatIdentityKey`), so changing the rules re-asks instead of reusing old answers.
  * Change it whenever the belongs / does-not-belong wording changes.
  */
-export const BEAT_JUDGE_RULES = "r649-unfilmable-lines";
+export const BEAT_JUDGE_RULES = "r650-visual-plan-context";
 
 function formatAnchors(anchors: BeatSubjectAnchors | undefined): string[] {
   if (!anchors) return [];
@@ -686,7 +682,13 @@ export function buildBeatImagePrompt(
   frameCount: number,
   videoTitle?: string,
   sceneText?: string,
-  anchors?: BeatSubjectAnchors
+  anchors?: BeatSubjectAnchors,
+  /**
+   * ONE ROUTE — the VisualIntent plan's own description of the shot this line was planned for.
+   * Context for the editor, never a requirement: a picture that fits the LINE fits, whether or not
+   * it is the shot that was planned.
+   */
+  plannedVisual?: string
 ): string {
   const many = frameCount > 1;
   return [
@@ -706,6 +708,9 @@ export function buildBeatImagePrompt(
       : "",
     `THE QUESTION — narration for this shot: "${beatText.slice(0, 300)}"`,
     ...formatAnchors(anchors),
+    plannedVisual?.trim()
+      ? `The script's visual plan for this line, for background only — NOT a requirement: "${plannedVisual.trim().slice(0, 240)}"`
+      : "",
     "",
     many
       ? "First say plainly what the clip shows — the subject, the period it looks like, any text" +
@@ -846,6 +851,8 @@ export async function judgeBeatImage(params: {
   sceneText?: string;
   /** RONDE 175 §3: the subject, years and places the pipeline already established for this beat. */
   anchors?: BeatSubjectAnchors;
+  /** ONE ROUTE: the VisualIntent plan's description of the shot planned for this line. */
+  plannedVisual?: string;
   contentKey: string;
   /**
    * RONDE 103 — identity of the narration this clip is being judged against. See
@@ -1013,7 +1020,7 @@ export async function judgeBeatImage(params: {
             content: [
               {
                 type: "text",
-                text: buildBeatImagePrompt(beatText, dataUrls.length, videoTitle, sceneText, params.anchors),
+                text: buildBeatImagePrompt(beatText, dataUrls.length, videoTitle, sceneText, params.anchors, params.plannedVisual),
               },
               // "low" detail: enough to recognise subject, period and on-screen text, at a
               // fraction of the tokens a full-resolution read would cost. That is what makes

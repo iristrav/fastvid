@@ -36,12 +36,6 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  describeTierChanges,
-  providerFitForNeed,
-  providerSuppliesForm,
-  tierTasksByNeed,
-} from "./providerCapability";
 import { mediaFormsForIntent, mediaFormsForScene } from "./beatVisualIntent";
 import { stripComments } from "./sourceScan.test.support";
 import fs from "fs";
@@ -49,7 +43,6 @@ import path from "path";
 
 const read = (f: string) => stripComments(fs.readFileSync(path.join(__dirname, f), "utf8"));
 const POOL = read("scenePool.ts");
-const CAPS = read("providerCapability.ts");
 const PIPE = read("videoPipeline.ts");
 
 /** The tiers `buildSceneCandidatePool` actually declares, as a fixture. */
@@ -92,129 +85,6 @@ const round = (n: number): number => Math.round(n * 10) / 10;
 const moved = (after: ReadonlyArray<{ tier: number; source: string }>, source: string): number =>
   round(tierOf(after, source) - tierOf(PRODUCTION_TIERS, source));
 
-/* ═══════════ 1. a dated beat no longer asks stock at the same moment ═══════════ */
-
-describe("P0-8 §1 — the need reaches the fetch, not only the ranking", () => {
-  /** A beat that proved a period and an event: the 1945 bunker shape, typed by the extractors. */
-  const dated = mediaFormsForIntent({ period: ["1945"], event: ["the fall of the bunker"] });
-
-  it("STOCK IS ASKED LATER ON A DATED BEAT — it cannot supply what the beat needs", () => {
-    /**
-     * Not an opinion about Pexels: the registry states that stock supplies none of the forms this
-     * beat PREFERS, and supplying none of them is the only condition that demotes.
-     *
-     * This is also the measurement that rejected the first version of the rule. The blended
-     * `providerFitForNeed` scores pexels 0.500 here — on the strength of B_ROLL being acceptable —
-     * so a rule keyed on it could never have fired on the case it was written for.
-     */
-    for (const form of dated.preferred) {
-      expect(providerSuppliesForm("pexels", form), `stock claims to supply ${form}`).toBe(false);
-    }
-    expect(providerFitForNeed("pexels", dated)).toBeGreaterThan(0);
-    const after = tierTasksByNeed(PRODUCTION_TIERS, dated);
-    expect(tierOf(after, "pexels")).toBeGreaterThan(tierOf(PRODUCTION_TIERS, "pexels"));
-    expect(tierOf(after, "pixabay")).toBeGreaterThan(tierOf(PRODUCTION_TIERS, "pixabay"));
-  });
-
-  it("AND IT IS STILL ASKED — the movement is one tier, never a removal", () => {
-    const after = tierTasksByNeed(PRODUCTION_TIERS, dated);
-    expect(after.map((t) => t.source).sort()).toEqual(PRODUCTION_TIERS.map((t) => t.source).sort());
-    expect(moved(after, "pexels")).toBe(STEP);
-  });
-
-  it("A BEAT THAT WANTS A PROCESS PROMOTES THE SAME STOCK THIS ONE DEMOTED", () => {
-    /**
-     * Topic-agnostic, and this is the check that says so: nothing in `tierTasksByNeed` names a
-     * provider, a subject or a decade. The same function that pushes pexels DOWN on a 1945 beat
-     * pulls it UP the moment the beat asks for something stock actually declares.
-     *
-     * A beat whose extractors typed only an action needs PROCESS, and the registry lists PROCESS
-     * for both stock libraries.
-     */
-    const process = mediaFormsForIntent({ action: ["mixing concrete"] });
-    expect(process.preferred).toEqual(["PROCESS"]);
-    const after = tierTasksByNeed(PRODUCTION_TIERS, process);
-    expect(moved(after, "pexels")).toBe(-STEP);
-  });
-
-  it("and a NAMED person demotes stock, which is what the registry actually claims", () => {
-    /**
-     * This fixture was written the other way round and the registry corrected it, so it is kept as
-     * the finding rather than dropped. `mediaFormsForIntent` pushes PERSON only for entities the
-     * extractors PROVED — a named individual — and neither stock library lists PERSON or LOCATION,
-     * which is a deliberate statement: a stock library cannot supply a picture of a specific named
-     * person. Demoting it there is the registry being believed, not a bug.
-     */
-    const named = mediaFormsForIntent({ people: ["a chief executive"], objects: ["a laptop"] });
-    expect(providerSuppliesForm("pexels", "PERSON")).toBe(false);
-    expect(moved(tierTasksByNeed(PRODUCTION_TIERS, named), "pexels")).toBe(STEP);
-  });
-
-  it("AND A PERFECT FIT IS ASKED EARLIER", () => {
-    const need = { preferred: ["ARCHIVAL_FOOTAGE"], acceptable: [] } as const;
-    const perfect = PRODUCTION_TIERS.filter((t) =>
-      need.preferred.every((f) => providerSuppliesForm(t.source, f) === true)
-    );
-    expect(perfect.length, "no source in the pool scores a perfect fit on any need").toBeGreaterThan(0);
-    const after = tierTasksByNeed(PRODUCTION_TIERS, need);
-    for (const t of perfect) {
-      expect(tierOf(after, t.source)).toBe(Math.max(FLOOR, round(t.tier - STEP)));
-    }
-  });
-});
-
-/* ═══════════ 2. only the two ends of the scale move anything ═══════════ */
-
-describe("P0-8 §2 — no threshold to argue about", () => {
-  const need = { preferred: ["ARCHIVAL_FOOTAGE", "NEWS"], acceptable: ["B_ROLL"] } as const;
-
-  it("EVERY SOURCE THAT MOVED SUPPLIED ALL OF THE PREFERRED FORMS, OR NONE OF THEM", () => {
-    const after = tierTasksByNeed(PRODUCTION_TIERS, need);
-    for (const before of PRODUCTION_TIERS) {
-      const now = tierOf(after, before.source);
-      if (now === before.tier) continue;
-      const supplies = need.preferred.map((f) => providerSuppliesForm(before.source, f));
-      const all = supplies.every((s) => s === true);
-      const none = supplies.every((s) => s === false);
-      expect(
-        all || none,
-        `${before.source} moved on a partial answer (${supplies.join(",")}) — that is a threshold, and there is not supposed to be one`
-      ).toBe(true);
-      /** And the direction follows from which end it was, never from the provider's name. */
-      expect(now).toBe(
-        all ? Math.max(FLOOR, round(before.tier - STEP)) : round(before.tier + STEP)
-      );
-    }
-  });
-
-  it("an unknown provider keeps the tier its author gave it — null is never a `no`", () => {
-    const tasks = [{ tier: 2, source: "a_source_nobody_has_characterised" }];
-    expect(providerSuppliesForm(tasks[0]!.source, need.preferred[0]!)).toBeNull();
-    expect(tierTasksByNeed(tasks, need)).toEqual(tasks);
-  });
-
-  it("a beat that proved nothing changes nothing at all", () => {
-    const nothing = mediaFormsForIntent(null);
-    expect(nothing.preferred).toEqual([]);
-    expect(tierTasksByNeed(PRODUCTION_TIERS, nothing)).toEqual([...PRODUCTION_TIERS]);
-    expect(tierTasksByNeed(PRODUCTION_TIERS, undefined)).toEqual([...PRODUCTION_TIERS]);
-  });
-
-  it("TIER 1 IS THE FLOOR — a promotion never invents a tier of its own", () => {
-    const need2 = { preferred: ["ARCHIVAL_FOOTAGE"], acceptable: [] } as const;
-    for (const t of tierTasksByNeed(PRODUCTION_TIERS, need2)) {
-      expect(t.tier, `${t.source} was promoted above the first declared tier`).toBeGreaterThanOrEqual(1);
-    }
-  });
-
-  it("and the function is pure — the caller's own array is not rewritten under it", () => {
-    const tasks = PRODUCTION_TIERS.map((t) => ({ ...t }));
-    const snapshot = JSON.stringify(tasks);
-    tierTasksByNeed(tasks, need);
-    expect(JSON.stringify(tasks)).toBe(snapshot);
-  });
-});
-
 /* ═══════════ 3. one scene, from the sentences in it ═══════════ */
 
 describe("P0-8 §3 — a scene's need is the union of its sentences', not one of them", () => {
@@ -222,27 +92,6 @@ describe("P0-8 §3 — a scene's need is the union of its sentences', not one of
   const personBeat = { people: ["a chancellor"] };
   const processBeat = { action: ["mixing concrete"] };
   const untypedBeat = null;
-
-  it("A SOURCE IS ONLY DEMOTED WHEN IT CAN SERVE NO SENTENCE IN THE SCENE", () => {
-    /**
-     * One sentence stock cannot serve (1945) and one it can (a process). The union makes that a
-     * PARTIAL answer, which moves nothing — a source that is right for a sentence in this scene is
-     * not pushed down the queue because another sentence has no use for it.
-     */
-    const scene = mediaFormsForScene([datedBeat, processBeat]);
-    expect(scene.preferred).toContain("ARCHIVAL_FOOTAGE");
-    expect(scene.preferred).toContain("PROCESS");
-    expect(providerSuppliesForm("pexels", "PROCESS")).toBe(true);
-    expect(providerSuppliesForm("pexels", "ARCHIVAL_FOOTAGE")).toBe(false);
-    expect(tierOf(tierTasksByNeed(PRODUCTION_TIERS, scene), "pexels")).toBe(
-      tierOf(PRODUCTION_TIERS, "pexels")
-    );
-  });
-
-  it("and a scene where NO sentence can be served still demotes, once", () => {
-    const scene = mediaFormsForScene([datedBeat, personBeat]);
-    expect(moved(tierTasksByNeed(PRODUCTION_TIERS, scene), "pexels")).toBe(STEP);
-  });
 
   it("AND ONE UNTYPED SENTENCE DOES NOT EMPTY THE SCENE'S NEED", () => {
     /**
@@ -265,68 +114,4 @@ describe("P0-8 §3 — a scene's need is the union of its sentences', not one of
       expect(scene.acceptable, `${form} is on both lists, which double-counts it`).not.toContain(form);
     }
   });
-});
-
-/* ═══════════ 4. nothing about which providers exist changed ═══════════ */
-
-describe("P0-8 §4 — order, and only order", () => {
-
-
-  it("NO SOURCE CAN BE DROPPED — the output holds exactly the input's sources", () => {
-    /**
-     * The one property that makes a mis-typed registry entry survivable. Checked over every need
-     * any beat can produce rather than on one fixture, because "it cannot drop a source" is a
-     * claim about all of them.
-     */
-    const NEEDS = [
-      mediaFormsForIntent({ period: ["1945"] }),
-      mediaFormsForIntent({ people: ["someone"] }),
-      mediaFormsForIntent({ location: ["Berlin"], objects: ["a map"] }),
-      mediaFormsForIntent({ event: ["a summit"] }),
-      mediaFormsForIntent({ action: ["walking"] }),
-      mediaFormsForIntent(null),
-    ];
-    for (const need of NEEDS) {
-      const after = tierTasksByNeed(PRODUCTION_TIERS, need);
-      expect(after.length).toBe(PRODUCTION_TIERS.length);
-      expect(after.map((t) => t.source).sort()).toEqual(PRODUCTION_TIERS.map((t) => t.source).sort());
-    }
-  });
-
-  it("the function cannot skip, refuse or filter — it has no such expression in it", () => {
-    const fn = CAPS.slice(
-      CAPS.indexOf("export function tierTasksByNeed"),
-      CAPS.indexOf("export function describeTierChanges")
-    );
-    expect(fn, "the tier router acquired a filter").not.toContain(".filter(");
-    expect(fn, "the tier router acquired a skip").not.toMatch(/\bskip/i);
-    /** It maps one task to one task. That shape is what makes the property above hold. */
-    expect(fn).toContain("tasks.map((task)");
-  });
-
-  it("NO BUDGET, CAP OR KEY IS READ HERE", () => {
-    const fn = CAPS.slice(
-      CAPS.indexOf("export function tierTasksByNeed"),
-      CAPS.indexOf("export function describeTierChanges")
-    );
-    for (const forbidden of ["process.env", "ApiKey", "budget", "Budget", "maxTotal"]) {
-      expect(fn, `the tier router reads ${forbidden}`).not.toContain(forbidden);
-    }
-  });
-});
-
-/* ═══════════ 5. and it says what it did ═══════════ */
-
-describe("P0-8 §5 — a re-ordering nobody can see is a re-ordering nobody can audit", () => {
-  it("EVERY MOVED SOURCE IS NAMED, WITH WHERE IT WENT", () => {
-    const dated = mediaFormsForIntent({ period: ["1945"] });
-    const line = describeTierChanges(PRODUCTION_TIERS, tierTasksByNeed(PRODUCTION_TIERS, dated));
-    expect(line).toContain("pexels 4→4.1");
-    expect(line).toContain("pixabay 4→4.1");
-  });
-
-  it("and a scene where nothing moved prints nothing", () => {
-    expect(describeTierChanges(PRODUCTION_TIERS, [...PRODUCTION_TIERS])).toBe("");
-  });
-
 });

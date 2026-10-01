@@ -71,14 +71,14 @@ describe("two minutes of YouTube per beat, and nothing above it ends them early"
 
   it("the YouTube slice is two minutes; an explicit override still wins", () => {
     expect(YOUTUBE_FIRST_TURN_MS).toBe(120_000);
-    expect(youtubeBeatBudgetMs("1")).toBe(120_000);
+    expect(youtubeBeatBudgetMs()).toBe(120_000);
     process.env.YOUTUBE_BEAT_BUDGET_MS = "45000";
-    expect(youtubeBeatBudgetMs("1")).toBe(45_000);
+    expect(youtubeBeatBudgetMs()).toBe(45_000);
   });
 
   it("the YouTube turn's own window is at least two minutes, fast profile included", () => {
-    expect(youtubeBeatFetchTimeoutMs(true)).toBeGreaterThanOrEqual(YOUTUBE_FIRST_TURN_MS);
-    expect(youtubeBeatFetchTimeoutMs(false)).toBeGreaterThanOrEqual(YOUTUBE_FIRST_TURN_MS);
+    expect(youtubeBeatFetchTimeoutMs()).toBeGreaterThanOrEqual(YOUTUBE_FIRST_TURN_MS);
+    expect(youtubeBeatFetchTimeoutMs()).toBeGreaterThanOrEqual(YOUTUBE_FIRST_TURN_MS);
   });
 
   it("the beat's wall holds the turn and the fallback after it", () => {
@@ -115,28 +115,5 @@ describe("two minutes of YouTube per beat, and nothing above it ends them early"
     expect(sceneVisualFlatMs(p)).toBe(p.sceneVisualTimeoutMs);
     expect(sceneRetrieveParallelism(p)).toBe(p.sceneParallelism);
     expect(beatVisualWallMs(p)).toBeLessThan(YOUTUBE_FIRST_BEAT_WORST_MS);
-  });
-});
-
-describe("the order on the route the 1-minute Railway profile takes", () => {
-  const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-  const start = SRC.indexOf("async function resolveBeatClipFastTurbo(");
-  const body = SRC.slice(start, SRC.indexOf("\n}\n", start));
-
-  it("YouTube is asked before the stills, and the stills come after the archive", () => {
-    // VIDEO 619: there is no stills-first opening on any setting any more...
-    expect(body).not.toContain("if (!youtubeFirst) {\n    clip = await fetchBeatInternetStillsFirst(");
-    // ...so the first provider work is beatPrimaryFetch, which opens with the YouTube-first slice...
-    const primary = body.indexOf("() => beatPrimaryFetch(");
-    const stillsAfter = body.indexOf("const stills = await fetchBeatInternetStillsFirst(");
-    expect(primary).toBeGreaterThan(-1);
-    expect(stillsAfter).toBeGreaterThan(primary);
-    // ...where YouTube and the own archive start together, and YouTube's answer is taken first.
-    const archival = SRC.slice(SRC.indexOf("export async function fetchBeatArchivalThenPexels("));
-    const slice = archival.indexOf("youtubeFirstBeatSlice(");
-    const ownArchive = archival.indexOf("ownArchiveBeatClip(");
-    expect(slice).toBeGreaterThan(-1);
-    expect(ownArchive).toBeGreaterThan(slice);
-    expect(archival.indexOf("await ownArchive;")).toBeGreaterThan(archival.indexOf("await youtube;"));
   });
 });

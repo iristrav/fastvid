@@ -262,7 +262,7 @@ describe("Test 14 — existing quality gates stay active", () => {
   });
 
   it("assertVisualCoverageExportGate (existing gate, unmodified this round) still blocks a scene that fell back entirely to placeholders", async () => {
-    const { assertVisualCoverageExportGate } = await import("./videoQualityReport");
+    const { assertVisualCoverageExportGate } = await import("./deliveryGate");
     const report = {
       generatedAt: new Date().toISOString(),
       videoTitle: "test",

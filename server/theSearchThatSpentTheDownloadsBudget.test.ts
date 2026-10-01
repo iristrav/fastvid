@@ -401,7 +401,7 @@ describe("R259 §5 — the numbers this round could have moved, and did not", ()
 
   it("the YouTube beat budget is the budget it was", async () => {
     const policy = fs.readFileSync(path.join(__dirname, "sourcingPolicy.ts"), "utf8");
-    expect(policy).toContain("isFastShortVideoLength(videoLength) ? 30_000 : 45_000");
+    expect(policy).toContain("const base = 45_000;");
     expect(policy).toContain("return Math.min(Math.max(base, share), base * 2);");
   });
 

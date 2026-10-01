@@ -111,11 +111,6 @@ export function maxMontageClipsForVoiceSec(
   return Math.max(pacingCap, coverageMin) + 2;
 }
 
-export function maxDirectorBeatsForSceneDuration(sceneDurationSec: number, minSec?: number): number {
-  const floor = minSec ?? vidrushMinClipSec();
-  return Math.max(1, Math.floor(sceneDurationSec / floor));
-}
-
 export function montageSharpScaleChain(width: number, height: number): string {
   return (
     `scale=${width}:${height}:flags=lanczos:force_original_aspect_ratio=decrease,` +
@@ -278,28 +273,6 @@ export function buildVidrushOpeningQueries(videoTitle?: string, beatText?: strin
   )].slice(0, 14);
 }
 
-export function clipPassesVidrushOpeningGate(
-  clipPath: string,
-  sourceQuery = "",
-  beatText = "",
-  videoTitle?: string
-): boolean {
-  if (!vidrushDocumentaryQualityEnabled()) return true;
-  if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return false;
-  const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${asVideoTitleString(videoTitle)}`.toLowerCase();
-  const titleGeo = inferPrimaryGeoFromTitle(videoTitle);
-  if (titleGeo !== "neutral" && titleGeo !== "both" && isWrongRegionForSegmentLock(hay, titleGeo)) {
-    return false;
-  }
-  if (
-    isOffTopicGeoUrbanOpeningVisual(hay, titleGeo) &&
-    !offTopicVisualAllowedForBeat(hay, beatText)
-  ) {
-    return false;
-  }
-  return true;
-}
-
 /** When clip metadata matches off-topic patterns, allow only if the beat narrates that subject. */
 export function offTopicVisualAllowedForBeat(visualHay: string, beatText: string): boolean {
   const beat = beatText.toLowerCase();
@@ -332,59 +305,6 @@ export function resolveBeatRegionLock(beatText: string, videoTitle?: string): Be
     if (fromTitle !== "neutral" && fromTitle !== "both") return fromTitle;
   }
   return inferPrimaryGeoFromTitle(videoTitle);
-}
-
-/**
- * Universal per-beat clip gate — all topics. Driven by beat + title anchors, not topic enum.
- */
-export function clipPassesDocumentaryBeatGate(
-  clipPath: string,
-  sourceQuery = "",
-  beatText = "",
-  videoTitle?: string
-): boolean {
-  return judgeDocumentaryBeatGate(clipPath, sourceQuery, beatText, videoTitle).passes;
-}
-
-/**
- * RONDE 174 — the same verdict, plus whether the gate had a rule that could apply at all.
- *
- * This gate is a set of blocklists about particular subjects: non-documentary filename patterns,
- * off-topic geo-urban visuals (pharmacies, retail, Columbus/Ohio/Wisconsin), and a Dutch/US region
- * lock. On a WWII documentary not one of them can match — so "asked 20 times, rejected nothing"
- * is the gate being out of scope, not the gate being broken.
- *
- * Without that distinction the silent-gate detector reports it as a suspected defect on every
- * render of every topic outside its scope, which is how a real alarm gets trained away. `armed`
- * says whether any rule was live for this candidate; the boolean verdict is unchanged.
- */
-export function judgeDocumentaryBeatGate(
-  clipPath: string,
-  sourceQuery = "",
-  beatText = "",
-  videoTitle?: string
-): { passes: boolean; armed: boolean } {
-  if (!vidrushDocumentaryQualityEnabled()) return { passes: true, armed: false };
-  if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return { passes: false, armed: true };
-  const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${asVideoTitleString(videoTitle)}`.toLowerCase();
-  const geoUrban = isOffTopicGeoUrbanVisual(hay);
-  if (geoUrban && !offTopicVisualAllowedForBeat(hay, beatText)) return { passes: false, armed: true };
-  const lockRegion = resolveBeatRegionLock(beatText, videoTitle);
-  const regionLocked = lockRegion !== "neutral" && lockRegion !== "both";
-  if (regionLocked && isWrongRegionForSegmentLock(hay, lockRegion)) {
-    return { passes: false, armed: true };
-  }
-  // Nothing this gate knows about was present: no non-documentary pattern, no geo-urban visual and
-  // no region to be on the wrong side of. It passed the candidate because it had nothing to say.
-  return { passes: true, armed: geoUrban || regionLocked };
-}
-
-/** @deprecated Use clipPassesDocumentaryBeatGate — kept as alias for imports. */
-export const clipPassesGeoUrbanBeatGate = clipPassesDocumentaryBeatGate;
-
-function pathBasename(p: string): string {
-  const parts = p.replace(/\\/g, "/").split("/");
-  return parts[parts.length - 1] ?? p;
 }
 
 /** Warn when voice contains overlay candidates but plan is empty. */

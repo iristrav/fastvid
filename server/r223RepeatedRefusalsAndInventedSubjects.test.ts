@@ -53,7 +53,6 @@ import { stubPowerWordFromSceneText } from "./curatedMediaSourcing";
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const SEM = fs.readFileSync(path.join(__dirname, "semanticVisualMatching.ts"), "utf8");
 const CURATED = fs.readFileSync(path.join(__dirname, "curatedMediaSourcing.ts"), "utf8");
-const FUNNEL = fs.readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
 
 /* ═══════════ 1. an oversized file is permanently refused ═══════════ */
 
@@ -222,16 +221,6 @@ describe("R223 §5 — the genre word stops standing in for a subject", () => {
   it("a scene with a real subject still yields it", () => {
     expect(stubPowerWordFromSceneText("The bunker beneath Berlin").toLowerCase()).toBeTruthy();
   });
-
-  it("none of the three fallbacks invent the genre word any more", () => {
-    expect(CURATED, "the archive pool stub still invents a subject").not.toContain(
-      `|| "documentary",`
-    );
-    expect(CURATED).not.toContain(`: ["documentary"]`);
-    expect(CURATED).toContain("return best;");
-    expect(FUNNEL, "the funnel stub still invents a subject").not.toContain(`|| "documentary"`);
-  });
-
 
   it("RONDE 88A's downstream guard still stands — this round fixed the source, not it", () => {
     const heal = fs.readFileSync(path.join(__dirname, "pipelineSelfHeal.ts"), "utf8");

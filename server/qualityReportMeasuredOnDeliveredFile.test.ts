@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
-import { indefensibleExportConditions, type VideoQualityReport } from "./videoQualityReport";
+import { type VideoQualityReport } from "./videoQualityReport";
+import { indefensibleExportConditions } from "./deliveryGate";
 
 /**
  * A QUALITY BLOCK MUST SAY WHICH FILE IT MEASURED.
@@ -76,7 +77,8 @@ describe("naming the file changes no gate", () => {
   });
 
   it("the export gate module does not mention measuredOn at all", () => {
-    const src = read(REPORT);
+    /** ONE ROUTE: the rule lives in the DeliveryGate. */
+    const src = read(path.join(__dirname, "deliveryGate.ts"));
     const gateStart = src.indexOf("export function indefensibleExportConditions");
     expect(gateStart).toBeGreaterThan(-1);
     expect(src.slice(gateStart)).not.toContain("measuredOn");

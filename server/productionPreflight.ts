@@ -35,6 +35,7 @@ import { getStorageBackend } from "./storageBackend";
 import { clipModelCacheLocation } from "./clipModelCache";
 import { envFlagIsOn } from "./envFlag";
 import { openAiKeyFromEnv } from "./_core/env";
+import { allowOperatorLicensedYoutube, allowUnverifiedYoutube } from "./config";
 
 /* ═══════════════════════ what production needs ═══════════════════════ */
 
@@ -221,16 +222,9 @@ export const CAPABILITIES: readonly Capability[] = [
     requires: [],
     fatal: false,
     satisfiedBy: (env) => {
-      /**
-       * The two rules below are `youtubeOperatorAuthorized()` and `allowUnverifiedYoutube()`
-       * verbatim, INCLUDING their defaults — note that the operator flag defaults to ON
-       * (`!== "false"`) while the unverified flag defaults to OFF (`=== "true"`). They are
-       * restated rather than imported because this module deliberately loads without the
-       * sourcing layer; the values are asserted against those functions in the tests, so the two
-       * cannot drift apart unnoticed.
-       */
-      const operator = env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() !== "false";
-      const unverified = env.ALLOW_UNVERIFIED_YOUTUBE?.trim().toLowerCase() === "true";
+      /** ONE ROUTE: the same two readers the render asks, from `config.ts`, on this environment. */
+      const operator = allowOperatorLicensedYoutube(env);
+      const unverified = allowUnverifiedYoutube(env);
       if (operator) {
         return {
           available: true,

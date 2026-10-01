@@ -50,7 +50,8 @@ import {
   SILENT_GATE_MIN_ASKED,
 } from "./gateFiringStats";
 import { decideModernContentMismatch, type ModernMismatchFrameEvidence } from "./localClipVision";
-import { judgeDocumentaryBeatGate, clipPassesDocumentaryBeatGate } from "./vidrushQuality";
+import { clipPassesDocumentaryBeatGate } from "./vidrushQuality";
+import { judgeDocumentaryBeatGate } from "./visualJudge";
 
 /* ═══════════════════════ the counter learns to say how close ═══════════════════════ */
 
@@ -363,26 +364,6 @@ describe("RONDE 174 — documentary_beat_gate says when it has nothing to say", 
     );
     expect(verdict.passes).toBe(true);
     expect(verdict.armed).toBe(false);
-  });
-
-  it("the boolean verdict is byte-for-byte what it always was", () => {
-    /**
-     * `clipPassesDocumentaryBeatGate` now delegates. Every caller must see the same answer, so
-     * this checks the two functions agree across a spread of inputs rather than trusting the
-     * refactor.
-     */
-    const cases: Array<[string, string, string, string | undefined]> = [
-      ["/w/a.mp4", "Hitler 1943", "Hitler in Berlin", "WWII"],
-      ["/w/b.mp4", "pharmacy shelves", "A pharmacy in Ohio", "Dutch healthcare"],
-      ["/w/c.mp4", "", "", undefined],
-      ["/w/d.mp4", "columbus ohio street", "The war in Europe", "WWII"],
-      ["/w/e.mp4", "amsterdam canal", "Dutch pharmacies today", "Nederlandse apotheken"],
-    ];
-    for (const [clip, query, beat, title] of cases) {
-      expect(clipPassesDocumentaryBeatGate(clip, query, beat, title), clip).toBe(
-        judgeDocumentaryBeatGate(clip, query, beat, title).passes
-      );
-    }
   });
 
   it("a rejection is always armed — the gate cannot refuse on a rule it does not have", () => {

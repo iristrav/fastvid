@@ -62,7 +62,6 @@ const CONTRACT_SRC = fs.readFileSync(path.join(SERVER_DIR, "searchQueryContract.
  * (on this list, so checked in the same loop).
  */
 const SAFE_HELPERS = [
-  "fetchBrollClips", "fetchBeatClipFromScript", "fetchBeatYoutubeThenPexels",
   "fetchBeatArchivalThenPexels", "fetchBeatYoutubeOnly", "tryBeatRealYouTubeFootage",
   /**
    * RONDE 260B — the central YouTube turn sits between the branches and the provider adapter, so
@@ -118,21 +117,15 @@ const POOL_SCOPED_HOSTS = new Set(["scenePoolYoutubeSearch"]);
 /** Every function that reaches a provider fetcher and must therefore carry the beat's proof. */
 const SCOPED_LEAVES = [
   "fetchBeatAuthenticStills",
-  "resolveBeatClipFast",
   "padShortClipWithNext",
   // RONDE 104: fetchMuskGoldenStockBeat was dead production code (zero callers) and is gone.
   "fetchBeatScriptImageClip",
-  "fetchBeatScriptImageForced",
-  "fetchPersonBeatClip",
-  "fetchLastResortRealClip",
   "fetchBeatPersonStockVideo",
   "fetchBeatStockFallback",
-  "resolveBeatClipTurbo",
   "adoptWikimediaBeatClip",
   "adoptStockBeatClipFallback",
   "adoptEmergencyGeoStockClip",
   // Found by the SECOND audit (RONDE 100B §15), not the first:
-  "fetchBeatAuthenticVideo",   // → tryBeatRealYouTubeFootage → fetchYouTubeCCClips
   "rescueBeatVisualWhenEmpty", // → fetchWikimediaImages
 ];
 
@@ -181,13 +174,10 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
     expect(body).toContain("beatSearchProvenance(");
   });
 
-  it("TEST 5 — Unsplash and SerpAPI are reached only through scoped leaves", () => {
-    // Both routes reported 100%/most bypass in production. Their direct callers are these.
+  it("TEST 5 — SerpAPI is reached only through scoped leaves", () => {
+    // The route reported most bypass in production. Its direct callers are these.
     for (const [fetcher, callers] of [
-      ["fetchUnsplashImages", ["fetchBeatScriptImageForcedInner", "researchBeatClipUnifiedInner"]],
-      ["fetchSerpAPIImages", ["fetchBeatAuthenticStillsInner", "fetchBeatScriptImageClipInner",
-                              "fetchBeatScriptImageForcedInner", "fetchPersonBeatClipInner",
-                              "tryBeatTopicRealFootageInner", "researchBeatClipUnifiedInner"]],
+      ["fetchSerpAPIImages", ["fetchBeatAuthenticStillsInner", "fetchBeatScriptImageClipInner"]],
     ] as const) {
       for (const caller of callers) {
         expect(PIPELINE_SRC, `${caller} is gone — ${fetcher}'s scope chain changed`).toContain(
@@ -285,8 +275,6 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
       const unscoped = [...hosts].filter((h) => !h.endsWith("Inner") && !helpers.has(h));
       expect(unscoped, `${helper} is reachable unscoped from ${unscoped.join(", ")}`).toEqual([]);
     }
-    expect(bodyOf(PIPELINE_SRC, "fetchBeatClipFromScript")).not.toContain("withBeatProvenance");
-    expect(bodyOf(PIPELINE_SRC, "fetchBeatClipInner")).toContain("fetchBeatClipFromScript(");
   });
 
   it("TEST 6 — LEGACY_QUERY_BUILDER still means exactly one thing", () => {

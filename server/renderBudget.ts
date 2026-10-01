@@ -37,7 +37,8 @@
  */
 
 import { getBudgetTier, getHistoricalAvgs } from "./renderBudgetTracker";
-import { pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS, maxPipelineWallClockHardMin } from "./sourcingPolicy";
+import { PIPELINE_UNLIMITED_MS, maxPipelineWallClockHardMin } from "./sourcingPolicy";
+import { pipelineWallClockLimitEnabled } from "./config";
 
 // ── Absolute floor/ceiling for each budget slot ──────────────────────────────
 const PER_SCENE_COMPOSE_MIN_MS  =  45_000;

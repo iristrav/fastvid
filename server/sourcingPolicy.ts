@@ -71,34 +71,6 @@ export function pipelineMinutesPerVideoMinute(): number {
   return 10;
 }
 
-/** Multiplier on target budget before hard-fail (default 1.3 → ~13 min pipeline per 1 min video). */
-export function pipelineWallClockGraceFactor(): number {
-  const raw = process.env.PIPELINE_WALL_CLOCK_GRACE?.trim();
-  if (raw) {
-    const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 1.05 && n <= 1.5) return n;
-  }
-  return 1.3;
-}
-
-/**
- * When true, enforce hard wall-clock fail + router race timeout. Default ON.
- *
- * RONDE 30: this doc comment used to say "Default OFF — jobs finish at their own pace", which
- * contradicted the code below it. Two test files (beatVisualRescue, pipelineStall) asserted the
- * documented OFF and had been failing ever since, unnoticed inside the known-failing baseline.
- *
- * Corrected the comment rather than the code: the watchdog work from RONDE 20/21/25 is built on
- * a render budget existing — RenderWatchdog derives its idle limit from the whole render budget,
- * and maxPipelineWallClockMin() returns PIPELINE_UNLIMITED_MS when this is off. Flipping the
- * default to match the old comment would silently remove the ceiling that stops a hung render
- * from running for hours. That is a product decision, not a test repair, so it is flagged rather
- * than made here.
- */
-export function pipelineWallClockLimitEnabled(): boolean {
-  return process.env.PIPELINE_WALL_CLOCK_LIMIT !== "false";
-}
-
 /** Re-queue jobs with no DB heartbeat (independent of wall-clock limit). Default ON. */
 export function pipelineProgressStallRecoveryEnabled(): boolean {
   return process.env.PIPELINE_PROGRESS_STALL_RECOVERY !== "false";
@@ -188,70 +160,14 @@ export function pipelineEmergencyFinishMs(videoLength?: string | null): number {
   return escalationThresholdMs(videoLength, EMERGENCY_FRACTION);
 }
 
-/** 1-min: compose may only read clips already on disk — no Wikimedia/Pexels/archive fetch during render. */
-export function composeLocalClipsOnly(videoLength?: string | null): boolean {
-  if (!isFastShortVideoLength(videoLength)) return false;
-  if (process.env.COMPOSE_LOCAL_CLIPS_ONLY === "false") return false;
-  return true;
-}
-
 /** Extra wall-clock after hard cap while compose/upload finishes (1-min fast path). */
-export function pipelineComposeGraceMs(videoLength?: string | null): number {
+export function pipelineComposeGraceMs(): number {
   const raw = process.env.PIPELINE_COMPOSE_GRACE_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 30_000 && n <= 300_000) return n;
   }
-  return isFastShortVideoLength(videoLength) ? 240_000 : 0;
-}
-
-/**
- * THE TEST LENGTH TAKES THE PRODUCTION PATH.
- *
- * ── What this used to do, and why it made the test useless ──────────────────────────────────
- *
- * The one-minute length is admin-only and exists to TEST a render. It also selected a different
- * product. Seventy-four branches keyed on it, and they are not tuning — they change what the film
- * is and what is checked about it:
- *
- *   postRenderSpotCheckEnabledForVideo   the content check on the DELIVERED file — skipped
- *   applySemanticAiRerank                semantic reranking of candidates — skipped
- *   skipLlmSemantic                      the LLM semantic pass — skipped
- *   fastShortPlainComposeEnabled         a simpler montage
- *   composeLocalClipsOnly                compose may not fetch; only files already on disk
- *   polishBeforeComposeEnabled           weak-beat polish — off
- *   maxVisualCandidatesPerBeatTry        8 candidates per beat instead of 14
- *   stockClipQualityFloor                a LOWER bar (7 instead of 8)
- *   archiveMinVideoClipsTarget           no minimum moving footage at all
- *   beatVisualRescueAiMaxClips           2 rescue clips instead of 3
- *
- * So a one-minute run answered questions about a pipeline nobody ships. And there is no shorter
- * honest option: `VIDEO_LENGTH_VALUES` is ["1", "8-10", "10-15", "15-20"], so the choice was a
- * one-minute test on a different architecture or a ten-minute one on the real thing.
- *
- * ── What changes ────────────────────────────────────────────────────────────────────────────
- *
- * The one-minute length now takes the same path as every other length. Every branch above applies
- * to it, including the content check on the delivered file — which is the thing a test is FOR.
- *
- * ── The one real risk, and its escape hatch ─────────────────────────────────────────────────
- *
- * Wall clock. A one-minute video gets 20 minutes (`maxPipelineWallClockMin`), and it now does the
- * work a full render does: semantic reranking, polish, fourteen candidates a beat, a spot check.
- * `pipelineComposeGraceMs` also stops applying, which took 240s of post-cap grace away.
- *
- * Twenty minutes for roughly eighteen shots is a generous budget and this is expected to fit. It is
- * not MEASURED — this environment has no credentials and cannot run a render — so the old path is
- * kept whole and one variable restores it:
- *
- *     FAST_SHORT_PATH=true
- *
- * That is a rollback for a measured timeout, not a second architecture to choose between. The
- * default is one behaviour at every length, which is the only way a test length tests anything.
- */
-export function isFastShortVideoLength(videoLength?: string | null): boolean {
-  if (process.env.FAST_SHORT_PATH?.trim().toLowerCase() !== "true") return false;
-  return targetVideoDurationMinutes(videoLength) <= 1;
+  return 0;
 }
 
 /** Parallel scene compose jobs. Was tuned for Railway's 24 vCPU/24GB RAM box; the current
@@ -307,7 +223,7 @@ function clampInt(n: number, min: number, max: number): number {
  * Deriving it from what is actually available keeps the old behaviour on a small box — a 4-core
  * host still gets 2 — and uses a large one.
  */
-export function composeParallelismForVideo(videoLength?: string | null, isRailway = false): number {
+export function composeParallelismForVideo(isRailway = false): number {
   const raw = process.env.COMPOSE_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
@@ -399,9 +315,8 @@ export function visualFootageFocusEnabled(): boolean {
 /** Max archive candidates to try per beat when wall-clock limit is on. Raised now that
  *  Railway has 24 vCPU headroom — more candidates per beat means a better CLIP match
  *  without slowing the video down, since beats are fetched/scored concurrently. */
-export function maxVisualCandidatesPerBeatTry(videoLength?: string | null): number {
+export function maxVisualCandidatesPerBeatTry(): number {
   if (!pipelineWallClockLimitEnabled()) return 14;
-  if (isFastShortVideoLength(videoLength)) return 8;
   if (visualFootageFocusEnabled()) return 8;
   return 6;
 }
@@ -443,13 +358,12 @@ const EMERGENCY_FRACTION = 0.45;
 /** Max ms per beat spent trying archive candidates before moving on. Beats are processed
  *  concurrently (fastBeatConcurrency) so this does NOT add up serially. Archive lookup
  *  is an embedding search — if nothing is found in 20s it won't be found at all. */
-export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
+export function archiveBeatTryTimeoutMs(): number {
   const raw = process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 4_000 && n <= 120_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 18_000;
   return 30_000;
 }
 
@@ -491,10 +405,9 @@ const MAX_BEAT_BUDGET_MULTIPLE = 3;
  * chosen for.
  */
 export function archiveBeatBudgetMs(
-  videoLength?: string | null,
   remainingWallClockMs?: number | null
 ): number {
-  const base = archiveBeatTryTimeoutMs(videoLength);
+  const base = archiveBeatTryTimeoutMs();
   // An explicit override is an instruction, not a starting point.
   if (process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim()) return base;
   if (remainingWallClockMs == null || !Number.isFinite(remainingWallClockMs)) return base;
@@ -706,24 +619,6 @@ export function youtubeSearchDurationForPass(
 }
 
 /**
- * RONDE 650 — HOW MANY LICENCE PASSES ONE QUERY MAY SPEND.
- *
- * The YouTube Data API allows 10,000 units a day and a search costs 100. With three passes per
- * query and two queries per turn, one beat's turn cost 600 units, and a beat asks through the
- * lookahead, its own turn and the rescue routes. Render 607 ran the key dry at 18:18
- * (`YouTube fair-use API error 429`) and the rest of it searched through the scraped fallback,
- * which answered with memes and a mobile game.
- *
- * The first pass is the widest one the policy allows (`any` under the operator's authorisation, so
- * it already contains what the CC and standard passes would return). One pass per query is the
- * default; `YOUTUBE_SEARCH_PASSES=3` restores every pass.
- */
-export function youtubeSearchPassesPerQuery(): number {
-  const raw = Number(process.env.YOUTUBE_SEARCH_PASSES?.trim());
-  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
-}
-
-/**
  * ASK YOUTUBE FIRST, BEFORE THE ARCHIVE AND EVERYTHING ELSE.
  *
  * ── What the production log showed ──────────────────────────────────────────────────────────
@@ -769,7 +664,6 @@ export function youtubeFirstEnabled(): boolean {
  * that is asked and can never answer.
  */
 export function youtubeBeatBudgetMs(
-  videoLength?: string | null,
   remainingWallClockMs?: number | null
 ): number {
   const raw = process.env.YOUTUBE_BEAT_BUDGET_MS?.trim();
@@ -798,7 +692,7 @@ export function youtubeBeatBudgetMs(
    * slice is a CEILING rather than a spend — YouTube answering early returns immediately and the
    * cascade never runs.
    */
-  const base = isFastShortVideoLength(videoLength) ? 30_000 : 45_000;
+  const base = 45_000;
   if (remainingWallClockMs == null || !Number.isFinite(remainingWallClockMs)) return base;
   const headroom = remainingWallClockMs - SOURCING_RESERVE_MS;
   if (headroom <= 0) return base;
@@ -899,22 +793,6 @@ export function maxBeatCapForVisualCadence(sceneDurationSec: number): number {
   );
 }
 
-/**
- * Beat cap for one scene — targets ~5–8s per visual (sentence length still splits within this band).
- * perfFloor is a profile minimum, not a ceiling.
- */
-export function sceneBeatCapForCadence(
-  sceneDurationSec: number,
-  perfFloor = 1,
-  beatSec = archiveVisualBeatSec()
-): number {
-  const minBeats = minBeatsForVisualCadence(sceneDurationSec);
-  const maxBeats = maxBeatCapForVisualCadence(sceneDurationSec);
-  const target = Math.max(minBeats, Math.ceil(sceneDurationSec / beatSec));
-  const cappedFloor = Math.min(Math.max(1, perfFloor), maxBeats);
-  return Math.max(minBeats, Math.min(maxBeats, Math.max(target, cappedFloor)));
-}
-
 /** Prefer moving archive video over Ken Burns stills (default on). */
 export function archivePreferVideoClips(): boolean {
   return process.env.ARCHIVE_PREFER_VIDEO !== "false";
@@ -953,7 +831,7 @@ export function archiveBlurFillStillsEnabled(): boolean {
 
 /** Prefer different archive clips across consecutive videos on the same topic.
  *  Phase 10: previously disabled for fast/short videos, but the underlying
- *  lookup (getCrossVideoExcludeAssetIds) is a synchronous in-memory scan of an
+ *  lookup (recentUsageCounts) is a synchronous in-memory scan of an
  *  already-loaded store, not a DB round-trip — there's no latency reason to
  *  exclude the fast path, and short videos are exactly where the same handful
  *  of clips getting reused video after video is most visible to viewers. */
@@ -1022,6 +900,7 @@ export function maxMotionGraphicsPerVideo(): number {
  */
 export { envFlagIsOn, envFlagIsNotOff } from "./envFlag";
 import { envFlagIsOn } from "./envFlag";
+import { pipelineWallClockGraceFactor, pipelineWallClockLimitEnabled } from "./config";
 
 /** YouTube clips — off unless ENABLE_YOUTUBE_SOURCING=true and keys set. */
 export function youtubeSourcingEnabled(): boolean {
@@ -1032,26 +911,6 @@ export function youtubeSourcingEnabled(): boolean {
 
 /** The three retrieval modes, as the YouTube Data API's own `videoLicense` parameter takes them. */
 export type YoutubeLicenseMode = "creative_common" | "youtube" | "any";
-
-/**
- * IS THE PROJECT'S YOUTUBE SOURCING AUTHORISATION IN FORCE?
- *
- * The FastVid owner holds authorisation to use YouTube as a production footage source and has
- * stated it for YouTube as a whole rather than clip by clip. `allowOperatorLicensedYoutube` in
- * `youtubeLicenseStatus` is that same switch on the archive.org `youtube-*` path, and this is the
- * same authorisation asked about on the LIVE retrieval path — one authorisation, one variable, two
- * doors. Duplicating the parse rather than importing keeps this module free of a dependency it
- * otherwise has no reason to carry, and a test pins the two to the same answer.
- *
- *     ALLOW_OPERATOR_LICENSED_YOUTUBE=false        CC-only retrieval, RONDE 160's behaviour exactly
- *     anything else, including unset (default)     YouTube is a full source
- *
- * Only the literal `false` switches it off: a typo must not silently withdraw an authorisation the
- * owner has given.
- */
-export function youtubeOperatorAuthorized(): boolean {
-  return process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() !== "false";
-}
 
 /**
  * WHY YOUTUBE IS OR IS NOT SEARCHING — the flag alone never answered that.
@@ -1168,8 +1027,12 @@ export function beatSemanticCacheEnabled(): boolean {
  *
  * Render 605 is why: of its 15 minutes of retrieval, the scene pools spent 1.5–2 minutes per scene
  * on YouTube downloads they abandoned at a 45-second cap measured on 2-second Wikimedia fetches,
- * while the per-beat YouTube turn adopted five live YouTube shots. SOURCING_YOUTUBE_FIRST=false
- * restores the pool route exactly as it was.
+ * while the per-beat YouTube turn adopted five live YouTube shots.
+ *
+ * ONE ROUTE — the scene pool is gone, so `SOURCING_YOUTUBE_FIRST=false` no longer restores any
+ * route. What it still changes is time: the beat's YouTube turn (`YOUTUBE_FIRST_TURN_MS`), the
+ * scene's visual timeout, the beats run at once and the YouTube lookahead. Whether YouTube is asked
+ * at all is `ENABLE_YOUTUBE_SOURCING` and `YOUTUBE_FIRST`.
  */
 export function youtubeFirstPerBeatEnabled(): boolean {
   return process.env.SOURCING_YOUTUBE_FIRST !== "false";

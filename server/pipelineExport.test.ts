@@ -25,7 +25,7 @@ import {
   SECTION_TITLES,
   type PipelineExportInput,
 } from "./pipelineExport";
-import { PIPELINE_SECTIONS } from "./renderPipelineReport";
+import { PIPELINE_SECTIONS } from "./renderReport";
 
 const REPORT = {
   renderId: "r-abc123",

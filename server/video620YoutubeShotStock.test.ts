@@ -193,7 +193,8 @@ describe("Video 620 — the render uses the stock", () => {
 });
 
 describe("Video 620 — another shot of the same YouTube video may join the film; the same seconds never", () => {
-  const pipe = async () => pipeline;
+  /** ONE ROUTE: the seconds rule is the dedup registry's segment identity; the keys are the pipeline's. */
+  const pipe = async () => ({ ...pipeline, ...(await import("./visualDedupRegistry")) });
 
   it("a YouTube clip is known by its seconds, so two shots of one video are two pictures", async () => {
     const { clipContentKey, tagPathWithProviderAsset, youtubeFragmentFileTag } = await pipe();
@@ -221,7 +222,9 @@ describe("Video 620 — another shot of the same YouTube video may join the film
   });
 
   it("a clip is never blocked by its own mark, only by other seconds that overlap", async () => {
-    const { youtubeClipSecondsAlreadyUsed, tagPathWithProviderAsset, youtubeFragmentFileTag, clipContentKey } = await pipe();
+    const { youtubeFragmentSecondsUsed, tagPathWithProviderAsset, youtubeFragmentFileTag, clipContentKey } = await pipe();
+    const youtubeClipSecondsAlreadyUsed = (used: Set<string>, clip: string) =>
+      youtubeFragmentSecondsUsed(used, clipContentKey(clip));
     const own = tagPathWithProviderAsset(`/w/s_${youtubeFragmentFileTag(100, 4)}.mp4`, "youtube_cc", "vidA");
     const overlapping = tagPathWithProviderAsset(`/w/s_${youtubeFragmentFileTag(103, 4)}.mp4`, "youtube_cc", "vidA");
     const other = tagPathWithProviderAsset(`/w/s_${youtubeFragmentFileTag(120, 4)}.mp4`, "youtube_cc", "vidA");
@@ -234,8 +237,11 @@ describe("Video 620 — another shot of the same YouTube video may join the film
 
   it("the adopt point, the push, the stock and the beat's own download all ask about the seconds", () => {
     const src = read("server/videoPipeline.ts");
-    expect(src).toContain("if (dedup.usedContentKeys.has(contentKey) || youtubeClipSecondsAlreadyUsed(dedup.usedContentKeys, p)) {");
-    expect(src).toContain("if (youtubeClipSecondsAlreadyUsed(dedup.usedContentKeys, clipPath)) {");
+    /** The adopt point and the push ask the one dedup question, whose last rule is the seconds. */
+    expect(src).toContain("const alreadyUsed = assetUsedInVideo(dedup, { path: p, contentKey });");
+    expect(src).toContain("const used = assetUsedInVideo(dedup, identity);");
+    const registry = read("server/visualDedupRegistry.ts");
+    expect(registry).toContain('if (key && youtubeFragmentSecondsUsed(sets.usedContentKeys, key)) return "segment_overlap";');
     expect(src).toContain("youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, shotDur(s))");
     expect(src).toContain("if (youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, clipStart, clipDur)) {");
     const claim = src.indexOf("if (youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, clipStart, clipDur)) {");

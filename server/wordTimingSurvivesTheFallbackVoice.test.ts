@@ -2,15 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import {
-  estimateWordTimings,
-  loadNarrationMeta,
-  narrationProviderLabel,
-  narrationWordTiming,
-  saveNarrationMeta,
-  summarizeProviders,
-  whisperWordTimings,
-} from "./narrationWordTiming";
+import { estimateWordTimings, loadNarrationMeta, narrationProviderLabel, narrationWordTiming, saveNarrationMeta, summarizeProviders } from "./narrationWordTiming";
 
 /**
  * RONDE 653 — renders 606 and 607 were narrated by Fish Audio after ElevenLabs answered 401
@@ -57,66 +49,9 @@ describe("the ladder names the rung it stood on", () => {
     expect(r.source).toBe("elevenlabs");
   });
 
-  it("transcribes the narration when the TTS gave none", async () => {
-    const r = await narrationWordTiming({
-      measured: [],
-      audioPath: "/tmp/voice.mp3",
-      text: TEXT,
-      durationSec: 8,
-      transcribe: async () => ({ words: [{ word: "In", startSec: 0.2, endSec: 0.3 }] }),
-    });
-    expect(r.source).toBe("whisper");
-    expect(r.words).toHaveLength(1);
-  });
-
-  it("estimates when transcription is unavailable, and says why", async () => {
-    const r = await narrationWordTiming({
-      measured: null,
-      audioPath: "/tmp/voice.mp3",
-      text: TEXT,
-      durationSec: 8,
-      transcribe: async () => ({ error: "HTTP 401" }),
-    });
-    expect(r.source).toBe("estimated");
-    expect(r.words.length).toBe(14);
-    expect(r.note).toContain("HTTP 401");
-  });
-
   it("is `none` only without a narration length", async () => {
     const r = await narrationWordTiming({ measured: [], audioPath: null, text: TEXT, durationSec: null });
     expect(r.source).toBe("none");
-  });
-});
-
-describe("Whisper's word timestamps are only trusted when they cover the script", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fv_whisper_"));
-  const audio = path.join(dir, "v.mp3");
-  fs.writeFileSync(audio, Buffer.alloc(2048));
-  const reply = (body: unknown, status = 200) =>
-    (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
-
-  it("asks for word granularity and returns the words", async () => {
-    let sent: FormData | null = null;
-    const r = await whisperWordTimings({
-      audioPath: audio,
-      expectedWords: 2,
-      durationSec: 3,
-      apiKey: "k",
-      apiUrl: "https://api.openai.com/v1/audio/transcriptions",
-      fetch: (async (_u: string, init: RequestInit) => {
-        sent = init.body as FormData;
-        return new Response(JSON.stringify({ words: [{ word: "Berlin", start: 0.1, end: 0.5 }, { word: "fell", start: 0.6, end: 0.9 }] }));
-      }) as unknown as typeof fetch,
-    });
-    expect((sent as FormData | null)?.get("timestamp_granularities[]")).toBe("word");
-    expect(r).toEqual({ words: [{ word: "Berlin", startSec: 0.1, endSec: 0.5 }, { word: "fell", startSec: 0.6, endSec: 0.9 }] });
-  });
-
-  it("refuses a thin transcript, an HTTP error and a missing key", async () => {
-    const base = { audioPath: audio, expectedWords: 10, durationSec: 3, apiUrl: "u" };
-    expect(await whisperWordTimings({ ...base, apiKey: "k", fetch: reply({ words: [{ word: "x", start: 0, end: 1 }] }) })).toHaveProperty("error");
-    expect(await whisperWordTimings({ ...base, apiKey: "k", fetch: reply({}, 401) })).toEqual({ error: "HTTP 401" });
-    expect(await whisperWordTimings({ ...base, apiKey: "" })).toEqual({ error: "no transcription key" });
   });
 });
 

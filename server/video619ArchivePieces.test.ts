@@ -192,7 +192,7 @@ describe("Video 619 — the wiring", () => {
     expect(ingest).toContain("const asShots = await ingestAsSingleShots(localPath, metadata);");
     expect(ingest).not.toContain("cutForCleanPieces");
     /** Each shot passes its own text check: a shot with text is refused, its clean neighbours kept. */
-    expect(ingest).toContain('if (overlay.verdict === "has_text" && !articleScreenshot) {');
+    expect(ingest).toContain('if (overlay?.decision === "REJECT") {');
   });
 
   it("the clip a film is made with stays the film's record, switched off", () => {

@@ -130,37 +130,6 @@ export function unmeasuredFootage(): YoutubeFootage {
   return { basis: "unmeasured", filmSec: 0, youtubeSec: 0, directSec: 0, viaArchiveSec: 0, videoIds: [], clips: [] };
 }
 
-/** Optional product requirement. Unset, blank, zero or unparseable: no requirement. */
-export function requiredYoutubeSeconds(env: NodeJS.ProcessEnv = process.env): number | null {
-  const raw = env.REQUIRE_YOUTUBE_MIN_SECONDS?.trim();
-  if (!raw) return null;
-  const n = Number.parseFloat(raw);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-export type YoutubeRequirementVerdict =
-  | { ok: true }
-  | { ok: false; code: "YOUTUBE_FOOTAGE_BELOW_REQUIREMENT" | "YOUTUBE_FOOTAGE_UNMEASURED"; detail: string };
-
-export function judgeYoutubeRequirement(f: YoutubeFootage, requiredSec: number | null): YoutubeRequirementVerdict {
-  if (requiredSec == null) return { ok: true };
-  if (f.basis === "unmeasured") {
-    return {
-      ok: false,
-      code: "YOUTUBE_FOOTAGE_UNMEASURED",
-      detail: `this deployment requires ${requiredSec}s of YouTube footage and this film has no timeline to measure it on`,
-    };
-  }
-  if (f.youtubeSec + 1e-6 < requiredSec) {
-    return {
-      ok: false,
-      code: "YOUTUBE_FOOTAGE_BELOW_REQUIREMENT",
-      detail: `${f.youtubeSec.toFixed(1)}s of YouTube footage in the film, ${requiredSec}s required`,
-    };
-  }
-  return { ok: true };
-}
-
 /**
  * One line, always printed, and loud when the answer is zero.
  *

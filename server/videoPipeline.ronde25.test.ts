@@ -69,7 +69,7 @@ describe("RONDE 25 — the cap is wired into both text-check callers", () => {
    * unchecked). See `archiveClipTextVerdict`.
    */
   it("archive ingestion always checks, outside the render's budget", () => {
-    expect(ingestionSrc).toContain("await archiveClipTextVerdict(localPath, metadata.mimeType, overlayKey)");
+    expect(ingestionSrc).toContain("await judgeOnScreenText({ path: localPath, mimeType: metadata.mimeType, memoKey: overlayKey })");
     expect(ingestionSrc).not.toContain("beatClipTextFilterMaxChecks()");
   });
 

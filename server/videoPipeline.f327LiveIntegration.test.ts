@@ -29,11 +29,6 @@ vi.mock("./archiveCoverageWarning", () => ({
 }));
 
 import { primeQueriesWithSearchMemory, reportFunnelCoverageIfInsufficient } from "./videoPipeline";
-import type { RetrievalFunnelResult, FunnelCandidate } from "./retrievalFunnel";
-
-function candidate(source: FunnelCandidate["source"]): FunnelCandidate {
-  return { source } as FunnelCandidate;
-}
 
 describe("primeQueriesWithSearchMemory — F3-27 Test E (self-learning query priming)", () => {
   beforeEach(() => {
@@ -81,44 +76,5 @@ describe("primeQueriesWithSearchMemory — F3-27 Test E (self-learning query pri
     const result = await primeQueriesWithSearchMemory(undefined, ["base"]);
     expect(result).toEqual(["base"]);
     expect(getVisualSearchMemoryForEntityMock).not.toHaveBeenCalled();
-  });
-});
-
-describe("reportFunnelCoverageIfInsufficient — F3-27 Test F (genuine-shortage warning wiring)", () => {
-  beforeEach(() => {
-    getVisualSearchMemoryForEntityMock.mockReset();
-    applyCoverageWarningIfNeededMock.mockReset();
-    getDeadEndQueriesMock.mockReset();
-    getDeadEndQueriesMock.mockResolvedValue(new Set<string>());
-  });
-
-  it("Test F — coverage below the recommended minimum fires the F3-26 warning with real archive/web counts", () => {
-    const funnel: RetrievalFunnelResult = {
-      candidates: [candidate("archive"), candidate("pexels")],
-      archiveCoverage: 0.4,
-      strategy: "hybrid",
-    } as RetrievalFunnelResult;
-
-    reportFunnelCoverageIfInsufficient(123, "Kylie Jenner", funnel);
-
-    expect(applyCoverageWarningIfNeededMock).toHaveBeenCalledWith(123, {
-      entity: "Kylie Jenner",
-      archiveCount: 1,
-      recommendedCount: 3,
-      webSearchAttempted: true,
-      webFoundCount: 1,
-    });
-  });
-
-  it("does nothing when there is no active video id (never blocks/crashes outside a render)", () => {
-    const funnel: RetrievalFunnelResult = { candidates: [], archiveCoverage: 0, strategy: "hybrid" } as RetrievalFunnelResult;
-    reportFunnelCoverageIfInsufficient(null, "X", funnel);
-    expect(applyCoverageWarningIfNeededMock).not.toHaveBeenCalled();
-  });
-
-  it("does nothing when there is no entity to attribute the warning to", () => {
-    const funnel: RetrievalFunnelResult = { candidates: [], archiveCoverage: 0, strategy: "hybrid" } as RetrievalFunnelResult;
-    reportFunnelCoverageIfInsufficient(123, undefined, funnel);
-    expect(applyCoverageWarningIfNeededMock).not.toHaveBeenCalled();
   });
 });

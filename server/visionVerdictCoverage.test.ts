@@ -78,7 +78,8 @@ describe("the vision gate's answer is counted wherever it is asked", () => {
     const at = CODE.indexOf("async function judgeBeatClipRelevance(");
     expect(at, "judgeBeatClipRelevance has moved").toBeGreaterThan(-1);
     const body = CODE.slice(at, CODE.indexOf("\n}", CODE.indexOf("return decision;", at)));
-    expect(body).toContain("await checkBeatRelevance({");
+    /** ONE ROUTE: through the VisualJudge, the only caller of the ledger's look. */
+    expect(body).toContain("await judgePicture({");
     expect(body, "the wrapper does not count the spend").toContain("noteVisionSpend(");
     expect(body, "the wrapper does not count the verdict").toContain("noteBeatVisionVerdict(");
   });
@@ -195,7 +196,7 @@ describe("this round only changed who counts", () => {
   });
 
   it("the gate is still on by default", () => {
-    expect(GATE).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
   });
 
 });

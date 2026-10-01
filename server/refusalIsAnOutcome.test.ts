@@ -109,15 +109,15 @@ describe("every push route records its refusals", () => {
      * ARCHIVE-FIRST ROUND — `beatClipRefusedByRelevanceGate` became a two-part answer.
      *
      * The exported function now asks the editorial question first and the archive question second;
-     * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
-     * is about that body, so it is read there. Nothing about what the gate decides changed.
+     * since ONE ROUTE the editorial answer is the VisualJudge's push verdict
+     * (`visualJudgeRefusesPush`), so the claim is read there.
      */
-    const at = SRC.indexOf("async function relevanceGateRefusesClip(");
+    const at = SRC.indexOf("export async function visualJudgeRefusesPush(");
     expect(at).toBeGreaterThan(-1);
     const body = SRC.slice(at, SRC.indexOf("\n}", SRC.indexOf("return true;", at)));
-    expect(body).toContain("recordRejection(clipPath, barrier.reason, contentKey)");
+    expect(body).toContain("registerRejection(dedup.rejections, sceneIndex, beatIndex, clipPath, why, undefined, {");
     expect(
-      body.indexOf("recordRejection"),
+      body.indexOf("registerRejection"),
       "the refusal returns before it is recorded"
     ).toBeLessThan(body.lastIndexOf("return true;"));
   });
@@ -128,9 +128,11 @@ describe("every push route records its refusals", () => {
    */
   it("every duplicate refusal is recorded", () => {
     const defs = SRC.match(/const pushSceneClip = async/g) ?? [];
-    /** VIDEO 620 — two duplicate refusals in the push: the same picture, and the same YouTube seconds. */
-    const refusals =
-      SRC.match(/if \(dedup\.usedContentKeys\.has\(key\)\)|if \(youtubeClipSecondsAlreadyUsed\(dedup\.usedContentKeys, clipPath\)\)/g) ?? [];
+    /**
+     * ONE ROUTE: one duplicate refusal in the push — the one dedup question, which covers the same
+     * picture and (VIDEO 620) the same YouTube seconds.
+     */
+    const refusals = SRC.match(/if \(used && \(used === "segment_overlap"/g) ?? [];
     /**
      * Matched on the call, not on its argument list. The signature has already grown once — the
      * beat's reject tally needs the scene and beat the ledger call did not — and pinning the exact
@@ -139,7 +141,7 @@ describe("every push route records its refusals", () => {
     const records = SRC.match(/noteDuplicateClipRefused\(\s*dedup,\s*clipPath,\s*key\b/g) ?? [];
     /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
     expect(defs.length, "the number of push routes changed").toBe(1);
-    expect(refusals.length).toBe(2);
+    expect(refusals.length).toBe(1);
     expect(records.length, "a duplicate refusal exists that records nothing").toBe(
       refusals.length
     );
@@ -150,11 +152,11 @@ describe("every push route records its refusals", () => {
     let from = 0;
     let checked = 0;
     for (;;) {
-      const at = SRC.indexOf("if (dedup.usedContentKeys.has(key))", from);
+      const at = SRC.indexOf('if (used && (used === "segment_overlap"', from);
       if (at === -1) break;
       from = at + 1;
       checked++;
-      const block = SRC.slice(at, at + 400);
+      const block = SRC.slice(at, at + 700);
       const record = block.indexOf("noteDuplicateClipRefused");
       const ret = block.indexOf("return false;");
       expect(record, `duplicate refusal #${checked} records nothing`).toBeGreaterThan(-1);
@@ -167,6 +169,9 @@ describe("every push route records its refusals", () => {
   it("is a no-op when the render carries no ledger", () => {
     const at = SRC.indexOf("function noteDuplicateClipRefused(");
     expect(at).toBeGreaterThan(-1);
-    expect(SRC.slice(at, at + 600)).toContain("dedup.sourcingCache?.lineage?.recordRejection");
+    /** ONE ROUTE: the registry carries the render's ledger, attached only when the render has one. */
+    expect(SRC.slice(at, at + 600)).toContain("registerRejection(dedup.rejections");
+    expect(SRC).toContain("cache.rejections.lineage = cache.lineage;");
+    expect(SRC).toContain("rejections: sourcingCache.rejections,");
   });
 });

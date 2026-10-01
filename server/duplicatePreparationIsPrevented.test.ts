@@ -39,12 +39,20 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 
 import {
   searchCuratedCandidatesForBeat,
-  markCuratedAssetUsed,
+  curatedClipPathAssetId,
   type CuratedCandidatePick,
   type CuratedBeatContext,
   type CuratedSceneContext,
 } from "./curatedMediaSourcing";
 import type { MediaArchiveAsset } from "../drizzle/schema";
+import { markAssetUsedInVideo } from "./visualDedupRegistry";
+
+/** ONE ROUTE: the curated half of the one dedup write (visualDedupRegistry.markAssetUsedInVideo). */
+const markCuratedAssetUsed = (clipPath: string, ids: Set<number>, urls: Set<string>, storageUrl?: string) =>
+  markAssetUsedInVideo(
+    { usedPaths: new Set(), usedContentKeys: new Set(), usedCuratedAssetIds: ids, usedCuratedStorageUrls: urls },
+    { archiveAssetId: curatedClipPathAssetId(clipPath), storageUrl }
+  );
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -154,29 +162,27 @@ describe("the curated search honours the render's own used-set", () => {
 /* ═══════════════ the write side: the funnel's acceptance point ═══════════════ */
 
 describe("adoptClip registers a curated pick in both registries", () => {
+  /** ONE ROUTE: the acceptance point is the one dedup write, `markAssetUsedInVideo`. */
   const acceptanceBlock = () => {
-    const at = PIPE.indexOf("      dedup.usedPaths.add(p);\n      dedup.usedContentKeys.add(contentKey);");
+    const at = PIPE.indexOf("      markAssetUsedInVideo(dedup, {\n        path: p,\n        contentKey,");
     expect(at, "adoptClip's single acceptance point is gone").toBeGreaterThan(-1);
-    return PIPE.slice(at, at + 2600);
+    return PIPE.slice(at, at + 400);
   };
 
   it("writes the curated asset id beside the content key", () => {
     const b = acceptanceBlock();
-    expect(b).toContain("markCuratedAssetUsed(p, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls,");
+    expect(b).toContain("archiveAssetId: curatedClipPathAssetId(p),");
   });
 
   /** The storage url comes from the render's own asset rows, never from the filename. */
   it("takes the storage url from the render's archive rows", () => {
-    expect(acceptanceBlock()).toContain("curatedStorageUrlForClip(p, dedup)");
+    expect(acceptanceBlock()).toContain("storageUrl: curatedStorageUrlForClip(p, dedup)");
   });
 
   /** Both writes are one decision; a marking that could be skipped is the bug coming back. */
   it("marks unconditionally, in the same block as the content key", () => {
     const b = acceptanceBlock();
-    const key = b.indexOf("dedup.usedContentKeys.add(contentKey);");
-    const mark = b.indexOf("markCuratedAssetUsed(p,");
-    expect(mark).toBeGreaterThan(key);
-    expect(b.slice(key, mark)).not.toMatch(/\b(if|return|continue)\b/);
+    expect(b.slice(0, b.indexOf("});"))).not.toMatch(/\b(if|return|continue)\b/);
   });
 });
 

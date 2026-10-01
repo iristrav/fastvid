@@ -13,7 +13,7 @@
  *
  * ── What it is not ───────────────────────────────────────────────────────────────────────────
  *
- * Not a second audit system. `clipRejectAudit` records why individual clips were refused and
+ * Not a second audit system. `rejections` records why individual clips were refused and
  * `visualSourceLineage` records what became of each asset; neither counts the funnel's own stages,
  * which is the gap. Every number here is already computed by the code that fills it in — no query,
  * no fetch, no extra scoring, no state that outlives the beat.

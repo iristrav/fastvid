@@ -1,18 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildHistoricalArchivalQueries,
-  buildMediaSearchIntent,
-  extractBeatVisualTargets,
-  extractEventCue,
-  inferTopicKind,
-  isHistoricalDocumentary,
-  realFootageFirstEnabled,
-  mergeAiRelevanceScores,
-  partitionCandidatesForIntent,
-  rankMediaCandidates,
-  scoreMediaCandidate,
-  type MediaCandidate,
-} from "./mediaResearchEngine";
+import { buildHistoricalArchivalQueries, buildMediaSearchIntent, extractBeatVisualTargets, extractEventCue, inferTopicKind, isHistoricalDocumentary, realFootageFirstEnabled, mergeAiRelevanceScores, scoreMediaCandidate, type MediaCandidate } from "./mediaResearchEngine";
 
 describe("inferTopicKind", () => {
   it("detects person topics", () => {
@@ -97,52 +84,6 @@ describe("scoreMediaCandidate", () => {
     expect(scoreMediaCandidate(wiki, titanicIntent)).toBeGreaterThan(
       scoreMediaCandidate(pexels, titanicIntent)
     );
-  });
-
-  it("prefers Internet Archive over YouTube for historical beats", () => {
-    const youtube: MediaCandidate = {
-      path: "/tmp/s1_b0_ytcc_titanic.mp4",
-      query: "RMS Titanic departure 1912 documentary",
-      source: "youtube_cc",
-      isVideo: true,
-    };
-    const archive: MediaCandidate = {
-      path: "/tmp/s1_b0_archive_titanic.mp4",
-      query: "Titanic departure 1912",
-      source: "internet_archive",
-      isVideo: true,
-    };
-    const ranked = rankMediaCandidates([youtube, archive], titanicIntent);
-    expect(ranked[0].source).toBe("internet_archive");
-  });
-
-  it("ranks authentic Titanic footage above ocean b-roll", () => {
-    const candidates: MediaCandidate[] = [
-      {
-        path: "/tmp/s1_b0_pexels_ocean.mp4",
-        query: "ocean sunset",
-        source: "pexels",
-        isVideo: true,
-      },
-      {
-        path: "/tmp/s1_b0_archive_titanic.mp4",
-        query: "Titanic departure 1912",
-        source: "internet_archive",
-        isVideo: true,
-      },
-      {
-        path: "/tmp/s1_b0_wiki_titanic.jpg.mp4",
-        query: "RMS Titanic",
-        source: "wikimedia_image",
-        isVideo: false,
-      },
-    ];
-    const ranked = rankMediaCandidates(candidates, titanicIntent);
-    expect(ranked[0].source).toBe("internet_archive");
-    expect(ranked.some((c) => c.source === "pexels")).toBe(true);
-    const pexelsIdx = ranked.findIndex((c) => c.source === "pexels");
-    const archiveIdx = ranked.findIndex((c) => c.source === "internet_archive");
-    expect(archiveIdx).toBeLessThan(pexelsIdx);
   });
 });
 
@@ -271,29 +212,6 @@ describe("realFootageFirstEnabled", () => {
     delete process.env.REAL_FOOTAGE_FIRST;
     expect(realFootageFirstEnabled()).toBe(true);
     process.env.REAL_FOOTAGE_FIRST = prev;
-  });
-});
-
-describe("partitionCandidatesForIntent", () => {
-  it("puts stock video in stock fallback for historical topics", () => {
-    const intent = buildMediaSearchIntent({
-      beatText: "The Titanic sank in 1912.",
-      searchQueries: ["Titanic"],
-      keywords: ["titanic"],
-      primaryPerson: "",
-      persons: [],
-      powerWord: "Titanic",
-      personTopicLock: false,
-      spaceTopic: false,
-    });
-    const ranked: MediaCandidate[] = [
-      { path: "/a.mp4", query: "ocean", source: "pexels", isVideo: true, score: 200 },
-      { path: "/b.mp4", query: "RMS Titanic archival", source: "internet_archive", isVideo: true, score: 150 },
-    ];
-    const { videoFirst, stockFallback } = partitionCandidatesForIntent(ranked, intent);
-    expect(videoFirst[0].source).toBe("internet_archive");
-    expect(videoFirst.some((c) => c.source === "pexels")).toBe(false);
-    expect(stockFallback[0].source).toBe("pexels");
   });
 });
 

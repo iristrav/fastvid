@@ -92,7 +92,7 @@ describe("the fetcher hands over the budget it is itself held to", () => {
   const code = PIPE.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
   it("THE DOWNLOAD IS GIVEN THE BEAT WRAPPER'S OWN NUMBER", () => {
-    expect(code).toContain("youtubeBeatFetchTimeoutMs(scriptGuided?.fastMode ?? false)");
+    expect(code).toContain("youtubeBeatFetchTimeoutMs()");
   });
 
   it("and the timeout call reads that cap", () => {
@@ -101,7 +101,6 @@ describe("the fetcher hands over the budget it is itself held to", () => {
 
   it("the wrapper's own values are untouched — nothing was widened to make room", () => {
     expect(code).toContain("if (realFootageFirstEnabled()) return IS_RAILWAY ? 55_000 : 70_000;");
-    expect(code).toContain("if (fastStockMode) return IS_RAILWAY ? 22_000 : 35_000;");
     expect(code).toContain("return 80_000;");
   });
 

@@ -2,7 +2,7 @@
  * Per-video quality summary — clip mix, source breakdown, geo warnings.
  */
 import * as path from "path";
-import { blankPictureFinding } from "./postRenderSpotCheck";
+
 import { classifyClipMixKind, type VisualMixKind } from "./visualMixPolicy";
 import { inferVideoVisualTopic } from "./visualBeatTags";
 import {
@@ -13,16 +13,15 @@ import {
   resolveBeatRegionLock,
 } from "./vidrushQuality";
 
-import type { ClipRejectAudit, ClipRejectEntry } from "./clipRejectAudit";
-import { summarizeClipRejectAudit } from "./clipRejectAudit";
+import type { RejectionRegistry, RejectionEntry } from "./rejectionRegistry";
+import { summarizeRejections } from "./rejectionRegistry";
 import type { ClipAdoptEntry, AdoptAuditSummary } from "./clipAdoptAudit";
 import { summarizeAdoptAudit } from "./clipAdoptAudit";
-import { isArchiveGeoBlockedForBeat, resolveRequiredGeoTagsForBeat } from "./curatedMediaSourcing";
+import { judgeArchiveAssetCountry, resolveRequiredGeoTagsForBeat } from "./visualJudge";
 import type { BeatGeoRegion } from "./vidrushQuality";
 import type { VoiceVisualMatchSummary } from "./voiceVisualMatch";
 import { buildVoiceVisualMatchSummary } from "./voiceVisualMatch";
 import { UNVERIFIED_PROVIDER as UNVERIFIED_SOURCE } from "./visualSourceLineage";
-import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import {
   buildBeatVisualStatuses,
   tallyBeatVisualStatuses,
@@ -31,6 +30,7 @@ import {
 } from "./beatVisualStatus";
 import type { BeatRelevanceLedger } from "./beatVisualRelevance";
 import type { ScreenTimeFinding } from "./deliveredScreenTime";
+import { indefensibleExportConditions, visualCoverageFallsShort } from "./deliveryGate";
 
 export type { VoiceVisualMatchSummary };
 
@@ -161,7 +161,7 @@ export type VideoQualityReport = {
   warnings: string[];
   offTopicSuspects: Array<{ basename: string; reason: string }>;
   rejectSummary?: Record<string, number>;
-  topRejects?: ClipRejectEntry[];
+  topRejects?: RejectionEntry[];
   criticalGeoViolations?: Array<{
     basename: string;
     reason: string;
@@ -455,7 +455,6 @@ export function computeMeritQualityScore(params: {
   geoViolationCount: number;
   adoptAudit?: ClipAdoptEntry[];
   archiveOnly: boolean;
-  fastShort: boolean;
   byMixKind: Record<VisualMixKind, number>;
   postRenderOk?: boolean;
   /**
@@ -512,8 +511,8 @@ export function computeMeritQualityScore(params: {
 
   score -= params.fallbackBeats * 14;
   score -= Math.min(12, params.stockCount * 3);
-  score -= Math.min(params.fastShort ? 8 : 16, params.offTopicCount * (params.fastShort ? 4 : 8));
-  score -= Math.min(params.fastShort ? 10 : 20, params.geoViolationCount * (params.fastShort ? 6 : 12));
+  score -= Math.min(16, params.offTopicCount * (8));
+  score -= Math.min(20, params.geoViolationCount * (12));
   if (params.postRenderOk === false) score -= 8;
 
   /**
@@ -581,14 +580,14 @@ export function buildVideoQualityReport(
   opts?: {
     pipelineSec?: number;
     stockBeatsUsed?: number;
-    rejectAudit?: ClipRejectEntry[];
+    rejectAudit?: RejectionEntry[];
     /** Did the render DRAW this clip? See `generatedClips` — absent means "no ledger to ask". */
     isGeneratedClip?: (clipPath: string) => boolean;
     /**
      * RENDER 569 — THE SAME AUDIT, UNCAPPED.
      *
      * `rejectAudit` above is the BOUNDED detail: named examples, capped at 400 entries and filled
-     * chronologically. Passing it to `summarizeClipRejectAudit` takes that function's array
+     * chronologically. Passing it to `summarizeRejections` takes that function's array
      * branch, which counts entries — so the render-wide breakdown was a count of the first 400
      * refusals, not of all of them.
      *
@@ -597,14 +596,13 @@ export function buildVideoQualityReport(
      * numbers summing exactly to the cap, which is what a truncated tally looks like.
      *
      * RONDE 70 built the uncapped per-beat tally precisely because a chronological cap made late
-     * beats report refusals they had earned as zero, and `summarizeClipRejectAudit`'s object
+     * beats report refusals they had earned as zero, and `summarizeRejections`'s object
      * branch reads it. The per-beat counts were moved over; this report was not. Same seam,
      * one route short.
      */
-    rejectTally?: ClipRejectAudit;
+    rejectTally?: RejectionRegistry;
     adoptAudit?: ClipAdoptEntry[];
     archiveOnly?: boolean;
-    fastShort?: boolean;
     sceneCriticalFailed?: number[];
     /**
      * RONDE 86/87: the render's own record of where each clip came from.
@@ -649,7 +647,6 @@ export function buildVideoQualityReport(
   const primaryGeo = inferPrimaryGeoFromTitle(videoTitle);
   const visualTopic = inferVideoVisualTopic(videoTitle, videoTitle);
   const archiveOnly = opts?.archiveOnly === true;
-  const fastShort = opts?.fastShort === true;
   const skipUrbanOffTopic =
     archiveOnly &&
     (visualTopic === "wwii" || visualTopic === "cold_war" || visualTopic === "general");
@@ -750,7 +747,7 @@ export function buildVideoQualityReport(
       title: adopt.assetTitle ?? adopt.basename.replace(/_/g, " "),
       tags: [] as string[],
     };
-    if (isArchiveGeoBlockedForBeat(assetLike, adopt.beatText, videoTitle, adopt.segmentGeoLock as BeatGeoRegion | null)) {
+    if (judgeArchiveAssetCountry(assetLike, adopt.beatText, videoTitle, adopt.segmentGeoLock as BeatGeoRegion | null).decision === "REJECT") {
       const required = resolveRequiredGeoTagsForBeat(
         adopt.beatText,
         videoTitle,
@@ -774,9 +771,9 @@ export function buildVideoQualityReport(
 
   /** The complete tally when it was handed over; the bounded entries only as a fallback. */
   const rejectSummary = opts?.rejectTally
-    ? summarizeClipRejectAudit(opts.rejectTally)
+    ? summarizeRejections(opts.rejectTally)
     : opts?.rejectAudit?.length
-      ? summarizeClipRejectAudit(opts.rejectAudit)
+      ? summarizeRejections(opts.rejectAudit)
       : undefined;
   const topRejects = opts?.rejectAudit?.slice(0, 12);
 
@@ -807,7 +804,6 @@ export function buildVideoQualityReport(
     geoViolationCount: criticalGeoViolations.length,
     adoptAudit: opts?.adoptAudit,
     archiveOnly,
-    fastShort,
     byMixKind,
     screenTime: opts?.screenTime,
   });
@@ -897,7 +893,6 @@ export function recountQualityReportForDeliveredClips(
     isGeneratedClip?: (clipPath: string) => boolean;
     adoptAudit?: ClipAdoptEntry[];
     archiveOnly?: boolean;
-    fastShort?: boolean;
   }
 ): { clipsBefore: number; clipsAfter: number; scoreBefore: number; scoreAfter: number } {
   const clipsBefore = report.totalClips;
@@ -943,7 +938,6 @@ export function recountQualityReportForDeliveredClips(
     geoViolationCount: criticalGeoViolations.length,
     adoptAudit: opts?.adoptAudit,
     archiveOnly: opts?.archiveOnly === true,
-    fastShort: opts?.fastShort === true,
     byMixKind,
     postRenderOk: report.postRenderSpotCheck?.ok,
     /**
@@ -1007,159 +1001,6 @@ export function logVideoQualityReport(videoId: number, report: VideoQualityRepor
   }
 }
 
-/** One reason a render must not be delivered, whatever its score says. */
-export type IndefensibleExportCondition = {
-  /** Machine-readable, stable, and the same word in the log and the thrown error. */
-  code: "NO_VERIFIED_OWN_VISUAL" | "MOSTLY_UNVERIFIED_CLIPS" | "FINAL_PICTURE_IS_BLACK";
-  detail: string;
-};
-
-/** More than half the delivered clips having no proven source is the second condition's bar. */
-const UNVERIFIED_CLIP_SHARE_LIMIT = 0.5;
-
-/**
- * RONDE 89 — THE TWO THINGS A SCORE MAY NOT OVERRULE.
- *
- * ── What render 568 delivered ───────────────────────────────────────────────────────────────
- *
- *     [Quality] Video 568: visual quality raw=24/100, availabilityAdjusted=82/100
- *               (export minimum 45) … The adjusted number is an availability decision, NOT a
- *               measurement of picture quality; raw is the measurement.
- *     [Quality] Video 568: export gate passed (score=82/100)
- *
- * The pipeline measured the picture at 24/100, an availability policy raised it to 82, and the
- * gate decided on the raised number. The log said out loud that the number it was deciding on was
- * not a measurement, and shipped anyway.
- *
- * What shipped, from the same render:
- *
- *     15 of 17 beats   visual_status=no_verified_visual verification=never_asked
- *                      reason=real_footage_never_judged
- *     17 of 20 clips   provider=UNVERIFIED
- *     240              beeldgate-momenten niet bevraagd — "die clips zijn ONGEZIEN aangenomen"
- *
- * ── Why this is a separate gate and not a threshold change ──────────────────────────────────
- *
- * Raising the minimum score would trade one arbitrary number for another, and the availability
- * policy would still be the thing being compared against it. These two conditions are not about
- * DEGREE. They are the cases where the render cannot answer "why is this picture on screen?" at
- * all, for the film as a whole:
- *
- *   NO_VERIFIED_OWN_VISUAL   not one beat got a picture of its own that the picture editor
- *                            looked at and approved. Whatever the montage contains, nothing in
- *                            it was verified to belong to the sentence it plays under.
- *   MOSTLY_UNVERIFIED_CLIPS  most of the delivered film has no proven provider — the lineage
- *                            cannot say where the pictures came from.
- *
- * A score can be argued with. Neither of these can.
- *
- * ── Deliberately unconditional ──────────────────────────────────────────────────────────────
- *
- * No flag switches this off, because a flag that has to be remembered is exactly how render 568
- * shipped: the conditions below were all true and every switch that could have stopped it was off.
- * It is the whole of `enforceQualityExportGate` now; the flag-gated checks beside it are gone.
- *
- * ── What it deliberately does NOT do ────────────────────────────────────────────────────────
- *
- * It does not judge picture quality, framing, relevance or pacing — those are the score's job and
- * it is left alone. It does not fire on missing data: a report built without a relevance ledger
- * or without clips (a tool, a test, a caller outside a render) yields no conditions, because
- * "nothing was measured" is not evidence of a bad render. And it never lowers a threshold or
- * relabels an outcome — it only refuses to call a render deliverable when the render itself has
- * already recorded that it could not verify what it shows.
- */
-export function indefensibleExportConditions(
-  report: VideoQualityReport
-): IndefensibleExportCondition[] {
-  const out: IndefensibleExportCondition[] = [];
-
-  const beats = report.beatVisuals;
-  if (beats && beats.beats > 0 && beats.verifiedOwnVisual === 0) {
-    const neverAsked = beats.byVerification.never_asked;
-    out.push({
-      code: "NO_VERIFIED_OWN_VISUAL",
-      detail:
-        `0 of ${beats.beats} beat(s) got an approved picture of their own ` +
-        `(never_asked=${neverAsked}, own_footage=${beats.ownFootage}) — ` +
-        `nothing on screen was verified against the narration it plays under`,
-    });
-  }
-
-  /**
-   * "NO PROVIDER TO PROVE" AND "A PROVIDER WE COULD NOT PROVE" ARE OPPOSITE FINDINGS.
-   *
-   * This gate's own sentence is "the lineage cannot say where most of this film came from". That
-   * is a true and serious statement about a clip fetched from somewhere whose record broke. It is
-   * false about a colour card the render drew itself: nothing was lost, because there was never a
-   * provider to lose. Both answered null from `providerFor`, so both landed in one bucket, and a
-   * film was refused for losing provenance it never had.
-   *
-   * The ledger has always kept the two apart — `summary()` counts `route === "fallback"` in its
-   * own column — so this reads that distinction rather than inventing one.
-   *
-   * NOT a relaxation, for a reason worth stating: a film that really is mostly drawn cards is
-   * refused by `assertVisualCoverageExportGate`, whose fallbackBeats/beatsFilled majority test is
-   * about exactly that and is untouched. This gate goes back to guarding the one thing its message
-   * describes. Both counts are printed either way, so a render can never again hide one behind the
-   * other.
-   */
-  const unverified = report.bySource[UNVERIFIED_SOURCE] ?? 0;
-  const drawn = report.generatedClips ?? 0;
-  const unprovable = Math.max(0, unverified - drawn);
-  const measured = Math.max(0, report.totalClips - drawn);
-  if (measured > 0 && unprovable / measured > UNVERIFIED_CLIP_SHARE_LIMIT) {
-    const pct = Math.round((unprovable / measured) * 100);
-    out.push({
-      code: "MOSTLY_UNVERIFIED_CLIPS",
-      detail:
-        `${unprovable} of ${measured} fetched clip(s) have no proven source ` +
-        `(${pct}%, limit ${Math.round(UNVERIFIED_CLIP_SHARE_LIMIT * 100)}%) — ` +
-        `the lineage cannot say where most of this film came from` +
-        (drawn > 0 ? ` (${drawn} drawn card(s) excluded — they have no provider to lose)` : ""),
-    });
-  }
-
-  /**
-   * AND THE ONE A VIEWER NOTICES BEFORE ANY OF THE OTHERS: THERE IS NO PICTURE.
-   *
-   * ── What was already true before this ───────────────────────────────────────────────────────
-   *
-   * `spotCheckFinalVideo` samples the DELIVERED file at four points and already draws the
-   * conclusion in as many words:
-   *
-   *     warnings.push(`Final video appears fully black (worst luma ...)`)
-   *
-   * and `isInformationalSpotWarning` singles that sentence out — with "Final video missing or too
-   * small" — as the one kind of warning that is NOT informational, which is what makes
-   * `ok: blockingWarnings.length === 0` false. So the render measured the blankness, classified it
-   * as blocking, and wrote it into `qualityReport.postRenderSpotCheck.ok`.
-   *
-   * Nothing then read that boolean. The two call sites log `console.warn` and feed `postRenderOk`
-   * into the merit score, which the availability heal can raise again; neither refuses anything.
-   * A blank film was uploaded, scored and delivered. Same shape as `formatAssetTrace` exported to
-   * no caller and `metadata.publishedAt` written as null while the ranking engine read it: a value
-   * computed, carried, and dropped by the only reader that needed it.
-   *
-   * ── Why the condition is stricter than the warning that prompted it ─────────────────────────
-   *
-   * The warning fires on `worstMeanLuma < 1` — ONE black sample out of four — while its sentence
-   * says "fully black". That gap is why it could not be promoted as written: a film that opens on
-   * a held black frame would be refused publication over a legitimate edit. So this reads the
-   * count, not the worst: every sample dark, and at least two samples actually taken. The warning
-   * is left exactly as it is; it is a warning, and it says "appears".
-   *
-   * ── What it deliberately does not do ────────────────────────────────────────────────────────
-   *
-   * It does not fire when the spot check did not run, or could not extract frames. Following this
-   * function's own rule: "nothing was measured" is not evidence of a bad render, and a render whose
-   * picture was never sampled is reported as unsampled rather than convicted.
-   */
-  const blank = blankPictureFinding(report.postRenderSpotCheck);
-  if (blank) out.push({ code: "FINAL_PICTURE_IS_BLACK", detail: blank });
-
-  return out;
-}
-
 /**
  * EVERY EXPORT GATE, ANSWERED AT ONCE, BEFORE ANY OF THEM THROWS.
  *
@@ -1202,10 +1043,9 @@ export function exportGateReadiness(
   /** 1. Coverage — the same arithmetic assertVisualCoverageExportGate performs. */
   const beatsFilled = report.adoptAuditSummary?.beatsFilled ?? 0;
   const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
-  const majorityFallback = beatsFilled > 0 && fallbackBeats / beatsFilled > 0.5;
   out.push({
     gate: "visual_coverage",
-    blocking: sceneRescueColorFallbackCount > 0 || majorityFallback,
+    blocking: visualCoverageFallsShort(report, sceneRescueColorFallbackCount),
     detail:
       `${fallbackBeats}/${beatsFilled} beat(s) got ONLY a card, ` +
       `${sceneRescueColorFallbackCount} scene(s) fell back entirely` +
@@ -1254,182 +1094,6 @@ export function formatExportGateReadiness(
       (s) => `[ExportReadiness]   ${(s.blocking ? "BLOCKS" : "ok").padEnd(6)} ${s.gate.padEnd(24)} ${s.detail}`
     ),
   ];
-}
-
-/**
- * Problem 10 (production render finding — "Why Hitler Killed Himself and His Wife"): this gate is
- * deliberately BLOCKING. A real render was found where actual sourced footage stopped after a
- * few seconds and a static color/text placeholder silently filled the rest of the video, while
- * the pipeline still reported the render as a normal success. This throws (PIPELINE_ERROR.
- * QUALITY_GATE — the existing quality-gate failure code, videos.errorMessage-storable) instead
- * of letting that ship, whenever:
- *   - any whole SCENE had to fall back to generateColorFallback as its entire composed output
- *     (sceneRescueColorFallbackCount > 0 — every real/rescue attempt for that scene failed, no
- *     ambiguity), or
- *   - a strict MAJORITY of filled beats were sourced via the per-beat color/text fallback
- *     (adoptAuditSummary.fallbackBeats), meaning most of what's on screen is placeholder, not
- *     real footage.
- * A handful of isolated fallback beats in an otherwise well-sourced video is not blocked — only
- * the two patterns above, which is what an actually-broken render looks like.
- */
-export function assertVisualCoverageExportGate(
-  report: VideoQualityReport,
-  sceneRescueColorFallbackCount: number
-): void {
-  const summary = report.adoptAuditSummary;
-  const beatsFilled = summary?.beatsFilled ?? 0;
-  const fallbackBeats = summary?.fallbackBeats ?? 0;
-  const majorityFallback = beatsFilled > 0 && fallbackBeats / beatsFilled > 0.5;
-  if (sceneRescueColorFallbackCount === 0 && !majorityFallback) return;
-
-  const rejectCounts = report.rejectSummary ?? {};
-  const totalRejected = Object.values(rejectCounts).reduce((a, b) => a + b, 0);
-  const topReasons = Object.entries(rejectCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([reason, count]) => `${reason}=${count}`)
-    .join(", ") || "none recorded";
-  const worstBeats = (report.topRejects ?? [])
-    .slice(0, 5)
-    .map((r) => `s${r.sceneIndex}b${r.beatIndex}:${r.reason}`)
-    .join("; ") || "none recorded";
-
-  throw pipelineError(
-    PIPELINE_ERROR.QUALITY_GATE,
-    `Render rejected — insufficient real visual coverage: ` +
-      `${sceneRescueColorFallbackCount} scene(s) fell back entirely to a static placeholder, ` +
-      /**
-       * RENDER 569 — "used" was the wrong word, and it cost a film.
-       *
-       * `fallbackBeats` now counts beats whose ONLY adoption was a card; a beat holding real
-       * footage plus a card is counted under its real source and reported as mixed. Before that
-       * fix this line said "14/14 filled beat(s) used the color/text fallback" about a render
-       * whose per-beat ledger named ten adopted archive, Wikimedia and SerpAPI files.
-       */
-      `${fallbackBeats}/${beatsFilled} filled beat(s) got ONLY the color/text fallback, ` +
-      `${report.totalClips} accepted candidate(s), ${totalRejected} rejected. ` +
-      `Top reject reasons: ${topReasons}. Worst beats: ${worstBeats}.`
-  );
-}
-
-/**
- * RENDER 562 — A VIDEO NOBODY LOOKED AT DOES NOT SHIP.
- *
- * ── What happened ───────────────────────────────────────────────────────────────────────────
- *
- * The beat image gate is the only judge in this pipeline that has seen the frame AND read the
- * narration. On 2 September it lost every provider it has:
- *
- *     09:37:33  [LLM] OpenAI quota spent — standing down for 30min
- *     09:40:30  Gemini 403 PERMISSION_DENIED — "project has been denied access"
- *               Groq is excluded from image calls entirely (its vision models 404)
- *     09:42:22  [BeatImageGate] no verdict: 23x gate could not ask
- *
- * The gate fails OPEN by design — an outage must not be able to empty a montage — so 23 clips
- * were adopted with no judgement, and the render finished, uploaded, and was marked `completed`.
- * One of them was archive footage of a present-day "White Lives Matter" demonstration, sitting in
- * a documentary about the Second World War.
- *
- * ── Why there is no local substitute ────────────────────────────────────────────────────────
- *
- * The obvious repair — let CLIP decide when the model cannot — is the repair this file's sibling
- * already tried and measured as WRONG. On this exact material CLIP's ordering is inverted: render
- * 531 scored the offending sticker 0.2226 and a signed photograph of Hitler 0.2116 on the same
- * beat, so a CLIP veto deletes the right picture and keeps the wrong one. See RONDE 58's header in
- * beatImageRelevanceGate.ts. There is no cheaper judge to fall back to.
- *
- * So the only honest options are a working gate, or not shipping. This is the second.
- *
- * ── What it refuses, and what it deliberately does not ──────────────────────────────────────
- *
- * BOTH conditions must hold:
- *
- *   1. a vision provider was unreachable — `judgementsProviderUnavailable`, a counter incremented
- *      only on the two provider-outage declines. NOT the budget ceiling, NOT a missing frame, NOT
- *      the gate being switched off: those are the render working as configured, and a render that
- *      is thrifty is not a render that is blind.
- *   2. real footage reached a beat that received NO verdict at all. Unjudged footage on screen is
- *      the harm; an outage that costs nothing but a few skipped candidates is not.
- *
- * A render where every provider is down but the gate is switched off passes — the operator turned
- * the judge off on purpose. A render where the outage cost only candidates that were never used
- * passes. What cannot pass is delivering pictures nobody approved.
- *
- * The counts come from the beat audit rather than from prose in `noVerdictReasons`: this module's
- * own RONDE 115 note warns that matching on message substrings rots the moment a message is
- * reworded, and a gate that decides whether a video ships must not rest on that.
- */
-export type VisionCoverageBeat = {
-  sceneIndex: number;
-  beatIndex: number;
-  /** Verdicts the gate actually returned for this beat: accepted + rejected + unclear. */
-  verdicts: number;
-  /** Did real footage end up on screen for this beat? */
-  hasRealFootage: boolean;
-};
-
-export type VisionCoverageGateParams = {
-  /** Declines caused by an unreachable provider — never a budget or configuration decline. */
-  providerUnavailable: number;
-  beats: readonly VisionCoverageBeat[];
-  /** The gate's own one-line summary of why it produced no verdicts, for the failure message. */
-  noVerdictSummary?: string;
-};
-
-/**
- * THE REFUSAL AS A VALUE, SO IT CAN BE DECIDED EARLY AND THROWN LATE.
- *
- * ── Render 580, and why the verdict was right and the outcome was not ───────────────────────
- *
- *     [Pipeline] Stage 4 (compose): 3 scenes in 3788.7s
- *     scene_0_composed.mp4  scene_1_composed.mp4  scene_2_composed.mp4
- *     [Video Generation] Error: Render rejected — the picture editor was unreachable ...
- *
- * Sixty-three minutes of rendering, three finished scenes on disk, and the operator received
- * nothing at all: Stage 5 never ran, so there was no assembled film, no upload and no URL. The
- * refusal was correct — every provider was gone and a beat of real footage had no verdict — but
- * refusing to PUBLISH a film and destroying it are not the same act.
- *
- * RONDE 202 settled this for the other export gates and built the machinery: `recordBlockedExport`
- * writes `failed` AND the location of the refused file in one statement, so "the gate's own
- * sentence reached them; the film did not" cannot happen again. Its closing line is the whole
- * principle: "This is only the difference between 'may not go out' and 'does not exist'."
- *
- * That protection sits after the upload. This gate threw about twelve hundred lines earlier —
- * before the concatenation, before the music, before anything was uploaded — so it fell outside
- * the one rule written to cover exactly this.
- *
- * So the decision is separated from the throw. The pipeline asks here, at the moment the evidence
- * is complete, says so in the log immediately, and carries the refusal to the point where a blocked
- * export is recorded with its film. Nothing about WHAT is refused changes: same two conditions,
- * same message, same error code, same `failed` status. What changes is that the operator can look
- * at the thing that was judged.
- */
-export function visionCoverageRefusal(params: VisionCoverageGateParams): string | null {
-  if (params.providerUnavailable <= 0) return null;
-  const unchecked = params.beats.filter((b) => b.hasRealFootage && b.verdicts === 0);
-  if (unchecked.length === 0) return null;
-
-  const named = unchecked
-    .slice(0, 6)
-    .map((b) => `s${b.sceneIndex}b${b.beatIndex}`)
-    .join(", ");
-  const withFootage = params.beats.filter((b) => b.hasRealFootage).length;
-  return (
-    `Render rejected — the picture editor was unreachable and this video contains footage nobody ` +
-    `judged: ${unchecked.length} of ${withFootage} beat(s) with real footage received no verdict ` +
-    `(${named}${unchecked.length > 6 ? ", …" : ""}), after ${params.providerUnavailable} ` +
-    `judgement(s) were declined for want of a vision provider. ` +
-    `${params.noVerdictSummary || "No provider was reachable."} ` +
-    `Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied) and ` +
-    `re-render; set ENABLE_BEAT_IMAGE_RELEVANCE_GATE=false only if you accept unjudged footage.`
-  );
-}
-
-/** The same gate, thrown where a caller wants it thrown. */
-export function assertVisionCoverageExportGate(params: VisionCoverageGateParams): void {
-  const refusal = visionCoverageRefusal(params);
-  if (refusal) throw pipelineError(PIPELINE_ERROR.QUALITY_GATE, refusal);
 }
 
 /**

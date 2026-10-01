@@ -36,11 +36,6 @@ import { join } from "path";
 import { describe, expect, it } from "vitest";
 
 import {
-  capCandidatesPerSource,
-  isStockSource,
-  shortlistCapForSource,
-} from "./retrievalFunnel";
-import {
   beatCandidateAccountingHolds,
   beatRecord,
   createBeatOutcomeAudit,
@@ -51,7 +46,6 @@ import {
 /* ═══════════════════ A. the download cap ═══════════════════ */
 
 const c = (source: string, id: string) => ({ source, id });
-
 
 /* ═══════════════════ B. one picture is one candidate ═══════════════════ */
 
@@ -203,14 +197,13 @@ describe("the invariants this round is not allowed to have moved", () => {
 
   it("no quality gate, threshold or timeout was changed", () => {
     const gate = readFileSync(join(__dirname, "searchQueryContract.ts"), "utf8");
-    expect(gate).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('return process.env.SEARCH_GATE_STRICT !== "false";');
     const policy = readFileSync(join(__dirname, "adoptionPolicy.ts"), "utf8");
     expect(policy).toContain('return process.env.ENFORCE_FUNNEL_ADOPTION !== "false";');
     const mismatch = readFileSync(join(__dirname, "visualMismatchFeedback.ts"), "utf8");
     expect(mismatch).toContain("export function reprieveAllowedFor");
     expect(mismatch.slice(mismatch.indexOf("export function reprieveAllowedFor"))).toContain("return false;");
   });
-
 
   it("dedup, the archive and the delivery gate are not mentioned by either fix", () => {
     const audit = readFileSync(join(__dirname, "beatOutcomeAudit.ts"), "utf8");

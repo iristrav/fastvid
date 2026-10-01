@@ -2,14 +2,14 @@ import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 import {
-  createClipRejectAudit,
-  recordClipReject,
+  createRejectionRegistry,
+  registerRejection,
   beatRejectCount,
   beatRejectReasons,
-  summarizeClipRejectAudit,
-  formatClipRejectAuditCapacity,
-  CLIP_REJECT_DETAIL_CAPACITY,
-} from "./clipRejectAudit";
+  summarizeRejections,
+  formatRejectionCapacity,
+  REJECTION_DETAIL_CAPACITY,
+} from "./rejectionRegistry";
 import {
   createBeatOutcomeAudit,
   noteBeatCandidatesOffered,
@@ -33,7 +33,7 @@ import {
  * not say where the other 390 went. Three reasons, all of them measurement defects rather than
  * sourcing defects:
  *
- *   1. clipRejectAudit stopped recording after 80 entries, silently and chronologically — so
+ *   1. rejections stopped recording after 80 entries, silently and chronologically — so
  *      late beats reported rejected=0, which is indistinguishable from "nothing was found".
  *   2. [VisualCoverage] only fires on the placeholder path, so successful beats logged nothing.
  *   3. "passed every gate but never became a clip" had no counter at all.
@@ -47,9 +47,9 @@ const PIPELINE = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"),
 
 describe("RONDE 70 §1 — the reject audit no longer loses information silently", () => {
   it("more rejections than the cap: the DETAIL is bounded and the loss is counted", () => {
-    const audit = createClipRejectAudit(10);
+    const audit = createRejectionRegistry(10);
     for (let i = 0; i < 25; i++) {
-      recordClipReject(audit, 0, 0, `/tmp/c${i}.mp4`, "vision_gate", "q");
+      registerRejection(audit, 0, 0, `/tmp/c${i}.mp4`, "vision_gate", "q");
     }
     expect(audit.entries).toHaveLength(10);
     expect(audit.capacity).toBe(10);
@@ -60,9 +60,9 @@ describe("RONDE 70 §1 — the reject audit no longer loses information silently
   });
 
   it("the overflow is REPORTED, not just held — auditEntriesRecorded/Dropped/Capacity", () => {
-    const audit = createClipRejectAudit(4);
-    for (let i = 0; i < 9; i++) recordClipReject(audit, 1, 2, `/tmp/x${i}.mp4`, "beat_image_gate");
-    const line = formatClipRejectAuditCapacity(audit);
+    const audit = createRejectionRegistry(4);
+    for (let i = 0; i < 9; i++) registerRejection(audit, 1, 2, `/tmp/x${i}.mp4`, "beat_image_gate");
+    const line = formatRejectionCapacity(audit);
     expect(line).toContain("auditEntriesRecorded=9");
     expect(line).toContain("auditEntriesDropped=5");
     expect(line).toContain("auditCapacity=4");
@@ -70,9 +70,9 @@ describe("RONDE 70 §1 — the reject audit no longer loses information silently
 
   it("NO FALSE rejected=0 — a late beat past the cap still reports its real count", () => {
     // The render-534 shape: an early beat floods the audit, a late beat is refused afterwards.
-    const audit = createClipRejectAudit(20);
-    for (let i = 0; i < 100; i++) recordClipReject(audit, 0, 0, `/tmp/early${i}.mp4`, "vision_gate");
-    for (let i = 0; i < 7; i++) recordClipReject(audit, 9, 3, `/tmp/late${i}.mp4`, "beat_image_gate");
+    const audit = createRejectionRegistry(20);
+    for (let i = 0; i < 100; i++) registerRejection(audit, 0, 0, `/tmp/early${i}.mp4`, "vision_gate");
+    for (let i = 0; i < 7; i++) registerRejection(audit, 9, 3, `/tmp/late${i}.mp4`, "beat_image_gate");
 
     // The detail array holds nothing at all about the late beat.
     expect(audit.entries.filter((e) => e.sceneIndex === 9)).toHaveLength(0);
@@ -84,31 +84,32 @@ describe("RONDE 70 §1 — the reject audit no longer loses information silently
   });
 
   it("the render-wide summary is complete past the cap too", () => {
-    const audit = createClipRejectAudit(5);
-    for (let i = 0; i < 30; i++) recordClipReject(audit, i, 0, `/tmp/a${i}.mp4`, "vision_gate");
-    for (let i = 0; i < 12; i++) recordClipReject(audit, i, 1, `/tmp/b${i}.mp4`, "beat_image_gate");
+    const audit = createRejectionRegistry(5);
+    for (let i = 0; i < 30; i++) registerRejection(audit, i, 0, `/tmp/a${i}.mp4`, "vision_gate");
+    for (let i = 0; i < 12; i++) registerRejection(audit, i, 1, `/tmp/b${i}.mp4`, "beat_image_gate");
     // Summing the 5 stored entries would give 5. Summing the tally gives the truth.
-    expect(summarizeClipRejectAudit(audit)).toEqual({ vision_gate: 30, beat_image_gate: 12 });
+    expect(summarizeRejections(audit)).toEqual({ vision_gate: 30, beat_image_gate: 12 });
   });
 
   it("a beat nothing was ever recorded for reads zero, not undefined", () => {
-    const audit = createClipRejectAudit();
+    const audit = createRejectionRegistry();
     expect(beatRejectCount(audit, 4, 4)).toBe(0);
     expect(beatRejectReasons(audit, 4, 4)).toEqual([]);
   });
 
   it("the cap still bounds memory — it was made honest, not removed", () => {
-    expect(CLIP_REJECT_DETAIL_CAPACITY).toBeGreaterThan(80);
-    expect(CLIP_REJECT_DETAIL_CAPACITY).toBeLessThanOrEqual(2000);
-    const audit = createClipRejectAudit();
-    for (let i = 0; i < CLIP_REJECT_DETAIL_CAPACITY * 3; i++) {
-      recordClipReject(audit, 0, i, `/tmp/z${i}.mp4`, "vision_gate");
+    expect(REJECTION_DETAIL_CAPACITY).toBeGreaterThan(80);
+    expect(REJECTION_DETAIL_CAPACITY).toBeLessThanOrEqual(2000);
+    const audit = createRejectionRegistry();
+    for (let i = 0; i < REJECTION_DETAIL_CAPACITY * 3; i++) {
+      registerRejection(audit, 0, i, `/tmp/z${i}.mp4`, "vision_gate");
     }
-    expect(audit.entries.length).toBe(CLIP_REJECT_DETAIL_CAPACITY);
+    expect(audit.entries.length).toBe(REJECTION_DETAIL_CAPACITY);
   });
 
   it("no reject REASON was added, removed or renamed — only the counting changed", () => {
-    const src = PIPELINE();
+    /** ONE ROUTE: the content reasons are the VisualJudge's; the picture model's stays in adoptClip. */
+    const src = PIPELINE() + fs.readFileSync(path.join(__dirname, "visualJudge.ts"), "utf8");
     for (const reason of [
       // vision_gate, baked_text and off_topic_protest went with `beatClipPassesVisionGate`.
       "documentary_beat_gate", "entity_evidence", "off_topic_visual", "beat_image_gate",
@@ -139,8 +140,8 @@ describe("RONDE 70 §2 — every beat gets exactly one VisualCoverageFinal line"
 
   it("a beat only the REJECT tally saw is still reported", () => {
     const audit = createBeatOutcomeAudit();
-    const rejects = createClipRejectAudit();
-    recordClipReject(rejects, 3, 9, "/tmp/r.mp4", "vision_gate");
+    const rejects = createRejectionRegistry();
+    registerRejection(rejects, 3, 9, "/tmp/r.mp4", "vision_gate");
     const beats = collectReportableBeats(audit, planned, rejects.perBeat.keys());
     expect(beats).toContainEqual({ sceneIndex: 3, beatIndex: 9 });
   });
@@ -483,7 +484,7 @@ describe("RONDE 70 §6/§7 — Ronde 69 is still intact", () => {
 
 describe("RONDE 70 §10 — observability only", () => {
   it("no provider call, no ranking and no LLM call was added to the audit modules", () => {
-    for (const file of ["beatOutcomeAudit.ts", "clipRejectAudit.ts"]) {
+    for (const file of ["beatOutcomeAudit.ts", "rejectionRegistry.ts"]) {
       const src = fs.readFileSync(path.join(__dirname, file), "utf8");
       for (const forbidden of ["fetch(", "invokeLLM", "await ", "providerLimiter", "import fetch"]) {
         expect(src).not.toContain(forbidden);
@@ -546,14 +547,6 @@ describe("RONDE 70 §10 — observability only", () => {
      */
     expect(gate).toContain("export const MAX_JUDGEMENTS_PER_BEAT = envInt(");
     expect(gate).toContain('envInt("MAX_BEAT_IMAGE_JUDGEMENTS",');
-  });
-
-  it("no threshold, source priority or fallback policy was touched", () => {
-    const src = PIPELINE();
-    expect(src).toContain("/** Quick script-ordered rescue: YouTube CC first, then capped Pexels. */");
-    expect(src).toContain("if (realFootageFirstEnabled() && !youtubeOnlySourcingEnabled()) {");
-    expect(src).toContain("const VISUAL_PROVIDER_FAILURE_STREAK_TRIP = 3;");
-    expect(src).toContain("MAX_FUNNEL_CANDIDATES_TO_SCORE");
   });
 
   it("no new database table or schema change came with this", () => {

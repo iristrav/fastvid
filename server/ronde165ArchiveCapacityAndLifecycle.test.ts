@@ -54,7 +54,7 @@ import {
   summarizeArchiveSourcing,
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
-import { MAX_FUNNEL_CANDIDATES_TO_SCORE } from "./retrievalFunnel";
+
 import {
   VisualSourceLedger,
   formatAssetLifecycleAudit,
@@ -62,7 +62,6 @@ import {
 } from "./visualSourceLineage";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-const FUNNEL = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
 const LINEAGE = readFileSync(join(__dirname, "visualSourceLineage.ts"), "utf8");
 
 /** A ledger holding one candidate, at whatever point in its life the test needs it. */

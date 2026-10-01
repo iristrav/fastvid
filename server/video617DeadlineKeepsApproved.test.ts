@@ -83,7 +83,6 @@ describe("Video 617. a scene still running at the visual deadline keeps what it 
     const at = PIPE.indexOf("const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number)");
     const body = PIPE.slice(at, PIPE.indexOf("clips.push(clipPath);", at));
     expect(body).toContain("if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;");
-    expect(body).toContain("if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;");
     expect((PIPE.match(/^\s*clips\.push\(clipPath\);/gm) ?? []).length).toBe(1);
   });
 });

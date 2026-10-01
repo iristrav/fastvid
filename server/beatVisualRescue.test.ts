@@ -1,24 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-/**
- * The one-minute length no longer takes a different path by default — see
- * `isFastShortVideoLength`. The fast-short tuning still EXISTS and is still what this file is
- * about, so these tests enable it explicitly rather than being loosened: the behaviour is
- * unchanged, only its default is.
- */
-beforeEach(() => { vi.stubEnv("FAST_SHORT_PATH", "true"); });
-afterEach(() => { vi.unstubAllEnvs(); });
-
-import {
-  beatVisualRescueEnabled,
-  beatVisualRescueVisionFloor,
-  beatVisualRescueAiMaxClips,
-  maxFallbackBeatsPerVideo,
-  fastShortArchivePoolMax,
-  fastShortClipIndexPrewarmMax,
-  isFastShortVideoLength,
-  pipelineWallClockLimitEnabled,
-} from "./sourcingPolicy";
+import { beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, maxFallbackBeatsPerVideo } from "./sourcingPolicy";
+import { pipelineWallClockLimitEnabled } from "./config";
 
 describe("beatVisualRescue", () => {
   afterEach(() => {
@@ -31,15 +14,13 @@ describe("beatVisualRescue", () => {
     delete process.env.PIPELINE_WALL_CLOCK_LIMIT;
   });
 
-  it("enables the wall-clock limit by default and keeps the 1-min fast path", () => {
+  it("enables the wall-clock limit by default", () => {
     // RONDE 30: this asserted `false` and had been failing for months. The flag is opt-OUT
     // (PIPELINE_WALL_CLOCK_LIMIT !== "false"), so the default is ON; only the doc comment in
     // sourcingPolicy.ts said otherwise, and that comment is now corrected.
     expect(pipelineWallClockLimitEnabled()).toBe(true);
-    expect(isFastShortVideoLength("1")).toBe(true);
     process.env.PIPELINE_WALL_CLOCK_LIMIT = "false";
     expect(pipelineWallClockLimitEnabled()).toBe(false);
-    expect(isFastShortVideoLength("1")).toBe(true);
     // The original left PIPELINE_WALL_CLOCK_LIMIT set for every later test in this process.
     delete process.env.PIPELINE_WALL_CLOCK_LIMIT;
   });

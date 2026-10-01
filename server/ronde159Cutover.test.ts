@@ -8,11 +8,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-  cinematicPlanningEnabled,
-  cinematicRenderPathEnabled,
-  enqueueCinematicRender,
-} from "./cinematicProduction";
+import { cinematicPlanningEnabled, enqueueCinematicRender } from "./cinematicProduction";
+import { cinematicRenderPathEnabled } from "./config";
 
 const ORIGINAL_ENGINE = process.env.CINEMATIC_EDITING_ENGINE;
 const ORIGINAL_PATH = process.env.CINEMATIC_RENDER_PATH;

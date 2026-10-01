@@ -395,7 +395,7 @@ describe("RONDE 147 §9/§10 — Generate Video out, Discount Codes in", () => {
 describe("RONDE 147 §13 — this round did not touch the YouTube licence work", () => {
   it("the operator authorisation still exists exactly as RONDE 147-licensing left it", () => {
     const licence = read("youtubeLicenseStatus.ts");
-    expect(licence).toContain("export function allowOperatorLicensedYoutube()");
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain("export function allowOperatorLicensedYoutube(env: NodeJS.ProcessEnv = process.env)");
     expect(licence).toContain("ALLOW_OPERATOR_LICENSED_YOUTUBE");
     expect(licence).toContain('status = "OPERATOR_AUTHORIZED";');
     expect(licence).toContain("export function isOperatorAuthorizedYoutube");

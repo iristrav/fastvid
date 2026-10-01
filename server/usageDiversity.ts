@@ -1,6 +1,13 @@
 /**
- * Tracks archive assets used in recent videos so the next generation picks different footage.
- * Persisted to disk (survives restarts on Railway volume / local uploads dir).
+ * USAGE DIVERSITY — the one owner of "prefer what was used less".
+ *
+ * ONE ROUTE: dedup (`visualDedupRegistry`) answers "has THIS video used this picture?" and refuses.
+ * Diversity answers a softer question and refuses nothing: among the pictures that already MATCH a
+ * sentence, which should be tried first? The ones used in fewer recent videos on the same subject,
+ * and — inside one render — the ones from archives drawn on less. It reorders within near-tied
+ * score bands only, so a genuinely better match is never displaced for the sake of variety.
+ *
+ * Recent use is persisted to disk (survives restarts on the Railway volume / local uploads dir).
  */
 import { foldSearchText } from "./searchTextNormalize";
 import * as fs from "fs";
@@ -96,35 +103,59 @@ export function recordArchiveVideoUsage(
   );
 }
 
-/** Asset IDs used in the last N videos on the same topic (excluding current video). */
-export function getCrossVideoExcludeAssetIds(
+/**
+ * How many of the last N same-subject videos (this one excluded) used each archive asset. An asset
+ * absent from the map was used by none of them.
+ */
+export function recentUsageCounts(
   topic: string,
   currentVideoId: number,
   lastVideos = archiveCrossVideoCooldownVideos()
-): Set<number> {
+): Map<number, number> {
   loadStore();
   const key = normalizeArchiveTopicKey(topic);
-  const ids = new Set<number>();
+  const counts = new Map<number, number>();
   let matchedVideos = 0;
   for (let i = entries.length - 1; i >= 0 && matchedVideos < lastVideos; i--) {
     const e = entries[i]!;
     if (e.videoId === currentVideoId) continue;
     if (!archiveTopicsShareSubject(e.topicKey, key)) continue;
     matchedVideos++;
-    for (const id of e.assetIds) ids.add(id);
+    for (const id of new Set(e.assetIds)) counts.set(id, (counts.get(id) ?? 0) + 1);
   }
-  return ids;
+  return counts;
 }
 
-/** Seeded shuffle for stable but varied ordering within a score band. */
-export function seededShuffle<T>(items: T[], seed: number): T[] {
-  if (items.length <= 1) return items;
-  const out = [...items];
-  let s = seed >>> 0 || 1;
-  for (let i = out.length - 1; i > 0; i--) {
-    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-    const j = s % (i + 1);
-    [out[i], out[j]] = [out[j]!, out[i]!];
+/**
+ * Prefer the less-used among candidates that already match: within each band of near-tied scores
+ * (top of the band minus `bandWidth`), fewer recent same-subject uses first, then fewer uses of the
+ * candidate's archive in this render. Order across bands — the match itself — is untouched.
+ */
+export function preferLessUsed<T extends { score: number; asset: { id: number }; archiveName: string }>(
+  ranked: T[],
+  usage: { recentVideoUses?: ReadonlyMap<number, number>; archiveUsesThisRender?: ReadonlyMap<string, number> },
+  bandWidth = 3
+): T[] {
+  const recent = usage.recentVideoUses;
+  const archives = usage.archiveUsesThisRender;
+  if (ranked.length <= 1 || (!recent?.size && !archives?.size)) return ranked;
+  const out: T[] = [];
+  let i = 0;
+  while (i < ranked.length) {
+    const bandTop = ranked[i]!.score;
+    let j = i + 1;
+    while (j < ranked.length && ranked[j]!.score >= bandTop - bandWidth) j++;
+    const band = ranked.slice(i, j);
+    if (band.length > 1) {
+      band.sort(
+        (a, b) =>
+          (recent?.get(a.asset.id) ?? 0) - (recent?.get(b.asset.id) ?? 0) ||
+          (archives?.get(a.archiveName) ?? 0) - (archives?.get(b.archiveName) ?? 0)
+      );
+    }
+    out.push(...band);
+    i = j;
   }
   return out;
 }
+

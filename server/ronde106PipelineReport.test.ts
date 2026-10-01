@@ -19,7 +19,7 @@ import {
   PIPELINE_SECTIONS,
   createPipelineReportCollector,
   type PipelineSection,
-} from "./renderPipelineReport";
+} from "./renderReport";
 
 const PIPELINE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const ROUTERS = fs.readFileSync(path.join(__dirname, "routers.ts"), "utf8");
@@ -183,7 +183,8 @@ describe("RONDE 106 — the render collects what it already prints", () => {
   });
 
   it("the report and the glance are stored with the video, in the same merge as the quality report", () => {
-    const idx = PIPELINE.indexOf("await mergeVideoMetadata(videoId, {");
+    /** ONE ROUTE: both stores go through the RenderReport's one writer. */
+    const idx = PIPELINE.indexOf("await storeRenderReport(videoId, {");
     expect(idx).toBeGreaterThan(-1);
     const block = PIPELINE.slice(idx, idx + 1400);
     expect(block).toContain("qualityReport,");

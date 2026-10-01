@@ -214,45 +214,22 @@ describe("§3 — proportional is not the same as absent", () => {
     }
   });
 
-  it("the AI clip ceiling is a count, and counts may differ", () => {
-    /** Named explicitly so nobody later reads it as a capability and flattens it. */
-    const values = profiles().map((p) => p.profile.maxAiClipsPerVideo);
-    expect(values.every((v) => typeof v === "number")).toBe(true);
+  /**
+   * ONE ROUTE: the AI-clip ceiling (and its "AI fallback" switch) was written into the profile and
+   * read by nothing since the AI generators were removed, so it left the profile.
+   */
+  it("the profile carries no AI-clip fields any more", () => {
+    for (const p of profiles()) {
+      expect(p.profile).not.toHaveProperty("maxAiClipsPerVideo");
+      expect(p.profile).not.toHaveProperty("enableAiFallback");
+    }
   });
 });
 
-/* ═══════════ 4 — what is NOT yet length-independent, named out loud ═══════════ */
+/* ═══════════ 4 — no boolean differs by length ═══════════ */
 
-describe("§4 — the remaining two, declared rather than hidden", () => {
-  /**
-   * `fastStockMode` and `scriptOnlyVisuals` still differ by length, and both are real violations
-   * of the rule rather than budgets:
-   *
-   *   fastStockMode      on a short Railway job this REPLACES the beat-resolution route with
-   *                      `resolveBeatClipTurbo` / `resolveBeatClipFastTurbo` — a reduced route,
-   *                      not a smaller budget. It also skips the Openverse stills tier.
-   *   scriptOnlyVisuals  false for short, true for longer, which changes what a beat may adopt.
-   *
-   * They are NOT fixed here, and the reason is not oversight. `fastStockMode` exists because of
-   * measured Railway behaviour — OOM-killed ffmpeg processes and a 10-minute wall-clock target —
-   * and switching it off without a production render to show the full route fits that budget would
-   * be trading a known defect for an unmeasured one. Production is `Unauthorized`, so that render
-   * cannot be run.
-   *
-   * This test exists so the boundary is explicit: these two are known, and a THIRD cannot be added
-   * without failing here.
-   */
-  const KNOWN_LENGTH_DEPENDENT = ["fastStockMode", "scriptOnlyVisuals"] as const;
-
-  it("no boolean OTHER than the two known ones differs by length", () => {
-    /**
-     * A subset check, not an equality one. `fastStockMode` is `IS_RAILWAY` on the short profile,
-     * and `IS_RAILWAY` is derived from an environment variable — so on a machine where that key is
-     * set the field is false everywhere and does not differ at all. Demanding that it DOES differ
-     * would make this test pass or fail on where it runs rather than on what the code says.
-     *
-     * The direction that matters is the other one: nothing new may join the list.
-     */
+describe("§4 — a length changes how much work a render does, never which route", () => {
+  it("no boolean in the profile differs by length", () => {
     for (const mode of MODES) {
       const one = inMode(mode.env, () => getPipelinePerfProfile("1"));
       const booleanFields = (Object.keys(one) as (keyof PipelinePerfProfile)[]).filter(
@@ -262,22 +239,11 @@ describe("§4 — the remaining two, declared rather than hidden", () => {
       const differing = booleanFields.filter(
         (f) => new Set(byLength.map((p) => String(p[f]))).size > 1
       );
-      const unexpected = differing.filter(
-        (f) => !(KNOWN_LENGTH_DEPENDENT as readonly string[]).includes(f)
-      );
-      expect(
-        unexpected,
-        `a new capability became a function of video length in ${mode.name}`
-      ).toEqual([]);
+      expect(differing, `a capability became a function of video length in ${mode.name}`).toEqual([]);
     }
   });
 
-  it("the two known ones are the only names on the list", () => {
-    /** So the list cannot be widened to hide a new violation instead of fixing it. */
-    expect([...KNOWN_LENGTH_DEPENDENT].sort()).toEqual(["fastStockMode", "scriptOnlyVisuals"]);
-  });
-
-  it("the two are documented where they are set, not only here", () => {
+  it("the rule is documented where the profile is set", () => {
     expect(PIPELINE).toContain("A CAPABILITY IS NOT A FUNCTION OF LENGTH.");
   });
 });

@@ -23,19 +23,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import path from "path";
 
-import {
-  allowUnverifiedYoutube,
-  classifyArchiveLicense,
-  formatYoutubeLicenseLine,
-  formatYoutubeUsageReport,
-  isYoutubeOriginIdentifier,
-  youtubeLicenseDecision,
-  youtubeVideoIdFromIdentifier,
-} from "./youtubeLicenseStatus";
+import { classifyArchiveLicense, formatYoutubeLicenseLine, formatYoutubeUsageReport, isYoutubeOriginIdentifier, youtubeLicenseDecision, youtubeVideoIdFromIdentifier } from "./youtubeLicenseStatus";
 import { isAllowedInternetArchiveLicense } from "./videoPipeline";
 import { isAllowedInternetArchiveLicensePool } from "./scenePool";
 import { healQualityReportForExport } from "./pipelineSelfHeal";
 import { buildVideoQualityReport } from "./videoQualityReport";
+import { allowUnverifiedYoutube } from "./config";
 
 const src = (f: string) => fs.readFileSync(path.join(process.cwd(), "server", f), "utf8");
 
@@ -68,8 +61,8 @@ describe("RONDE 124 — ALLOW_UNVERIFIED_YOUTUBE", () => {
      * Captured at import, a flag set on the worker service but not on the web service would
      * behave differently depending on which process happened to load the module first.
      */
-    expect(src("youtubeLicenseStatus.ts")).toContain(
-      "return process.env.ALLOW_UNVERIFIED_YOUTUBE?.trim().toLowerCase() === \"true\";"
+    expect(src("config.ts")).toContain(
+      "return env.ALLOW_UNVERIFIED_YOUTUBE?.trim().toLowerCase() === \"true\";"
     );
   });
 });
@@ -209,12 +202,12 @@ describe("RONDE 124 — the whole chain, not the first hit", () => {
     expect(p).toContain("formatYoutubeLicenseLine(licenseDecision)");
   });
 
-
   it("the module has no pipeline imports, so the scenePool cycle stays impossible", () => {
     const m = src("youtubeLicenseStatus.ts");
     expect(m).not.toContain('from "./videoPipeline"');
     expect(m).not.toContain('from "./scenePool"');
-    expect(m).not.toContain("import ");
+    /** ONE ROUTE: its one import is config.ts, which imports no pipeline module either. */
+    expect(m.replace('import { allowOperatorLicensedYoutube, allowUnverifiedYoutube } from "./config";', "")).not.toContain("import ");
   });
 
   it("the preview check and the vision gate are still ahead of any use", () => {

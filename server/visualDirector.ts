@@ -120,16 +120,6 @@ function extractNarrationSentences(script: string): string[] {
   return [];
 }
 
-function splitBeatSentences(text: string): string[] {
-  const trimmed = text.replace(/\s+/g, " ").trim();
-  if (!trimmed) return [];
-  const sentences =
-    trimmed.match(/[^.!?]+[.!?]+/g)?.map((s) => s.trim()).filter((s) => s.length > 5) ?? [];
-  if (sentences.length > 0) return sentences;
-  if (trimmed.length > 5) return [trimmed];
-  return [];
-}
-
 function sanitizeVisualKeyword(keyword: unknown): string {
   let k = coerceText(keyword)
     .toLowerCase()
@@ -259,61 +249,6 @@ export function hasDirectorPlan(intent: ScriptVisualIntentEntry | undefined): bo
   );
 }
 
-/** Match director scenes whose spoken_text appears in this scene voice block. */
-export function directorScenesForSceneVoice(
-  sceneText: string,
-  allScenes: VisualDirectorScene[]
-): VisualDirectorScene[] {
-  const sceneNorm = normalizeSentenceKey(sceneText);
-  const parts = splitBeatSentences(sceneText);
-  const partKeys = parts.map(normalizeSentenceKey);
-
-  return allScenes.filter((d) => {
-    const key = normalizeSentenceKey(d.spoken_text);
-    if (sceneNorm.includes(key)) return true;
-    return partKeys.some((p) => p.includes(key) || key.includes(p));
-  });
-}
-
-/** Merge excess director scenes so each beat stays ≥ VISUAL_DIRECTOR_MIN_SEC on screen. */
-export function mergeDirectorScenesForPacing(
-  scenes: VisualDirectorScene[],
-  maxScenes: number
-): VisualDirectorScene[] {
-  if (scenes.length <= maxScenes || maxScenes < 1) return scenes;
-  const out: VisualDirectorScene[] = [];
-  const groupSize = Math.ceil(scenes.length / maxScenes);
-  for (let i = 0; i < scenes.length; i += groupSize) {
-    const chunk = scenes.slice(i, i + groupSize);
-    const first = chunk[0]!;
-    if (chunk.length === 1) {
-      out.push(first);
-      continue;
-    }
-    out.push({
-      ...first,
-      spoken_text: chunk.map((c) => c.spoken_text).join(" "),
-      visual_description: chunk.map((c) => c.visual_description).join("; "),
-      search_query: first.search_query,
-    });
-  }
-  return out.slice(0, maxScenes);
-}
-
-export function estimateDirectorSceneHoldSec(
-  spokenText: string,
-  sceneDuration: number,
-  sceneCount: number
-): number {
-  const words = spokenText.replace(/\[visual:[^\]]+\]/gi, "").split(/\s+/).filter(Boolean).length;
-  const byWords = words / 2.8;
-  const evenShare = sceneDuration / Math.max(1, sceneCount);
-  return Math.max(
-    VISUAL_DIRECTOR_MIN_SEC,
-    Math.min(VISUAL_DIRECTOR_MAX_SEC, Math.min(byWords, evenShare * 1.02))
-  );
-}
-
 function buildDirectorBatchPrompt(
   sentences: string[],
   offset: number,
@@ -358,8 +293,8 @@ Each scene MUST include:
 Rules:
 - MAX 1 visual idea per scene
 - BE SPECIFIC, not generic: when THIS SENTENCE names a real PERSON, PLACE, ORGANIZATION, EVENT or YEAR, put it IN the search_query. Prefer "German soldiers Berlin 1945" over "soldiers marching"; "Elon Musk Tesla factory" over "man in factory"; "Amsterdam canal houses" over "old buildings".
-- Never emit a query built on a bare pronoun ("he", "she", "they"). If the sentence gives you only a pronoun, describe the visible scene instead — do NOT substitute a name from the documentary subject.
-- EVERY content word in search_query must appear in THIS SENTENCE. Not implied by it, not inferred from the documentary subject, not carried over from a neighbouring scene, not supplied by the title: stated in this sentence. A term that is only "clearly implied" is a guess, and a guess is discarded before it reaches a provider. If the sentence names no specific entity, describe a concrete generic scene using the sentence's own words.
+- Never emit a query built on a bare pronoun ("he", "she", "they"). Resolve it: when THE SCRIPT makes clear who or what a pronoun or vague reference ("the deal", "the company") means — this sentence or the sentences around it — name that person/organization/event in the search_query. Example: "He later announced the acquisition." after sentences about Elon Musk buying Twitter → "Elon Musk Twitter acquisition". The documentary subject only helps you recognise who the script is about; it never puts a name on a sentence the script does not tie to that name.
+- Every content word in search_query must come from the script (this sentence, its neighbours, the documentary subject) or be something visible in your own visual_description. Never introduce a person, place, event, year or fact the script does not mention. If the script does not make the reference clear, describe a concrete generic scene instead of guessing a name.
 - search_query must describe visible footage, not abstract concepts (no: success, growth, strategy)
 - Do NOT search on voice-over words — search on what the viewer should see
 - Split multi-concept sentences into separate scenes with different visual_description + search_query
@@ -498,31 +433,6 @@ export async function generateVisualDirectorPlan(
   );
 
   return all;
-}
-
-export function parseVisualDirectorFromMetadata(metadata: unknown): VisualDirectorScene[] {
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
-  const raw = (metadata as Record<string, unknown>).visualDirectorScenes;
-  if (!Array.isArray(raw)) return [];
-
-  const out: VisualDirectorScene[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const row = item as Record<string, unknown>;
-    const spoken = String(row.spoken_text ?? "").trim();
-    const visualDescription = sanitizeVisualDescription(String(row.visual_description ?? ""));
-    const searchQuery = sanitizeSearchQuery(String(row.search_query ?? ""), visualDescription);
-    if (spoken.length < 4 || !visualDescription || !searchQuery) continue;
-    out.push({
-      source_sentence_index: Number(row.source_sentence_index ?? 0),
-      spoken_text: spoken,
-      visual_description: visualDescription,
-      camera_shot: sanitizeCameraShot(String(row.camera_shot ?? "medium shot")),
-      emotion: sanitizeEmotion(String(row.emotion ?? "neutral")),
-      search_query: searchQuery,
-    });
-  }
-  return out;
 }
 
 export function mergeVisualDirectorIntoMetadata(

@@ -44,7 +44,7 @@ import { readFileSync } from "fs";
 import path from "path";
 
 import { formatPipelineExport } from "./pipelineExport";
-import type { RenderPipelineReport, PipelineGlance } from "./renderPipelineReport";
+import type { RenderPipelineReport, PipelineGlance } from "./renderReport";
 
 const PIPELINE = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 

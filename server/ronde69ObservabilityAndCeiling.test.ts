@@ -451,15 +451,6 @@ describe("RONDE 69 FIX 2 — the YouTube ceiling is claimed, not checked", () =>
     expect(missing).toEqual([]);
   });
 
-  it("YouTube is still bounded, not disabled, and the source order is unchanged", () => {
-    const src = PIPELINE();
-    expect(src).not.toContain("YOUTUBE_DISABLED");
-    expect(youtubeMaxDownloadsPerRender()).toBeGreaterThan(0);
-    // RONDE 68's priority statement is left exactly as it was.
-    expect(src).toContain("/** Quick script-ordered rescue: YouTube CC first, then capped Pexels. */");
-    expect(src).toContain("if (realFootageFirstEnabled() && !youtubeOnlySourcingEnabled()) {");
-  });
-
   it("no retry was added — a refused claim ends the loop, it does not try again", () => {
     const src = PIPELINE();
     const claim = src.indexOf("if (!claimDownloadSlot()) {");

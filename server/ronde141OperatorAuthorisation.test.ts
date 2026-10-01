@@ -21,12 +21,8 @@
  * FastVid knows and writes down did not.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  allowOperatorLicensedYoutube,
-  formatYoutubeLicenseLine,
-  formatYoutubeUsageReport,
-  youtubeLicenseDecision,
-} from "./youtubeLicenseStatus";
+import { formatYoutubeLicenseLine, formatYoutubeUsageReport, youtubeLicenseDecision } from "./youtubeLicenseStatus";
+import { allowOperatorLicensedYoutube } from "./config";
 
 const NC_ND = "https://creativecommons.org/licenses/by-nc-nd/4.0/";
 const CC_BY = "https://creativecommons.org/licenses/by/4.0/";

@@ -300,8 +300,8 @@ describe("the worker egress probe reads the answer, not the status code", () => 
 describe("what this round did not touch", () => {
   it("the operator authorisation default is still ON unless literally false", () => {
     const LIC = readFileSync(join(__dirname, "youtubeLicenseStatus.ts"), "utf8");
-    expect(LIC).toContain(
-      'return process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() !== "false";'
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain(
+      'return env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() !== "false";'
     );
   });
 

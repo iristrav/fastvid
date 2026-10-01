@@ -39,7 +39,6 @@ export type ScriptGuidedOptions = {
   videoTitle?: string;
   /** Wall-clock deadline (Date.now() ms). */
   deadlineMs: number;
-  fastMode?: boolean;
   /** RONDE 60: how much of the video will be taken, so a fallback start can leave room for it. */
   clipDurationSec?: number;
   /**
@@ -255,13 +254,13 @@ export function scriptGuidedClipsEnabled(): boolean {
 }
 
 /** Per-beat time budget for script-guided planning (keeps generation fast). */
-export function scriptGuidedBudgetMs(fastMode: boolean): number {
+export function scriptGuidedBudgetMs(): number {
   const raw = process.env.SCRIPT_GUIDED_BUDGET_MS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n > 0) return n;
   }
-  return fastMode ? 22_000 : 32_000;
+  return 32_000;
 }
 
 /**
@@ -305,7 +304,7 @@ export async function planScriptGuidedClip(
 
   // One watch-page read gives both the caption tracks and the duration; fetchYoutubeTranscript
   // below reads the same cached context, so this costs nothing extra.
-  const transcriptMs = options.fastMode ? 3_500 : 5_000;
+  const transcriptMs = 5_000;
   // RONDE 61: the watch page gets its own budget, capped by what is left of the planning
   // deadline. It was being handed the 3.5s transcript timeout, which is not enough to fetch and
   // read one to two megabytes of HTML — render 532 logged src=unknown on all 52 plans.
@@ -352,14 +351,13 @@ export async function planScriptGuidedClip(
     };
   }
 
-  if (options.fastMode && metaScore >= 2) return defaultPlan();
   if (Date.now() > options.deadlineMs || !candidate.thumbnailUrl) return defaultPlan();
 
   const vision = await scoreThumbnailRelevance(
     candidate.thumbnailUrl,
     options.beatText,
     options.videoTitle,
-    options.fastMode ? 5_000 : 7_000
+    7_000
   );
   if (vision) {
     if (vision.relevance < 4 && !vision.showsSubject) {
@@ -390,7 +388,7 @@ export async function planBestScriptGuidedClip(
   const ranked = [...candidates].sort(
     (a, b) => scoreYoutubeMetadata(b, options.keywords) - scoreYoutubeMetadata(a, options.keywords)
   );
-  const maxTries = options.fastMode ? 3 : 4;
+  const maxTries = 4;
 
   for (const c of ranked.slice(0, maxTries)) {
     if (Date.now() > options.deadlineMs) break;

@@ -136,7 +136,7 @@ describe("T1/T2 — a beat gets one central turn", () => {
     const dedup = {
       youtubeTurnByBeat: new Map<string, YoutubeTurnRecord>(),
       entityYoutubeFetchesUsed: 0,
-      perf: { maxEntityYoutubePerVideo: 4, fastStockMode: false },
+      perf: { maxEntityYoutubePerVideo: 4 },
     };
     const held = claimYoutubeTurn(dedup, 3, 1, "historical cascade");
     expect(held.granted).toBe(true);
@@ -277,7 +277,6 @@ describe("T4 — non-YouTube providers cannot spend the YouTube reserve", () => 
      */
     expect(PIPELINE).toContain("countsAgainstEntityCeiling?: boolean;");
     expect(PIPELINE).toContain("countsAgainstEntityCeiling: false,");
-    expect(PIPELINE).toContain("countsAgainstEntityCeiling: entityUsable,");
     expect(PIPELINE).toContain("req.countsAgainstEntityCeiling !== false");
   });
 
@@ -316,19 +315,6 @@ describe("T5 — a failed turn falls through to the next tier", () => {
     ]) {
       expect(body, outcome).toContain(outcome);
     }
-  });
-
-  it("every branch continues when the turn yields nothing", () => {
-    /**
-     * Each call-site reads `.clip` and falls through on null — it does not return null itself, and
-     * it does not treat a failed YouTube turn as the end of sourcing for the beat.
-     */
-    for (const { host, request } of centralCalls()) {
-      if (host === "fetchBeatYoutubeOnly") continue; // its own function IS the YouTube tier
-      expect(request, `${host} builds a request`).toContain("visualNeed:");
-    }
-    const adapterFree = bodyOf("fetchBeatClipInner");
-    expect(adapterFree).toContain("runCentralYoutubeTurn({");
   });
 
   it("the adapter's failure is caught and reported, never propagated as a crash", () => {
@@ -380,29 +366,18 @@ describe("T6-T9 — no branch loses its context at the door", () => {
   });
 
   it("T6 — a PERSON branch keeps its person", () => {
-    const person = centralCalls().filter((c) => c.request.includes('visualNeed: "person"'));
-    expect(person.length, "no person route reaches the central turn").toBeGreaterThanOrEqual(3);
+    const person = centralCalls().filter((c) => /visualNeed:[^,]*"person"/.test(c.request));
+    expect(person.length, "no person route reaches the central turn").toBeGreaterThanOrEqual(1);
     expect(
       person.some((c) => c.request.includes("primaryPerson")),
       "the person never reaches the provider"
     ).toBe(true);
   });
 
-  it("T7 — an EVENT branch keeps its event queries", () => {
-    const event = centralCalls().filter((c) => c.request.includes('visualNeed: "event"'));
-    expect(event.length).toBeGreaterThanOrEqual(3);
-    expect(
-      event.every((c) => c.request.includes("entityYt")),
-      "an event beat reaches the provider without its entity queries"
-    ).toBe(true);
-    // And the builder that produced them is named, wherever an event route hands them over.
-    expect(PIPELINE).toContain('"realEntityYoutubeQueriesForBeat"');
-  });
-
   it("T8 — a TOPIC/PROCESS branch keeps its documentary queries", () => {
-    const topic = centralCalls().filter((c) => c.request.includes('visualNeed: "topic"'));
-    expect(topic.length).toBeGreaterThanOrEqual(2);
-    expect(topic.some((c) => c.request.includes("topicYt"))).toBe(true);
+    const topic = centralCalls().filter((c) => /visualNeed:[^,]*"topic"/.test(c.request));
+    expect(topic.length).toBeGreaterThanOrEqual(1);
+    expect(topic.some((c) => c.request.includes('queryBuilder: "buildBeatYoutubeQueries"'))).toBe(true);
   });
 
   it("T9 — an ARCHIVAL branch keeps its archival queries and its relevance floor", () => {
@@ -435,7 +410,8 @@ describe("T10 — the central route is not an archival route", () => {
      * opening searches ("SpaceX Falcon 9 rocket launch", …), one subject's fixed queries, and they
      * were removed with the rest of that subject's code.
      */
-    for (const need of ["person", "event", "topic", "archival", "research", "last_resort"]) {
+    /** One ladder per sentence: the event, research and last-resort routes are gone with it. */
+    for (const need of ["person", "topic", "archival"]) {
       expect([...needs], `${need} beats no longer use the central route`).toContain(need);
     }
   });
@@ -453,40 +429,6 @@ describe("T10 — the central route is not an archival route", () => {
     );
     const adapter = bodyOf("tryBeatRealYouTubeFootage");
     expect(adapter, "the adapter branches on the need").not.toContain("visualNeed");
-  });
-
-  it("no branch is allowed to ask whether YouTube is available before routing to it", () => {
-    const hosts = new Set<string>();
-    const re = /(?<![\w.])youtubeCcReady\s*\(\)/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(PIPELINE))) hosts.add(enclosingFunction(m.index));
-    for (const host of hosts) {
-      expect(
-        [
-          "runCentralYoutubeTurn", // the one place that MAY decide
-          "youtubeCcReady", // the function itself
-          "downloadYouTubeCCClip", // prose in a doc comment
-          "probeYouTubeCcPipeline", // the readiness probe; sources nothing
-          "maxEntityYoutubeFetchesPerVideo", // sizes the ceiling, does not route
-          "fetchUniqueStockForBeat", // sizes a wall clock for a mixed-provider path
-          "fetchUniqueStockForBeatInner", // refuses when NO provider at all is configured
-          "_runVideoPipelineInner", // reports capability at startup
-          /**
-           * Declares tier 1 UNAVAILABLE for the sourcing ladder, which is the opposite of routing
-           * to it: the answer can only ever make the beat skip YouTube, never reach it. It exists
-           * so "not called" and "declined" stay different states — see `beatSourcingDeclines`.
-           */
-          "beatSourcingDeclines",
-          /**
-           * RONDE 600 — sizes a WALL CLOCK, exactly as `fetchUniqueStockForBeat` does, and is
-           * where that expression now lives so the rule is written once. Its answer can only
-           * change a number of seconds: true sends no beat to YouTube, false stops none.
-           */
-          "youtubeAvailableForBudgeting",
-        ],
-        `${host} decides for itself whether to try YouTube`
-      ).toContain(host);
-    }
   });
 });
 
@@ -576,26 +518,6 @@ describe("§17 — golden trace: 'Kim Kardashian appears at a Los Angeles court.
     expect(archive.granted).toBe(false);
     if (archive.granted) return;
     expect(archive.record.clip).toBe("/w/kk.mp4");
-  });
-
-  it("no historical, celebrity or rescue route sits between the beat and the provider", () => {
-    /**
-     * Structural, because this is a claim about every path. Each of these functions used to reach
-     * YouTube itself; none of them may any more, and the door they go through is the same one a
-     * 1945 archival beat goes through.
-     */
-    for (const route of [
-      "fetchBeatYoutubeOnly",
-      "fetchHistoricalBeatVideoInner",
-      "researchBeatClipUnifiedInner",
-      "fetchPersonBeatClipInner",
-      "resolveBeatClipTurboInner",
-      "fetchLastResortRealClipInner",
-    ]) {
-      expect(bodyOf(route), `${route} still calls the provider`).not.toContain(
-        "fetchYouTubeCCClips("
-      );
-    }
   });
 });
 

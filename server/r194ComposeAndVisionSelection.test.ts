@@ -453,7 +453,7 @@ describe("the adoption loop really uses the verdict", () => {
     const b = adoptBlock();
     const gate = b.indexOf("beatClipPassesImageGate(p, contentKey");
     const evidence = b.indexOf("const beatEvidence: VisionEvidence");
-    const accept = b.indexOf("dedup.usedPaths.add(p);");
+    const accept = b.indexOf("markAssetUsedInVideo(dedup, {");
     expect(gate).toBeGreaterThan(-1);
     expect(evidence, "the verdict is not read between the gate and the acceptance").toBeGreaterThan(gate);
     expect(evidence, "the verdict is read after the clip is already accepted").toBeLessThan(accept);

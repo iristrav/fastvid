@@ -10,15 +10,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
-import {
-  extractBeatRealEntities,
-  extractPersonNamesFromText,
-  isRejectedStockClip,
-  setRenderPeopleReadingForTests,
-  stockCategoryGateForTest,
-} from "./videoPipeline";
+import { extractBeatRealEntities, extractPersonNamesFromText, setRenderPeopleReadingForTests, stockCategoryGateForTest } from "./videoPipeline";
 import { scriptStillOnTopic } from "./scriptWriter";
 import { extractMotionOverlayCandidates } from "./motionGraphicsLayer";
+import { isRejectedStockClip } from "./visualJudge";
 
 const SERVER = __dirname;
 const codeLines = (file: string) =>

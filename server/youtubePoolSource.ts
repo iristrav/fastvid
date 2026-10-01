@@ -26,7 +26,6 @@
  * per-render budgets intact. This file translates that function's rows into the pool's vocabulary
  * and nothing else. RULE 4 and RULE 5, in one shape.
  */
-import type { RankablePoolCandidate } from "./poolRanking";
 import type { YoutubeLicenseMode } from "./videoPipeline";
 
 /**
@@ -68,6 +67,33 @@ export type YoutubeCandidateMeta = {
   license: { reported?: string; retrievedUnder: string };
   /** When this render asked. Not the upload date — that is `publishedAt`. */
   retrievedAt: string;
+};
+
+/** The fields every pool candidate carries, whatever its source. */
+export type RankablePoolCandidate = {
+  id: string;
+  assetId: string;
+  source: string;
+  remoteUrl: string;
+  thumbnailUrl: string | null;
+  title: string;
+  description: string | null;
+  tags: string[];
+  mediaType: "video" | "image";
+  durationSec: number | null;
+  license: string | null;
+  width: number | null;
+  height: number | null;
+  clipSimilarity: number | null;
+  embeddingSimilarity: number | null;
+  rankingScore: number | null;
+  /** The query this candidate came back for, when the retrieval route recorded one. */
+  searchQuery?: string;
+  /**
+   * The platform block, when the provider filled one. Optional everywhere: only YouTube supplies
+   * it, and a candidate without it is ranked exactly as it was before this round.
+   */
+  youtube?: { channel?: string | null; publishedAt?: string | null } | null;
 };
 
 export type YoutubePoolCandidate = RankablePoolCandidate & {

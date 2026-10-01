@@ -1,98 +1,33 @@
 /**
- * THE TEST LENGTH TESTS THE PRODUCT.
+ * One route for every length.
  *
- * ── What a one-minute render used to prove ──────────────────────────────────────────────────
- *
- * Almost nothing. The one-minute length is admin-only and exists to TEST a render, and it selected
- * a different product: seventy-four branches keyed on `isFastShortVideoLength`, and they are not
- * tuning. They change what the film is and what is checked about it —
- *
- *   the content check on the DELIVERED file        skipped
- *   semantic AI reranking of candidates            skipped
- *   the LLM semantic pass                          skipped
- *   the montage                                    a simpler one
- *   fetching during compose                        forbidden; local files only
- *   weak-beat polish                               off
- *   candidates tried per beat                      8 instead of 14
- *   the stock quality floor                        LOWER (7 instead of 8)
- *   the minimum moving-footage target              none at all
- *
- * — so it answered questions about a pipeline nobody ships, and the two most useful answers a test
- * can give (is the delivered file any good, and were the right pictures chosen) were the two it
- * switched off.
- *
- * There was no shorter honest option either. `VIDEO_LENGTH_VALUES` is ["1", "8-10", "10-15",
- * "15-20"], so the choice was a one-minute test on a different architecture, or a ten-minute one.
- *
- * ── What this pins ──────────────────────────────────────────────────────────────────────────
- *
- * That the one-minute length now takes the same path as every other length, by default. The old
- * tuning is kept whole behind `FAST_SHORT_PATH=true` — a rollback for a measured wall-clock
- * timeout, not a second architecture to choose between — and its own tests still cover it, with the
- * flag set.
- *
- * ── What is NOT claimed ─────────────────────────────────────────────────────────────────────
- *
- * That a one-minute render still fits its budget. It gets 20 minutes of wall clock and now does the
- * work a full render does. Twenty minutes for roughly eighteen shots is expected to fit and has NOT
- * been measured — this environment has no credentials and cannot run a render. That is exactly what
- * the escape hatch is for, and why it exists rather than the branches being deleted.
+ * The one-minute length used to select a different product — a turbo route (`fastStockMode`), a
+ * looser script anchor (`scriptOnlyVisuals: false`) and a fast-short rollback (`FAST_SHORT_PATH`).
+ * All three are gone. A length may change how MUCH work a render does (scenes, budgets, timeouts);
+ * it may not change WHICH route that work takes.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { maxVisualCandidatesPerBeatTry } from "./sourcingPolicy";
+import { postRenderSpotCheckEnabled } from "./postRenderSpotCheck";
+import { getPipelinePerfProfile } from "./videoPipeline";
 
-import {
-  archiveMinVideoClipsTarget,
-  composeLocalClipsOnly,
-  fastShortPlainComposeEnabled,
-  isFastShortVideoLength,
-  maxVisualCandidatesPerBeatTry,
-  
-} from "./sourcingPolicy";
-import { postRenderSpotCheckEnabledForVideo } from "./postRenderSpotCheck";
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
+const LENGTHS = ["1", "8-10", "10-15", "15-20"] as const;
 
 describe("one minute takes the same path as ten", () => {
-  it("is not treated as a fast-short length by default", () => {
-    expect(isFastShortVideoLength("1")).toBe(false);
-    expect(isFastShortVideoLength("8-10")).toBe(false);
+  it("every length has the same profile shape — no field picks a route", () => {
+    const keys = (len: string) => Object.keys(getPipelinePerfProfile(len)).sort();
+    for (const len of LENGTHS) {
+      expect(keys(len), len).toEqual(keys("8-10"));
+      expect(getPipelinePerfProfile(len), len).not.toHaveProperty("fastStockMode");
+      expect(getPipelinePerfProfile(len), len).not.toHaveProperty("scriptOnlyVisuals");
+    }
   });
 
-  /**
-   * The single most important one. A test length that skips the check on the file it produced is
-   * not a test — it is a rehearsal with the marking switched off.
-   */
-  it("the delivered file gets its content check", () => {
-    expect(postRenderSpotCheckEnabledForVideo("1")).toBe(true);
-    expect(postRenderSpotCheckEnabledForVideo("8-10")).toBe(true);
+  it("the delivered file gets its content check at every length", () => {
+    expect(postRenderSpotCheckEnabled()).toBe(true);
   });
-
 
   it("gets the same candidate depth per beat", () => {
-    expect(maxVisualCandidatesPerBeatTry("1")).toBe(maxVisualCandidatesPerBeatTry("8-10"));
-  });
-
-});
-
-describe("the old tuning is kept, not deleted", () => {
-
-  /** And it never reaches the lengths it was never about. */
-  it("the flag does not change any other length", () => {
-    vi.stubEnv("FAST_SHORT_PATH", "true");
-    expect(isFastShortVideoLength("8-10")).toBe(false);
-    expect(isFastShortVideoLength("10-15")).toBe(false);
-    expect(isFastShortVideoLength("15-20")).toBe(false);
-  });
-
-  /** Only the exact word turns it on — a stray value must not silently restore the old product. */
-  it("anything but true leaves the unified path in place", () => {
-    for (const v of ["", "false", "1", "yes", "TRUE "]) {
-      vi.stubEnv("FAST_SHORT_PATH", v);
-      expect(isFastShortVideoLength("1"), `FAST_SHORT_PATH=${JSON.stringify(v)}`).toBe(
-        v.trim().toLowerCase() === "true"
-      );
-    }
+    expect(maxVisualCandidatesPerBeatTry()).toBeGreaterThan(0);
   });
 });

@@ -1,10 +1,10 @@
 /**
- * Video 619 — YouTube, the own archive and the Internet Archive/Wikimedia video cascade are asked
- * for a beat at the same time, and a video always comes before a picture.
+ * Archive first, suppliers second — and a video always comes before a picture.
  *
- * The beat route needs a whole render around it, so its ORDER is read from the source: which calls
- * start before anything is awaited, and in which order the answers are taken. The ladder rule that
- * makes starting them together possible is exercised for real.
+ * The own archive is asked first; only on an ARCHIVE_GAP do the YouTube turn and the Internet
+ * Archive/Wikimedia video cascade start, together. The beat route needs a whole render around it,
+ * so its ORDER is read from the source. The ladder rule that lets the two suppliers start together
+ * is exercised for real.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
@@ -33,28 +33,36 @@ const at = (needle: string): number => {
   return i;
 };
 
-describe("Video 619 — the three video sources start together", () => {
-  it("all three are started before the route waits for any of them", () => {
-    const firstWait = at("await youtube;");
-    expect(at("youtubeFirstBeatSlice(")).toBeLessThan(firstWait);
-    expect(at("ownArchiveBeatClip(")).toBeLessThan(firstWait);
-    expect(at("gatherHistoricalBeatVideoPool(")).toBeLessThan(firstWait);
-    /** Nothing before them is awaited: no source waits on another. */
-    expect(ROUTE.slice(0, at("youtubeFirstBeatSlice(")).includes("await ")).toBe(false);
+describe("archive first — suppliers only on a gap", () => {
+  it("the own archive is awaited before any supplier is started", () => {
+    const archive = at("ownArchiveBeatClip(");
+    expect(archive).toBeLessThan(at("youtubeFirstBeatSlice("));
+    expect(archive).toBeLessThan(at("gatherHistoricalBeatVideoPool("));
+    expect(ROUTE.slice(0, archive)).toContain("await settle(");
   });
 
-  it("the answers are taken in the old order — YouTube, own archive, Internet Archive/Wikimedia", () => {
-    expect(at("await youtube;")).toBeLessThan(at("await ownArchive;"));
-    expect(at("await ownArchive;")).toBeLessThan(at("await archivePool;"));
+  it("an archive video ends the beat before a supplier is asked", () => {
+    const hit = at("ARCHIVE_HIT — no supplier asked");
+    expect(hit).toBeLessThan(at("youtubeFirstBeatSlice("));
+    expect(hit).toBeLessThan(at("gatherHistoricalBeatVideoPool("));
+  });
+
+  it("the gap is logged, then both suppliers start before either is awaited", () => {
+    const gap = at("ARCHIVE_GAP");
+    const firstWait = at("await youtube;");
+    expect(gap).toBeLessThan(at("youtubeFirstBeatSlice("));
+    expect(at("youtubeFirstBeatSlice(")).toBeLessThan(firstWait);
+    expect(at("gatherHistoricalBeatVideoPool(")).toBeLessThan(firstWait);
+    expect(at("await youtube;")).toBeLessThan(at("await archivePool;"));
     expect(at("await archivePool;")).toBeLessThan(at("adoptHistoricalBeatVideoPool("));
   });
 
   it("the cascade does not ask YouTube a second time while the YouTube turn runs", () => {
     expect(ROUTE).toContain("skipYoutube: youtubeTurnRuns,");
-    expect(ROUTE).toContain("const youtubeTurnRuns = youtubeFirstEnabled() && !youtubeOnlySourcingEnabled();");
+    expect(ROUTE).toContain("const youtubeTurnRuns = youtubeFirstEnabled();");
   });
 
-  it("tier 1 is recorded as attempted before the others start, because it is", () => {
+  it("tier 1 is recorded as attempted before the suppliers start, because it is", () => {
     expect(at('if (youtubeTurnRuns) noteTierAttempted("YOUTUBE", "youtube_first_turn");')).toBeLessThan(
       at("youtubeFirstBeatSlice(")
     );
@@ -63,10 +71,6 @@ describe("Video 619 — the three video sources start together", () => {
   it("a failing source ends without a clip instead of taking the others down", () => {
     expect(ROUTE).toContain("p.catch((err) => {");
     for (const label of ['"youtube"', '"own archive"', '"archive video"']) expect(ROUTE).toContain(label);
-  });
-
-  it("the render says which sources it asked at once", () => {
-    expect(ROUTE).toContain("[BeatTogether] s${sceneIndex}b${beat.index} asking at once:");
   });
 });
 
@@ -80,7 +84,7 @@ describe("Video 619 — video always before a picture", () => {
 
   it("a photograph from the own archive waits until no source had a video", () => {
     expect(ROUTE).toContain("isCuratedPreparedStillClip(ownArchiveClip)");
-    expect(ROUTE).toContain("if (ownArchiveClip !== null && !ownArchiveStill) return ownArchiveClip;");
+    expect(ROUTE).toContain("if (ownArchiveClip !== null && !ownArchiveStill) {");
     const stillReturn = at("if (ownArchiveStill) {");
     expect(stillReturn).toBeGreaterThan(at("adoptHistoricalBeatVideoPool("));
     expect(stillReturn).toBeGreaterThan(at("adoptBestCelebrityClip("));

@@ -8,8 +8,7 @@ import { promisify } from "util";
 import { withForkRetry } from "./_core/execForkRetry";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { exec as execCb } from "child_process";
-import { normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
-import { spotCheckFinalVideo, isInformationalSpotWarning } from "./postRenderSpotCheck";
+import { absoluteMinFinalVideoBytes, finalVideoRefusals } from "./deliveryGate";
 import { resolveLocalVideoPath } from "./storageLocal";
 
 // Routed through ffmpegSemaphore (previously ungated) — this file is the mandatory final export
@@ -33,45 +32,6 @@ export type FinalVideoValidation = {
 
 function ffprobeBin(): string {
   return process.env.FFPROBE_PATH?.trim() || process.env.FFPROBE_BIN?.trim() || "ffprobe";
-}
-
-/** Target duration window for QA logging (not export blocking). */
-export function expectedDurationBoundsSec(videoLength?: string | null): { min: number; max: number } {
-  switch (normalizeVideoLength(videoLength)) {
-    case "1":
-      return { min: 35, max: 100 };
-    case "8-10":
-      return { min: 300, max: 780 };
-    case "10-15":
-      return { min: 420, max: 1080 };
-    case "15-20":
-      return { min: 600, max: 1380 };
-    default:
-      return { min: 300, max: 780 };
-  }
-}
-
-/** Absolute minimum playable file size — below this we heal/reassemble. */
-export function absoluteMinFinalVideoBytes(videoLength?: string | null): number {
-  const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 80_000;
-  return Math.max(400_000, Math.round(mins * 60 * 8_000));
-}
-
-/** Minimum duration (seconds) for a finished video to be considered playable. */
-export function absoluteMinDurationSec(videoLength?: string | null): number {
-  switch (normalizeVideoLength(videoLength)) {
-    case "1":
-      return 28;
-    case "8-10":
-      return 240;
-    case "10-15":
-      return 360;
-    case "15-20":
-      return 540;
-    default:
-      return 240;
-  }
 }
 
 async function probeStreamExists(filePath: string, stream: "v" | "a"): Promise<boolean> {
@@ -120,48 +80,6 @@ function looksLikeMp4(filePath: string): boolean {
   }
 }
 
-function splitExportReasons(
-  allReasons: string[],
-  durationSec: number | null,
-  videoLength?: string | null
-): { hard: string[]; soft: string[] } {
-  const hard: string[] = [];
-  const soft: string[] = [];
-  const bounds = expectedDurationBoundsSec(videoLength);
-  for (const r of allReasons) {
-    if (isInformationalSpotWarning(r)) {
-      soft.push(r);
-      continue;
-    }
-    if (/too short.*need/i.test(r) && durationSec != null && durationSec >= absoluteMinDurationSec(videoLength)) {
-      soft.push(r);
-      continue;
-    }
-    if (/too long/i.test(r)) {
-      soft.push(r);
-      continue;
-    }
-    if (/too small.*need/i.test(r)) {
-      soft.push(r);
-      continue;
-    }
-    if (/ffprobe could not read/i.test(r) && durationSec != null) {
-      soft.push(r);
-      continue;
-    }
-    if (/appears fully black/i.test(r)) {
-      soft.push(r);
-      continue;
-    }
-    if (durationSec != null && durationSec >= bounds.min * 0.85 && /too short/i.test(r)) {
-      soft.push(r);
-      continue;
-    }
-    hard.push(r);
-  }
-  return { hard, soft };
-}
-
 /** Hard playable check — used as last resort accept after self-heal. */
 export async function validateFinalVideoPlayable(
   filePath: string,
@@ -188,21 +106,8 @@ export async function validateFinalVideoPlayable(
   if (!hasVideo && looksLikeMp4(filePath) && sizeBytes > minBytes) hasVideo = true;
   const hasAudio = await probeStreamExists(filePath, "a");
 
-  const reasons: string[] = [];
-  if (sizeBytes < minBytes) {
-    reasons.push(`Final video too small (${Math.round(sizeBytes / 1024)}KB, need ≥${Math.round(minBytes / 1024)}KB)`);
-  }
-  if (!hasVideo) reasons.push("Final video has no video stream");
-  if (!hasAudio) reasons.push("Final video has no audio stream");
-  if (durationSec == null) {
-    reasons.push("Could not read final video duration");
-  } else if (durationSec < absoluteMinDurationSec(videoLength)) {
-    reasons.push(
-      `Final video too short (${durationSec.toFixed(1)}s, need ≥${absoluteMinDurationSec(videoLength)}s)`
-    );
-  }
-
-  const ok = reasons.length === 0 && hasVideo && sizeBytes >= minBytes;
+  const reasons = finalVideoRefusals({ sizeBytes, hasVideo, hasAudio, durationSec }, videoLength);
+  const ok = reasons.length === 0;
   return {
     ok,
     durationSec,
@@ -211,70 +116,6 @@ export async function validateFinalVideoPlayable(
     sizeBytes,
     spotOk: true,
     reasons,
-    softWarnings,
-  };
-}
-
-/** Full QA validation — soft issues never set ok=false. */
-export async function validateFinalVideoForExport(
-  filePath: string,
-  videoLength?: string | null
-): Promise<FinalVideoValidation> {
-  const softWarnings: string[] = [];
-  if (!filePath || !fs.existsSync(filePath)) {
-    return {
-      ok: false,
-      durationSec: null,
-      hasAudio: false,
-      hasVideo: false,
-      sizeBytes: 0,
-      spotOk: false,
-      reasons: ["Final video file missing"],
-      softWarnings,
-    };
-  }
-
-  const sizeBytes = fs.statSync(filePath).size;
-  const minBytes = absoluteMinFinalVideoBytes(videoLength);
-  let hasVideo = await probeStreamExists(filePath, "v");
-  if (!hasVideo && looksLikeMp4(filePath) && sizeBytes > 50_000) hasVideo = true;
-  let hasAudio = await probeStreamExists(filePath, "a");
-
-  const spot = await spotCheckFinalVideo(filePath);
-  const allWarnings = [...spot.warnings];
-  const bounds = expectedDurationBoundsSec(videoLength);
-
-  if (spot.durationSec != null) {
-    if (spot.durationSec < bounds.min) {
-      allWarnings.push(`Duration below target (${spot.durationSec.toFixed(1)}s, ideal ≥${bounds.min}s)`);
-    } else if (spot.durationSec > bounds.max) {
-      allWarnings.push(`Duration above target (${spot.durationSec.toFixed(1)}s, ideal ≤${bounds.max}s)`);
-    }
-  }
-  if (sizeBytes < minBytes) {
-    allWarnings.push(`File smaller than ideal (${Math.round(sizeBytes / 1024)}KB, ideal ≥${Math.round(minBytes / 1024)}KB)`);
-  }
-  if (!hasVideo) allWarnings.push("Final video has no video stream");
-  if (!hasAudio) allWarnings.push("Final video has no audio stream");
-
-  for (const w of allWarnings) {
-    if (isInformationalSpotWarning(w)) softWarnings.push(w);
-  }
-
-  const { hard, soft } = splitExportReasons(allWarnings, spot.durationSec, videoLength);
-  softWarnings.push(...soft);
-
-  const playable = await validateFinalVideoPlayable(filePath, videoLength);
-  const ok = playable.ok;
-
-  return {
-    ok,
-    durationSec: spot.durationSec ?? playable.durationSec,
-    hasAudio: playable.hasAudio || hasAudio,
-    hasVideo: playable.hasVideo || hasVideo,
-    sizeBytes,
-    spotOk: spot.warnings.filter((w) => !isInformationalSpotWarning(w)).length === 0,
-    reasons: playable.ok ? [] : [...playable.reasons, ...hard],
     softWarnings,
   };
 }

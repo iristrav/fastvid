@@ -51,14 +51,10 @@ import {
   selectCorrectedQueries,
 } from "./mismatchResearch";
 import { classifyMismatch, mismatchFault } from "./visualMismatchFeedback";
-import {
-  emptyQueryContext,
-  provenToken,
-  searchGateStrict,
-  type VerifiedQueryContext,
-} from "./searchQueryContract";
+import { emptyQueryContext, provenToken, type VerifiedQueryContext } from "./searchQueryContract";
 import { auditVideoStillness, checkStillnessLimit } from "./videoStillnessAudit";
 import { stillImageMaxSec } from "./stillImagePolicy";
+import { searchGateStrict } from "./config";
 
 const FFMPEG = process.env.FFMPEG_BIN || "ffmpeg";
 const FFPROBE = process.env.FFPROBE_BIN || "ffprobe";
@@ -97,23 +93,10 @@ function personOnlyContext(): VerifiedQueryContext {
 
 describe("RONDE 132 — a QUESTION fault starts one corrected search", () => {
 
-
-
-
-
-
-
-
-
-
-
   it("12. the SearchGate is still strict — this round switches nothing off", () => {
     expect(process.env.SEARCH_GATE_STRICT).not.toBe("false");
     expect(searchGateStrict()).toBe(true);
   });
-
-
-
 
 });
 
@@ -121,8 +104,6 @@ describe("RONDE 132 — a QUESTION fault starts one corrected search", () => {
 
 describe("RONDE 132 — the research pass is actually wired in", () => {
   const SRC = () => readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-
-
 
   it("19. the corrected queries lead inside the SAME provider cap", () => {
     const src = SRC();

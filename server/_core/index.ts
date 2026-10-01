@@ -299,6 +299,11 @@ async function startServer() {
     formatYoutubeReadiness()
   );
   for (const warning of youtubeReadinessWarnings()) console.log(warning);
+  /** ONE ROUTE — the operator's settings, from `config.ts`: SET or MISSING, never a value. */
+  {
+    const { formatConfigPresence } = await import("../config");
+    for (const line of formatConfigPresence()) console.log(line);
+  }
   const visionQa = getVisionQaStatus();
   console.log(
     "[Fastvid] Local vision QA:",
@@ -346,9 +351,8 @@ async function startServer() {
    * banner must never be the thing that drags it into the web process — or that fails a boot
    * because a describing line could not load.
    */
-  const { cinematicPlanningEnabled, cinematicRenderPathEnabled } = await import(
-    "../cinematicProduction"
-  );
+  const { cinematicPlanningEnabled } = await import("../cinematicProduction");
+  const { cinematicRenderPathEnabled } = await import("../config");
   const cinematicPlans = cinematicPlanningEnabled();
   const cinematicDelivers = cinematicRenderPathEnabled();
   console.log(
@@ -1097,7 +1101,9 @@ async function startServer() {
         title: video.title,
         videoLength: video.videoLength,
         fileProbe,
+        /** Old videos only: since ONE ROUTE a render stores its ProjectTimeline, never a manifest. */
         videoScenes: videoScenes ?? null,
+        timelineVersion: (video as { timelineVersion?: number }).timelineVersion ?? 0,
         qualityReport,
       });
     } catch (err) {

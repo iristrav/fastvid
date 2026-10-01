@@ -142,7 +142,7 @@ describe("the render's scope", () => {
     const at = CODE.indexOf("subjectGateScope.onRefusal =");
     expect(at, "refusals are no longer audited").toBeGreaterThan(-1);
     const body = CODE.slice(at, at + 500);
-    expect(body).toContain("recordClipReject(");
+    expect(body).toContain("registerRejection(");
     expect(body).toContain('"subject_gate"');
   });
 });

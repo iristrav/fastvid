@@ -40,7 +40,6 @@ import {
 } from "./videoPipeline";
 import { VisualSourceLedger, formatUsageInconsistencies } from "./visualSourceLineage";
 
-
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
 /* ═════════════ 1. the rescue routes are visible in the funnel ═════════════ */
@@ -63,23 +62,7 @@ describe("R198 §1 — a picture taken without a judgement says so", () => {
     expect(f.visionAsked).toBe(0);
   });
 
-  it("the fast stock route records it at the point it adopts", () => {
-    const idx = PIPE.indexOf("fast Pexels \"${q}\"");
-    expect(idx).toBeGreaterThan(0);
-    const around = PIPE.slice(idx - 700, idx + 200);
-    expect(around).toContain('noteNotAsked(dedup.beatShortlist, sceneIndex, beat.index, "ADOPTED_WITHOUT_JUDGEMENT")');
-    // The adoption and the record of it are the same event, so they cannot come apart.
-    expect(around.indexOf("dedup.usedPaths.add(p)")).toBeLessThan(around.indexOf("noteNotAsked("));
-  });
-
-  it("the forced-image route records it too", () => {
-    const idx = PIPE.indexOf("const takeFirstValid = async (paths: string[])");
-    expect(idx).toBeGreaterThan(0);
-    const body = PIPE.slice(idx, idx + 1400);
-    expect(body).toContain('"ADOPTED_WITHOUT_JUDGEMENT"');
-  });
-
-  it("neither rescue route grants eligibility on the way past the editor", () => {
+      it("neither rescue route grants eligibility on the way past the editor", () => {
     /**
      * The whole point of the reason: it accounts for the clip WITHOUT letting it claim the funnel.
      * `markEligible` next to either adoption would let a picture nobody looked at be counted as

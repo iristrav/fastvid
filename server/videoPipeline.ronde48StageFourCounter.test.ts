@@ -73,12 +73,12 @@ describe("RONDE 48 (C1) — the export gate is what makes this counter expensive
     }) as any;
 
   it("a render with a healthy report and a zero counter passes the gate", async () => {
-    const { assertVisualCoverageExportGate } = await import("./videoQualityReport");
+    const { assertVisualCoverageExportGate } = await import("./deliveryGate");
     expect(() => assertVisualCoverageExportGate(cleanReport(), 0)).not.toThrow();
   });
 
   it("the SAME healthy render is rejected outright once the counter reads 1", async () => {
-    const { assertVisualCoverageExportGate } = await import("./videoQualityReport");
+    const { assertVisualCoverageExportGate } = await import("./deliveryGate");
     // This is the cost of counting the intent instead of the outcome: nothing about the render
     // changed, only the bookkeeping, and the export is refused.
     expect(() => assertVisualCoverageExportGate(cleanReport(), 1)).toThrow(

@@ -158,22 +158,22 @@ describe("R222 §4 — a clip nobody looked at is stored as unjudged", () => {
   });
 
   it("ONLY A REAL `clean` IS WRITTEN AS CLEAN; a real `has_text` as text (VIDEO 619: such a video is stored off and cut); anything else is null", () => {
-    expect(INGEST).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : overlay.verdict === "has_text" ? 1 : null,`);
+    expect(INGEST).toContain(`hasBakedEditText: hasText ? 1 : overlay?.evaluated ? 0 : null,`);
   });
 
   it("ingestion asks for the verdict, not the boolean", () => {
-    /** VIDEO 621 — through the archive's own check, outside the render's budget. */
-    expect(INGEST).toContain("archiveClipTextVerdict(");
+    /** VIDEO 621 — through the VisualJudge's archive door: a memo key, no render budget. */
+    expect(INGEST).toContain("judgeOnScreenText({");
     expect(INGEST).not.toContain("cachedClipHasBakedEditText(");
   });
 
   it("an unjudged admission is announced, never silent", () => {
-    const at = INGEST.indexOf(`if (overlay.verdict === "not_asked")`);
+    const at = INGEST.indexOf(`if (overlay && overlay.evaluated === false)`);
     expect(at, "an unchecked clip is admitted with no line in the log").toBeGreaterThan(0);
     const block = INGEST.slice(at, at + 500);
     expect(block).toContain("console.warn");
     expect(block).toContain("WITHOUT an on-screen-text verdict");
-    expect(block, "the reason is not carried into the log").toContain("overlay.reason");
+    expect(block, "the reason is not carried into the log").toContain("overlay.notAskedReason");
   });
 
   it("AN UNCHECKED CLIP IS STILL ADMITTED — the archive is not starved", () => {
@@ -181,7 +181,7 @@ describe("R222 §4 — a clip nobody looked at is stored as unjudged", () => {
      * The not_asked branch warns and falls through. If it ever returns, this round turned a
      * reporting fix into a rejection, and the archive empties whenever vision is unavailable.
      */
-    const at = INGEST.indexOf(`if (overlay.verdict === "not_asked")`);
+    const at = INGEST.indexOf(`if (overlay && overlay.evaluated === false)`);
     const block = INGEST.slice(at, at + 500);
     expect(block).not.toContain("return null");
   });

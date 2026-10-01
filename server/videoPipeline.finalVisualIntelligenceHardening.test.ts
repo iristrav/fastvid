@@ -368,7 +368,7 @@ describe("Test 17 — scoreMargin computed correctly", () => {
 
 describe("Test 18 — placeholder quality gate still blocks", () => {
   it("assertVisualCoverageExportGate (existing gate, unmodified this round) still blocks a scene that fell back entirely to placeholders", async () => {
-    const { assertVisualCoverageExportGate } = await import("./videoQualityReport");
+    const { assertVisualCoverageExportGate } = await import("./deliveryGate");
     const report = {
       generatedAt: new Date().toISOString(),
       videoTitle: "test",

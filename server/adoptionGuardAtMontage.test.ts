@@ -317,7 +317,8 @@ describe("the guard runs at the montage boundary", () => {
     const variants = [...PIPE.matchAll(/const pushSceneClip = async \(/g)];
     /** One push closure is left — `pushSceneClip` in the per-beat ladder; the others were in the deleted curated-only, recovery, backfill and coverage routes. */
     expect(variants.length).toBeGreaterThanOrEqual(1);
-    const calls = [...PIPE.matchAll(/adoptionGuardRefusesPush\(dedup, clipPath, scene\.index, beatIndex\)/g)];
+    /** ONE ROUTE: the guard is the route half of the VisualJudge's push verdict, behind this gate. */
+    const calls = [...PIPE.matchAll(/beatClipRefusedByRelevanceGate\(dedup, clipPath, scene\.index, beatIndex\)/g)];
     expect(calls.length).toBeGreaterThanOrEqual(variants.length);
   });
 
@@ -329,7 +330,7 @@ describe("the guard runs at the montage boundary", () => {
   it("is checked before the clip enters clips[]", () => {
     for (const m of PIPE.matchAll(/const pushSceneClip = async \(/g)) {
       const body = PIPE.slice(m.index!, PIPE.indexOf("\n  };", m.index!));
-      const guard = body.indexOf("adoptionGuardRefusesPush(");
+      const guard = body.indexOf("beatClipRefusedByRelevanceGate(");
       const push = body.indexOf("clips.push(clipPath)");
       if (push < 0) continue;
       expect(guard, "a pushSceneClip variant does not consult the guard").toBeGreaterThan(-1);
@@ -339,10 +340,11 @@ describe("the guard runs at the montage boundary", () => {
 
   /** A refusal is a terminal outcome, not a silent disappearance. */
   it("records the refusal on the ledger and the beat audit", () => {
-    const at = PIPE.indexOf("async function adoptionGuardRefusesPush(");
+    const at = PIPE.indexOf("async function visualJudgeRefusesPush(");
     const body = PIPE.slice(at, PIPE.indexOf("\n}", at));
-    expect(body).toContain("recordClipReject(");
-    expect(body).toContain("recordRejection(");
+    /** The registry is the one writer: it counts the refusal under the sentence and files it on the lineage. */
+    expect(body).toContain("registerRejection(");
+    expect(body).not.toContain("recordRejection(");
     expect(body).toContain("tracePushOutcome(");
     expect(body).toContain("[AdoptionGuard]");
   });
@@ -356,9 +358,10 @@ describe("the guard runs at the montage boundary", () => {
    * through the derivation chain and ask `hasStage` rather than matching a name.
    */
   it("asks the ledger for eligibility through the one central helper", () => {
-    const at = PIPE.indexOf("async function adoptionGuardRefusesPush(");
+    const at = PIPE.indexOf("async function visualJudgeRefusesPush(");
     const body = PIPE.slice(at, PIPE.indexOf("\n}", at));
-    expect(body).toContain("isEligible(clipPath, clipContentKey(clipPath))");
+    expect(body).toContain("const contentKey = clipContentKey(clipPath);");
+    expect(body).toContain("isEligible(clipPath, contentKey)");
     expect(body).toContain("relevanceVerdictForRenderedAsset(");
     /** And it acts on WHAT was said, not merely that something was. */
     expect(body).toContain("visionVerdictFromGate(");

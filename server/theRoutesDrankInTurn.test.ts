@@ -241,7 +241,7 @@ describe("R260 §4 — the numbers, all of them, unchanged", () => {
 
   it("the YouTube beat budget stands", () => {
     const policy = fs.readFileSync(path.join(__dirname, "sourcingPolicy.ts"), "utf8");
-    expect(policy).toContain("isFastShortVideoLength(videoLength) ? 30_000 : 45_000");
+    expect(policy).toContain("const base = 45_000;");
   });
 
   it("and RONDE 259's reserve is still computed the way it was", () => {

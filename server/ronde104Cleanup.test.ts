@@ -24,7 +24,7 @@ describe("RONDE 104 #1 — a filename may flag footage, it may not refuse it", (
   it("no reject reason in the pipeline is decided by reading a filename any more", () => {
     // vision_gate went in RONDE 103; off_topic_protest goes here. baked_text reads the PIXELS.
     for (const reason of ['"vision_gate"', '"off_topic_protest"']) {
-      const rejects = PIPELINE.match(new RegExp(`recordClipReject\\([^)]*${reason}`, "g")) ?? [];
+      const rejects = PIPELINE.match(new RegExp(`registerRejection\\([^)]*${reason}`, "g")) ?? [];
       expect(rejects, `${reason} still rejects`).toHaveLength(0);
     }
   });

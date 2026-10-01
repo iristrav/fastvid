@@ -35,6 +35,8 @@
  * licence exists.
  */
 
+import { allowOperatorLicensedYoutube, allowUnverifiedYoutube } from "./config";
+
 /**
  * What the METADATA established about an item's rights.
  *
@@ -60,79 +62,6 @@ export type LicenseAction =
   | "ALLOW_UNVERIFIED"
   | "ALLOW_OPERATOR_LICENSED_YOUTUBE"
   | "REJECT";
-
-/**
- * Is the operator willing to use YouTube-origin material whose rights FastVid cannot prove?
- *
- * Default false, and false is the current behaviour exactly — an unset variable changes nothing.
- * Read at call time rather than captured at import, so the worker picks it up from its own
- * environment without a code change.
- */
-export function allowUnverifiedYoutube(): boolean {
-  return process.env.ALLOW_UNVERIFIED_YOUTUBE?.trim().toLowerCase() === "true";
-}
-
-/**
- * RONDE 147 — is the operator's YouTube authorisation in force?
- *
- * The FastVid owner states they hold authorisation to use YouTube content, and asked for that to
- * apply to YouTube as a whole rather than clip by clip. One switch, therefore, and it is the
- * authorisation itself:
- *
- *     ALLOW_OPERATOR_LICENSED_YOUTUBE=false              RONDE 124's flow, untouched
- *     anything else, including unset (default)           every youtube-* item is allowed
- *
- * ── RONDE 141: the default is now ON, and why that is a deliberate flip ──────────────────────
- *
- * RONDE 147 built this switch and left it off, because the authorisation it represents was not
- * this code's to assume. The FastVid owner has since given it explicitly and in writing — "hij mag
- * gewoon alles van het web en van youtube halen, ik heb daar akkoord voor" — for YouTube as a
- * whole. An authorisation that has actually been given is not something an operator should have to
- * remember to re-enter as an environment variable on every deployment; leaving it off would mean
- * the code kept refusing material the owner has said it may use.
- *
- * What did NOT change is everything the switch does once it is on. The metadata verdict is still
- * recorded per item, the status is still OPERATOR_AUTHORIZED and never VERIFIED, and the usage
- * report still marks every one of these with ⛔ and the sentence saying FastVid verified no right
- * to it. The authorisation is the owner's; the record of what was known when they gave it is
- * FastVid's, and that record is exactly as complete as it was before.
- *
- * `=false` still switches it back off, in one variable, with no code change.
- *
- * Read at call time rather than captured at import, so the worker picks it up from its own
- * environment without a code change.
- *
- * ── What it does NOT do ──────────────────────────────────────────────────────────────────────
- *
- * It does not change `classifyArchiveLicense`. A `-nc` or `-nd` licence still classifies as
- * REJECTED and an empty field still classifies as UNVERIFIED, whatever this flag is set to; the
- * decision keeps that verdict on `metadataStatus` so it survives the override. Nothing in this
- * module is made to claim a licence that the metadata does not show — RONDE 124's founding rule,
- * unchanged.
- *
- * It also does not produce VERIFIED. The override's own status is `OPERATOR_AUTHORIZED`, which
- * exists precisely so "the operator permits this" never has to borrow the word for "the licence
- * was verified". VERIFIED stays reachable only through the flow that earns it.
- *
- * ── What the operator is taking on ───────────────────────────────────────────────────────────
- *
- * A REJECTED classification means the UPLOADER chose "non-commercial" or "no derivative works" on
- * their own video. That choice belongs to the uploader rather than to the platform. Switching this
- * on asserts an authorisation from elsewhere, for YouTube material generally. The assertion is
- * recorded on every decision it carries — `operatorAuthorized`, `licenseBasis`, and the log line —
- * so the record always shows what was known and who decided to proceed anyway.
- */
-export function allowOperatorLicensedYoutube(): boolean {
-  /**
-   * Only the literal `false` switches it off.
-   *
-   * Not `!== "true"` inverted into a truthiness test: a typo (`ALLOW_OPERATOR_LICENSED_YOUTUBE=no`)
-   * must not silently disable an authorisation the owner has given, and the one word that means
-   * "off" should be the one word that turns it off. The same shape the pipeline's other
-   * default-on flags use.
-   */
-  return process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() !== "false";
-}
 
 /**
  * Is this item covered by the operator's YouTube authorisation?

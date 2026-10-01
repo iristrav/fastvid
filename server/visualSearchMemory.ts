@@ -592,51 +592,6 @@ export type ProvenAssetMemory = {
   qualityScore: number | null;
 };
 
-export async function getProvenAssetIdsForEntity(
-  entity: string,
-  limit = 12
-): Promise<ProvenAssetMemory[]> {
-  try {
-    const db = await getDb();
-    if (!db) return [];
-    const normalized = canonicalEntityKey(entity);
-    if (!normalized) return [];
-    const rows = await db
-      .select()
-      .from(visualSearchMemory)
-      .where(
-        and(
-          eq(visualSearchMemory.entity, normalized),
-          eq(visualSearchMemory.success, 1),
-          // Only rows that name a real file. A proven QUERY without an asset is still useful, and
-          // primeQueriesWithSearchMemory is where it is used; it is of no use here.
-          sql`${visualSearchMemory.assetId} IS NOT NULL`
-        )
-      )
-      .orderBy(desc(visualSearchMemory.usageCount), desc(visualSearchMemory.lastUsedAt))
-      .limit(limit);
-
-    const out: ProvenAssetMemory[] = [];
-    const seen = new Set<number>();
-    for (const row of rows) {
-      const assetId = row.assetId;
-      if (assetId == null || seen.has(assetId)) continue;
-      seen.add(assetId);
-      out.push({
-        assetId,
-        query: row.query,
-        source: row.source,
-        usageCount: row.usageCount ?? 1,
-        qualityScore: row.qualityScore ?? null,
-      });
-    }
-    return out;
-  } catch (err) {
-    console.warn("[VisualSearchMemory] asset lookup failed:", (err as Error).message?.slice(0, 120));
-    return [];
-  }
-}
-
 export async function getVisualSearchMemoryForEntity(entity: string, limit = 10): Promise<VisualSearchMemoryRow[]> {
   try {
     const db = await getDb();

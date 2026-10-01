@@ -45,10 +45,6 @@ import { readFileSync } from "fs";
 import path from "path";
 
 import {
-  applyBeatVoiceAlignments,
-  type BeatVoiceAlignment,
-} from "./voiceBeatAlignment";
-import {
   buildCinematicSceneInputs,
   formatCinematicInputs,
   type AdoptedClipFacts,
@@ -59,73 +55,6 @@ import {
 import { runCinematicPipeline } from "./cinematicPipeline";
 import { validateTimeline } from "./timelineValidator";
 import type { Scene } from "./pipeline/types";
-
-/* ═══════════════════════ §1 — the measurement reaches the planner ═══════════════════════ */
-
-describe("the window Whisper measured is written where the planner reads it", () => {
-  /** Render 574's own scene 2: three beats, windows 5.3s / 6.1s / 2.7s of a 14.1s scene. */
-  const render574Scene2 = (): BeatVoiceAlignment[] => [
-    { beatIndex: 0, startSec: 0, endSec: 5.3, durationSec: 5.3 },
-    { beatIndex: 1, startSec: 5.3, endSec: 11.4, durationSec: 6.1 },
-    { beatIndex: 2, startSec: 11.4, endSec: 14.1, durationSec: 2.7 },
-  ];
-
-  const beats = () => [
-    { text: "In the depths of his Berlin bunker.", holdSec: 5 },
-    { text: "He clung to grand illusions.", holdSec: 5 },
-    { text: "No escape, no glory.", holdSec: 5 },
-  ];
-
-  it("every beat comes back with the start it was measured at", () => {
-    const b = beats();
-    applyBeatVoiceAlignments(b, render574Scene2(), 14.1);
-    expect(b.map((x) => (x as { voiceStartSec?: number }).voiceStartSec)).toEqual([0, 5.3, 11.4]);
-  });
-
-  it("and with its end, so the planner can place it rather than lay it out", () => {
-    const b = beats();
-    applyBeatVoiceAlignments(b, render574Scene2(), 14.1);
-    expect(b.map((x) => (x as { voiceEndSec?: number }).voiceEndSec)).toEqual([5.3, 11.4, 14.1]);
-  });
-
-  it("the windows stay inside the scene's own narration", () => {
-    /**
-     * The whole point: three windows that add up to the audio, instead of three clamped budgets
-     * that add up to 15.22s of a 14.1s scene.
-     */
-    const b = beats();
-    applyBeatVoiceAlignments(b, render574Scene2(), 14.1);
-    const ends = b.map((x) => (x as { voiceEndSec?: number }).voiceEndSec);
-    for (const end of ends) expect(end, "a beat came back with no window at all").toBeTypeOf("number");
-    expect(Math.max(...(ends as number[]))).toBeLessThanOrEqual(14.1);
-  });
-
-  it("a window belonging to another beat is never stamped on this one", () => {
-    /**
-     * `alignments.find(...) ?? alignments[i]` is a positional fallback. A borrowed LENGTH is a
-     * rough number and keeps its old behaviour; a borrowed POSITION would be a false claim about
-     * where the voice is, so only a window that names this beat is written.
-     */
-    const b = beats();
-    applyBeatVoiceAlignments(
-      b,
-      [{ beatIndex: 0, startSec: 0, endSec: 5.3, durationSec: 5.3 }],
-      14.1
-    );
-    const starts = b.map((x) => (x as { voiceStartSec?: number }).voiceStartSec);
-    expect(starts[0]).toBe(0);
-    expect(starts[1]).toBeUndefined();
-    expect(starts[2]).toBeUndefined();
-  });
-
-  it("the hold length still behaves exactly as it did", () => {
-    /** Nothing about the montage's clip budget is loosened or re-scaled by this round. */
-    const b = beats();
-    applyBeatVoiceAlignments(b, render574Scene2(), 14.1);
-    for (const beat of b) expect(beat.holdSec).toBeGreaterThan(0);
-    expect(b.reduce((s, x) => s + x.holdSec, 0)).toBeGreaterThan(0);
-  });
-});
 
 /* ═══════════════════════ §2 — a beat cannot outlive its scene ═══════════════════════ */
 

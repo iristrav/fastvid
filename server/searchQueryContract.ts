@@ -3,6 +3,7 @@ import { admitProviderForTier } from "./centralVisualSourcing";
 import { providerRemoved } from "./sourcingTiers";
 
 import { foldSearchText } from "./searchTextNormalize";
+import { searchGateStrict } from "./config";
 
 /**
  * RONDE 88 — a search term is proven, or it is not sent.
@@ -83,6 +84,13 @@ export type QueryTokenSource =
    * model output would silently turn it into the hole RONDE 90 closed.
    */
   | "topic"
+  /**
+   * The stored VisualDirector plan for THIS sentence (`videos.metadata.visualIntents`): its
+   * description and search query. Approved 1 Oct 2026: context the director resolved from the
+   * script for this line may prove a query term. Only the entry matched to this sentence counts —
+   * never a template, a title or a later model call.
+   */
+  | "visual_plan"
   /** Allowed for technical terms only — "archival footage", provider syntax. Never for content. */
   | "technical"
   /** Present so a rejection can NAME the route that produced the term, never to permit it. */
@@ -141,13 +149,16 @@ export type VerifiedQueryContext = {
    * proven by the script exactly as before.
    */
   topic?: string;
+  /** The stored VisualDirector plan for this sentence (see `QueryTokenSource` "visual_plan"). */
+  plan?: string;
 };
 
-export function emptyQueryContext(evidence = "", topic = ""): VerifiedQueryContext {
+export function emptyQueryContext(evidence = "", topic = "", plan = ""): VerifiedQueryContext {
   return {
     persons: [], places: [], countries: [], events: [], actions: [], objects: [], time: [], years: [],
     evidence,
     ...(topic.trim() ? { topic: topic.trim() } : {}),
+    ...(plan.trim() ? { plan: plan.trim() } : {}),
   };
 }
 
@@ -158,6 +169,7 @@ const PROVEN_SOURCES: ReadonlySet<QueryTokenSource> = new Set([
   "proven_entity",
   /** RONDE 160 — the user's own prompt. See `QueryTokenSource` for why this is not the title. */
   "topic",
+  "visual_plan",
 ]);
 
 export function isProvenSource(source: QueryTokenSource): boolean {
@@ -1425,7 +1437,7 @@ export function validateSearchQuery(
    * individual beat happens to spell it out. See `QueryTokenSource` for why this is the prompt and
    * never the title.
    */
-  for (const w of (ctx.topic ?? "").split(/[^\p{L}\p{N}'’-]+/u)) {
+  for (const w of `${ctx.topic ?? ""} ${ctx.plan ?? ""}`.split(/[^\p{L}\p{N}'’-]+/u)) {
     if (w) addProven(w);
   }
 
@@ -1643,6 +1655,7 @@ function namedSubjectStems(ctx: VerifiedQueryContext): { named: Set<string>; ope
       });
   }
   addWords(ctx.topic ?? "", named);
+  addWords(ctx.plan ?? "", named);
   return { named, openers };
 }
 
@@ -1705,6 +1718,9 @@ export function termProvenance(term: string, ctx: VerifiedQueryContext): TermPro
   }
   if (containsStem(ctx.topic)) {
     return { term: raw, provenance: "topic", source: "video.prompt", approved: true };
+  }
+  if (containsStem(ctx.plan)) {
+    return { term: raw, provenance: "visual_plan", source: "metadata.visualIntents", approved: true };
   }
 
   /** Traceable to a route that is not allowed to introduce content — named, still refused. */
@@ -1985,24 +2001,6 @@ export function formatSearchGateReport(audit: SearchGateAudit = searchGateAudit)
   const reasons = Object.entries(s.rejectReasons).sort((a, b) => b[1] - a[1]);
   if (reasons.length) out.push(`[SearchGate] rejectReasons ` + reasons.map(([r, n]) => `${r}=${n}`).join(" "));
   return out;
-}
-
-/**
- * Is the gate refusing unverified queries outright?
- *
- * RONDE 90 (§1): ON unless somebody explicitly turns it off. RONDE 89 shipped it OFF because
- * turning it on would have blocked every call site that could not supply a context — which was
- * all of them, because nothing minted a verified query anywhere in the pipeline. That is now
- * fixed at the source: the beat's proven context is ambient (withSearchProvenance), so the gate
- * can verify a query the caller passed as a bare string.
- *
- * The default matters more than the flag. A safety property that has to be switched on is a
- * safety property that is off in production, and "unproven content may not reach a provider" is
- * not a mode — it is the contract. `SEARCH_GATE_STRICT=false` remains, for one purpose only: to
- * measure what strict mode is blocking without having to ship a code change to find out.
- */
-export function searchGateStrict(): boolean {
-  return process.env.SEARCH_GATE_STRICT !== "false";
 }
 
 // ─── RONDE 90/91: the provenance scope and THE gate decision ─────────────────

@@ -1,30 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildRelevanceKeywordsFromIntent,
-  buildSentenceIntentMap,
-  buildSentenceKeywordMap,
-  buildVisualIntentSegments,
-  beatVisualSearchSubjects,
-  extractNarrationSentences,
-  fallbackVisualIntent,
-  fallbackVisualKeyword,
-  intentSearchQueries,
-  lookupBeatVisualIntent,
-  // RONDE 30: this was missing from the import list, so the case below threw a ReferenceError
-  // instead of testing anything. The function itself exists and always has
-  // (scriptVisualKeywords.ts) — only the test was broken.
-  sanitizeVisualKeyword,
-  lookupBeatVisualKeyword,
-  mergeVisualIntentsIntoMetadata,
-  mergeVisualKeywordsIntoMetadata,
-  normalizeSentenceKey,
-  parseVisualIntentsFromMetadata,
-  parseVisualKeywordsFromMetadata,
-  beatVisualSearchSubjects,
-  hydrateBeatScriptVisuals,
-  resolveBeatScriptVisualAnchor,
-  splitBeatSentences,
-} from "./scriptVisualKeywords";
+import { buildRelevanceKeywordsFromIntent, buildSentenceIntentMap, buildSentenceKeywordMap, beatVisualSearchSubjects, extractNarrationSentences, fallbackVisualIntent, fallbackVisualKeyword, intentSearchQueries, lookupBeatVisualIntent, sanitizeVisualKeyword, mergeVisualIntentsIntoMetadata, mergeVisualKeywordsIntoMetadata, normalizeSentenceKey, parseVisualIntentsFromMetadata, beatVisualSearchSubjects, hydrateBeatScriptVisuals, resolveBeatScriptVisualAnchor, splitBeatSentences } from "./scriptVisualKeywords";
 
 describe("scriptVisualKeywords", () => {
   it("extracts narration sentences from markdown script", () => {
@@ -108,23 +83,6 @@ Het team bespreekt de resultaten tijdens een vergadering.`;
     expect(parsed[0]?.scene_type).toBe("office");
   });
 
-  it("parses visualKeywords from intents when visualIntents present", () => {
-    const parsed = parseVisualKeywordsFromMetadata({
-      visualIntents: [
-        {
-          sentence: "Amsterdam canals.",
-          visual_intent: "amsterdam canal bikes timelapse",
-          primary_keyword: "amsterdam canal bikes",
-          secondary_keyword: "netherlands canal aerial",
-          fallback_keyword: "dutch city canal",
-          scene_type: "city",
-          priority_subject: "amsterdam",
-        },
-      ],
-    });
-    expect(parsed).toEqual([{ sentence: "Amsterdam canals.", keyword: "amsterdam canal bikes" }]);
-  });
-
   it("fallback intent produces searchable keywords for entrepreneur sentence", () => {
     const intent = fallbackVisualIntent(
       "Veel ondernemers verspillen uren per week aan handmatig werk."
@@ -197,36 +155,10 @@ Het team bespreekt de resultaten tijdens een vergadering.`;
     expect(lookupBeatVisualIntent(merged, intentMap)?.primary_keyword).toBe("amsterdam cyclists rain");
   });
 
-  it("lookupBeatVisualKeyword still works via keyword map", () => {
-    const map = buildSentenceKeywordMap([
-      {
-        sentence: "De ondernemer werkt laat door aan zijn nieuwe webshop.",
-        keyword: "entrepreneur working laptop",
-      },
-    ]);
-    expect(
-      lookupBeatVisualKeyword("De ondernemer werkt laat door aan zijn nieuwe webshop.", map)
-    ).toBe("entrepreneur working laptop");
-  });
-
   it("buildRelevanceKeywordsFromIntent includes intent fields and beat text", () => {
     const intent = fallbackVisualIntent("De ondernemer werkt laat door aan zijn webshop.");
     const keywords = buildRelevanceKeywordsFromIntent(intent, intent.sentence, ["shop"], "Test title");
     expect(keywords).toEqual(expect.arrayContaining([intent.primary_keyword, "ondernemer", "shop"]));
-  });
-
-  it("buildVisualIntentSegments assigns cumulative timestamps", () => {
-    const intent = fallbackVisualIntent("Eerste zin over treinen.");
-    const segments = buildVisualIntentSegments(
-      [
-        { text: "Eerste zin.", holdSec: 4, visualIntent: intent },
-        { text: "Tweede zin.", holdSec: 3.5 },
-      ],
-      12
-    );
-    expect(segments[0]).toMatchObject({ start_time: 12, end_time: 16 });
-    expect(segments[1]).toMatchObject({ start_time: 16, end_time: 19.5 });
-    expect(segments[0]?.keywords.length).toBeGreaterThan(0);
   });
 
   it("splitBeatSentences mirrors pipeline sentence splitting", () => {

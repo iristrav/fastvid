@@ -84,24 +84,21 @@ import {
   normaliseDeliveredLoudness,
   type LoudnessResult,
 } from "./audioLoudness";
-import {
-  postRenderSpotCheckEnabled,
-  spotCheckFinalVideo,
-  blankPictureFinding,
-  type PostRenderSpotCheckResult,
-} from "./postRenderSpotCheck";
+import { postRenderSpotCheckEnabled, spotCheckFinalVideo, type PostRenderSpotCheckResult } from "./postRenderSpotCheck";
 import { resolveLocalStorageFilePath } from "./storageLocal";
 import { resolveArchiveObjectFetchUrl } from "./archiveAssetLoad";
 import { downloadToFileStreaming, isPipelineFallbackClip } from "./videoPipeline";
 import {
+  blankPictureFinding,
   deliveryGate,
+  finalTimelineFootageRefusal,
   formatDeliveryBlock,
   TIMELINE_ARCHIVE_REFERENCE,
 } from "./deliveryGate";
-import { finalTimelineFootageRefusal } from "./deliveredScreenTime";
 import { youtubeVideoIdsForArchiveAssets } from "./youtubeFootageInFilm";
 import type { ProjectTimeline } from "./projectTimeline";
 import { audioTrackOf, videoTrack } from "./projectTimeline";
+import { maxConcurrentRenderJobs } from "./config";
 
 /* ═══════════════════════ the outcome of one job ═══════════════════════ */
 
@@ -997,18 +994,6 @@ export async function runRenderJob(params: {
         }
       }
     }
-    /**
-     * RONDE 662 — A BLANK FILM IS NOT DELIVERED, WHICHEVER PROCESS RENDERED IT.
-     *
-     * The warnings above stay non-blocking. This is the one content finding that is: every sample
-     * black. It is asked here, before the upload, so it holds on both delivery paths — the render
-     * the pipeline ran itself and the one the job worker ran while the pipeline waited.
-     */
-    const blank = blankPictureFinding(spotCheck);
-    if (blank) {
-      console.error(`[RenderJob] video=${job.videoId} job=${job.id} FINAL_PICTURE_IS_BLACK — ${blank}`);
-      return await fail(RENDER_ERROR.RENDER_FAILED, `FINAL_PICTURE_IS_BLACK: ${blank}`);
-    }
 
     /**
      * RONDE 654 — every change of picture in the delivered file should be one of the edit's own
@@ -1092,6 +1077,11 @@ export async function runRenderJob(params: {
       },
       /** Null when this film has no narration — then there is nothing to align to. */
       voiceoverSec: voiceEnd > 0 ? voiceEnd : null,
+      /**
+       * RONDE 662 — a blank film is not delivered, whichever process rendered it. The spot check's
+       * warnings stay non-blocking; every sample black is the one content finding that blocks.
+       */
+      blankPicture: blankPictureFinding(spotCheck),
       /** Video 612 — the timeline that was rendered, measured after its holds and pieces. */
       footageRefusal: finalTimelineFootageRefusal(
         videoTrack(timeline),
@@ -1212,12 +1202,6 @@ export async function runRenderJob(params: {
 
 let tickInFlight = false;
 let pollTimer: NodeJS.Timeout | null = null;
-
-/** How many renders this process runs at once. One by default: ffmpeg is not a light guest. */
-export function maxConcurrentRenderJobs(): number {
-  const raw = parseInt(process.env.MAX_CONCURRENT_RENDER_JOBS ?? "1", 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : 1;
-}
 
 let activeRenderJobs = 0;
 

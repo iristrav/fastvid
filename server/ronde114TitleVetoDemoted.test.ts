@@ -87,25 +87,27 @@ describe("RONDE 114 — but it no longer refuses", () => {
   it("neither call site rejects on it any more", () => {
     const code = codeOnly(PIPELINE);
     expect(code).not.toContain(
-      'recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "off_topic_visual", sourceQuery);'
+      'registerRejection(dedup.rejections, sceneIndex, beatIndex, p, "off_topic_visual", sourceQuery);'
     );
     expect(code).not.toContain(
-      'recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clip, "off_topic_visual", similarQuery);'
+      'registerRejection(dedup.rejections, scene.index, beat.index, clip, "off_topic_visual", similarQuery);'
     );
     // No reject on this reason survives anywhere.
-    expect(code).not.toMatch(/recordClipReject\([^)]*"off_topic_visual"/);
+    expect(code).not.toMatch(/registerRejection\([^)]*"off_topic_visual"/);
   });
 
   it("the verdict is still recorded at both sites, so the signal is not lost", () => {
+    /** ONE ROUTE: the one remaining site is the VisualJudge's metadata stage. */
+    const JUDGE = fs.readFileSync(path.join(__dirname, "visualJudge.ts"), "utf8");
     expect(
-      (PIPELINE.match(/recordGateVerdict\("off_topic_visual",/g) ?? []).length,
+      (JUDGE.match(/recordGateVerdict\("off_topic_visual",/g) ?? []).length,
       "the remaining call site must still record (the similar-match site was deleted)"
     ).toBe(1);
   });
 
   it("both sites say out loud that they flagged rather than refused", () => {
     expect(
-      (PIPELINE.match(/flagged, not rejected; the relevance gate decides/g) ?? []).length
+      (fs.readFileSync(path.join(__dirname, "visualJudge.ts"), "utf8").match(/flagged, not rejected; the picture decides/g) ?? []).length
     ).toBeGreaterThanOrEqual(1); // adoptClip's; off_topic_protest's and the similar-match one were deleted
   });
 
@@ -142,6 +144,6 @@ describe("RONDE 114 — the demote list matches reality", () => {
 describe("RONDE 114 — the checks that read PIXELS keep their veto", () => {
 
   it("the beat image gate is still the one that decides", () => {
-    expect(PIPELINE).toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');
+    expect(PIPELINE).toContain('registerRejection(dedup.rejections, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');
   });
 });

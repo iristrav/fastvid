@@ -24,14 +24,11 @@ import { describe, expect, it } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 
-import {
-  youtubeOperatorAuthorized,
-  youtubeRetrievalMode,
-  type YoutubeLicenseMode,
-} from "./sourcingPolicy";
-import { allowOperatorLicensedYoutube } from "./youtubeLicenseStatus";
+import { youtubeRetrievalMode, type YoutubeLicenseMode } from "./sourcingPolicy";
+
 /** Statically imported: the module is large, and its load must not count against a test timeout. */
 import { capYoutubeClipDurationForTest } from "./videoPipeline";
+import { allowOperatorLicensedYoutube } from "./config";
 
 const SERVER = __dirname;
 const read = (f: string) => fs.readFileSync(path.join(SERVER, f), "utf8");
@@ -61,18 +58,15 @@ const WITHDRAWN = { ALLOW_OPERATOR_LICENSED_YOUTUBE: "false", YOUTUBE_LICENSE_MO
 
 describe("the licence question the project's policy names", () => {
 
-
-
-
   it("only the literal `false` withdraws the authorisation", () => {
     for (const v of ["", "1", "yes", "on", "true", "no"]) {
       expect(
-        withEnv({ ALLOW_OPERATOR_LICENSED_YOUTUBE: v }, youtubeOperatorAuthorized),
+        withEnv({ ALLOW_OPERATOR_LICENSED_YOUTUBE: v }, allowOperatorLicensedYoutube),
         `"${v}" is not the word "false"`
       ).toBe(true);
     }
     for (const v of ["false", "FALSE", " false "]) {
-      expect(withEnv({ ALLOW_OPERATOR_LICENSED_YOUTUBE: v }, youtubeOperatorAuthorized), v).toBe(
+      expect(withEnv({ ALLOW_OPERATOR_LICENSED_YOUTUBE: v }, allowOperatorLicensedYoutube), v).toBe(
         false
       );
     }
@@ -82,7 +76,7 @@ describe("the licence question the project's policy names", () => {
     /** One authorisation, two paths. A change to one that misses the other is a split brain. */
     for (const v of [undefined, "", "true", "false", "FALSE", " false ", "no"]) {
       expect(
-        withEnv({ ALLOW_OPERATOR_LICENSED_YOUTUBE: v }, youtubeOperatorAuthorized),
+        withEnv({ ALLOW_OPERATOR_LICENSED_YOUTUBE: v }, allowOperatorLicensedYoutube),
         `value=${String(v)}`
       ).toBe(withEnv({ ALLOW_OPERATOR_LICENSED_YOUTUBE: v }, allowOperatorLicensedYoutube));
     }
@@ -119,14 +113,14 @@ describe("the licence passes are ordered by what the project may use", () => {
      * the unfiltered pass last therefore produced CC-only in practice — from an ordering rather
      * than from a rule.
      */
-    expect(PIPELINE).toContain("const recallFirst = youtubeOperatorAuthorized();");
+    expect(PIPELINE).toContain("const recallFirst = allowOperatorLicensedYoutube();");
     expect(PIPELINE).toContain("if (recallFirst && youtubeFairUseEnabled()) licensePasses.push(anyPass);");
     expect(PIPELINE).toContain("if (!recallFirst && youtubeFairUseEnabled()) licensePasses.push(anyPass);");
   });
 
   it("the explicit standard-licence pass is on under the authorisation and opt-in without it", () => {
-    expect(PIPELINE).toContain(
-      'youtubeOperatorAuthorized()\n    ? envFlagIsNotOff("ENABLE_YOUTUBE_STANDARD_LICENSE")\n    : envFlagIsOn("ENABLE_YOUTUBE_STANDARD_LICENSE")'
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain(
+      'allowOperatorLicensedYoutube()\n    ? envFlagIsNotOff("ENABLE_YOUTUBE_STANDARD_LICENSE")\n    : envFlagIsOn("ENABLE_YOUTUBE_STANDARD_LICENSE")'
     );
   });
 

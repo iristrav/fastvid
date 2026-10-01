@@ -50,8 +50,8 @@ import { memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
 import type { GateVerdict } from "./youtubeVideoSearchPlanner";
 import { runWithActiveVideoId } from "./videoGenerationCancel";
 import { formatYoutubeFootage, youtubeFootageInTimeline } from "./youtubeFootageInFilm";
-import { finalTimelineFootageRefusal, type FinalTimelineClip } from "./deliveredScreenTime";
-import { deliveryGate } from "./deliveryGate";
+
+import { deliveryGate, finalTimelineFootageRefusal, type FinalTimelineClip } from "./deliveryGate";
 import type { TimelineVideoClip } from "./projectTimeline";
 
 process.env.SEARCH_GATE_STRICT = "false";
@@ -131,7 +131,6 @@ function poolDeps(results: Array<{ id: string; type: Triage["footageType"] }>): 
       return { footageType: type, servesBeats: [0, 1], depicts: "" };
     },
     archive: async () => [],
-    notFootage: () => null,
     log: silent,
   };
 }
@@ -219,7 +218,6 @@ describe("Fix 2/3. one other window after a black fragment; the pool's length fi
     setYoutubeLengthLookupForTests(async () => LENGTH);
     process.env.YOUTUBE_CC_DL_SERVICE = "https://v616b-cloud.example.com";
     process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";
-    delete process.env.YOUTUBE_SEARCH_MODE;
     resetPermanentDownloadRefusals();
     /** VIDEO 622 — a new render starts with no seconds fetched, as the pipeline does. */
     resetYoutubeFragmentsFetched();
@@ -465,7 +463,6 @@ describe("Scenario. A black · B baked text · C commentary · D real footage ·
     process.env.YOUTUBE_API_KEY = "v616c-test-key";
     process.env.YOUTUBE_CC_DL_SERVICE = "https://v616c-cloud.example.com";
     process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";
-    delete process.env.YOUTUBE_SEARCH_MODE;
     resetPermanentDownloadRefusals();
     /** VIDEO 622 — a new render starts with no seconds fetched, as the pipeline does. */
     resetYoutubeFragmentsFetched();

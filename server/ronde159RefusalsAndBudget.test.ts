@@ -29,16 +29,7 @@
  */
 import { readFileSync } from "fs";
 import { join } from "path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-/**
- * The one-minute length no longer takes the fast-short path by default — see
- * `isFastShortVideoLength`. That tuning still EXISTS and is what this file asserts, so the flag is
- * set here rather than the expectations being loosened: the behaviour is unchanged, only its
- * default is.
- */
-beforeEach(() => { vi.stubEnv("FAST_SHORT_PATH", "true"); });
-afterEach(() => { vi.unstubAllEnvs(); });
+import { describe, expect, it } from "vitest";
 
 import {
   classifyMismatch,
@@ -67,7 +58,6 @@ describe("RONDE 159 §A — the gate's real wording is now understood", () => {
     expect(kind).not.toBe("UNCLEAR");
     expect(kind).toBe("UNRELATED");
   });
-
 
   it("the adjective form still works — nothing was traded away", () => {
     expect(classifyMismatch({ reason: "This footage is not related to the topic." })).toBe("UNRELATED");
@@ -127,7 +117,6 @@ describe("RONDE 159 §A — the specific kinds still win over the general one", 
   });
 });
 
-
 /**
  * RONDE 159 §B — the render throws footage away for want of time it is not using.
  *
@@ -146,37 +135,37 @@ describe("RONDE 159 §B — the beat budget spends headroom that exists", () => 
     const { archiveBeatBudgetMs, archiveBeatTryTimeoutMs, SOURCING_RESERVE_MS } = await import(
       "./sourcingPolicy"
     );
-    const base = archiveBeatTryTimeoutMs("1");
-    expect(archiveBeatBudgetMs("1", SOURCING_RESERVE_MS)).toBe(base);
-    expect(archiveBeatBudgetMs("1", 0)).toBe(base);
+    const base = archiveBeatTryTimeoutMs();
+    expect(archiveBeatBudgetMs(SOURCING_RESERVE_MS)).toBe(base);
+    expect(archiveBeatBudgetMs(0)).toBe(base);
     // Nothing known about the clock is not a licence to spend it.
-    expect(archiveBeatBudgetMs("1", null)).toBe(base);
-    expect(archiveBeatBudgetMs("1", undefined)).toBe(base);
-    expect(archiveBeatBudgetMs("1", NaN)).toBe(base);
+    expect(archiveBeatBudgetMs(null)).toBe(base);
+    expect(archiveBeatBudgetMs(undefined)).toBe(base);
+    expect(archiveBeatBudgetMs(NaN)).toBe(base);
   });
 
   it("video 552's actual clock would have bought those beats more time", async () => {
     const { archiveBeatBudgetMs, archiveBeatTryTimeoutMs } = await import("./sourcingPolicy");
-    const base = archiveBeatTryTimeoutMs("1");
+    const base = archiveBeatTryTimeoutMs();
     // Roughly where the render stood when beats were being abandoned.
-    const budget = archiveBeatBudgetMs("1", 15 * 60_000);
+    const budget = archiveBeatBudgetMs(15 * 60_000);
     expect(budget).toBeGreaterThan(base);
   });
 
   it("it is capped, so a generous clock cannot become an overrun", async () => {
     const { archiveBeatBudgetMs, archiveBeatTryTimeoutMs } = await import("./sourcingPolicy");
-    const base = archiveBeatTryTimeoutMs("1");
+    const base = archiveBeatTryTimeoutMs();
     // An absurd amount of remaining time still buys a bounded amount of beat.
-    expect(archiveBeatBudgetMs("1", 10 * 60 * 60_000)).toBeLessThanOrEqual(base * 3);
+    expect(archiveBeatBudgetMs(10 * 60 * 60_000)).toBeLessThanOrEqual(base * 3);
   });
 
   it("the extra time comes out of headroom only, never out of the reserve", async () => {
     const { archiveBeatBudgetMs, archiveBeatTryTimeoutMs, SOURCING_RESERVE_MS } = await import(
       "./sourcingPolicy"
     );
-    const base = archiveBeatTryTimeoutMs("1");
+    const base = archiveBeatTryTimeoutMs();
     for (const remaining of [6 * 60_000, 12 * 60_000, 20 * 60_000]) {
-      const per = archiveBeatBudgetMs("1", remaining);
+      const per = archiveBeatBudgetMs(remaining);
       if (per <= base) continue; // no extension granted; nothing to bound
       /**
        * The rule the share is computed against: if twenty more beats each took this budget, the
@@ -191,7 +180,7 @@ describe("RONDE 159 §B — the beat budget spends headroom that exists", () => 
     const prev = process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS;
     try {
       process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS = "9000";
-      expect(archiveBeatBudgetMs("1", 30 * 60_000)).toBe(9_000);
+      expect(archiveBeatBudgetMs(30 * 60_000)).toBe(9_000);
     } finally {
       if (prev === undefined) delete process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS;
       else process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS = prev;

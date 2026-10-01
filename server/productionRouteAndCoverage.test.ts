@@ -27,7 +27,7 @@ import {
   coverageHasRealFootage,
   beatRecord,
 } from "./beatOutcomeAudit";
-import { createClipRejectAudit } from "./clipRejectAudit";
+import { createRejectionRegistry } from "./rejectionRegistry";
 
 /* ═══════════════════════ §14 — the route line ═══════════════════════ */
 
@@ -198,7 +198,7 @@ describe("§20 — the render report carries coverage alongside the funnel", () 
   const planned = Array.from({ length: 3 }, (_, beatIndex) => ({ sceneIndex: 0, beatIndex }));
 
   it("rolls the categories up on a line of their own", () => {
-    const lines = renderBeatFunnelReport(productionLikeAudit(), planned, createClipRejectAudit());
+    const lines = renderBeatFunnelReport(productionLikeAudit(), planned, createRejectionRegistry());
     const roll = lines.find((l) => l.includes("COVERAGE beats="));
     expect(roll, "no coverage roll-up in the report").toBeTruthy();
     expect(roll).toContain("REAL_ASSET=2");
@@ -210,7 +210,7 @@ describe("§20 — the render report carries coverage alongside the funnel", () 
    * coverage — which is exactly the misreading this section exists to end.
    */
   it("keeps the funnel roll-up and the coverage roll-up apart", () => {
-    const lines = renderBeatFunnelReport(productionLikeAudit(), planned, createClipRejectAudit());
+    const lines = renderBeatFunnelReport(productionLikeAudit(), planned, createRejectionRegistry());
     const funnel = lines.find((l) => l.includes("TOTAL beats="))!;
     expect(funnel).toContain("adopted=2");
     expect(funnel, "the two roll-ups were merged into one line").not.toContain("REAL_ASSET");
@@ -218,7 +218,7 @@ describe("§20 — the render report carries coverage alongside the funnel", () 
 
   /** Every beat lands in exactly one category, so the categories sum to the beat count. */
   it("categorises every beat exactly once", () => {
-    const roll = renderBeatFunnelReport(productionLikeAudit(), planned, createClipRejectAudit())
+    const roll = renderBeatFunnelReport(productionLikeAudit(), planned, createRejectionRegistry())
       .find((l) => l.includes("COVERAGE beats="))!;
     const nums = [
       ...roll.matchAll(

@@ -17,7 +17,7 @@
  *
  * `providerAssetAlreadyUsed` is the pre-download skip, and its own doc says what it remembers:
  * "already ADOPTED this render". A refused asset is never adopted, so it never enters that set,
- * so it returns a stranger. The refusal WAS written down — in `clipRejectAudit`, whose header says
+ * so it returns a stranger. The refusal WAS written down — in `rejections`, whose header says
  * "Observability only" — and nothing ever read it back. An answer computed on one side and never
  * handed to the side that decides: this codebase's signature defect, here for the seventh time.
  *
@@ -39,9 +39,9 @@ import { join } from "path";
 import {
   
   
-  createClipRejectAudit,
+  createRejectionRegistry,
   
-} from "./clipRejectAudit";
+} from "./rejectionRegistry";
 import { isCanonicalAssetKey } from "./beatVisualRelevance";
 
 const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
@@ -56,9 +56,11 @@ const R598 = [
 /* ═══════════ §1 — the render remembers what it refused ═══════════ */
 
 describe("§1 — render 598's three clips", () => {
-
+  /** ONE ROUTE: the never-written `refusedAssets` map is gone; a fresh registry holds nothing. */
   it("a fresh render starts with nothing written off", () => {
-    expect(createClipRejectAudit().refusedAssets.size).toBe(0);
+    const r = createRejectionRegistry();
+    expect(r.recorded).toBe(0);
+    expect(r.entries).toHaveLength(0);
   });
 });
 

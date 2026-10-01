@@ -70,7 +70,7 @@ describe("§1 — the five judges", () => {
     const at = PIPE.indexOf("async function judgeBeatClipRelevance(");
     const body = PIPE.slice(at, at + 3500);
     const stamp = body.indexOf("noteEligibleForJudgement(dedup, params.clipPath");
-    const check = body.indexOf("await checkBeatRelevance({");
+    const check = body.indexOf("await judgePicture({");
     expect(stamp).toBeGreaterThan(-1);
     expect(check).toBeGreaterThan(-1);
     expect(stamp, "the stamp records a decision that is made by calling the judge").toBeLessThan(check);

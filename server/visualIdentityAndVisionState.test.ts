@@ -13,7 +13,6 @@ import {
   visionPipelineIsUnavailable,
   resetVisionPipelineAvailability,
 } from "./visualQualityGate";
-import { poolCandidateToAsset, type RankablePoolCandidate } from "./poolRanking";
 
 let TMP: string;
 

@@ -206,8 +206,8 @@ describe("4. the exemption is counted, and a clean render says so in words", () 
 describe("5. what this round deliberately does NOT do", () => {
   const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
   const GUARD = SRC.slice(
-    SRC.indexOf("async function adoptionGuardRefusesPush"),
-    SRC.indexOf("function noteDuplicateClipRefused")
+    SRC.indexOf("async function visualJudgeRefusesPush"),
+    SRC.indexOf("export function formatSuspendedVisionAdoptions")
   );
   const POLICY = readFileSync(join(__dirname, "adoptionPolicy.ts"), "utf8");
 
@@ -217,9 +217,9 @@ describe("5. what this round deliberately does NOT do", () => {
    * has been explicit that an empty video is the worst outcome there is.
    */
   it("the suspension still allows the adoption — the counting is beside it, not instead of it", () => {
-    expect(GUARD).toContain("if (verdict.allowed) return false;");
+    expect(GUARD).toContain('if (verdict.decision === "ACCEPT") {');
     const counted = GUARD.indexOf("UNJUDGED_REAL_FOOTAGE_ADOPTED");
-    const allowed = GUARD.indexOf("if (verdict.allowed) return false;");
+    const allowed = GUARD.indexOf("    return false;\n  }", counted);
     expect(counted).toBeGreaterThan(0);
     expect(counted).toBeLessThan(allowed);
   });

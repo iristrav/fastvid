@@ -26,7 +26,7 @@ import {
   type YoutubeAttemptRecord,
 } from "./youtubeUnusableVideos";
 import { memoryStore } from "./youtubeUnusableVideos.test.support";
-import { decidePrefetchVerdict, prefetchOneVideo, shouldSearchAlternatives, type PrefetchDeps } from "./youtubePrefetch";
+import { decidePrefetchVerdict, prefetchOneVideo, type PrefetchDeps } from "./youtubePrefetch";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const PREFETCH = fs.readFileSync(path.join(__dirname, "youtubePrefetch.ts"), "utf8");
@@ -153,36 +153,6 @@ describe("Video 618 — a written-off video is not asked for again", () => {
   it("it is taken out of the search results, which keep their order", () => {
     const rows = [{ id: "a1" }, { id: "5GZpQahYhPk" }, { id: "b2" }];
     expect(withoutUnusableYoutubeVideos(rows, (r) => r.id)).toEqual([{ id: "a1" }, { id: "b2" }]);
-  });
-
-  it("the background fetch refuses it before its length is looked up or a byte moves", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v618-unusable-"));
-    const deps: PrefetchDeps = {
-      isIdle: () => true,
-      sourceDurationSec: vi.fn(async () => 600),
-      download: vi.fn(async () => ({ ok: true })),
-      videoRefusal: () => null,
-      writtenOff: (id) => {
-        const why = youtubeVideoUnusable(id);
-        return why ? `known_unusable:${why}` : null;
-      },
-      forgetRefusal: vi.fn(),
-      probeDurationSec: async () => 30,
-      ingest: vi.fn(),
-      release: () => {},
-      makeWorkDir: () => dir,
-      removeWorkDir: (d) => fs.rmSync(d, { recursive: true, force: true }),
-    };
-    const fetched = await prefetchOneVideo({ videoId: "5GZpQahYhPk", title: "x", query: "q", licenseMode: null }, deps);
-    expect(fetched.videoRefusal).toBe("known_unusable:http_502:stream_refused");
-    expect(fetched.segments).toEqual([]);
-    expect(deps.sourceDurationSec).not.toHaveBeenCalled();
-    expect(deps.download).not.toHaveBeenCalled();
-    const verdict = decidePrefetchVerdict({ attempts: 2, segments: fetched.segments, videoRefusal: fetched.videoRefusal, interrupted: false, now: 0 });
-    /** `refused` is never claimed again, and it does not spend a search on alternatives. */
-    expect(verdict.status).toBe("refused");
-    expect(shouldSearchAlternatives(verdict)).toBe(false);
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it("the download itself refuses it without a request, and says why", async () => {

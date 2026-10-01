@@ -11,17 +11,11 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { judgeAcquiredFile, minimumAcquiredDurationSec, validateAcquiredFile } from "./youtubeAcquisitionValidation";
-import {
-  formatYoutubeFootage,
-  judgeYoutubeRequirement,
-  requiredYoutubeSeconds,
-  unmeasuredFootage,
-  youtubeFootageInTimeline,
-  youtubeIdFromUrl,
-  type ArchiveOrigin,
-} from "./youtubeFootageInFilm";
+import { formatYoutubeFootage, unmeasuredFootage, youtubeFootageInTimeline, youtubeIdFromUrl, type ArchiveOrigin } from "./youtubeFootageInFilm";
 import { prefetchRouteOrder } from "./youtubePrefetch";
 import type { TimelineVideoClip } from "./projectTimeline";
+import { judgeYoutubeRequirement } from "./deliveryGate";
+import { requiredYoutubeSeconds } from "./config";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 

@@ -40,17 +40,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  allowOperatorLicensedYoutube,
-  classifyArchiveLicense,
-  formatYoutubeLicenseLine,
-  formatYoutubeUsageReport,
-  isOperatorAuthorizedYoutube,
-  isYoutubeOriginIdentifier,
-  youtubeLicenseDecision,
-  youtubeVideoIdFromIdentifier,
-} from "./youtubeLicenseStatus";
-import { youtubeOperatorAuthorized } from "./sourcingPolicy";
+import { classifyArchiveLicense, formatYoutubeLicenseLine, formatYoutubeUsageReport, isOperatorAuthorizedYoutube, isYoutubeOriginIdentifier, youtubeLicenseDecision, youtubeVideoIdFromIdentifier } from "./youtubeLicenseStatus";
+import { allowOperatorLicensedYoutube } from "./config";
 
 const NC = "https://creativecommons.org/licenses/by-nc-nd/4.0/";
 const CC_BY = "https://creativecommons.org/licenses/by/4.0/";
@@ -345,7 +336,7 @@ describe("RONDE 147 — one decision, no second engine", () => {
     /**
      * The authorisation is one fact about the project, and it is asked about on two paths: the
      * archive.org `youtube-*` gate (`allowOperatorLicensedYoutube`) and the live YouTube retrieval
-     * policy (`youtubeOperatorAuthorized`). They parse the same variable in two modules, so a
+     * policy (`allowOperatorLicensedYoutube`). They parse the same variable in two modules, so a
      * change to one that is not made to the other would let the pipeline hold two opinions about
      * whether it may use YouTube. Pinned by behaviour, on every value that matters.
      */
@@ -354,7 +345,7 @@ describe("RONDE 147 — one decision, no second engine", () => {
       for (const value of [undefined, "", "true", "false", "FALSE", " false ", "no", "1"]) {
         if (value === undefined) delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
         else process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = value;
-        expect(youtubeOperatorAuthorized(), `value=${String(value)}`).toBe(
+        expect(allowOperatorLicensedYoutube(), `value=${String(value)}`).toBe(
           allowOperatorLicensedYoutube()
         );
       }

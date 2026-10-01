@@ -85,14 +85,13 @@ function llmText(resp: unknown): string {
 }
 
 export async function productionVideoPoolDeps(input: PlannerInput & { videoId: number; renderId?: string }): Promise<PoolDeps> {
-  const [{ invokeLLM }, pipeline, contract, { dbYoutubeSearchBudgetStore }, quota, nonFootage, clipFilter, curated, db] =
+  const [{ invokeLLM }, pipeline, contract, { dbYoutubeSearchBudgetStore }, quota, clipFilter, curated, db] =
     await Promise.all([
       import("./_core/llm"),
       import("./videoPipeline"),
       import("./searchQueryContract"),
       import("./db"),
       import("./youtubeSearchQuota"),
-      import("./youtubeNonFootage"),
       import("./archiveClipFilter"),
       import("./curatedMediaSourcing"),
       import("./db"),
@@ -205,7 +204,7 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
     for (const s of sentences) {
       const tags = db.normalizeMediaTags(s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 4));
       const picks = await curated
-        .listCuratedArchiveCandidates(tags, new Set(), new Set(), anchors, undefined, s, new Set(), cache, true, true)
+        .listCuratedArchiveCandidates(tags, new Set(), new Set(), anchors, undefined, s, cache, true, true)
         .catch(() => []);
       for (const p of picks) {
         const id =
@@ -242,7 +241,6 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
     details,
     triage,
     archive,
-    notFootage: nonFootage.youtubeTitleIsNotFootage,
     inCooldown: pipeline.isYoutubeInCooldown,
     log: (l) => console.log(l),
   };

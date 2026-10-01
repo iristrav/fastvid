@@ -13,7 +13,7 @@ import { rankCandidatesWithContext, type AssetDirectorContext, type CandidateMet
 // plus the new buildBeatQueryEscalationTiers (entity+event / entity+location / event+location+date
 // / historical-context / object-context — reusing Round 8's extractEventCue/extractLocationPhrase/
 // extractObjectCue/extractSecondaryEntities, no new NER). The Wikimedia rescue query list and a new
-// [VisualCoverage] explainability log (reusing the existing clipRejectAudit trail) round out the
+// [VisualCoverage] explainability log (reusing the existing rejections trail) round out the
 // change. Structural checks use the file's own source text (extractFunctionSource) for control-flow
 // guarantees (ordering, exhaustion-before-fallback) that don't require mocking a dozen providers.
 const nodeFetchMock = vi.fn();
@@ -116,7 +116,7 @@ describe("Test 10 — sceneRescueColorFallbackCount is still incremented correct
 
 describe("Test 11 — assertVisualCoverageExportGate still blocks a render with scene-level fallback", () => {
   it("(existing gate, unmodified this round) still throws for a scene that fell back entirely to placeholders", async () => {
-    const { assertVisualCoverageExportGate } = await import("./videoQualityReport");
+    const { assertVisualCoverageExportGate } = await import("./deliveryGate");
     const report = {
       generatedAt: new Date().toISOString(),
       videoTitle: "test",

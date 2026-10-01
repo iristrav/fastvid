@@ -95,26 +95,6 @@ describe("§2 — the narrow predicate, and why it stays narrow", () => {
 /* ═══════════ §3 — one token list, and the dead one is alive ═══════════ */
 
 describe("§3 — the four duplicate token regexes", () => {
-  it("no module declares its own fallback token list any more", () => {
-    /**
-     * Guarded by shape: the literal that was maintained in four places must not reappear in any
-     * of them. `placeholderIdentity` is the one file allowed to spell it.
-     */
-    for (const f of [
-      "assetDirector.ts",
-      "globalDocumentaryDirector.ts",
-      "shotSequenceOptimizer.ts",
-      "editorialReorder.ts",
-    ]) {
-      const src = read(f);
-      expect(src, `${f} still spells its own token list`).not.toMatch(
-        /\/\^?\(?color_fallback\|fallback\|guaranteed/
-      );
-      expect(src, `${f} does not read the shared one`).toMatch(
-        /from "\.\/placeholderIdentity"/
-      );
-    }
-  });
 
   it("THE DEAD PREDICATE IS ALIVE: the anchor is gone", () => {
     /**

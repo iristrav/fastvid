@@ -45,8 +45,8 @@ import { claimYoutubeSearch, memoryYoutubeSearchBudgetStore } from "./youtubeSea
 import type { GateVerdict } from "./youtubeVideoSearchPlanner";
 import { planScriptGuidedClip } from "./scriptGuidedClipFinder";
 import { _resetYoutubeVideoContextCache } from "./youtubeVideoContext";
-import { finalTimelineFootageRefusal, type FinalTimelineClip } from "./deliveredScreenTime";
-import { deliveryGate } from "./deliveryGate";
+
+import { deliveryGate, finalTimelineFootageRefusal, type FinalTimelineClip } from "./deliveryGate";
 
 /** Direct fetcher calls have no beat provenance; the gate's own behaviour is tested elsewhere. */
 process.env.SEARCH_GATE_STRICT = "false";
@@ -77,7 +77,6 @@ describe("A/B. a refused YouTube fragment is not downloaded again; the next cand
     setYoutubeRowLookForTests(async () => ({ footageType: "real_footage", servesBeats: [0] }));
     process.env.YOUTUBE_CC_DL_SERVICE = "https://v616-cloud.example.com";
     process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";
-    process.env.YOUTUBE_SEARCH_MODE = "per_beat";
     resetPermanentDownloadRefusals();
     /** VIDEO 622 — a new render starts with no seconds fetched, as the pipeline does. */
     resetYoutubeFragmentsFetched();
@@ -214,7 +213,6 @@ function deps(store = memoryYoutubeSearchBudgetStore()): PoolDeps & { searches: 
     details: async (ids) => new Map(ids.map((id) => [id, { durationSec: 480, embeddable: true, live: false }])),
     triage: async (): Promise<Triage> => ({ footageType: "real_footage", servesBeats: [0, 1, 2], depicts: "" }),
     archive: async () => [],
-    notFootage: () => null,
     log: silent,
   };
 }

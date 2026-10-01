@@ -98,69 +98,6 @@ export function computeScreenTimeShare(clips: readonly DeliveredClip[]): ScreenT
  * sit well above anything a considered edit would produce and well below the 47.6% that shipped.
  */
 export const MAX_SINGLE_FOOTAGE_SHARE = 0.25;
-
-/**
- * Above this share one piece of footage is not a film but a held picture, and it is NOT delivered.
- *
- * Video 612 shipped 3.83 s of one YouTube clip held under 71 s of narration, cut into fifteen
- * 4.74 s pieces from two windows of the same source. Every clip-level check passed: no piece was
- * over the shot limit, and the screen-time line above was measured on the clips before the hold.
- */
-export const MAX_DELIVERABLE_FOOTAGE_SHARE = 0.5;
-
-/** A video clip of the FINAL timeline — after the holds and the YouTube pieces. Structural. */
-export type FinalTimelineClip = {
-  id: string;
-  disabled?: boolean;
-  timelineStart: number;
-  timelineEnd: number;
-  source: { provider?: string | null; providerAssetId?: string | null; archiveAssetId?: number | null };
-};
-
-/**
- * The same screen-time measurement, on the timeline that will actually be rendered.
- *
- * Pieces cut from one source count as one piece of footage: the key is the source asset, never the
- * clip id. Returns the refusal reason, or null when no single piece of footage fills more than
- * `maxShare` of the film.
- *
- * `youtubeVideoByArchiveAsset` — the original YouTube video behind an archive asset, when the
- * caller could read it (the archive stores several segments of one video as separate assets). Those
- * segments are one source for the viewer, so they share the key `youtube:<videoId>`. Without an
- * entry the archive/provider key below is used, exactly as before.
- */
-export function finalTimelineFootageRefusal(
-  clips: readonly FinalTimelineClip[],
-  maxShare = MAX_DELIVERABLE_FOOTAGE_SHARE,
-  youtubeVideoByArchiveAsset: ReadonlyMap<number, string> = new Map()
-): string | null {
-  const share = computeScreenTimeShare(
-    clips
-      .filter((c) => !c.disabled)
-      .map((c) => {
-        const youtubeVideo =
-          c.source.archiveAssetId != null ? youtubeVideoByArchiveAsset.get(c.source.archiveAssetId) : undefined;
-        return {
-          path: c.id,
-          source: c.source.provider ?? null,
-          contentKey: youtubeVideo
-            ? `youtube:${youtubeVideo}`
-            : c.source.archiveAssetId != null
-              ? `archive:${c.source.archiveAssetId}`
-              : c.source.providerAssetId
-                ? `${c.source.provider ?? "?"}:${c.source.providerAssetId}`
-                : null,
-          durationSec: c.timelineEnd - c.timelineStart,
-        };
-      })
-  );
-  const top = share.byFootage[0];
-  if (!top || top.share <= maxShare) return null;
-  return (
-    `one piece of footage (${top.key}, source=${top.source}) fills ${pct(top.share)} of the final timeline ` +
-    `(${top.sec.toFixed(1)}s of ${share.totalSec.toFixed(1)}s in ${top.appearances} piece(s), limit ${pct(maxShare)})`
-  );
-}
 export const MAX_SINGLE_SOURCE_SHARE = 0.7;
 
 /**

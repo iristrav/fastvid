@@ -79,14 +79,14 @@ describe("the render job inspects the file it is about to deliver", () => {
     expect(at).toBeGreaterThan(-1);
     expect(nextStepAt, "the content check is no longer followed by the delivery gate").toBeGreaterThan(at);
     /**
-     * RONDE 662 — exactly one refusal sits in this window, and it is not a warning: every sample
-     * black (`blankPictureFinding`). Warnings still only log; the one finding that blocks is named.
+     * RONDE 662 — the one content finding that blocks (every sample black, `blankPictureFinding`)
+     * is handed to the delivery gate. ONE ROUTE: nothing in this window fails the render itself;
+     * warnings only log.
      */
     const window = worker.slice(at, nextStepAt);
     const fails = window.match(/fail\(/g) ?? [];
-    expect(fails.length, "a content warning can fail the render again").toBe(1);
-    expect(window).toContain("const blank = blankPictureFinding(spotCheck);");
-    expect(window).toContain("`FINAL_PICTURE_IS_BLACK: ${blank}`");
+    expect(fails.length, "a content warning can fail the render again").toBe(0);
+    expect(worker.slice(nextStepAt)).toContain("blankPicture: blankPictureFinding(spotCheck),");
     expect(window).not.toMatch(/spotCheck\.ok[^\n]*fail\(|warnings[^\n]*fail\(/);
   });
 
@@ -152,7 +152,8 @@ describe("the quality report describes the file that was delivered", () => {
    */
   it("is written before the record is persisted, not after", () => {
     const spotAt = pipeline.indexOf("if (jobOutcome.spotCheck) {");
-    const persistAt = pipeline.lastIndexOf("await mergeVideoMetadata(videoId, {");
+    /** ONE ROUTE: the RenderReport has one writer, `storeRenderReport`; the final store is its last call. */
+    const persistAt = pipeline.lastIndexOf("await storeRenderReport(videoId, {");
     expect(persistAt).toBeGreaterThan(spotAt);
   });
 });

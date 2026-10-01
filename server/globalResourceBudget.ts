@@ -24,7 +24,7 @@
  */
 
 import pLimit from "p-limit";
-import { readQueueConfig } from "@shared/videoQueue";
+import { maxConcurrentRenders } from "./config";
 
 function envInt(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name]?.trim();
@@ -32,23 +32,6 @@ function envInt(name: string, fallback: number, min: number, max: number): numbe
   const n = parseInt(raw, 10);
   if (isNaN(n) || n < min || n > max) return fallback;
   return n;
-}
-
-/**
- * How many renders this process may have in flight at once.
- *
- * Defaults to the queue's own per-worker cap so nothing changes for an existing deployment: that
- * value is 1 unless MAX_JOBS_PER_WORKER is set, which is why renders have effectively serialised
- * on a single worker until now. Setting MAX_CONCURRENT_RENDERS makes the intent explicit and
- * lets it be lowered independently of the queue's job accounting.
- */
-export function maxConcurrentRenders(): number {
-  const explicit = process.env.MAX_CONCURRENT_RENDERS?.trim();
-  if (explicit) {
-    const n = parseInt(explicit, 10);
-    if (!isNaN(n) && n >= 1 && n <= 16) return n;
-  }
-  return Math.max(1, readQueueConfig().maxJobsPerWorker);
 }
 
 /**

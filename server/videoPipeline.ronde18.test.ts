@@ -25,16 +25,6 @@ import {
 
 const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-describe("RONDE 18A — YouTube-only sourcing is strictly opt-in", () => {
-  it("youtubeOnlySourcingEnabled requires YOUTUBE_ONLY_SOURCING === 'true' (default OFF)", () => {
-    const fn = src.match(/function youtubeOnlySourcingEnabled\(\)[^}]*}/)?.[0] ?? "";
-    // Strictly opt-in via the case-tolerant envFlagIsOn helper (RONDE 18 follow-up).
-    expect(fn).toContain('envFlagIsOn("YOUTUBE_ONLY_SOURCING")');
-    // The old trap — defaulting ON via `!== "false"` — must be gone.
-    expect(fn).not.toContain('!== "false"');
-  });
-});
-
 describe("RONDE 18B — decision verbs never fabricate a person name", () => {
   it('does not lock "Hitler Chose" as a full person name', () => {
     // Before the fix this returned the fabricated two-word name "Hitler Chose".

@@ -1,5 +1,19 @@
 /**
- * Per-video audit trail — why candidate clips were rejected during adopt.
+ * REJECTION REGISTRY — the one owner of "this picture was turned away".
+ *
+ * ONE ROUTE: every refusal in a render is registered here and nowhere else — what was refused
+ * (the file and its asset identity), why (the reason code), at which stage (the file, its content,
+ * the push…), for which intent (scene, sentence, the query that found it), when, and how sure the
+ * decider was. It is the only writer of a refusal onto the asset's lineage, so an asset's record
+ * cannot end twice or not at all. It is NOT the archive: it remembers decisions about candidates
+ * for this render, it stores no media and outlives nothing.
+ *
+ * What it does not own, and why: a supplier that cannot DELIVER a file (a YouTube video refused at
+ * download, a 403 from an archive) is a fact about the supplier, kept by `providerFailureClass` and
+ * `youtubeUnusableVideos`; a VisualJudge verdict is kept, with its frames' evidence, by the
+ * relevance ledger. Both still register the refusal they cause here.
+ *
+ * — Per-video audit trail, history —
  *
  * RONDE 70 — the cap used to lie.
  *
@@ -27,20 +41,39 @@
 import * as path from "path";
 import type { VisualSourceLedger } from "./visualSourceLineage";
 
-export type ClipRejectEntry = {
+/** Where in the one route a refusal was made. */
+export type RejectionStage =
+  | "technical"
+  | "dedup"
+  | "usage"
+  | "budget"
+  | "metadata"
+  | "on_screen_text"
+  | "picture"
+  | "push"
+  | "archive"
+  | "unknown";
+
+export type RejectionEntry = {
   sceneIndex: number;
   beatIndex: number;
   basename: string;
   reason: string;
+  /** The query that found the candidate — the intent it was fetched for. */
   source?: string;
+  stage: RejectionStage;
+  /** 0..1 — how sure the decider was. Deterministic rules are 1. */
+  confidence: number;
+  /** Epoch ms. */
+  at: number;
 };
 
-export type ClipRejectAudit = {
+export type RejectionRegistry = {
   /** Bounded detail — the named examples. */
-  entries: ClipRejectEntry[];
+  entries: RejectionEntry[];
   /** How many detail entries this audit will hold. */
   capacity: number;
-  /** Every recordClipReject call, whether or not its detail was stored. */
+  /** Every registerRejection call, whether or not its detail was stored. */
   recorded: number;
   /** Calls whose DETAIL was not stored because the cap had been reached. */
   dropped: number;
@@ -75,30 +108,6 @@ export type ClipRejectAudit = {
    * buys is a log that names the repetition instead of performing it.
    */
   repeats: Map<string, number>;
-  /**
-   * RONDE 625 — ASSETS REFUSED FOR A REASON THAT IS A FACT ABOUT THE FILE.
-   *
-   * Render 598 offered the same three Internet Archive clips to scene 2 beat 0 every thirty-five
-   * seconds for nine minutes — two episodes of "The World at War" and a German documentary, all
-   * `legendado` uploads with Portuguese subtitles burnt into the picture. Each round refused all
-   * three on `baked_text`, correctly, and each round offered them again.
-   *
-   * `providerAssetAlreadyUsed` is the pre-download skip, and its own doc says what it holds:
-   * "already ADOPTED this render". A refused asset is never adopted, so it never enters, so it
-   * comes back a stranger. The refusal WAS recorded — in this audit, whose header says
-   * "Observability only" — and nothing read it back. The answer was computed on one side and never
-   * handed to the side that decides.
-   *
-   * ONLY reasons that are facts about the FILE belong here. A verdict belongs to a (picture,
-   * narration) pair — this codebase says so where the gate caches them — so `vision_gate` and
-   * `beat_image_gate` refuse a picture FOR THIS BEAT and must never write it off elsewhere. Burnt-in
-   * subtitles are in the pixels and are the same on every beat of every scene.
-   *
-   * Keyed by the asset's canonical identity, never by a path: `file:<size>:<basename>` is a
-   * fingerprint of one copy, and writing an asset off under it would miss the next copy and could
-   * catch an unrelated one.
-   */
-  refusedAssets: Map<string, string>;
 };
 
 /**
@@ -106,7 +115,7 @@ export type ClipRejectAudit = {
  * this call, so a caller logs on 0 and counts thereafter.
  */
 export function noteRepeatedRefusal(
-  audit: ClipRejectAudit | undefined,
+  audit: RejectionRegistry | undefined,
   sceneIndex: number,
   beatIndex: number,
   identity: string,
@@ -120,13 +129,13 @@ export function noteRepeatedRefusal(
 }
 
 /** Detail entries kept. Counting is unbounded; only the named examples are limited. */
-export const CLIP_REJECT_DETAIL_CAPACITY = 400;
+export const REJECTION_DETAIL_CAPACITY = 400;
 
 export function beatRejectKey(sceneIndex: number, beatIndex: number): string {
   return `s${sceneIndex}b${beatIndex}`;
 }
 
-export function createClipRejectAudit(capacity = CLIP_REJECT_DETAIL_CAPACITY): ClipRejectAudit {
+export function createRejectionRegistry(capacity = REJECTION_DETAIL_CAPACITY): RejectionRegistry {
   return {
     entries: [],
     capacity,
@@ -134,58 +143,74 @@ export function createClipRejectAudit(capacity = CLIP_REJECT_DETAIL_CAPACITY): C
     dropped: 0,
     perBeat: new Map(),
     repeats: new Map(),
-    refusedAssets: new Map(),
   };
 }
 
-export function recordClipReject(
-  audit: ClipRejectAudit,
+/**
+ * Which stage a reason code belongs to. The codes are the ones every decider has always used; the
+ * stage is read off them so a caller states WHY once and the registry files it in the right place.
+ */
+export function rejectionStageForReason(reason: string): RejectionStage {
+  if (/^(file_missing|not_a_valid_video|pipeline_fallback|mostly_black|below_size_floor|invalid_file|transform_failed)/.test(reason)) return "technical";
+  if (/^(already_used_in_render|duplicate_clip_once_per_video)/.test(reason)) return "dedup";
+  if (/^(still_photo_budget|scene_still_cap|category_at_limit)/.test(reason)) return "usage";
+  if (/^shortlist_full/.test(reason)) return "budget";
+  if (/^(baked_edit_text)/.test(reason)) return "on_screen_text";
+  if (/^(beat_image_gate|hard_mismatch)|refused on s\d+b\d+/.test(reason)) return "picture";
+  if (/^(UNDECLARED_ADOPT_ROUTE|FUNNEL_WITHOUT_EVIDENCE)/.test(reason)) return "push";
+  if (/^archive not ready/.test(reason)) return "archive";
+  if (/^(ai_generated|rejected_stock|person_topic_off_topic_visual|stock_without_person|blocked_category|documentary_beat_gate|entity_evidence|no_beat_match|not_script_anchored|person_not_named)/.test(reason)) return "metadata";
+  return "unknown";
+}
+
+/**
+ * Register one refusal — the only way a refusal is written.
+ *
+ * Counted per sentence with no cap (the placeholder decision and the funnel read the count); the
+ * named detail is bounded; and the refusal is filed ONCE on the asset's lineage, so callers never
+ * write the lineage themselves. A refusal with no sentence (`beatIndex` undefined) still reaches
+ * the lineage — it simply has no sentence to be counted under.
+ */
+export function registerRejection(
+  registry: RejectionRegistry,
   sceneIndex: number,
-  beatIndex: number,
+  beatIndex: number | undefined,
   clipPath: string,
   reason: string,
-  source?: string
+  source?: string,
+  detail: { stage?: RejectionStage; confidence?: number; contentKey?: string } = {}
 ): void {
-  audit.recorded++;
-  /**
-   * RONDE 86/87: the same refusal, attached to the ASSET that was refused.
-   *
-   * §E of the round: "Internet Archive rejected 184" is not an answer anybody can act on. A
-   * rejection recorded against the clip's own lineage carries its provider, its provider asset id
-   * and the gate that refused it, so the summary can say which provider fails on which gate and
-   * why. A clip the ledger does not know produces no event — there is nothing to attach it to,
-   * and attaching it to a guessed provider is what this round forbids. The per-beat and per-reason
-   * counters below are unaffected either way.
-   */
-  if (audit.lineage) {
-    audit.lineage.recordRejection(clipPath, reason);
-  }
+  registry.recorded++;
+  registry.lineage?.recordRejection(clipPath, reason, detail.contentKey);
+  if (beatIndex == null) return;
 
   // The count comes first and has no cap. Whatever happens to the detail below, the funnel
   // audit's per-beat number is complete.
   const key = beatRejectKey(sceneIndex, beatIndex);
-  let byReason = audit.perBeat.get(key);
+  let byReason = registry.perBeat.get(key);
   if (!byReason) {
     byReason = new Map();
-    audit.perBeat.set(key, byReason);
+    registry.perBeat.set(key, byReason);
   }
   byReason.set(reason, (byReason.get(reason) ?? 0) + 1);
 
-  if (audit.entries.length >= audit.capacity) {
-    audit.dropped++;
+  if (registry.entries.length >= registry.capacity) {
+    registry.dropped++;
     return;
   }
-  audit.entries.push({
+  registry.entries.push({
     sceneIndex,
     beatIndex,
     basename: path.basename(clipPath),
     reason,
     source,
+    stage: detail.stage ?? rejectionStageForReason(reason),
+    confidence: detail.confidence ?? 1,
+    at: Date.now(),
   });
 }
 
-/** Total rejections for one beat — from the tally, so never understated by the detail cap. */
-export function beatRejectCount(audit: ClipRejectAudit, sceneIndex: number, beatIndex: number): number {
+export function beatRejectCount(audit: RejectionRegistry, sceneIndex: number, beatIndex: number): number {
   const byReason = audit.perBeat.get(beatRejectKey(sceneIndex, beatIndex));
   if (!byReason) return 0;
   let total = 0;
@@ -195,7 +220,7 @@ export function beatRejectCount(audit: ClipRejectAudit, sceneIndex: number, beat
 
 /** Reasons for one beat, most frequent first — again from the tally, not the capped entries. */
 export function beatRejectReasons(
-  audit: ClipRejectAudit,
+  audit: RejectionRegistry,
   sceneIndex: number,
   beatIndex: number
 ): Array<[string, number]> {
@@ -205,7 +230,7 @@ export function beatRejectReasons(
 }
 
 /** Render-wide reason breakdown. Reads the tally, so it is complete even past the detail cap. */
-export function summarizeClipRejectAudit(audit: ClipRejectAudit | ClipRejectEntry[]): Record<string, number> {
+export function summarizeRejections(audit: RejectionRegistry | RejectionEntry[]): Record<string, number> {
   const counts: Record<string, number> = {};
   if (Array.isArray(audit)) {
     for (const e of audit) counts[e.reason] = (counts[e.reason] ?? 0) + 1;
@@ -221,7 +246,7 @@ export function summarizeClipRejectAudit(audit: ClipRejectAudit | ClipRejectEntr
  * One line saying how much of the detail survived. Printed once per render so a reader knows
  * whether the named examples below are the whole story or a sample of it.
  */
-export function formatClipRejectAuditCapacity(audit: ClipRejectAudit): string {
+export function formatRejectionCapacity(audit: RejectionRegistry): string {
   return (
     `auditEntriesRecorded=${audit.recorded} auditEntriesDropped=${audit.dropped} ` +
     `auditCapacity=${audit.capacity}`

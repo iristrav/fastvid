@@ -348,7 +348,7 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
      * CLIP verdict into a rejection. RONDE 58 measured why: on the same beat it scored a
      * white-lives-matter sticker 0.2226 and a signed photograph of Hitler 0.2116.
      */
-    expect(SRC.match(/recordClipReject\([^)]*"vision_gate"/g) ?? []).toHaveLength(0);
+    expect(SRC.match(/registerRejection\([^)]*"vision_gate"/g) ?? []).toHaveLength(0);
     for (const site of ["CLIP would have rejected", "CLIP ranks"]) {
       expect(SRC).toContain(site);
     }
@@ -376,10 +376,9 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
      */
     /** The scene pool and funnel routes left when the three candidate systems became one. */
     expect(SRC.split("judgeBeatClipRelevance(").length - 1).toBeGreaterThanOrEqual(3);
-    expect(
-      SRC.split("await checkBeatRelevance({").length - 1,
-      "a route reaches the gate without going through the recorder"
-    ).toBe(1);
+    /** ONE ROUTE: the recorder asks through the VisualJudge, which is the only caller of the ledger's look. */
+    expect(SRC, "a route reaches the gate without going through the recorder").not.toContain("checkBeatRelevance(");
+    expect(SRC.split("await judgePicture({").length - 1).toBe(1);
   });
 
   it("the text overlay carries the decision across the file it writes", () => {
@@ -458,21 +457,8 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
     expect(closures.length).toBeGreaterThanOrEqual(1);
     for (const c of closures) {
       const head = c.slice(0, 1200);
-      /**
-       * The demand argument is optional, so the call is matched up to the beat and then allowed to
-       * end or continue. Render 579 gave the coverage backfill a fifth argument — `"approval"`,
-       * because a backfill places a picture under a sentence nobody chose it for — and an anchor
-       * spelling out four arguments read that as the closure no longer consulting the gate at all.
-       */
-      const call = head.match(
-        /beatClipRefusedByRelevanceGate\(dedup, clipPath, scene\.index, beatIndex(, "(\w+)")?\)/
-      );
+      const call = head.match(/beatClipRefusedByRelevanceGate\(dedup, clipPath, scene\.index, beatIndex\)/);
       expect(call, "a pushSceneClip closure no longer asks the gate about its own beat").toBeTruthy();
-      /**
-       * And what it may ask for is bounded. Only the documented tightening is allowed through here;
-       * a future argument that loosened the gate would otherwise slip past this audit unnoticed.
-       */
-      if (call![2] !== undefined) expect(call![2]).toBe("approval");
     }
     // And it refuses only a refusal — an unjudged clip still passes, or the routes that build
     // their own files would empty every montage.
@@ -483,42 +469,20 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
      * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
      * is about that body, so it is read there. Nothing about what the gate decides changed.
      */
-    const idx = SRC.indexOf("async function relevanceGateRefusesClip(");
+    const idx = SRC.indexOf("export async function visualJudgeRefusesPush(");
     const body = SRC.slice(idx, SRC.indexOf("\n}", idx));
     /**
-     * The content key is now computed once and reused, because the refusal is also RECORDED and
-     * both the barrier and the ledger must be asked about the same asset. The property this pinned
-     * is unchanged — the barrier is consulted with the clip's own content key — so it is asserted
-     * on the value rather than on one spelling of the expression, and the reuse is asserted too:
-     * a second, separately-derived key here would let the gate refuse one asset while the ledger
-     * ended another.
+     * ONE ROUTE — the barrier is the VisualJudge's push verdict now. The property is unchanged: it
+     * is consulted with the clip's own, once-computed content key and about the beat the clip is
+     * being placed at, and a refusal leaves an ending on the ledger before the push returns.
      */
     expect(body).toContain("const contentKey = clipContentKey(clipPath);");
-    /**
-     * Read whitespace-insensitively, because the call now spans several lines: the barrier is
-     * asked about the BEAT as well, so one beat's `does_not_fit` no longer turns the clip away at
-     * a beat that approved it (see `composeBarrierAllows` and aVerdictBelongsToItsBeat).
-     *
-     * The property this pins is untouched and still the point — the barrier is consulted with the
-     * clip's own reused content key — and the beat argument is asserted beside it rather than the
-     * assertion being loosened to match the new spelling.
-     */
     const flat = body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ");
-    expect(flat).toContain("composeBarrierAllows( dedup.beatRelevance, clipPath, contentKey,");
-    expect(flat, "the barrier is asked about the beat this clip is being placed at").toContain(
-      "beatIndex != null ? { sceneIndex, beatIndex } : undefined"
-    );
-    expect(body).toContain("if (barrier.allow) return false;");
-    /**
-     * And a refusal leaves an ending on the ledger. Before this, both refusals in every
-     * `pushSceneClip` warned to the console and returned — so a clip turned away here never
-     * entered the scene's clip list, which is the only list `noteSceneClipsResourced` walks, and
-     * nothing downstream could ever explain it. That is the `reachedAssigned=true
-     * outcome=DROPPED_WITHOUT_EVENT` the render audit reports.
-     */
-    expect(body).toContain("recordRejection(clipPath, barrier.reason, contentKey)");
+    expect(flat).toContain("barrier: [dedup.beatRelevance, clipPath, contentKey, beatIndex != null ? { sceneIndex, beatIndex } : undefined]");
+    expect(body).toContain('if (verdict.decision === "ACCEPT") {');
+    expect(body).toContain("registerRejection(dedup.rejections, sceneIndex, beatIndex, clipPath, why, undefined, {");
     expect(
-      body.indexOf("recordRejection"),
+      body.indexOf("registerRejection"),
       "the gate returns its refusal before recording it"
     ).toBeLessThan(body.lastIndexOf("return true;"));
   });

@@ -160,8 +160,7 @@ const SEARCH_TEXT_MODULES = [
   "localClipVision.ts",
   "replacementCandidates.ts",
   "scriptWriter.ts",
-  "archiveUsageMemory.ts",
-  "candidateTopicalRelevance.ts",
+  "usageDiversity.ts",
 ];
 
 /** An ASCII-only letter class — the shape that cuts an accented word in half. */

@@ -29,12 +29,10 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import {
-  cinematicRenderPathEnabled,
-  formatProductionRoute,
-} from "./cinematicProduction";
+import { formatProductionRoute } from "./cinematicProduction";
 import { envFlagIsOn } from "./envFlag";
 import { ROUTE_FLAGS } from "./productionPreflight";
+import { cinematicRenderPathEnabled } from "./config";
 
 const SERVER = __dirname;
 const read = (f: string) => fs.readFileSync(path.join(SERVER, f), "utf8");

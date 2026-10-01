@@ -24,8 +24,8 @@
  * No provider is called from here, nothing is ranked, nothing is judged. This module counts.
  */
 
-import type { ClipRejectAudit } from "./clipRejectAudit";
-import { beatRejectCount, beatRejectReasons, formatClipRejectAuditCapacity } from "./clipRejectAudit";
+import type { RejectionRegistry } from "./rejectionRegistry";
+import { beatRejectCount, beatRejectReasons, formatRejectionCapacity } from "./rejectionRegistry";
 
 export type BeatFinalStatus =
   | "adopted"
@@ -552,7 +552,7 @@ export function summarizeBeatOutcomes(
 export function renderBeatFunnelReport(
   audit: BeatOutcomeAudit,
   plannedBeats: Array<{ sceneIndex: number; beatIndex: number }>,
-  rejects: ClipRejectAudit
+  rejects: RejectionRegistry
 ): string[] {
   const rows = finalizeBeatOutcomes(
     audit,
@@ -602,7 +602,7 @@ export function renderBeatFunnelReport(
   for (const { record } of rows) lines.push(formatBeatLedgerLine(record));
   // Whether the named examples elsewhere in the log are the whole story or a sample. The
   // per-beat counts above are never capped, so only the DETAIL can be short.
-  lines.push(`[VisualCoverageFinal] rejectAudit ${formatClipRejectAuditCapacity(rejects)}`);
+  lines.push(`[VisualCoverageFinal] rejectAudit ${formatRejectionCapacity(rejects)}`);
   return lines;
 }
 

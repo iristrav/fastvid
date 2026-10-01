@@ -3,7 +3,7 @@
  * Years appear bottom-left in a documentary date-card style.
  */
 import { burnedInTextAllowed } from "./onScreenTextPolicy";
-import { envFlagIsNotOff, envFlagIsOn } from "./envFlag";
+import { envFlagIsNotOff } from "./envFlag";
 import * as fs from "fs";
 import * as path from "path";
 import { sanitizeForDrawtext, isCaptionTextCorrupt } from "./ffmpegSanitize";
@@ -39,11 +39,6 @@ export type SceneLike = {
 };
 
 const YEAR_RE = /\b(?:1[0-9]{3}|20[0-9]{2})\b/g;
-
-/** Full-frame particle layer — off by default (can look like a dirty overlay). */
-export function cinematicParticlesEnabled(): boolean {
-  return envFlagIsOn("ENABLE_CINEMATIC_PARTICLES");
-}
 
 export function extractYearsFromText(text: string): string[] {
   const matches = text.match(YEAR_RE) ?? [];

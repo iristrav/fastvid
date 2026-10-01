@@ -10,7 +10,6 @@ import * as path from "path";
 import { ffmpegThreadFlag } from "./sourcingPolicy";
 import { ffmpegSemaphore } from "./_core/semaphore";
 
-import type { ArchiveSubjectContext } from "./archiveClipRelevance";
 import {
   ARCHIVE_MAX_UPLOAD_BYTES,
   ARCHIVE_MAX_VIDEO_DURATION_SEC,
@@ -1403,7 +1402,6 @@ async function extractAllClipsSinglePass(
 export const ARCHIVE_PIECE_MAX_SEC = 11;
 
 export type ArchiveSplitOptions = {
-  subjectContext?: ArchiveSubjectContext;
   /** VIDEO 619 — the longest piece to keep; defaults to ARCHIVE_PIECE_MAX_SEC. */
   maxPieceSec?: number;
   /**

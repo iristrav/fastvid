@@ -188,7 +188,7 @@ describe("no gate was weakened to make coverage look better", () => {
 
   /** The gate is still on by default, and the budget check still runs before any call. */
   it("the gate is still enabled by default and still checks its budget first", () => {
-    expect(GATE).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
     /**
      * RONDE 199b — the check is unchanged and now carries exactly one named exemption.
      *

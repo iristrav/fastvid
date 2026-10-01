@@ -1,13 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  directorSceneToIntent,
-  directorScenesForSceneVoice,
-  estimateDirectorSceneHoldSec,
-  parseVisualDirectorFromMetadata,
-  VISUAL_DIRECTOR_MAX_SEC,
-  VISUAL_DIRECTOR_MIN_SEC,
-  type VisualDirectorScene,
-} from "./visualDirector";
+import { directorSceneToIntent, VISUAL_DIRECTOR_MAX_SEC, VISUAL_DIRECTOR_MIN_SEC, type VisualDirectorScene } from "./visualDirector";
 import { directorSearchQueries, hasDirectorPlan } from "./scriptVisualKeywords";
 
 describe("visualDirector", () => {
@@ -43,46 +35,9 @@ describe("visualDirector", () => {
     expect(queries[0]).toMatch(/frustrated entrepreneur/);
   });
 
-  it("RONDE 91 §3 — a plan term its own sentence does not state is discarded", () => {
-    // The sample plan is English and its sentence is Dutch, so not one of "frustrated",
-    // "entrepreneur", "repetitive" or "computer" stands in the sentence the plan was written for.
-    //
-    // This is a real capability loss and it is deliberate: nothing in the pipeline can tell a
-    // TRANSLATION of a stated subject apart from an INVENTED one, and the round's rule is that an
-    // unprovable term does not reach a provider. It did not reach one before this change either —
-    // RONDE 90's gate refused it against the same Dutch beat — so what changed is that the
-    // pipeline no longer spends a round building queries it may not send, and the refusal is now
-    // logged as LLM_UNPROVEN_CONTENT instead of an anonymous UNVERIFIED_TERM.
+  it("a plan's own English terms prove its query, even against a Dutch sentence (1 Oct 2026)", () => {
     const intent = directorSceneToIntent(sampleScene);
     expect(hasDirectorPlan(intent)).toBe(true);
-    expect(directorSearchQueries(intent)).toEqual([]);
-  });
-
-  it("hold duration stays within 3-5 seconds", () => {
-    const hold = estimateDirectorSceneHoldSec(sampleScene.spoken_text, 20, 4);
-    expect(hold).toBeGreaterThanOrEqual(VISUAL_DIRECTOR_MIN_SEC);
-    expect(hold).toBeLessThanOrEqual(VISUAL_DIRECTOR_MAX_SEC);
-  });
-
-  it("matches director scenes to scene voice block", () => {
-    const sceneText =
-      "Steeds meer ondernemers verliezen tijd aan repetitieve taken. Klanten bestellen online.";
-    const other: VisualDirectorScene = {
-      ...sampleScene,
-      source_sentence_index: 1,
-      spoken_text: "Klanten bestellen online.",
-      visual_description: "Customer browsing products on a smartphone at home.",
-      search_query: "online shopping smartphone customer",
-    };
-    const matched = directorScenesForSceneVoice(sceneText, [sampleScene, other]);
-    expect(matched).toHaveLength(2);
-  });
-
-  it("parses director scenes from metadata", () => {
-    const parsed = parseVisualDirectorFromMetadata({
-      visualDirectorScenes: [sampleScene],
-    });
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0]?.camera_shot).toBe("medium shot");
+    expect(directorSearchQueries(intent).length).toBeGreaterThan(0);
   });
 });

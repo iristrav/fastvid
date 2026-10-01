@@ -22,7 +22,7 @@ import { AUTO_ARCHIVES, autoArchiveKind } from "./stockArchive";
 import { formatPreviewRefusal, verifyArchivePreview } from "./archivePreviewCheck";
 import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
-import { archiveClipTextVerdict } from "./archiveClipFilter";
+import { judgeOnScreenText } from "./visualJudge";
 import { cutLocalVideoIntoShots, productionLocalShotCutter, shotSourceUrl, type LocalShotCutter } from "./archiveShotPieces";
 import * as os from "os";
 import { isArticleScreenshotFile } from "./articleScreenshot";
@@ -435,19 +435,20 @@ async function ingestExternalClipToArchiveInner(
      * as having text (never offered as ordinary footage) instead of being refused for it.
      */
     const articleScreenshot = isArticleScreenshotFile(localPath);
-    const overlay: Awaited<ReturnType<typeof archiveClipTextVerdict>> = articleScreenshot
-      ? { verdict: "has_text", reason: "a screenshot of a news article" }
-      : /** VIDEO 621 — always looked at, never on the render's budget: see `archiveClipTextVerdict`. */
-        await archiveClipTextVerdict(localPath, metadata.mimeType, overlayKey);
+    /** VIDEO 621 — always looked at, never on the render's budget (memo key, no budget). */
+    const overlay = articleScreenshot
+      ? null
+      : await judgeOnScreenText({ path: localPath, mimeType: metadata.mimeType, memoKey: overlayKey });
+    const hasText = articleScreenshot || overlay?.decision === "REJECT";
     /**
      * VIDEO 619 — a video reaches this check one shot at a time (cut above), so a shot with text is
      * refused and the clean shots of the same download are kept.
      */
-    if (overlay.verdict === "has_text" && !articleScreenshot) {
+    if (overlay?.decision === "REJECT") {
       console.log(
         `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
       );
-      return refuse("BAKED_EDIT_TEXT", overlay.reason ?? "the on-screen-text check said has_text", {
+      return refuse("BAKED_EDIT_TEXT", overlay.reason, {
         mimeType: metadata.mimeType,
       });
     }
@@ -458,10 +459,10 @@ async function ingestExternalClipToArchiveInner(
      * vision path is slow, budgeted out or switched off, which is a far worse failure than the one
      * this guards against. What changes is what gets written down. See the row below.
      */
-    if (overlay.verdict === "not_asked") {
+    if (overlay && overlay.evaluated === false) {
       console.warn(
         `[Ingestion] "${metadata.title.slice(0, 60)}" admitted WITHOUT an on-screen-text verdict — ` +
-          `${overlay.reason ?? "no reason recorded"}; stored as unjudged so a later render asks`
+          `${overlay.notAskedReason}; stored as unjudged so a later render asks`
       );
     }
 
@@ -613,7 +614,7 @@ async function ingestExternalClipToArchiveInner(
        * question properly. That is the correct cost for a clip nobody has looked at, and it is paid
        * once rather than inherited forever.
        */
-      hasBakedEditText: overlay.verdict === "clean" ? 0 : overlay.verdict === "has_text" ? 1 : null,
+      hasBakedEditText: hasText ? 1 : overlay?.evaluated ? 0 : null,
       /** VIDEO 619 — a single shot, cut at the door: nothing left to cut, no cut inside it. */
       ...(metadata.alreadyOneShot ? { shotCutsSec: [], splitIntoShotsAt: new Date() } : {}),
       ...(metadata.storeSwitchedOff ? { isActive: 0 } : {}),

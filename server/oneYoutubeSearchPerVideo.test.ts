@@ -14,15 +14,7 @@ import {
   refuseQuery,
   type GateVerdict,
 } from "./youtubeVideoSearchPlanner";
-import {
-  buildVideoYoutubePool,
-  poolRowsForBeat,
-  search2Reasons,
-  youtubeVideoPoolEnabled,
-  type PoolDeps,
-  type SearchItem,
-  type Triage,
-} from "./youtubeVideoPool";
+import { buildVideoYoutubePool, poolRowsForBeat, search2Reasons, type PoolDeps, type SearchItem, type Triage } from "./youtubeVideoPool";
 
 /**
  * RONDE 658 — "1 search normaal. 2 searches maximaal. 3 searches nooit."
@@ -195,7 +187,6 @@ function deps(over: Partial<PoolDeps> & { usable?: (it: SearchItem) => number[] 
       return { footageType: serves.length ? "real_footage" : "talking_head", servesBeats: serves, depicts: "" };
     },
     archive: async () => [],
-    notFootage: () => null,
     log: silent,
     ...over,
   };
@@ -272,15 +263,12 @@ describe("one search fills the pool; a second only for a real gap; never a third
     const beat = tesla.sceneTexts[0]!.split(". ")[0]! + ".";
     /** Judged to serve this beat: kept whatever the name string says. */
     expect(poolRowsForBeat(pool, beat, [], "Hitler Took").length).toBe(50);
-    /** Not judged for this beat: not downloaded for it. */
-    const other = poolRowsForBeat(pool, "An unrelated sentence about nothing here.", [], "Hitler Took");
-    expect(other).toEqual([]);
     /**
-     * VIDEO 624 — first look, then download: a video the look did not judge to serve this sentence
-     * is not downloaded for it, even when its title carries the name.
+     * ONE ROUTE — not judged for this beat: still offered (the look ranks, the VisualJudge decides),
+     * and a name string in the title never moves a video ahead of the look's order.
      */
-    const withName = { ...pool, candidates: pool.candidates.map((c, i) => (i === 0 ? { ...c, title: "Hitler in Berlin", serves: [9] } : c)) };
-    expect(poolRowsForBeat(withName, "An unrelated sentence about nothing here.", [], "Hitler Took")).toEqual([]);
+    const other = poolRowsForBeat(pool, "An unrelated sentence about nothing here.", [], "Hitler Took");
+    expect(other.length).toBe(50);
   });
 
   it("a beat gets the videos judged to serve it first", async () => {
@@ -296,11 +284,6 @@ describe("the wiring: inside a render only the pool searches", () => {
   const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
   const PROD = fs.readFileSync(path.join(__dirname, "youtubeVideoPoolProduction.ts"), "utf8");
   const PREFETCH = fs.readFileSync(path.join(__dirname, "youtubePrefetch.ts"), "utf8");
-
-  it("is on unless the operator asks for the old per-beat searches", () => {
-    expect(youtubeVideoPoolEnabled({})).toBe(true);
-    expect(youtubeVideoPoolEnabled({ YOUTUBE_SEARCH_MODE: "per_beat" })).toBe(false);
-  });
 
   it("every other search inside a render is refused before it reaches Google", async () => {
     const { runWithActiveVideoId } = await import("./videoGenerationCancel");
@@ -339,10 +322,6 @@ describe("the wiring: inside a render only the pool searches", () => {
     expect(PROD).not.toContain("markYoutubeKeySpent");
     expect(PROD).toContain("if (resp.status === 429) pipeline.markYoutubeRateLimited();");
     expect(PROD).toContain('url.searchParams.set("maxResults", "50")');
-  });
-
-  it("no background search in this mode", () => {
-    expect(PREFETCH).toContain("takeDailySlot: () => !youtubeVideoPoolEnabled() && !pipeline.isYoutubeInCooldown() && takeDailyAltSlot()");
   });
 
   it("the budget and the record live in the database", () => {

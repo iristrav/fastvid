@@ -3,7 +3,14 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
-import { markCuratedAssetUsed } from "./curatedMediaSourcing";
+import { curatedClipPathAssetId } from "./curatedMediaSourcing";
+import { markAssetUsedInVideo } from "./visualDedupRegistry";
+/** ONE ROUTE: the curated half of the one dedup write (visualDedupRegistry.markAssetUsedInVideo). */
+const markCuratedAssetUsed = (clipPath: string, ids: Set<number>, urls: Set<string>, storageUrl?: string) =>
+  markAssetUsedInVideo(
+    { usedPaths: new Set(), usedContentKeys: new Set(), usedCuratedAssetIds: ids, usedCuratedStorageUrls: urls },
+    { archiveAssetId: curatedClipPathAssetId(clipPath), storageUrl }
+  );
 
 // RONDE 34 — the limitations the Ronde-32/33 audits left standing.
 //

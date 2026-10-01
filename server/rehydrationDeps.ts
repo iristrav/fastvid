@@ -226,7 +226,7 @@ async function providerResolver(identity: AssetSourceIdentity): Promise<Provider
  * why the import is inside the function — a build without it must fail closed, not throw at boot.
  */
 async function youtubeResolver(videoId: string, destPath: string): Promise<ProviderResolution | boolean> {
-  const { allowOperatorLicensedYoutube } = await import("./youtubeLicenseStatus");
+  const { allowOperatorLicensedYoutube } = await import("./config");
   if (!allowOperatorLicensedYoutube()) {
     return {
       ok: false,

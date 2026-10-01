@@ -2,8 +2,8 @@
  * Per-sentence visual planning for stock/archive footage.
  * Analyses full voice-over context (subject, action, editor intent) — not loose words.
  */
+import { AsyncLocalStorage } from "async_hooks";
 import { foldToSearchTokensText } from "./searchTextNormalize";
-import { invokeLLM } from "./_core/llm";
 import {
   extractFullNarrationText,
   parseMarkdownNarrationBlocks,
@@ -30,21 +30,7 @@ import {
   buildIntentFromVisualFallbackHint,
   matchVisualFallbackHint,
 } from "./visualFallbackHints";
-import {
-  directorSceneToIntent,
-  directorScenesForSceneVoice,
-  estimateDirectorSceneHoldSec,
-  generateVisualDirectorPlan,
-  hasDirectorPlan,
-  mergeDirectorScenesForPacing,
-  mergeVisualDirectorIntoMetadata,
-  parseVisualDirectorFromMetadata,
-  VISUAL_DIRECTOR_MAX_SEC,
-  VISUAL_DIRECTOR_MIN_SEC,
-  type VisualDirectorScene,
-  type DirectorVideoContext,
-} from "./visualDirector";
-import { maxDirectorBeatsForSceneDuration } from "./vidrushQuality";
+import { directorSceneToIntent, generateVisualDirectorPlan, hasDirectorPlan, mergeVisualDirectorIntoMetadata, type VisualDirectorScene, type DirectorVideoContext } from "./visualDirector";
 import {
   emptyQueryContext,
   formatSearchQueryAudit,
@@ -77,19 +63,6 @@ export type ScriptVisualIntentEntry = {
   priority_subject: string;
 };
 
-/** Timed segment for montage / editor preview (holdSec-based until TTS alignment). */
-export type VisualIntentSegment = {
-  start_time: number;
-  end_time: number;
-  voiceover: string;
-  visual_intent: string;
-  keywords: string[];
-  scene_type?: string;
-  priority_subject?: string;
-};
-
-const BATCH_SIZE = 35;
-
 const SCENE_TYPES = new Set([
   "office",
   "city",
@@ -112,46 +85,6 @@ const SCENE_TYPES = new Set([
 
 const ABSTRACT_KEYWORD_RE =
   /\b(success|growth|groei|strategy|strategie|company|bedrijf|business|person|persoon|people|concept|idea|innovation|future|impact|value|vision|mission|goal|doel|solution|opportunity|challenge|important|significant|powerful|amazing|incredible|remarkable)\b/i;
-
-const INTENT_JSON_SCHEMA = {
-  type: "json_schema" as const,
-  json_schema: {
-    name: "sentence_visual_intents",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: {
-        intents: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              index: { type: "integer" },
-              visual_intent: { type: "string" },
-              primary_keyword: { type: "string" },
-              secondary_keyword: { type: "string" },
-              fallback_keyword: { type: "string" },
-              scene_type: { type: "string" },
-              priority_subject: { type: "string" },
-            },
-            required: [
-              "index",
-              "visual_intent",
-              "primary_keyword",
-              "secondary_keyword",
-              "fallback_keyword",
-              "scene_type",
-              "priority_subject",
-            ],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ["intents"],
-      additionalProperties: false,
-    },
-  },
-} as const;
 
 /** Normalize sentence text for map lookup (case/whitespace insensitive). */
 export function normalizeSentenceKey(sentence: string): string {
@@ -450,31 +383,18 @@ export function hydrateBeatScriptVisuals<
 }
 
 /**
- * RONDE 91 (§3) — the visual-director plan may SELECT from its sentence. It may not add to it.
+ * The visual-director plan's queries are checked with the SAME validator the provider gate uses.
  *
- * A director plan is written by a language model. RONDE 90 already stopped its inventions at the
- * provider gate, which is where the invariant has to hold — but it stopped them silently and
- * only after the pipeline had spent a round building queries that could never be sent, and the
- * refusal read as a generic UNVERIFIED_TERM indistinguishable from a template appending "aerial".
- *
- * So the plan's output is now checked against the plan's own sentence, with the SAME validator
- * the gate uses — not a second copy of the rules, the same function. A term the sentence does not
- * state is dropped here and logged as LLM_UNPROVEN_CONTENT, naming who guessed.
- *
- * Two consequences worth stating plainly rather than discovering later:
- *
- *   · A model that TRANSLATES a subject ("ondernemers" -> "entrepreneur") is refused, because
- *     nothing here can tell a translation apart from an invention. That capability did not
- *     survive RONDE 90 either — the gate refuses the English term against a Dutch beat — so this
- *     does not remove it, it makes its absence visible and logged instead of silent.
- *   · A plan whose every term is unprovable returns nothing, and the beat falls through to the
- *     deterministic routes. "No reliable query" is a correct answer.
+ * Evidence is the sentence plus the plan entry for that sentence (its description and search
+ * query) — approved 1 Oct 2026: context the director resolved from the script may prove a term.
+ * What stays refused is a word that neither the sentence nor this sentence's plan states — a
+ * template appending "aerial", a title, a later model call. Those are logged as LLM_UNPROVEN_CONTENT.
  */
-function keepProvableDirectorQueries(queries: string[], sentence: string): string[] {
-  const evidence = (sentence ?? "").trim();
+function keepProvableDirectorQueries(queries: string[], intent: ScriptVisualIntentEntry): string[] {
+  const evidence = (intent.sentence ?? "").trim();
   // No sentence means nothing to check against, and "unchecked" is not "proven".
   if (!evidence) return [];
-  const ctx = emptyQueryContext(evidence);
+  const ctx = emptyQueryContext(evidence, "", planEvidenceText(intent));
   const kept: string[] = [];
   for (const query of queries) {
     const verdict = validateSearchQuery(query, ctx);
@@ -513,7 +433,7 @@ export function directorSearchQueries(intent: ScriptVisualIntentEntry): string[]
     if (compact && compact !== primary) out.push(compact);
   }
   const built = [...new Set(out.filter((q) => q.length >= 3))].slice(0, 4);
-  return keepProvableDirectorQueries(built, intent.sentence);
+  return keepProvableDirectorQueries(built, intent);
 }
 
 export function buildRelevanceKeywordsFromIntent(
@@ -573,24 +493,26 @@ function normalizeVisualIntentEntry(entry: ScriptVisualIntentEntry): ScriptVisua
   const secondary = sanitizeVisualKeyword(entry.secondary_keyword) || primary;
   const fallback =
     sanitizeVisualKeyword(entry.fallback_keyword) || sanitizeVisualKeyword(`${entry.scene_type} broll`) || primary;
+  /**
+   * The director's own fields are kept. They used to be dropped here, so even a stored plan
+   * reached the render as keywords only: no description, no shot, no search query.
+   */
+  const description = sanitizeVisualIntentText(entry.visual_description ?? "");
   return {
     sentence: entry.sentence,
     visual_intent:
       sanitizeVisualIntentText(entry.visual_intent) ||
       fallbackVisualIntent(entry.sentence).visual_intent,
+    ...(description ? { visual_description: description } : {}),
+    ...(entry.camera_shot?.trim() ? { camera_shot: entry.camera_shot.trim() } : {}),
+    ...(entry.emotion?.trim() ? { emotion: entry.emotion.trim() } : {}),
+    ...(entry.search_query?.trim() ? { search_query: entry.search_query.trim() } : {}),
     primary_keyword: primary,
     secondary_keyword: secondary,
     fallback_keyword: fallback,
     scene_type: sanitizeSceneType(entry.scene_type),
     priority_subject: sanitizePrioritySubject(entry.priority_subject),
   };
-}
-
-export function lookupSentenceKeyword(
-  sentence: string,
-  map: Map<string, string>
-): string | undefined {
-  return map.get(normalizeSentenceKey(sentence));
 }
 
 export function lookupSentenceIntent(
@@ -649,32 +571,6 @@ function pickDominantSentenceIntent(
   return best.intent;
 }
 
-function pickDominantSentenceKeyword(
-  sentences: string[],
-  map: Map<string, string>
-): string | undefined {
-  const candidates = sentences
-    .map((sentence) => ({
-      sentence,
-      keyword: lookupSentenceKeyword(sentence, map),
-    }))
-    .filter((row): row is { sentence: string; keyword: string } => Boolean(row.keyword));
-
-  if (candidates.length === 0) return undefined;
-  if (candidates.length === 1) return candidates[0].keyword;
-
-  let best = candidates[0];
-  let bestScore = scoreSentenceVisualDominance(best.sentence);
-  for (let i = 1; i < candidates.length; i++) {
-    const score = scoreSentenceVisualDominance(candidates[i].sentence);
-    if (score > bestScore) {
-      bestScore = score;
-      best = candidates[i];
-    }
-  }
-  return best.keyword;
-}
-
 function lookupPartialSentenceIntent(
   beatText: string,
   map: Map<string, ScriptVisualIntentEntry>
@@ -694,25 +590,6 @@ function lookupPartialSentenceIntent(
   return best?.intent;
 }
 
-function lookupPartialSentenceKeyword(
-  beatText: string,
-  map: Map<string, string>
-): string | undefined {
-  const beatKey = normalizeSentenceKey(beatText);
-  if (beatKey.length < 5) return undefined;
-
-  let best: { keyword: string; overlap: number } | undefined;
-  for (const [sentKey, keyword] of map) {
-    if (sentKey === beatKey) return keyword;
-    if (!sentKey.includes(beatKey) && !beatKey.includes(sentKey)) continue;
-    const overlap =
-      Math.min(sentKey.length, beatKey.length) / Math.max(sentKey.length, beatKey.length);
-    if (overlap < 0.45) continue;
-    if (!best || overlap > best.overlap) best = { keyword, overlap };
-  }
-  return best?.keyword;
-}
-
 /**
  * Resolve the best stored visual intent for a beat — exact match, merged beats (dominant
  * sentence), or partial match when a sentence was split for timing.
@@ -721,23 +598,28 @@ export function lookupBeatVisualIntent(
   beatText: string,
   map: Map<string, ScriptVisualIntentEntry>
 ): ScriptVisualIntentEntry | undefined {
+  return matchBeatVisualIntent(beatText, map)?.entry;
+}
+
+/** `found` — the beat is a planned sentence (or holds one); `partial` — it overlaps one. */
+function matchBeatVisualIntent(
+  beatText: string,
+  map: Map<string, ScriptVisualIntentEntry>
+): { entry: ScriptVisualIntentEntry; plan: "found" | "partial" } | undefined {
   if (map.size === 0) return undefined;
 
   const exact = lookupSentenceIntent(beatText, map);
-  if (exact) return exact;
+  if (exact) return { entry: exact, plan: "found" };
 
   const sentences = splitBeatSentences(beatText);
   if (sentences.length > 1) {
     const dominant = pickDominantSentenceIntent(sentences, map);
-    if (dominant) return dominant;
+    if (dominant) return { entry: dominant, plan: "found" };
   }
 
-  const partial = lookupPartialSentenceIntent(beatText, map);
-  if (partial) return partial;
-
-  for (const sentence of sentences) {
-    const fromPart = lookupPartialSentenceIntent(sentence, map);
-    if (fromPart) return fromPart;
+  for (const text of [beatText, ...sentences]) {
+    const partial = lookupPartialSentenceIntent(text, map);
+    if (partial) return { entry: partial, plan: "partial" };
   }
 
   return undefined;
@@ -749,6 +631,58 @@ function isWeakStoredIntent(intent: ScriptVisualIntentEntry): boolean {
 }
 
 /**
+ * STAP 1 — THE STORED VISUALDIRECTOR PLAN IS THE RENDER'S VISUAL INTENT.
+ *
+ * The plan is written to `videos.metadata.visualIntents` when the script is written and again when
+ * it is approved, and no render read it: every caller asked `resolveBeatVisualIntent(text)` with no
+ * map and got the word rules. The render now opens one scope with the stored plan, and every
+ * caller that passes no map of its own reads that plan.
+ */
+type RenderVisualPlan = { map: Map<string, ScriptVisualIntentEntry>; reported: Set<string> };
+const renderVisualPlanStorage = new AsyncLocalStorage<RenderVisualPlan>();
+
+export function withRenderVisualPlan<T>(metadata: unknown, fn: () => T): T {
+  const map = buildSentenceIntentMap(parseVisualIntentsFromMetadata(metadata));
+  console.log(
+    `[VisualIntentPlan] stored plan sentences=${map.size}` +
+      (map.size === 0 ? " VISUAL_INTENT_FALLBACK reason=no_plan_for_video" : "")
+  );
+  return renderVisualPlanStorage.run({ map, reported: new Set() }, fn);
+}
+
+/** The stored plan entry for this beat, when the render has one — never the word rules. */
+export function storedVisualIntentForBeat(beatText: string): ScriptVisualIntentEntry | undefined {
+  const scope = renderVisualPlanStorage.getStore();
+  const match = scope ? matchBeatVisualIntent(beatText, scope.map) : undefined;
+  if (!match) return undefined;
+  const normalized = normalizeVisualIntentEntry(match.entry);
+  return isWeakStoredIntent(normalized) ? undefined : normalized;
+}
+
+/** What a stored plan entry may prove in a query: the director's description and search query. */
+export function planEvidenceText(entry: ScriptVisualIntentEntry | undefined): string {
+  if (!entry) return "";
+  return [entry.visual_description, entry.search_query].filter(Boolean).join(" ").trim();
+}
+
+/** One line per text per render: whether the plan answered, and why the word rules did if not. */
+function reportPlanUse(
+  scope: RenderVisualPlan | undefined,
+  beatText: string,
+  plan: "found" | "partial" | "missing",
+  fallbackReason?: string
+): void {
+  const key = normalizeSentenceKey(beatText);
+  if (!scope || !key || scope.reported.has(key)) return;
+  scope.reported.add(key);
+  console.log(
+    `[VisualIntentPlan] plan=${plan}` +
+      (fallbackReason ? ` VISUAL_INTENT_FALLBACK reason=${fallbackReason}` : "") +
+      ` sentence="${beatText.replace(/\s+/g, " ").trim().slice(0, 90)}"`
+  );
+}
+
+/**
  * Always returns a usable visual intent — stored LLM plan, or rule-based fallback.
  * Upgrades weak stored intents (e.g. "documentary broll scene") with rule-based matches.
  */
@@ -756,18 +690,28 @@ export function resolveBeatVisualIntent(
   beatText: string,
   map?: Map<string, ScriptVisualIntentEntry>
 ): ScriptVisualIntentEntry {
+  const scope = map ? undefined : renderVisualPlanStorage.getStore();
+  const plan = map ?? scope?.map;
   const ruleBased = fallbackVisualIntent(beatText);
-  if (!map || map.size === 0) return ruleBased;
+  if (!plan || plan.size === 0) {
+    reportPlanUse(scope, beatText, "missing", "no_plan_for_video");
+    return ruleBased;
+  }
 
-  const fromMap = lookupBeatVisualIntent(beatText, map);
-  if (!fromMap) return ruleBased;
-  const normalized = normalizeVisualIntentEntry(fromMap);
+  const match = matchBeatVisualIntent(beatText, plan);
+  if (!match) {
+    reportPlanUse(scope, beatText, "missing", "sentence_not_in_plan");
+    return ruleBased;
+  }
+  const normalized = normalizeVisualIntentEntry(match.entry);
   if (isWeakStoredIntent(normalized) && !isWeakStoredIntent(ruleBased)) {
+    reportPlanUse(scope, beatText, match.plan, "weak_plan");
     return {
       ...ruleBased,
       visual_intent: normalized.visual_intent || ruleBased.visual_intent,
     };
   }
+  reportPlanUse(scope, beatText, match.plan);
   return normalized;
 }
 
@@ -777,56 +721,6 @@ export function resolveBeatVisualKeyword(
   intentMap?: Map<string, ScriptVisualIntentEntry>
 ): string {
   return resolveBeatVisualIntent(beatText, intentMap).primary_keyword;
-}
-
-/**
- * Resolve the best stored keyword for a beat — exact match, merged beats (dominant
- * sentence), or partial match when a sentence was split for timing.
- */
-export function lookupBeatVisualKeyword(
-  beatText: string,
-  map: Map<string, string>
-): string | undefined {
-  if (map.size === 0) return undefined;
-
-  const exact = lookupSentenceKeyword(beatText, map);
-  if (exact) return exact;
-
-  const sentences = splitBeatSentences(beatText);
-  if (sentences.length > 1) {
-    const dominant = pickDominantSentenceKeyword(sentences, map);
-    if (dominant) return dominant;
-  }
-
-  const partial = lookupPartialSentenceKeyword(beatText, map);
-  if (partial) return partial;
-
-  for (const sentence of sentences) {
-    const fromPart = lookupPartialSentenceKeyword(sentence, map);
-    if (fromPart) return fromPart;
-  }
-
-  return undefined;
-}
-
-export function parseVisualKeywordsFromMetadata(metadata: unknown): ScriptVisualKeywordEntry[] {
-  const intents = parseVisualIntentsFromMetadata(metadata);
-  if (intents.length > 0) return intents.map(intentToKeywordEntry);
-
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
-  const raw = (metadata as Record<string, unknown>).visualKeywords;
-  if (!Array.isArray(raw)) return [];
-
-  const out: ScriptVisualKeywordEntry[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const sentence = String((item as Record<string, unknown>).sentence ?? "").trim();
-    const keyword = String((item as Record<string, unknown>).keyword ?? "").trim();
-    if (sentence.length > 5 && keyword.length > 2) {
-      out.push({ sentence, keyword });
-    }
-  }
-  return out;
 }
 
 export function parseVisualIntentsFromMetadata(metadata: unknown): ScriptVisualIntentEntry[] {
@@ -882,192 +776,6 @@ export function mergeVisualIntentsIntoMetadata(
   );
   base.visualIntents = intents;
   return base;
-}
-
-/** Build timed segments from beats (holdSec estimates until TTS word alignment). */
-export function buildVisualIntentSegments(
-  beats: Array<{ text: string; holdSec: number; visualIntent?: ScriptVisualIntentEntry }>,
-  startSec = 0
-): VisualIntentSegment[] {
-  const segments: VisualIntentSegment[] = [];
-  let t = startSec;
-  for (const beat of beats) {
-    const intent = beat.visualIntent ?? fallbackVisualIntent(beat.text);
-    const end = t + beat.holdSec;
-    segments.push({
-      start_time: Math.round(t * 10) / 10,
-      end_time: Math.round(end * 10) / 10,
-      voiceover: beat.text,
-      visual_intent: intent.visual_intent,
-      keywords: intentSearchQueries(intent),
-      scene_type: intent.scene_type,
-      priority_subject: intent.priority_subject,
-    });
-    t = end;
-  }
-  return segments;
-}
-
-function buildIntentBatchPrompt(sentences: string[], offset: number): string {
-  const lines = sentences
-    .map((s, i) => `${offset + i}: ${s.replace(/\s+/g, " ").trim()}`)
-    .join("\n");
-
-  return `You are a professional documentary video editor planning B-roll for each voice-over sentence.
-
-For EVERY sentence, first understand:
-1. What is the main subject?
-2. What is the main action?
-3. Who or what is central?
-4. What footage would a human editor choose?
-5. What image best supports the message of this sentence?
-
-Do NOT copy random words from the narration into keywords. Translate meaning into what a camera would show.
-
-Return JSON with one intent per index:
-- visual_intent: short English description of the shot (concrete, filmable)
-- primary_keyword: 2–5 word English stock-footage search phrase
-- secondary_keyword: alternate search phrase (different angle, same meaning)
-- fallback_keyword: broader backup phrase if primary finds nothing
-- scene_type: one of office, city, nature, home, factory, street, transport, government, sports, technology, medical, education, historical, aerial, retail, restaurant, other
-- priority_subject: main visible subject in 1–2 English words
-
-Rules:
-- Keywords must always be English (script may be Dutch or other)
-- Never use vague words alone: success, growth, strategy, company, business, concept, innovation
-- Focus on visible people, objects, actions, locations
-- Pick the dominant visual idea when a sentence has multiple subjects
-
-Example:
-"Dutch: Veel ondernemers verspillen uren per week aan handmatig werk."
-→ visual_intent: "frustrated entrepreneur working late at laptop"
-→ primary_keyword: "frustrated entrepreneur laptop"
-→ secondary_keyword: "office worker overwhelmed"
-→ fallback_keyword: "busy business owner"
-→ scene_type: "office"
-→ priority_subject: "entrepreneur"
-
-Sentences:
-${lines}`;
-}
-
-async function generateIntentBatch(
-  sentences: string[],
-  offset: number
-): Promise<Map<number, ScriptVisualIntentEntry>> {
-  const result = new Map<number, ScriptVisualIntentEntry>();
-  if (sentences.length === 0) return result;
-
-  try {
-    const resp = await invokeLLM({
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an expert documentary editor planning stock footage. Return valid JSON only — full visual intent per sentence index.",
-        },
-        { role: "user", content: buildIntentBatchPrompt(sentences, offset) },
-      ],
-      preferProvider: "groq",
-      response_format: INTENT_JSON_SCHEMA,
-    });
-
-    const raw = resp?.choices?.[0]?.message?.content ?? "{}";
-    const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)) as {
-      intents?: Array<{
-        index?: number;
-        visual_intent?: string;
-        primary_keyword?: string;
-        secondary_keyword?: string;
-        fallback_keyword?: string;
-        scene_type?: string;
-        priority_subject?: string;
-      }>;
-    };
-
-    for (const row of parsed.intents ?? []) {
-      if (typeof row.index !== "number") continue;
-      const sentence = sentences[row.index - offset];
-      if (!sentence) continue;
-      const primary = sanitizeVisualKeyword(row.primary_keyword ?? "");
-      if (!primary) continue;
-      result.set(
-        row.index,
-        normalizeVisualIntentEntry({
-          sentence,
-          visual_intent: String(row.visual_intent ?? primary),
-          primary_keyword: primary,
-          secondary_keyword: String(row.secondary_keyword ?? primary),
-          fallback_keyword: String(row.fallback_keyword ?? primary),
-          scene_type: String(row.scene_type ?? "other"),
-          priority_subject: String(row.priority_subject ?? primary.split(/\s+/)[0] ?? "scene"),
-        })
-      );
-    }
-  } catch (err) {
-    console.warn("[ScriptKeywords] LLM intent batch failed:", err);
-  }
-
-  return result;
-}
-
-/** Generate full visual intent plan via Visual Director (runs before footage search). */
-export async function generateScriptVisualIntents(
-  script: string,
-  videoContext?: DirectorVideoContext
-): Promise<ScriptVisualIntentEntry[]> {
-  const directorScenes = await generateVisualDirectorPlan(script, videoContext);
-  return directorScenes.map(directorSceneToIntent);
-}
-
-export function buildSceneBeatsFromDirector(
-  sceneText: string,
-  duration: number,
-  directorScenes: VisualDirectorScene[],
-  videoTitle?: string
-): Array<{
-  text: string;
-  holdSec: number;
-  visualIntent: ScriptVisualIntentEntry;
-  searchQuery: string;
-}> {
-  const forSceneRaw = directorScenesForSceneVoice(sceneText, directorScenes);
-  if (forSceneRaw.length === 0) return [];
-
-  const maxBeats = maxDirectorBeatsForSceneDuration(duration, VISUAL_DIRECTOR_MIN_SEC);
-  const forScene = mergeDirectorScenesForPacing(forSceneRaw, maxBeats);
-
-  const beats = forScene.map((dirScene) => {
-    const intent = directorSceneToIntent(dirScene);
-    const holdSec = estimateDirectorSceneHoldSec(dirScene.spoken_text, duration, forScene.length);
-    return {
-      text: dirScene.spoken_text,
-      holdSec,
-      visualIntent: intent,
-      searchQuery: intent.search_query ?? intent.primary_keyword,
-    };
-  });
-
-  const totalHold = beats.reduce((s, b) => s + b.holdSec, 0);
-  if (totalHold > 0.5 && Math.abs(totalHold - duration) > 0.2) {
-    const scale = duration / totalHold;
-    for (const beat of beats) {
-      beat.holdSec = Math.max(
-        VISUAL_DIRECTOR_MIN_SEC,
-        Math.min(VISUAL_DIRECTOR_MAX_SEC, beat.holdSec * scale)
-      );
-    }
-  }
-
-  return beats;
-}
-
-/** Generate one English visual keyword per narration sentence (legacy compat). */
-export async function generateScriptVisualKeywords(
-  script: string
-): Promise<ScriptVisualKeywordEntry[]> {
-  const intents = await generateScriptVisualIntents(script);
-  return intents.map(intentToKeywordEntry);
 }
 
 /** Generate visual intents and merge into video metadata (script text unchanged). */

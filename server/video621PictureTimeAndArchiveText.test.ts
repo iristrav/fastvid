@@ -79,9 +79,10 @@ describe("Video 621 — the archive's text check is never skipped for a render's
   });
 
   it("ingestion and the shot sweep use the archive's own check", () => {
-    expect(read("server/archiveIngestion.ts")).toContain("await archiveClipTextVerdict(localPath, metadata.mimeType, overlayKey)");
-    expect(read("server/archiveIngestion.ts")).not.toContain("cachedClipBakedEditTextVerdict(");
-    expect(read("server/archiveShotPieces.ts")).toContain("filter.archiveClipTextVerdict(piecePath");
+    /** A memo key and no budget: the VisualJudge's archive door, never on a render's budget. */
+    expect(read("server/archiveIngestion.ts")).toContain("await judgeOnScreenText({ path: localPath, mimeType: metadata.mimeType, memoKey: overlayKey })");
+    expect(read("server/archiveIngestion.ts")).not.toContain("budget:");
+    expect(read("server/archiveShotPieces.ts")).toContain('judgeOnScreenText({ path: piecePath, mimeType: "video/mp4", memoKey: key })');
   });
 });
 

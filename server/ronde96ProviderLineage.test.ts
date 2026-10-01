@@ -25,7 +25,6 @@ const LEDGER_SRC = fs.readFileSync(path.join(__dirname, "visualSourceLineage.ts"
 /** The fetchers this round is about, and the id each one keeps (Openverse was removed in VIDEO 619). */
 const NEW_PROVIDERS = [
   { fn: "fetchPexelsClips", provider: "pexels", idExpr: "String(video.id)" },
-  { fn: "fetchUnsplashImages", provider: "unsplash", idExpr: "images[i].id?.trim() || urlKey" },
   { fn: "fetchSerpAPIImages", provider: "serpapi", idExpr: "urlKey" },
 ] as const;
 
@@ -47,7 +46,7 @@ const ALL_DOWNLOADING_FETCHERS = [
   "fetchWikimediaVideos", "fetchYouTubeCCClips", "fetchInternetArchiveClips",
   // VIDEO 619 removed Europeana, NARA, NASA, GDELT, SepiaSearch, Vimeo, media.ccc, Flickr,
   // Openverse and the web-wide route: none of them delivered a clip to any film in renders 597–619.
-  "fetchPexelsClips", "fetchUnsplashImages", "fetchSerpAPIImages",
+  "fetchPexelsClips", "fetchSerpAPIImages",
   "downloadAndTrimPoolCandidate",
   // RONDE 96's own re-scan found four more the brief had not listed: Pixabay (which §8 does name),
   // Wikimedia IMAGES — a sibling of fetchWikimediaVideos that never opened a record — and the

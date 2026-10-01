@@ -43,12 +43,6 @@ import {
   youtubeBeatBudgetMs,
   youtubeFirstEnabled,
 } from "./sourcingPolicy";
-import {
-  buildDownloadShortlist,
-  hoistBudgetSensitiveDownload,
-  type FunnelCandidate,
-  type FunnelCandidateSource,
-} from "./retrievalFunnel";
 
 const pipeline = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -136,14 +130,6 @@ describe("YouTube is the first source the cascade asks", () => {
     expect(slice(), "and the slice itself answers null rather than throwing").toContain("return null;");
   });
 
-  /** `youtubeOnly` asks YouTube and then Pexels, skipping the archive — a turn before the cascade
-   * would be a turn before itself. It is the one mode this still stands down for. */
-  it("does not double up with youtube-only mode", () => {
-    // Inverted as an early return, so the mode that skips the archive reads as a stand-down.
-    expect(guard()).toMatch(/\|\|\s*youtubeOnlySourcingEnabled\(\)/);
-    expect(guard()).toContain("return null;");
-  });
-
   /**
    * RONDE 233 — THE TURN THAT WAS CONFIGURED, DOCUMENTED, TESTED, AND UNREACHABLE.
    *
@@ -185,50 +171,10 @@ describe("YouTube is the first source the cascade asks", () => {
    */
   it("a render can prove the turn was taken", () => {
     const src = pipeline();
-    expect(src, "the success says so").toContain("YouTube answered first");
+    expect(src, "the offer says so").toContain("YouTube offered ");
     expect(src, "and so does the spent slice").toContain("YouTube-first slice spent");
   });
 });
-
-/* ═══════════════════ the route the render actually takes ═══════════════════ */
-
-/**
- * THE CASCADE WAS NOT THE ROUTE.
- *
- * The block above orders `fetchBeatArchivalThenPexels`, and the production render never entered
- * it. Tracing the refusal backwards settles it: the `0s left in the scene budget` line lives in
- * `downloadYouTubeCCClip`, whose non-rehydration caller is `downloadAndTrimPoolCandidate`, called
- * by `downloadFunnelCandidate` — the RETRIEVAL FUNNEL, in `fetchSceneVisualsInner`. Every clip in
- * that render is named `scene_N_bM_curated_a<id>.mp4`, which only `prepareCuratedArchiveClip`
- * produces, and the strings `no archive/wiki match` and `external cascade` appear zero times in
- * five thousand lines of log.
- *
- * `fetchBeatArchivalThenPexels` has two call sites. The funnel branch is the one that runs. This
- * is the recurring seam in this codebase — a rule several routes must remember, remembered by one —
- * and it is why these tests pin the funnel route by name and not only the cascade.
- */
-const candidate = (
-  id: string,
-  source: FunnelCandidateSource,
-  rankingScore: number
-): FunnelCandidate => ({
-  id,
-  source,
-  title: `${source} ${id}`,
-  thumbnailUrl: null,
-  mediaType: "video",
-  embeddingSimilarity: null,
-  archiveKeywordScore: null,
-  clipSimilarity: null,
-  rankingScore,
-  // Anything that is not the operator's own archive carries a poolCandidate; only its presence
-  // matters here, and the subject screen reads these fields.
-  ...(source === "archive"
-    ? {}
-    : { poolCandidate: { id, source, assetId: id, title: `${source} ${id}` } as never }),
-});
-
-
 
 /* ═══════════════════════ the bound ═══════════════════════ */
 
@@ -261,8 +207,8 @@ describe("the YouTube-first attempt cannot eat the scene", () => {
      * still the one that mode's switch restores.
      */
     vi.stubEnv("SOURCING_YOUTUBE_FIRST", "false");
-    const base = youtubeBeatBudgetMs("8-10", 0);
-    const generous = youtubeBeatBudgetMs("8-10", SOURCING_RESERVE_MS + 60 * 60_000);
+    const base = youtubeBeatBudgetMs(0);
+    const generous = youtubeBeatBudgetMs(SOURCING_RESERVE_MS + 60 * 60_000);
     expect(generous).toBeGreaterThan(base);
     expect(generous).toBeLessThanOrEqual(base * 2);
   });
@@ -270,11 +216,11 @@ describe("the YouTube-first attempt cannot eat the scene", () => {
   /** An override is an instruction — but never below the download guard's minimum. */
   it("an override is honoured within a sane range", () => {
     vi.stubEnv("YOUTUBE_BEAT_BUDGET_MS", "45000");
-    expect(youtubeBeatBudgetMs("8-10")).toBe(45_000);
+    expect(youtubeBeatBudgetMs()).toBe(45_000);
     vi.stubEnv("YOUTUBE_BEAT_BUDGET_MS", "3000");
-    expect(youtubeBeatBudgetMs("8-10")).toBeGreaterThan(12_000);
+    expect(youtubeBeatBudgetMs()).toBeGreaterThan(12_000);
     vi.stubEnv("YOUTUBE_BEAT_BUDGET_MS", "999999");
-    expect(youtubeBeatBudgetMs("8-10")).toBeLessThanOrEqual(120_000);
+    expect(youtubeBeatBudgetMs()).toBeLessThanOrEqual(120_000);
   });
 
   /**
@@ -286,6 +232,6 @@ describe("the YouTube-first attempt cannot eat the scene", () => {
     /** RONDE 648 — the pool route's rule, as above; YouTube-first mode is the operator's order. */
     vi.stubEnv("SOURCING_YOUTUBE_FIRST", "false");
     const { archiveBeatBudgetMs } = await import("./sourcingPolicy");
-    expect(youtubeBeatBudgetMs("8-10", 0)).toBeLessThan(archiveBeatBudgetMs("8-10", 0) * 3);
+    expect(youtubeBeatBudgetMs(0)).toBeLessThan(archiveBeatBudgetMs(0) * 3);
   });
 });

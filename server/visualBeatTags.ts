@@ -355,7 +355,7 @@ const CLIP_TITLE_DOMAIN_RULES: ClipTitleDomainRule[] = [
  * (named figure, named atrocity, graphic content) that is NOT referenced
  * in the current beat text — making the clip irrelevant for this beat.
  *
- * Used as a hard block in assetPassesBeatMinimum() and a heavy penalty in
+ * Used as a hard block in the VisualJudge archive rule (`judgeArchiveAsset`) and a heavy penalty in
  * scoreCuratedAsset() to prevent e.g. "Hitler youth rally" appearing in
  * an Amsterdam post-war reconstruction beat.
  */

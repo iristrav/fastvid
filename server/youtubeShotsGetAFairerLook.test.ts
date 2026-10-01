@@ -20,7 +20,8 @@ import {
   createBeatRelevanceLedger,
   type BeatRelevanceEntry,
 } from "./beatVisualRelevance";
-import { askForFootage, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
+import { askForFootage } from "./youtubeNonFootage";
+import { youtubeTitleIsNotFootage } from "./visualJudge";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -52,7 +53,7 @@ describe("A — the judge may show the world an unfilmable line is about", () =>
     const REL = readFileSync(join(__dirname, "beatVisualRelevance.ts"), "utf8");
     const body = REL.slice(REL.indexOf("export function beatIdentityKey("));
     expect(body.slice(0, body.indexOf("\n}\n"))).toContain("parts.push(BEAT_JUDGE_RULES);");
-    expect(BEAT_JUDGE_RULES).toMatch(/^r649/);
+    expect(BEAT_JUDGE_RULES).toMatch(/^r650/);
     // Still one key per narration, and still empty when there is no narration to judge against.
     const ctx = { sceneIndex: 0, beatIndex: 0, beatText: "A line.", sceneText: "A scene.", videoTitle: "T" };
     expect(beatIdentityKey(ctx)).toBe(beatIdentityKey({ ...ctx, sceneIndex: 4 }));
@@ -91,12 +92,10 @@ describe("B — what render 606 downloaded, refused before a byte moves", () => 
     expect(askForFootage("  ")).toBe("");
   });
 
-  it("the filter sits in the one search every YouTube route uses, render and background alike", () => {
+  it("the filter sits in the one search every YouTube route uses", () => {
     const fn = PIPE.slice(PIPE.indexOf("export async function searchYoutubeVideoCandidates("));
     const body = fn.slice(0, fn.indexOf("\n}\n"));
-    expect(body).toContain("const genre = youtubeTitleIsNotFootage(item.snippet?.title);");
-    const PREFETCH = readFileSync(join(__dirname, "youtubePrefetch.ts"), "utf8");
-    expect(PREFETCH).toContain("pipeline.searchYoutubeVideoCandidates(");
+    expect(body).toContain("const byTitle = judgeFootageTitle(item.snippet?.title);");
   });
 
   it("every beat query asks for footage", () => {

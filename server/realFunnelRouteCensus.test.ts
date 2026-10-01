@@ -82,7 +82,7 @@ describe("no REAL_FUNNEL adoption may be anonymous", () => {
       .sort();
     /** The other six intents were on the deleted curated-only, rescue, stock-ladder and recovery routes. */
     /** `research_refetch` was the funnel's mismatch research, which left with the funnel. */
-    expect(realFunnel).toEqual(["beat_fetch", "script_image"]);
+    expect(realFunnel).toEqual(["beat_fetch"]);
   });
 
   /**

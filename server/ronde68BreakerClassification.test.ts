@@ -158,14 +158,6 @@ describe("RONDE 68 TEST 3 — one provider's cancellation cannot trip another's 
 });
 
 describe("RONDE 68 TEST 4/5 — the archival sources get their turn", () => {
-  it("the existing source order is left as designed, not rewritten", () => {
-    const src = SRC();
-    // resolveBeatClipFast states its intent in its own docstring. RONDE 68 does not overrule it:
-    // the brief is to stop YouTube CONSUMING the budget, not to reorder the cascade.
-    expect(src).toContain("/** Quick script-ordered rescue: YouTube CC first, then capped Pexels. */");
-    expect(src).toContain("if (realFootageFirstEnabled() && !youtubeOnlySourcingEnabled()) {");
-  });
-
   it("YouTube cannot spend the whole render's fetch budget on downloads", () => {
     const src = SRC();
     /**
@@ -181,7 +173,6 @@ describe("RONDE 68 TEST 4/5 — the archival sources get their turn", () => {
     );
     expect([...src.matchAll(/downloadsSoFar\(\) >= maxDownloadAttempts/g)]).toHaveLength(3);
   });
-
 
   it("a cancelled archival search no longer removes the source for three minutes", () => {
     // The full chain from render 533, now broken at its first link.

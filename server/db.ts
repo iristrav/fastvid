@@ -12,8 +12,8 @@ import {
   readQueueConfig,
 } from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
-import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
-import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
+import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
+import { maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineComposeGraceMs } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser, renderJobs, renderLocks, youtubeVideoSearches, type RenderJob } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -1132,7 +1132,7 @@ export async function expireStuckVideos(maxAgeMinutes = 95) {
     if (!v.generationStartedAt) continue;
     const startedAt = new Date(v.generationStartedAt).getTime();
     const perVideoMaxMs =
-      (maxPipelineWallClockHardMin(v.videoLength) * 60_000 + pipelineComposeGraceMs(v.videoLength)) * 1.5;
+      (maxPipelineWallClockHardMin(v.videoLength) * 60_000 + pipelineComposeGraceMs()) * 1.5;
     const effectiveMaxMs = Math.max(perVideoMaxMs, maxAgeMinutes * 60_000);
     if (Date.now() - startedAt < effectiveMaxMs) continue;
     // F3-47: age past effectiveMaxMs alone used to fail the video here even if it was still
@@ -1164,7 +1164,6 @@ export async function getAllVideos(limit = 100, offset = 0) {
   if (!db) return [];
   return db.select().from(videos).orderBy(desc(videos.createdAt)).limit(limit).offset(offset);
 }
-
 
 export async function searchVideos(opts: {
   query?: string;
@@ -1422,14 +1421,6 @@ export interface EditorScene {
  * Bumped only when a reader would need to behave differently — not on every field added.
  */
 export const MANIFEST_SCHEMA_VERSION = 2;
-
-export async function updateVideoScenes(id: number, scenes: EditorScene[]) {
-  const db = await getDb();
-  if (!db) return;
-  await db.execute(
-    sql`UPDATE videos SET videoScenes = ${JSON.stringify(scenes)} WHERE id = ${id}`
-  );
-}
 
 export async function updateEditedVideoUrl(id: number, editedVideoUrl: string) {
   const db = await getDb();
@@ -1755,15 +1746,7 @@ export async function updateVideoEditorSettings(
 
 // ─── Media Archives ───────────────────────────────────────────────────────────
 
-import {
-  InsertMediaArchive,
-  InsertMediaArchiveAsset,
-  MediaArchiveAsset,
-  mediaArchiveAssets,
-  visualSearchMemory,
-  mediaArchives,
-  backfillCursors,
-} from "../drizzle/schema";
+import { InsertMediaArchive, InsertMediaArchiveAsset, MediaArchiveAsset, mediaArchiveAssets, visualSearchMemory, mediaArchives } from "../drizzle/schema";
 
 export function normalizeMediaTags(tags: string[]): string[] {
   return Array.from(
@@ -2324,193 +2307,7 @@ export async function deleteMediaArchiveAsset(id: number) {
 
 // ─── Visual Matching Engine V2: VideoContext + VisualIntent caches ────────────
 
-import {
-  InsertVisualContextCacheRow,
-  InsertVisualIntentCacheRow,
-  visualContextCache,
-  visualIntentCache,
-  InsertVisualQueryExpansionCacheRow,
-  visualQueryExpansionCache,
-  InsertEmbeddingCacheRow,
-  InsertMediaArchiveAssetEmbeddingRow,
-  embeddingCache,
-  mediaArchiveAssetEmbeddings,
-} from "../drizzle/schema";
-
-export async function getVisualContextCacheByTopicHash(topicHash: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db
-    .select()
-    .from(visualContextCache)
-    .where(eq(visualContextCache.topicHash, topicHash))
-    .limit(1);
-  return result.length > 0 ? result[0] : undefined;
-}
-
-export async function createVisualContextCache(data: InsertVisualContextCacheRow) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.insert(visualContextCache).values(data);
-  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
-}
-
-export async function getVisualIntentCacheByIntentHash(intentHash: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db
-    .select()
-    .from(visualIntentCache)
-    .where(eq(visualIntentCache.intentHash, intentHash))
-    .limit(1);
-  return result.length > 0 ? result[0] : undefined;
-}
-
-export async function createVisualIntentCache(data: InsertVisualIntentCacheRow) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.insert(visualIntentCache).values(data);
-  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
-}
-
-export async function getVisualQueryExpansionCacheByIntentHash(intentHash: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db
-    .select()
-    .from(visualQueryExpansionCache)
-    .where(eq(visualQueryExpansionCache.intentHash, intentHash))
-    .limit(1);
-  return result.length > 0 ? result[0] : undefined;
-}
-
-export async function createVisualQueryExpansionCache(data: InsertVisualQueryExpansionCacheRow) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.insert(visualQueryExpansionCache).values(data);
-  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
-}
-
-// ─── Visual Matching Engine V2: Embedding cache + own-archive asset embeddings (stage 3) ──
-
-export async function getEmbeddingCache(subjectId: string, model: string, embeddingVersion: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db
-    .select()
-    .from(embeddingCache)
-    .where(
-      and(
-        eq(embeddingCache.subjectId, subjectId),
-        eq(embeddingCache.model, model),
-        eq(embeddingCache.embeddingVersion, embeddingVersion)
-      )
-    )
-    .limit(1);
-  return result.length > 0 ? result[0] : undefined;
-}
-
-export async function createEmbeddingCache(data: InsertEmbeddingCacheRow) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.insert(embeddingCache).values(data);
-  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
-}
-
-/** Asset IDs that already have a current embedding (matching provider/model/version) —
- *  used by the incremental backfill to skip assets that don't need re-embedding. */
-export async function listMediaArchiveAssetIdsWithEmbedding(
-  provider: string,
-  model: string,
-  embeddingVersion: string
-): Promise<Set<number>> {
-  const db = await getDb();
-  if (!db) return new Set();
-  const rows = await db
-    .select({ assetId: mediaArchiveAssetEmbeddings.assetId })
-    .from(mediaArchiveAssetEmbeddings)
-    .where(
-      and(
-        eq(mediaArchiveAssetEmbeddings.provider, provider),
-        eq(mediaArchiveAssetEmbeddings.model, model),
-        eq(mediaArchiveAssetEmbeddings.embeddingVersion, embeddingVersion)
-      )
-    );
-  return new Set(rows.map((r) => r.assetId));
-}
-
-export async function getMediaArchiveAssetEmbedding(assetId: number, model: string, embeddingVersion: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db
-    .select()
-    .from(mediaArchiveAssetEmbeddings)
-    .where(
-      and(
-        eq(mediaArchiveAssetEmbeddings.assetId, assetId),
-        eq(mediaArchiveAssetEmbeddings.model, model),
-        eq(mediaArchiveAssetEmbeddings.embeddingVersion, embeddingVersion)
-      )
-    )
-    .limit(1);
-  return result.length > 0 ? result[0] : undefined;
-}
-
-export async function createMediaArchiveAssetEmbedding(data: InsertMediaArchiveAssetEmbeddingRow) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.insert(mediaArchiveAssetEmbeddings).values(data);
-  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
-}
-
-// ─── Visual Matching Engine V2 — resumable backfill cursor ────────────────────
-
-/** Reads the persisted lastProcessedId for one (jobName, provider, model, embeddingVersion)
- *  combination, so a crashed backfill can resume mid-scan instead of starting at id 0 and
- *  rescanning every page. Returns 0 (start from the beginning) when no cursor exists yet,
- *  or when DATABASE_URL is unset — same "degrade to no-op" pattern as the rest of V2. */
-export async function getBackfillCursor(jobName: string, provider: string, model: string, embeddingVersion: string): Promise<number> {
-  const db = await getDb();
-  if (!db) return 0;
-  const rows = await db
-    .select()
-    .from(backfillCursors)
-    .where(
-      and(
-        eq(backfillCursors.jobName, jobName),
-        eq(backfillCursors.provider, provider),
-        eq(backfillCursors.model, model),
-        eq(backfillCursors.embeddingVersion, embeddingVersion)
-      )
-    )
-    .limit(1);
-  return rows[0]?.lastProcessedId ?? 0;
-}
-
-/** Upserts the cursor after each processed page. Plain insert-then-update via the unique
- *  (jobName, provider, model, embeddingVersion) key — no native upsert needed since this is
- *  called at low frequency (once per backfill page, not per asset). */
-export async function setBackfillCursor(jobName: string, provider: string, model: string, embeddingVersion: string, lastProcessedId: number): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  const existing = await db
-    .select({ id: backfillCursors.id })
-    .from(backfillCursors)
-    .where(
-      and(
-        eq(backfillCursors.jobName, jobName),
-        eq(backfillCursors.provider, provider),
-        eq(backfillCursors.model, model),
-        eq(backfillCursors.embeddingVersion, embeddingVersion)
-      )
-    )
-    .limit(1);
-  if (existing[0]) {
-    await db.update(backfillCursors).set({ lastProcessedId }).where(eq(backfillCursors.id, existing[0].id));
-  } else {
-    await db.insert(backfillCursors).values({ jobName, provider, model, embeddingVersion, lastProcessedId });
-  }
-}
+import { mediaArchiveAssetEmbeddings } from "../drizzle/schema";
 
 export async function deleteMediaArchiveAssets(ids: number[]) {
   const db = await getDb();
@@ -2604,6 +2401,7 @@ export function filterMediaArchiveAssets<
 
 // ─── Discount Codes (RONDE 147) ───────────────────────────────────────────────
 import { discountCodes, type InsertDiscountCode } from "../drizzle/schema";
+import { pipelineWallClockLimitEnabled } from "./config";
 
 /**
  * The mirror of Stripe's promotion codes — see drizzle/schema.ts for why a mirror exists at all.

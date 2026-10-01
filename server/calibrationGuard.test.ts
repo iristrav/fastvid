@@ -259,7 +259,6 @@ describe("RONDE 43 — host comparison uses a real parser", () => {
 
 describe("RONDE 43 — placement and blast radius", () => {
   const WORKER = readFileSync(path.join(__dirname, "worker.ts"), "utf8");
-  const FUNNEL = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
 
   it("the guard runs before runMigrations — and before the first database write", () => {
     const guardIdx = WORKER.indexOf("applyCalibrationGuard();");
@@ -280,7 +279,6 @@ describe("RONDE 43 — placement and blast radius", () => {
     expect(block).toContain("process.exit(1)");
     expect(block).not.toContain("console.warn");
   });
-
 
   it("the guard module itself touches nothing but env", () => {
     const GUARD = readFileSync(path.join(__dirname, "calibrationGuard.ts"), "utf8");

@@ -153,7 +153,7 @@ describe("the message matches the gate it is standing in for", () => {
      * Pinned against the export gate's own wording.
      */
     const msg = formatVisionJudgeUnreachable({ reachable: false, reason: "gemini 403" });
-    const REPORT = readFileSync(join(__dirname, "videoQualityReport.ts"), "utf8");
+    const REPORT = readFileSync(join(__dirname, "deliveryGate.ts"), "utf8");
     expect(msg).toContain("Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied)");
     expect(REPORT).toContain("Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied)");
     expect(msg).toContain("only if you accept unjudged footage");
