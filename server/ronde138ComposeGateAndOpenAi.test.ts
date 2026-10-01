@@ -97,28 +97,15 @@ describe("RONDE 138 §A1 — an abandoned scope no longer rejects a measured cli
 
 /* ═══════════════════════ B — the OpenAI image provider ═══════════════════════ */
 
-describe("RONDE 138 §B — OpenAI joins the cheap image tier", () => {
-  it("it is OFF unless explicitly switched on", () => {
+describe("RONDE 138 §B — the OpenAI image provider", () => {
+  it("is gone, with its switch: no generated image can reach a film", () => {
     /**
-     * This spends money per beat on an account configured for text. Defaulting it on would bill an
-     * operator for a decision they never made.
+     * Code audit P13: ENABLE_OPENAI_IMAGE_FALLBACK only fed a readiness line; no route generated an
+     * image. The flag, its readiness helper and the health field were removed together.
      */
     const src = readCode("server/videoPipeline.ts");
-    const fn = src.slice(
-      src.indexOf("export function openAiImageFallbackEnabled("),
-      src.indexOf("export async function generateOpenAiImageClip(")
-    );
-    expect(fn).toContain('process.env.ENABLE_OPENAI_IMAGE_FALLBACK !== "true"');
-    expect(fn).toContain("openAiKeyFromEnv()");
-  });
-
-  it("the readiness line counts it, so 'AI fallback: on' stays truthful", () => {
-    // RONDE 137 made that line honest; it would be false again if a working provider were invisible.
-    const src = readCode("server/videoPipeline.ts");
-    const fn = src.slice(
-      src.indexOf("function cheapAiImageProvidersReady("),
-      src.indexOf("function premiumAiVideoFallbackEnabled(")
-    );
-    expect(fn).toContain("openAiImageFallbackEnabled()");
+    expect(src).not.toContain("ENABLE_OPENAI_IMAGE_FALLBACK");
+    expect(src).not.toContain("openAiImageFallbackEnabled");
+    expect(src).not.toContain("generateOpenAiImageClip");
   });
 });

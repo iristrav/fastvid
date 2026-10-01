@@ -31,14 +31,11 @@ import {
   DEFAULT_TEXT_STYLE,
   TIMELINE_SCHEMA_VERSION,
   emptyTimeline,
-  timelineDigest,
   type ProjectTimeline,
   type TimelineVideoClip,
 } from "./projectTimeline";
 import {
   NON_BLOCKING_ISSUES,
-  TimelineValidationError,
-  assertRenderableTimeline,
   formatTimelineIssue,
   validateTimeline,
 } from "./timelineValidator";
@@ -53,6 +50,11 @@ import {
 import { CAMERA_MAP, TRANSITION_MAP, translateEdl, trackForCaption } from "./edlToTimeline";
 import type { EditDecision } from "./cinematicEditingEngine/types";
 import { checkRenderedFile, renderTimeline } from "./timelineRenderer";
+
+
+/** The render's own predicate (cinematicProduction, timelineRepair): what is left after the advisory codes. */
+const blockingIssues = (t: Parameters<typeof validateTimeline>[0]) =>
+  validateTimeline(t).issues.filter((i) => !NON_BLOCKING_ISSUES.has(i.code));
 
 const execFileAsync = promisify(execFile);
 const FFMPEG = (ffmpegStatic as unknown as string) || "ffmpeg";
@@ -194,7 +196,7 @@ describe("PHASE 9 — the timeline validator reports and never repairs", () => {
     const result = validateTimeline(t);
     expect(result.issues.map((i) => i.code)).toContain("video_gap");
     expect(NON_BLOCKING_ISSUES.has("video_gap")).toBe(true);
-    expect(() => assertRenderableTimeline(t)).not.toThrow();
+    expect(blockingIssues(t)).toEqual([]);
   });
 
   it("a duration mismatch is caught — a render may never silently get another length", () => {
@@ -249,19 +251,13 @@ describe("PHASE 9 — the timeline validator reports and never repairs", () => {
     expect(codes).toContain("invalid_fade");
   });
 
-  it("BLOCKING ISSUES THROW, with every element named", () => {
+  it("BLOCKING ISSUES ARE REPORTED, with every element named", () => {
     const t = goodTimeline();
     const track = t.tracks.find((x) => x.kind === "VIDEO");
     if (track?.kind === "VIDEO") track.clips[0]!.timelineEnd = -5;
-    let caught: TimelineValidationError | null = null;
-    try {
-      assertRenderableTimeline(t);
-    } catch (err) {
-      caught = err as TimelineValidationError;
-    }
-    expect(caught).toBeInstanceOf(TimelineValidationError);
-    expect(caught!.issues.length).toBeGreaterThan(0);
-    expect(caught!.message).toContain("VIDEO/vc_0");
+    const blocking = blockingIssues(t);
+    expect(blocking.length).toBeGreaterThan(0);
+    expect(blocking.map(formatTimelineIssue).join("\n")).toContain("VIDEO/vc_0");
   });
 
   it("IT NEVER REPAIRS: the timeline is unchanged after validation", () => {
@@ -274,11 +270,7 @@ describe("PHASE 9 — the timeline validator reports and never repairs", () => {
     if (track?.kind === "VIDEO") track.clips[0]!.timelineEnd = -1;
     const before = JSON.stringify(t);
     validateTimeline(t);
-    try {
-      assertRenderableTimeline(t);
-    } catch {
-      /* expected */
-    }
+    blockingIssues(t);
     expect(JSON.stringify(t)).toBe(before);
   });
 
@@ -595,7 +587,6 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
     const input = { decision: decision(), sceneOffsetSec: 3, identity };
     const a = translateEdl({ videoId: 1, inputs: [input] });
     const b = translateEdl({ videoId: 1, inputs: [input] });
-    expect(timelineDigest(b.timeline)).toBe(timelineDigest(a.timeline));
     expect(JSON.stringify(b.timeline.tracks)).toBe(JSON.stringify(a.timeline.tracks));
   });
 
@@ -649,7 +640,7 @@ describe("END TO END — identity → rehydrate → validate → render → MP4"
     // 1. validate BEFORE rendering — the whole point of the validator's placement
     const validation = validateTimeline(t);
     expect(validation.issues.filter((i) => i.code === "missing_asset")).toEqual([]);
-    expect(() => assertRenderableTimeline(t)).not.toThrow();
+    expect(blockingIssues(t)).toEqual([]);
 
     // 2. rehydrate every clip from its identity alone
     const workDir = path.join(ROOT, "e2e_work");
@@ -707,6 +698,6 @@ describe("END TO END — identity → rehydrate → validate → render → MP4"
     const issues = validateTimeline(t).issues.filter((i) => i.code === "missing_asset");
     expect(issues).toHaveLength(1);
     expect(issues[0]!.elementId).toBe("vc_0");
-    expect(() => assertRenderableTimeline(t)).toThrow(TimelineValidationError);
+    expect(blockingIssues(t).length).toBeGreaterThan(0);
   });
 });

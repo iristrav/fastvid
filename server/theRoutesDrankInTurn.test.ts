@@ -55,32 +55,6 @@ const CODE = stripComments(PIPE);
 /* ═══════════ 1. a share, not a turn at the glass ═══════════ */
 
 describe("R260 §1 — YouTube hands out shares", () => {
-  it("one route may take half of what is left, so the other half survives it", () => {
-    expect(YOUTUBE_DOWNLOAD_ROUTES).toBe(2);
-    expect(youtubeRouteShareMs(45_000)).toBe(22_500);
-    expect(youtubeRouteShareMs(60_000)).toBe(30_000);
-  });
-
-  it("A SHARE IS A CEILING, NOT A SPEND: the divisor is the number of routes", () => {
-    /**
-     * A divisor that drifts from the number of routes stops being a share without saying so, so
-     * the two are one constant. Three routes would each get a third by construction.
-     */
-    const src = CODE.slice(
-      CODE.indexOf("export function youtubeRouteShareMs("),
-      CODE.indexOf("export const YOUTUBE_SEARCH_TIMEOUT_MS")
-    );
-    expect(src).toContain("Math.floor(totalMs / YOUTUBE_DOWNLOAD_ROUTES)");
-    expect(src, "a literal 2 would drift away from the route count silently").not.toMatch(
-      /totalMs \/ 2\b/
-    );
-  });
-
-  it("nothing to divide divides to nothing", () => {
-    expect(youtubeRouteShareMs(0)).toBe(0);
-    expect(youtubeRouteShareMs(-1_000)).toBe(0);
-    expect(youtubeRouteShareMs(Number.POSITIVE_INFINITY)).toBe(0);
-  });
 
   it("VIDEO 615 — the chosen cloud cut gets the whole scope, no longer half of it", () => {
     /**
@@ -120,7 +94,6 @@ describe("R260 §2 — a turn is declined before it is performed", () => {
       "export const YOUTUBE_MIN_TURN_MS = YOUTUBE_SEARCH_TIMEOUT_MS + YOUTUBE_MIN_DOWNLOAD_WINDOW_MS;"
     );
   });
-
 
   it("THE CHECK STANDS BEFORE THE FIRST QUERY, WHICH IS THE WHOLE POINT", () => {
     const fn = CODE.slice(
@@ -208,7 +181,6 @@ describe("R260 §3 — a refusal names the clock that refused", () => {
     expect(describeEnclosingScope()).toBe("no enclosing scope");
   });
 
-
   it("the label reaches the scope from the caller, not from a second source of truth", () => {
     const fn = CODE.slice(
       CODE.indexOf("export function withSceneFetchTimeout<T>("),
@@ -241,14 +213,15 @@ describe("R260 §4 — the numbers, all of them, unchanged", () => {
 
   it("the YouTube beat budget stands", () => {
     const policy = fs.readFileSync(path.join(__dirname, "sourcingPolicy.ts"), "utf8");
-    expect(policy).toContain("const base = 45_000;");
+    /** The value production ran (SOURCING_YOUTUBE_FIRST defaulted on); the switch is gone. */
+    expect(policy).toContain("return YOUTUBE_FIRST_TURN_MS;");
+    expect(policy).toContain("export const YOUTUBE_FIRST_TURN_MS = 120_000;");
   });
 
   it("and RONDE 259's reserve is still computed the way it was", () => {
     expect(CODE).toContain("export const TRANSFER_RESERVE_MS = YOUTUBE_MIN_DOWNLOAD_WINDOW_MS * 2;");
     expect(CODE).toContain("return Math.min(TRANSFER_RESERVE_MS, Math.floor(windowMs / 2));");
   });
-
 
   it("and the download still funnels through the one function it always did", () => {
     /** RONDE 647: plus exactly one re-entry from inside, which queues calls writing the same file. */

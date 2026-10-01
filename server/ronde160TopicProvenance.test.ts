@@ -23,13 +23,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  emptyQueryContext,
-  provenToken,
-  termProvenance,
-  validateSearchQuery,
-  type VerifiedQueryContext,
-} from "./searchQueryContract";
+import { emptyQueryContext, provenToken, validateSearchQuery, type VerifiedQueryContext } from "./searchQueryContract";
 import { buildVerifiedQueryContextForBeat } from "./videoPipeline";
 
 /** The exact beat from the reproduction: it is about WWII and never says so. */
@@ -147,78 +141,6 @@ describe("FASE 3 — a term the user typed is allowed; a term from nowhere is no
     expect(v.ok).toBe(false);
     if (v.ok) return;
     expect(v.reason).toBe("NO_CONTENT_ANCHOR");
-  });
-});
-
-/* ═══════════════════════ provenance, stated explicitly ═══════════════════════ */
-
-/**
- * FASE 3 asked for a query to be able to say, in so many words:
- *
- *     queryTerm = "WWII"; provenance = "topic"; source = "video.topic"; approved = true
- *
- * `termProvenance` is that sentence. These tests are the sentence being true.
- */
-describe("FASE 3 — termProvenance says WHICH channel proved a word", () => {
-  it("names the topic for a word only the user's prompt supplies", () => {
-    expect(termProvenance("WWII", ctxWithTopic("wwii"))).toEqual({
-      term: "WWII",
-      provenance: "topic",
-      source: "video.prompt",
-      approved: true,
-    });
-  });
-
-  it("names the beat for a word the script itself uses", () => {
-    const p = termProvenance("commanders", ctxWithTopic("wwii"));
-    expect(p.approved).toBe(true);
-    expect(p.provenance).toBe("beat_text");
-  });
-
-  /** The narrower claim wins: a typed token beats the raw evidence it came from. */
-  it("names the typed token when an extractor proved one", () => {
-    const p = termProvenance("front", ctxWithTopic("wwii"));
-    expect(p.approved).toBe(true);
-    expect(p.source).toBe("place_token");
-  });
-
-  it("refuses a word nothing supplies, and says so", () => {
-    expect(termProvenance("panzer", ctxWithTopic("wwii"))).toEqual({
-      term: "panzer",
-      provenance: "unknown",
-      source: null,
-      approved: false,
-    });
-  });
-
-  it("names the forbidden route when a word is traceable to one", () => {
-    const ctx = ctxWithTopic("wwii");
-    ctx.persons.push({
-      term: "Churchill",
-      type: "person",
-      source: "title_inference",
-      verified: false,
-    });
-    const p = termProvenance("Churchill", ctx);
-    expect(p.approved).toBe(false);
-    expect(p.provenance).toBe("title_inference");
-  });
-
-  it("treats camera vocabulary as technical rather than as content", () => {
-    const p = termProvenance("archival", ctxWithTopic("wwii"));
-    expect(p.approved).toBe(true);
-    expect(p.provenance).toBe("technical");
-  });
-
-  /** Every word of an accepted query must have a provenance — no word gets in unexplained. */
-  it("every word of an accepted query can name its own source", () => {
-    const ctx = ctxWithTopic("wwii");
-    const query = "WWII commanders archival footage";
-    expect(validateSearchQuery(query, ctx).ok).toBe(true);
-    for (const word of query.split(/\s+/)) {
-      const p = termProvenance(word, ctx);
-      expect(p.approved, `${word} got into an accepted query with no provenance`).toBe(true);
-    }
   });
 });
 

@@ -249,8 +249,6 @@ const HISTORICAL_ERAS = [
   "1930s", "1940s", "1950s", "1960s", "1970s", "world war", "wwi", "wwii",
   "roman", "greek", "egyptian", "empire", "revolution", "colonial",
 ];
-const MODERN_TERMS = ["modern footage", "contemporary", "2020", "2021", "2022", "2023", "2024", "2025", "AI generated", "CGI"];
-
 function deriveForbiddenContent(
   act: NarrativeAct,
   goal: VisualGoal,

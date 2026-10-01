@@ -108,11 +108,14 @@ describe("RONDE 66 — it looks where the text actually is", () => {
     const block = src.slice(idx, src.indexOf("\nasync function extractVideoPreviewJpegs("));
     expect(block).toContain("catch (err)");
     expect(block).toMatch(/catch \(err\)[\s\S]{0,220}return null;/);
-    /** The collapse, at both booleans the montage routes actually call. */
-    expect(src).toContain(
-      `return (await archiveClipBakedEditTextVerdict(media, mimeType, opts)).verdict === "has_text";`
-    );
-    expect(src).toContain(`return (await detectOnScreenTextInImages(dataUrls)) === true;`);
+    /** The collapse: only a definite `has_text` refuses — at the one judge every route asks. */
+    const judge = fs.readFileSync(path.join(__dirname, "visualJudge.ts"), "utf8");
+    const at = judge.indexOf("export async function judgeOnScreenText(");
+    const body = judge.slice(at, judge.indexOf("\n/**", at));
+    /** The one reader (VisualJudge, code audit): "nobody looked" is an accept, never a refusal. */
+    expect(body).toContain('if (result.verdict === "not_asked") {');
+    expect(body).toContain('...accept("on_screen_text", "not_asked", 0)');
+    expect(body).toContain('if (result.verdict === "has_text") {');
   });
 
   it("one frame showing text condemns the clip", () => {

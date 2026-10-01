@@ -118,19 +118,6 @@ export function createPipelineReportCollector(
   };
 }
 
-/** Human-readable section titles for the admin, so the UI holds no vocabulary of its own. */
-export const PIPELINE_SECTION_TITLES: Record<PipelineSection, string> = {
-  summary: "Samenvatting",
-  beats: "Beats zonder goedgekeurd eigen beeld",
-  clips: "Clips in de uiteindelijke video",
-  dropped: "Gekozen maar niet gerenderd",
-  sourcing: "Bronnen en funnel",
-  search: "Zoekopdrachten",
-  gates: "Gates",
-  timing: "Tijd per stap",
-  warnings: "Waarschuwingen",
-};
-
 /**
  * The few numbers the "all videos" list shows per row.
  *

@@ -4,7 +4,6 @@ import { archiveTagsAtMostTwo } from "./archiveTagRule";
 import type { RenderLockStore } from "./renderLock";
 import { drizzle } from "drizzle-orm/mysql2";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
-import { BLOCKED_EXPORT_METADATA_KEY, type BlockedExportRecord } from "@shared/exportBlocked";
 import {
   PIPELINE_PROCESSING_STATUSES,
   USER_ACTIVE_VIDEO_STATUSES,
@@ -15,7 +14,7 @@ import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineComposeGraceMs } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
-import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser, renderJobs, renderLocks, youtubeVideoSearches, type RenderJob } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, inviteCodes, users, videos, llmSpendByUser, renderJobs, renderLocks, youtubeVideoSearches, type RenderJob } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import type { AssetSourceIdentity } from "./projectTimeline";
 
@@ -319,60 +318,8 @@ export async function mergeVideoMetadata(id: number, patch: Record<string, unkno
   await db.update(videos).set({ metadata: merged, updatedAt: new Date() }).where(eq(videos.id, id));
 }
 
-/**
- * A render the export gate refused: mark it failed AND say where its file is.
- *
- * ONE write, not two, and that is the whole point of the function existing.
- *
- * `recoverVideoCompletionState` promotes any video that is not yet terminal but does have a
- * `videoUrl` straight to `completed`. So recording the URL first and letting the outer catch
- * in routers.ts set `failed` a moment later would open a window in which a dashboard poll
- * could find a mid-render row with a URL on it and publish the very film the gate had just
- * refused. Writing the status in the same statement closes that window: the row is never
- * visible in the state that would trigger the promotion.
- *
- * Nothing here overrules the gate. The video is `failed`, it is not counted as completed
- * anywhere, and `blockedExportForVideo` will only show it to its owner as what it is — a
- * refused render they may look at, not a published one.
- */
-export async function recordBlockedExport(
-  id: number,
-  videoUrl: string,
-  reason: string
-): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  const video = await getVideoById(id);
-  const record: BlockedExportRecord = {
-    reason: reason.slice(0, 2000),
-    videoUrl,
-    at: new Date().toISOString(),
-  };
-  await db
-    .update(videos)
-    .set({
-      status: "failed",
-      videoUrl,
-      errorMessage: record.reason,
-      progressStep: "Export blocked",
-      progressPercent: 0,
-      metadata: {
-        ...readVideoMetadataObject(video),
-        [BLOCKED_EXPORT_METADATA_KEY]: record,
-      },
-      updatedAt: new Date(),
-    })
-    .where(eq(videos.id, id));
-}
-
-export async function getVideosByUserId(userId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(videos).where(eq(videos.userId, userId)).orderBy(desc(videos.createdAt));
-}
-
 /** The `metadata` keys the dashboard's video card reads; the rest of the blob stays in the database. */
-export const VIDEO_LIST_METADATA_KEYS = ["generationDurationSec", "nicheTitle", "exportBlocked"] as const;
+export const VIDEO_LIST_METADATA_KEYS = ["generationDurationSec", "nicheTitle"] as const;
 
 /**
  * The dashboard's video list: the columns a card shows, and of `metadata` only the keys it reads.
@@ -461,31 +408,6 @@ export async function countGlobalProcessingVideos(): Promise<number> {
   return Number(row?.count ?? 0);
 }
 
-export async function countUserProcessingVideos(userId: number): Promise<number> {
-  const db = await getDb();
-  if (!db) return 0;
-  const [row] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(videos)
-    .where(and(eq(videos.userId, userId), inArray(videos.status, PROCESSING_STATUS_LIST)));
-  return Number(row?.count ?? 0);
-}
-
-/** Returns a map of userId → active-job count for all provided userIds in one query. */
-export async function countProcessingVideosByUsers(
-  userIds: number[]
-): Promise<Map<number, number>> {
-  if (!userIds.length) return new Map();
-  const db = await getDb();
-  if (!db) return new Map();
-  const rows = await db
-    .select({ userId: videos.userId, count: sql<number>`count(*)` })
-    .from(videos)
-    .where(and(inArray(videos.userId, userIds), inArray(videos.status, PROCESSING_STATUS_LIST)))
-    .groupBy(videos.userId);
-  return new Map(rows.map((r) => [r.userId, Number(r.count)]));
-}
-
 /**
  * RONDE 109 — userId → "has a render underway" count, for the queue picker.
  *
@@ -504,26 +426,6 @@ export async function countActiveVideosByUsers(userIds: number[]): Promise<Map<n
     .where(and(inArray(videos.userId, userIds), inArray(videos.status, USER_ACTIVE_STATUS_LIST)))
     .groupBy(videos.userId);
   return new Map(rows.map((r) => [r.userId, Number(r.count)]));
-}
-
-export async function countUserQueuedVideos(userId: number): Promise<number> {
-  const db = await getDb();
-  if (!db) return 0;
-  const [row] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(videos)
-    .where(and(eq(videos.userId, userId), eq(videos.status, "queued")));
-  return Number(row?.count ?? 0);
-}
-
-export async function countUserAwaitingScriptApproval(userId: number): Promise<number> {
-  const db = await getDb();
-  if (!db) return 0;
-  const [row] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(videos)
-    .where(and(eq(videos.userId, userId), eq(videos.status, "awaiting_approval")));
-  return Number(row?.count ?? 0);
 }
 
 export async function listQueuedVideosOrdered(limit = 50) {
@@ -1308,35 +1210,6 @@ export async function seedDefaultVoices() {
   }
 }
 
-// ─── Password Reset Tokens ────────────────────────────────────────────────────
-
-export async function createPasswordResetToken(data: InsertPasswordResetToken) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  const result = await db.insert(passwordResetTokens).values(data);
-  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
-}
-
-export async function getPasswordResetTokenByToken(token: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.select().from(passwordResetTokens).where(eq(passwordResetTokens.token, token)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
-}
-
-export async function markPasswordResetTokenAsUsed(tokenId: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.update(passwordResetTokens).set({ usedAt: new Date() }).where(eq(passwordResetTokens.id, tokenId));
-}
-
-export async function deleteExpiredPasswordResetTokens() {
-  const db = await getDb();
-  if (!db) return 0;
-  const result = await db.delete(passwordResetTokens).where(sql`${passwordResetTokens.expiresAt} < NOW()`);
-  return (result as unknown as [{ affectedRows: number }])[0]?.affectedRows ?? 0;
-}
-
 // ─── Editor ───────────────────────────────────────────────────────────────────
 
 export interface EditorClip {
@@ -1421,12 +1294,6 @@ export interface EditorScene {
  * Bumped only when a reader would need to behave differently — not on every field added.
  */
 export const MANIFEST_SCHEMA_VERSION = 2;
-
-export async function updateEditedVideoUrl(id: number, editedVideoUrl: string) {
-  const db = await getDb();
-  if (!db) return;
-  await db.update(videos).set({ editedVideoUrl }).where(eq(videos.id, id));
-}
 
 export async function getVideoScenes(id: number): Promise<EditorScene[] | null> {
   const db = await getDb();
@@ -1703,47 +1570,6 @@ export type VideoEditorSettings = {
   backgroundMusicUrl: string | null;
 };
 
-export function readVideoEditorSettings(video: {
-  enableSubtitles?: number | null;
-  metadata?: unknown;
-}): VideoEditorSettings {
-  const meta = readVideoMetadataObject(video) as { backgroundMusicUrl?: string };
-  return {
-    enableSubtitles: video.enableSubtitles !== 0,
-    backgroundMusicUrl: meta.backgroundMusicUrl ?? null,
-  };
-}
-
-export async function updateVideoEditorSettings(
-  id: number,
-  settings: { enableSubtitles?: boolean; backgroundMusicUrl?: string | null }
-) {
-  const db = await getDb();
-  if (!db) return;
-  const video = await getVideoById(id);
-  if (!video) return;
-  /**
-   * The canonical reader, not a blind spread.
-   *
-   * `{ ...video.metadata }` on a JSON STRING produces `{0:"{",1:'"',…}` and this function writes
-   * that straight back — so saving an editor setting could erase qualityReport, pipelineReport and
-   * everything else the render stored. See `readVideoMetadataObject`.
-   */
-  const meta = { ...readVideoMetadataObject(video) };
-  if (settings.backgroundMusicUrl !== undefined) {
-    if (settings.backgroundMusicUrl) {
-      meta.backgroundMusicUrl = settings.backgroundMusicUrl;
-    } else {
-      delete meta.backgroundMusicUrl;
-    }
-  }
-  const patch: Record<string, unknown> = { metadata: meta, updatedAt: new Date() };
-  if (settings.enableSubtitles !== undefined) {
-    patch.enableSubtitles = settings.enableSubtitles ? 1 : 0;
-  }
-  await db.update(videos).set(patch).where(eq(videos.id, id));
-}
-
 // ─── Media Archives ───────────────────────────────────────────────────────────
 
 import { InsertMediaArchive, InsertMediaArchiveAsset, MediaArchiveAsset, mediaArchiveAssets, visualSearchMemory, mediaArchives } from "../drizzle/schema";
@@ -1975,21 +1801,6 @@ export async function listActiveVideoArchiveAssetsBatch(afterId: number, limit: 
         gt(mediaArchiveAssets.id, afterId)
       )
     )
-    .orderBy(asc(mediaArchiveAssets.id))
-    .limit(limit);
-}
-
-/** Paginated active assets of any media type (video + image) — used by the Visual Matching
- *  Engine V2 archive embedding backfill, a standalone script (see
- *  server/visualMatchingV2/embeddings/archiveEmbeddingBackfill.ts). Not called from any
- *  worker startup path. */
-export async function listActiveMediaArchiveAssetsBatch(afterId: number, limit: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db
-    .select()
-    .from(mediaArchiveAssets)
-    .where(and(eq(mediaArchiveAssets.isActive, 1), gt(mediaArchiveAssets.id, afterId)))
     .orderBy(asc(mediaArchiveAssets.id))
     .limit(limit);
 }
@@ -2312,7 +2123,28 @@ import { mediaArchiveAssetEmbeddings } from "../drizzle/schema";
 export async function deleteMediaArchiveAssets(ids: number[]) {
   const db = await getDb();
   if (!db || ids.length === 0) return 0;
-  const uniqueIds = [...new Set(ids)];
+  /**
+   * ONE ROUTE — an asset a stored timeline still uses is switched off, never deleted: a film whose
+   * clip points at a deleted asset can no longer be rendered (the DeliveryGate refuses it as
+   * CLIP_UNRESOLVED). Switched off, it is no longer offered to any new film, exactly like a cut
+   * parent asset.
+   */
+  const requested = [...new Set(ids)];
+  const { archiveAssetIdsOfStoredTimeline } = await import("./projectTimeline");
+  const requestedSet = new Set(requested);
+  const inUse = new Set<number>();
+  const timelines = await db
+    .select({ videoTimeline: videos.videoTimeline })
+    .from(videos)
+    .where(sql`${videos.videoTimeline} IS NOT NULL`);
+  for (const row of timelines) {
+    for (const id of archiveAssetIdsOfStoredTimeline(row.videoTimeline)) if (requestedSet.has(id)) inUse.add(id);
+  }
+  if (inUse.size > 0) {
+    await db.update(mediaArchiveAssets).set({ isActive: 0 }).where(inArray(mediaArchiveAssets.id, [...inUse]));
+    console.log(`[Archive] ${inUse.size} asset(s) switched off instead of deleted — a stored film still uses them`);
+  }
+  const uniqueIds = requested.filter((id) => !inUse.has(id));
   const chunkSize = 500;
   for (let i = 0; i < uniqueIds.length; i += chunkSize) {
     const chunk = uniqueIds.slice(i, i + chunkSize);
@@ -2329,7 +2161,7 @@ export async function deleteMediaArchiveAssets(ids: number[]) {
       .where(inArray(visualSearchMemory.assetId, chunk));
     await db.delete(mediaArchiveAssets).where(inArray(mediaArchiveAssets.id, chunk));
   }
-  return uniqueIds.length;
+  return requested.length;
 }
 
 /** Delete all assets in an archive (optionally filtered by the same search as listAssets). */

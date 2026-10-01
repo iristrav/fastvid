@@ -12,14 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-  cinematicRouteEnabled,
-  formatCinematicPlan,
-  lostEditorialIntent,
-  runCinematicPipeline,
-  type CinematicBeatInput,
-  type CinematicSceneInput,
-} from "./cinematicPipeline";
+import { formatCinematicPlan, lostEditorialIntent, runCinematicPipeline, type CinematicBeatInput, type CinematicSceneInput } from "./cinematicPipeline";
 import type { CinematicEditingInput } from "./cinematicEditingEngine";
 import type { AssetSourceIdentity } from "./projectTimeline";
 import type { Scene } from "./pipeline/types";
@@ -199,12 +192,6 @@ afterEach(() => {
 /* ═══════════════════════ §2 — the engine is actually called ═══════════════════════ */
 
 describe("RONDE 150 §2 — the cinematic engine is on the path, not beside it", () => {
-  it("the route is OFF unless an operator turns it on", () => {
-    delete process.env.CINEMATIC_EDITING_ENGINE;
-    expect(cinematicRouteEnabled()).toBe(false);
-    process.env.CINEMATIC_EDITING_ENGINE = "true";
-    expect(cinematicRouteEnabled()).toBe(true);
-  });
 
   it("produces one EDL decision AND one timeline clip per beat", () => {
     const result = runCinematicPipeline({ videoId: 1, scenes: twoScenes() });

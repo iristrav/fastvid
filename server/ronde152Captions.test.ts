@@ -23,15 +23,7 @@ import {
   safeArea,
   type Obstacle,
 } from "./captionLayout";
-import {
-  NEUTRAL,
-  SUPPORTED_ANIMATIONS,
-  SUPPORTED_CAPTION_MODES,
-  animationAt,
-  chunkCaption,
-  revealProgress,
-  transitionFrames,
-} from "./remotion/components/animation";
+import { NEUTRAL, animationAt, chunkCaption, revealProgress, transitionFrames } from "./remotion/components/animation";
 import { DEFAULT_CAPTION_STYLE, DEFAULT_TEXT_STYLE, type TextStyle } from "./projectTimeline";
 
 const HD = { widthPx: 1920, heightPx: 1080 };
@@ -346,13 +338,6 @@ describe("RONDE 152 — collision is geometry, not a nudge", () => {
 /* ═══════════════════════ animations ═══════════════════════ */
 
 describe("RONDE 152 — animations are deterministic arithmetic", () => {
-  it("every named animation is a pure function of the frame", () => {
-    for (const name of SUPPORTED_ANIMATIONS) {
-      const a = animationAt(name, 5, 60);
-      const b = animationAt(name, 5, 60);
-      expect(b, name).toEqual(a);
-    }
-  });
 
   it("an unknown animation does nothing rather than guessing a similar one", () => {
     expect(animationAt("kaleidoscope", 5, 60)).toEqual(NEUTRAL);
@@ -404,18 +389,6 @@ describe("RONDE 152 — animations are deterministic arithmetic", () => {
   it("a very short element still gets a real entrance", () => {
     expect(transitionFrames(2)).toBeGreaterThanOrEqual(1);
     expect(transitionFrames(600)).toBeLessThanOrEqual(10);
-  });
-
-  it("opacity and scale stay in sane ranges for every animation and frame", () => {
-    for (const name of SUPPORTED_ANIMATIONS) {
-      for (const frame of [0, 1, 5, 15, 30, 59, 60]) {
-        const s = animationAt(name, frame, 60);
-        expect(s.opacity, `${name}@${frame}`).toBeGreaterThanOrEqual(0);
-        expect(s.opacity, `${name}@${frame}`).toBeLessThanOrEqual(1);
-        expect(s.scale, `${name}@${frame}`).toBeGreaterThan(0);
-        expect(s.scale, `${name}@${frame}`).toBeLessThan(3);
-      }
-    }
   });
 });
 
@@ -477,13 +450,6 @@ describe("RONDE 152 — caption modes group the TTS's own words", () => {
   it("an unknown mode shows the sentence and says it degraded", () => {
     const { degraded } = chunkCaption({ mode: "hologram", words, startSec: 0, endSec: 2 });
     expect(degraded).toBe(true);
-  });
-
-  it("chunks never leave a gap or run backwards", () => {
-    for (const mode of SUPPORTED_CAPTION_MODES) {
-      const { chunks } = chunkCaption({ mode, words, startSec: 0, endSec: 2 });
-      for (const c of chunks) expect(c.endSec, mode).toBeGreaterThan(c.startSec);
-    }
   });
 });
 

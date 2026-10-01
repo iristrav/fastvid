@@ -1037,20 +1037,3 @@ export function translateEdl(params: {
   };
 }
 
-/** What the translation could not carry across, for the render log. */
-export function formatEdlTranslation(result: EdlTranslation): string[] {
-  const clipCount = result.timeline.tracks.find((t) => t.kind === "VIDEO");
-  const clips = clipCount && clipCount.kind === "VIDEO" ? clipCount.clips.length : 0;
-  const lines = [
-    `[EdlToTimeline] clips=${clips} duration=${result.timeline.durationSec.toFixed(2)}s ` +
-      `unsupported=${result.unsupported.length} held=${result.covered.length}`,
-  ];
-  for (const u of result.unsupported) lines.push(`   not executed: ${u}`);
-  /**
-   * Every hold, named. `held=0` is the healthy render and reads as such; a render with twelve of
-   * these has a sourcing problem that happened to be survivable, and that is a different thing from
-   * a slightly slower edit. Reporting it here is what keeps the repair from being a silent one.
-   */
-  for (const c of result.covered) lines.push(`   HELD: ${c}`);
-  return lines;
-}

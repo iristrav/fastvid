@@ -133,16 +133,6 @@ export function sceneCriticalReviewEnabled(): boolean {
   return process.env.ENABLE_VIDRUSH_QUALITY !== "false";
 }
 
-/** Minimum vision score for Wikimedia/Openverse stills — same bar as archive (default 8). */
-export function minWikiClipQualityScore(): number {
-  const raw = process.env.MIN_WIKI_CLIP_QUALITY_SCORE?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 5 && n <= 10) return n;
-  }
-  return minClipQualityScore();
-}
-
 /** Minimum quality score (0–10). Default 7 — balanced hit-rate vs speed on 1-min. */
 export function minClipQualityScore(): number {
   const raw = process.env.MIN_CLIP_QUALITY_SCORE?.trim();
@@ -715,64 +705,3 @@ export async function evaluateClipVisionGate(
   return { pass: result.pass, worstScore10: result.worstScore, skipped: false, fromCache: false };
 }
 
-/** Score clip against narration for post-adoption QA (returns null when local vision unavailable). */
-export async function scoreAdoptedClipQuality(
-  clipPath: string,
-  beatText: string,
-  visualDescription: string | undefined,
-  videoTitle: string | undefined,
-  workDir: string,
-  sceneIndex: number,
-  beatIndex: number,
-  fastMode = false,
-  shortVideo = false
-): Promise<{
-  score: number;
-  matchesNarration: boolean;
-  showsSubject: boolean;
-  wellFramed: boolean;
-  wrongSubject: boolean;
-} | null> {
-  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) {
-    recordVisionAsk("adopted_clip_quality", "skipped");
-    return null;
-  }
-
-  const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode, shortVideo);
-  if (framePaths.length === 0) {
-    /** No frame came out of the clip, so nothing was asked — a different fact from a refusal. */
-    recordVisionAsk("adopted_clip_quality", "skipped");
-    return null;
-  }
-  recordVisionAsk("adopted_clip_quality", "judged");
-
-  const assetId = curatedClipPathAssetId(clipPath);
-  // loadStoredFrameEmbeddings is synchronous and reads the durable store's in-process cache;
-  // warm it first or a restarted worker sees no embeddings for an asset indexed long ago.
-  if (assetId != null) await prefetchArchiveClipEmbeddings([assetId]);
-  const storedEmbeddings =
-    assetId != null
-      ? loadStoredFrameEmbeddings(assetId)
-      : loadStoredStockFrameEmbeddingsFromPath(clipPath);
-
-  const result = await scoreFramePathsAgainstBeat(
-    framePaths,
-    beatText,
-    visualDescription,
-    videoTitle,
-    clipPath,
-    minClipQualityScore(),
-    storedEmbeddings
-  );
-  cleanupFramePaths(framePaths);
-
-  if (!result) return null;
-
-  return {
-    score: result.score,
-    matchesNarration: result.matchesNarration,
-    showsSubject: result.showsSubject,
-    wellFramed: result.wellFramed,
-    wrongSubject: result.wrongSubject,
-  };
-}

@@ -35,8 +35,9 @@ process.env.SEARCH_GATE_STRICT = "false";
 // VIDEO 619 — NARA, Flickr, SepiaSearch, Vimeo, media.ccc and NASA delivered nothing to any film
 // across renders 597–619 and were removed; the cascade keeps the three sources that did deliver.
 describe("HISTORICAL_SOURCE_TIER_ORDER — F3-28 Test 2-8 (exact required source order)", () => {
-  it("matches the exact required priority: Archive → YouTube CC → Wikimedia, Pexels/Pixabay excluded entirely", () => {
-    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual(["internet_archive", "youtube_cc", "wikimedia"]);
+  it("matches the exact required priority: Archive → Wikimedia (YouTube has its own turn), Pexels/Pixabay excluded entirely", () => {
+    /** Code audit P2/P12: YouTube is asked only by the beat's YouTube turn, never by the cascade. */
+    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual(["internet_archive", "wikimedia"]);
     // Pexels/Pixabay must never appear in this list — they stay the separate, absolute
     // last-resort tier tried only after every source above has failed for a beat.
     expect(HISTORICAL_SOURCE_TIER_ORDER).not.toContain("pexels");

@@ -25,14 +25,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  ARCHIVE_MAX_TAGS,
-  MAX_AI_TAGS_ADDED_PER_CLIP,
-  applySharedAiToClipFields,
-  mergeArchiveTags,
-  mergeArchiveTagsLimited,
-  type ArchiveAssetAiMetadata,
-} from "./archiveAssetTagging";
+import { ARCHIVE_MAX_TAGS, MAX_AI_TAGS_ADDED_PER_CLIP, applySharedAiToClipFields, mergeArchiveTagsLimited, type ArchiveAssetAiMetadata } from "./archiveAssetTagging";
 
 const ai = (tags: string[]): ArchiveAssetAiMetadata => ({
   title: "Churchill at Tehran",
@@ -114,11 +107,6 @@ describe("mergeArchiveTagsLimited on its own", () => {
     const out = mergeArchiveTagsLimited(existing, ["x", "y", "z"]);
     for (const tag of existing) expect(out).toContain(tag);
     expect(out).toHaveLength(existing.length + MAX_AI_TAGS_ADDED_PER_CLIP);
-  });
-
-  it("the unlimited merge is still available and still unlimited", () => {
-    // Kept for callers that are not the AI pass — the limit is about machine-generated tags.
-    expect(mergeArchiveTags(["a"], ["b", "c", "d", "e"])).toEqual(["a", "b", "c", "d", "e"]);
   });
 });
 

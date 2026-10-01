@@ -37,16 +37,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import {
-  PROVIDER_TIER,
-  SOURCING_TIERS,
-  formatTierAttempt,
-  providerTier,
-  providersInTier,
-  tierMayRun,
-  tierNumber,
-  type SourcingTier,
-} from "./sourcingTiers";
+import { PROVIDER_TIER, SOURCING_TIERS, providerTier, tierMayRun, tierNumber, type SourcingTier } from "./sourcingTiers";
 
 const PIPELINE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 const POOL = readFileSync(join(__dirname, "scenePool.ts"), "utf8");
@@ -59,12 +50,6 @@ describe("§2 — four tiers, in the order the brief names", () => {
     expect(tierNumber("OWN_ARCHIVE")).toBe(2);
     expect(tierNumber("OPEN_SOURCES")).toBe(3);
     expect(tierNumber("STOCK")).toBe(4);
-  });
-
-  it("every tier has at least one provider — none is an empty promise", () => {
-    for (const tier of SOURCING_TIERS) {
-      expect(providersInTier(tier), `${tier} has no providers`).not.toEqual([]);
-    }
   });
 
   it("the own archive is tier 2, for every subject and not only historical ones", () => {
@@ -152,8 +137,8 @@ describe("§22 — every provider the code searches has a tier", () => {
   };
 
   it("the scan finds providers — it has not gone blind", () => {
-    /** Twelve before VIDEO 619 removed the providers that never delivered to a film. */
-    expect(gatedProviders().length).toBeGreaterThanOrEqual(6);
+    /** Twelve before VIDEO 619; five since the code audit removed the per-beat YouTube search. */
+    expect(gatedProviders().length).toBeGreaterThanOrEqual(5);
   });
 
   it("every provider that reaches the search gate is on the ladder", () => {
@@ -163,31 +148,6 @@ describe("§22 — every provider the code searches has a tier", () => {
      */
     const untiered = gatedProviders().filter((p) => providerTier(p) === null);
     expect(untiered, "a provider is searched and belongs to no tier").toEqual([]);
-  });
-});
-
-/* ═══════════ 4 — the line a render log can be read with ═══════════ */
-
-describe("§10 — the attempt says which tier it was and whether the order held", () => {
-  it("an in-order attempt names its tier", () => {
-    const line = formatTierAttempt(1, 2, "internet_archive", { ok: true });
-    expect(line).toContain("s1b2");
-    expect(line).toContain("provider=internet_archive");
-    expect(line).toContain("tier=3:OPEN_SOURCES");
-    expect(line).toContain("order=OK");
-  });
-
-  it("an out-of-order attempt names what it skipped", () => {
-    const line = formatTierAttempt(0, 0, "pexels", tierMayRun("pexels", new Set()));
-    expect(line).toContain("tier=4:STOCK");
-    expect(line).toContain("order=OUT_OF_ORDER");
-    expect(line).toContain("1:YOUTUBE");
-    expect(line).toContain("2:OWN_ARCHIVE");
-    expect(line).toContain("3:OPEN_SOURCES");
-  });
-
-  it("an untiered provider says so rather than claiming a tier", () => {
-    expect(formatTierAttempt(0, 0, "something_new", { ok: true })).toContain("tier=UNTIERED");
   });
 });
 

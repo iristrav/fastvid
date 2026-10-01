@@ -17,24 +17,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import {
-  DEFAULT_TRANSITION_SEC,
-  LOOK_MODIFIERS,
-  OVERLAY_EFFECTS,
-  OVERLAY_TRANSITIONS,
-  RENDERABLE_EFFECTS,
-  RENDERABLE_LOOKS,
-  XFADE_TRANSITIONS,
-  buildTransitionGraph,
-  effectChain,
-  effectUnsupportedReason,
-  gradeChain,
-  lookUnsupportedReason,
-  transitionIsRenderable,
-  transitionUnsupportedReason,
-  unsupportedEffects,
-  validateEffect,
-} from "./timelineFilters";
+import { DEFAULT_TRANSITION_SEC, LOOK_MODIFIERS, OVERLAY_TRANSITIONS, RENDERABLE_EFFECTS, RENDERABLE_LOOKS, XFADE_TRANSITIONS, buildTransitionGraph, effectChain, gradeChain, lookUnsupportedReason, transitionIsRenderable, transitionUnsupportedReason, unsupportedEffects } from "./timelineFilters";
 import { resolveFFmpegBin } from "./ffmpegBinary";
 
 const execFileAsync = promisify(execFile);
@@ -167,14 +150,6 @@ describe("RONDE 153B — the effect vocabulary and its bounds", () => {
     }
   });
 
-  it("refuses the overlay-dependent ones with a reason", () => {
-    for (const t of ["film_dust", "vhs"]) {
-      expect(effectChain({ effectType: t, intensity: 0.5 }), t).toBeNull();
-      expect(effectUnsupportedReason(t), t).toBeTruthy();
-    }
-    expect(Object.keys(OVERLAY_EFFECTS).sort()).toEqual(["film_dust", "vhs"]);
-  });
-
   it("direction flips the sign of a signed effect and nothing else", () => {
     const up = effectChain({ effectType: "temperature", intensity: 0.8, direction: "up" })!;
     const down = effectChain({ effectType: "temperature", intensity: 0.8, direction: "down" })!;
@@ -200,30 +175,6 @@ describe("RONDE 153B — the effect vocabulary and its bounds", () => {
     });
     expect(evil).toBeNull();
     expect(RENDERABLE_EFFECTS.has("blur; drawtext=text='pwned'")).toBe(false);
-  });
-
-  it("clamps an out-of-range intensity rather than passing it through", () => {
-    const high = validateEffect({ effectType: "blur", intensity: 99 });
-    expect(high.ok).toBe(true);
-    if (high.ok) expect(high.effect.intensity).toBe(1);
-    const low = validateEffect({ effectType: "blur", intensity: -5 });
-    if (low.ok) expect(low.effect.intensity).toBe(0);
-  });
-
-  /** NaN formats as "NaN" through toFixed, which ffmpeg reads as a syntax error. */
-  it("refuses a non-finite intensity outright", () => {
-    const nan = validateEffect({ effectType: "blur", intensity: Number.NaN });
-    expect(nan.ok).toBe(false);
-    if (!nan.ok) expect(nan.reason).toContain("not a number");
-  });
-
-  it("refuses a direction that is neither up nor down", () => {
-    const bad = validateEffect({
-      effectType: "contrast",
-      intensity: 0.5,
-      direction: "sideways" as never,
-    });
-    expect(bad.ok).toBe(false);
   });
 
   it("no effect chain ever contains NaN or Infinity", () => {

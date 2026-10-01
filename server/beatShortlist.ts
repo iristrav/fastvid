@@ -150,15 +150,6 @@ export type NotAskedReason =
    */
   | "ADOPTED_WITHOUT_JUDGEMENT"
   /**
-   * P0-7 — the gate is switched off by configuration. A CHOICE, NOT AN OUTAGE.
-   *
-   * Deliberately not folded into `VISION_UNAVAILABLE`. One says an operator turned the picture
-   * editor off and the render is doing exactly what it was told; the other says the editor was
-   * supposed to be there and could not be reached. Reading the first as the second sends somebody
-   * to check API keys that were never the problem.
-   */
-  | "VISION_GATE_DISABLED"
-  /**
    * P0-7 — there was no narration to judge this picture against.
    *
    * A fact about the BEAT, not about the picture and not about the editor. It is the one decline
@@ -710,8 +701,6 @@ export function noteVisionOutcome(
  */
 export function notAskedReasonForDecline(cause: VisionDeclineCause): NotAskedReason {
   switch (cause) {
-    case "GATE_DISABLED":
-      return "VISION_GATE_DISABLED";
     case "NO_NARRATION":
       return "NO_NARRATION_TO_JUDGE";
     /** Both ceilings are the same finding for the funnel: the looks were spent before this one. */
@@ -908,7 +897,6 @@ export type DeclineCensus = {
 function declineBucket(reason: NotAskedReason): "blind" | "starved" | "settled" | "unattributed" {
   switch (reason) {
     case "VISION_UNAVAILABLE":
-    case "VISION_GATE_DISABLED":
       return "blind";
     case "SHORTLIST_FULL":
     case "SHORTLIST_SOURCE_SHARE":

@@ -129,17 +129,6 @@ export type TimelineValidation = {
   issues: TimelineIssue[];
 };
 
-/** Thrown when a render is asked for on a timeline that cannot produce one. */
-export class TimelineValidationError extends Error {
-  constructor(readonly issues: TimelineIssue[]) {
-    super(
-      `timeline has ${issues.length} blocking issue(s):\n` +
-        issues.map((i) => `  ${formatTimelineIssue(i)}`).join("\n")
-    );
-    this.name = "TimelineValidationError";
-  }
-}
-
 export function formatTimelineIssue(issue: TimelineIssue): string {
   const where =
     issue.start != null && issue.end != null
@@ -875,19 +864,3 @@ export const NON_BLOCKING_ISSUES: ReadonlySet<TimelineIssueCode> = new Set([
   "local_only_asset",
 ]);
 
-export function assertRenderableTimeline(timeline: ProjectTimeline): TimelineValidation {
-  const result = validateTimeline(timeline);
-  const blocking = result.issues.filter((i) => !NON_BLOCKING_ISSUES.has(i.code));
-  if (blocking.length > 0) throw new TimelineValidationError(blocking);
-  return result;
-}
-
-/** The validator's own report lines, for the render log. */
-export function formatTimelineValidation(result: TimelineValidation): string[] {
-  if (result.ok) return ["[TimelineValidator] ok — no issues"];
-  const blocking = result.issues.filter((i) => !NON_BLOCKING_ISSUES.has(i.code));
-  return [
-    `[TimelineValidator] ${result.issues.length} issue(s), ${blocking.length} blocking`,
-    ...result.issues.map((i) => `   ${formatTimelineIssue(i)}`),
-  ];
-}

@@ -66,21 +66,27 @@ export function youtubeIdFromUrl(url: string | null | undefined): string | null 
 }
 
 /**
- * Video 612 audit — the original YouTube video behind each archive asset of a timeline, read the
- * same way as `youtubeFootageInTimeline` below: the archive row's own platform and watch URL. An
- * asset whose row cannot be read, or is not YouTube, is simply left out.
+ * ONE ROUTE — the source footage behind each archive asset of a timeline, for the DeliveryGate's
+ * "one piece of footage fills the film" rule. A YouTube segment belongs to its YouTube video; a
+ * shot piece cut from a longer archive clip (`parentAssetId`) belongs to that parent. Without the
+ * second, the pieces of one uploaded or Internet Archive film were counted as separate footage and
+ * could fill the whole film unseen.
  */
-export async function youtubeVideoIdsForArchiveAssets(
+export async function footageSourceForArchiveAssets(
   clips: readonly { source?: { archiveAssetId?: number | null } }[],
-  loadRow: (id: number) => Promise<{ sourcePlatform?: string | null; sourceUrl?: string | null } | undefined | null>
+  loadRow: (
+    id: number
+  ) => Promise<{ sourcePlatform?: string | null; sourceUrl?: string | null; parentAssetId?: number | null } | undefined | null>
 ): Promise<Map<number, string>> {
   const out = new Map<number, string>();
   const ids = Array.from(new Set(clips.flatMap((c) => (c.source?.archiveAssetId != null ? [c.source.archiveAssetId] : []))));
   for (const id of ids) {
     const row = await loadRow(id).catch(() => undefined);
-    if (!row || (row.sourcePlatform ?? "").toLowerCase() !== YOUTUBE_PROVIDER_ID) continue;
-    const videoId = youtubeIdFromUrl(row.sourceUrl);
-    if (videoId) out.set(id, videoId);
+    if (!row) continue;
+    const videoId =
+      (row.sourcePlatform ?? "").toLowerCase() === YOUTUBE_PROVIDER_ID ? youtubeIdFromUrl(row.sourceUrl) : null;
+    if (videoId) out.set(id, `youtube:${videoId}`);
+    else if (row.parentAssetId != null) out.set(id, `archive:${row.parentAssetId}`);
   }
   return out;
 }

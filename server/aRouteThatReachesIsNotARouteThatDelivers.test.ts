@@ -11,7 +11,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { readFileSync } from "fs";
-import { googlevideoLinkLock } from "./videoPipeline";
+
 import {
   ROUTE_TEST_DEFAULT_VIDEO_ID,
   configuredRoutes,
@@ -21,28 +21,6 @@ import {
 } from "./youtubeRouteTest";
 
 const PIPE = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-
-describe("§1 — whose address a RapidAPI file link was made for", () => {
-  it("a googlevideo link that signs its ip is locked to that address", () => {
-    expect(
-      googlevideoLinkLock(
-        "https://rr1---sn-x.googlevideo.com/videoplayback?expire=1&ip=203.0.113.9&sparams=expire,ip,id&sig=a"
-      )
-    ).toBe("ip_locked");
-  });
-
-  it("one that does not sign it is not", () => {
-    expect(
-      googlevideoLinkLock("https://rr1---sn-x.googlevideo.com/videoplayback?expire=1&sparams=expire,id&sig=a")
-    ).toBe("not_ip_locked");
-  });
-
-  it("another host, or no URL at all, is said so rather than guessed", () => {
-    expect(googlevideoLinkLock("https://cdn.example.com/v.mp4")).toBe("not_googlevideo");
-    expect(googlevideoLinkLock("not a url")).toBe("unparseable");
-  });
-
-});
 
 describe("§2 — one route at a time, without changing a render", () => {
 

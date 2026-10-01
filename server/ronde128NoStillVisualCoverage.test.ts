@@ -25,22 +25,13 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-import {
-  MAX_STILL_IMAGE_DURATION_SEC,
-  MIN_STILL_SEGMENT_SEC,
-  containCenterFilter,
-  formatStillPlan,
-  planStillSegments,
-  stillImageMaxSec,
-  stillKenBurnsEnabled,
-  stillPlanIsValid,
-} from "./stillImagePolicy";
+import { MAX_STILL_IMAGE_DURATION_SEC, containCenterFilter, stillImageMaxSec } from "./stillImagePolicy";
 
 const src = (f: string) => fs.readFileSync(path.join(process.cwd(), "server", f), "utf8");
 
 let tmpDir: string;
 const saved: Record<string, string | undefined> = {};
-const KEYS = ["MAX_STILL_IMAGE_DURATION_SEC", "ENABLE_STILL_KEN_BURNS"];
+const KEYS = ["MAX_STILL_IMAGE_DURATION_SEC"];
 
 beforeEach(() => {
   for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
@@ -79,77 +70,6 @@ describe("RONDE 128 — an image is on screen for at most five seconds", () => {
     expect(fn.slice(0, 2000)).toContain("const cap = stillImageMaxSec();");
     expect(fn.slice(0, 2000)).toContain("duration = cap;");
   });
-
-  it("15s across three images is 5 + 5 + 5", () => {
-    const plan = planStillSegments({ totalSec: 15, imageCount: 3 });
-    expect(plan.map((s) => s.durationSec)).toEqual([5, 5, 5]);
-    expect(plan.map((s) => s.imageIndex)).toEqual([0, 1, 2]);
-    expect(stillPlanIsValid(plan)).toBe(true);
-  });
-
-  it("20s across four images is four shots, none over five seconds", () => {
-    const plan = planStillSegments({ totalSec: 20, imageCount: 4 });
-    expect(plan).toHaveLength(4);
-    for (const s of plan) expect(s.durationSec).toBeLessThanOrEqual(5);
-    expect(stillPlanIsValid(plan)).toBe(true);
-  });
-
-  it("a stretch that fits stays one shot", () => {
-    expect(planStillSegments({ totalSec: 4, imageCount: 1 })).toEqual([
-      { imageIndex: 0, durationSec: 4 },
-    ]);
-  });
-});
-
-/* ═══════════ 2. never the same picture twice in a row ═══════════ */
-
-describe("RONDE 128 — a repeat is a held frame with a cut drawn in it", () => {
-  it("CRITICAL: one image cannot cover more than the cap", () => {
-    /**
-     * Repeating the same photograph back to back is the same picture standing still with an edit
-     * in the middle. An empty plan is a coverage gap the caller must report — never a licence to
-     * hold one frame for the whole stretch.
-     */
-    expect(planStillSegments({ totalSec: 12, imageCount: 1 })).toEqual([]);
-    expect(planStillSegments({ totalSec: 5.5, imageCount: 1 })).toEqual([]);
-  });
-
-  it("two images alternate rather than one being exhausted", () => {
-    const plan = planStillSegments({ totalSec: 15, imageCount: 2 });
-    expect(plan.map((s) => s.imageIndex)).toEqual([0, 1, 0]);
-    expect(stillPlanIsValid(plan)).toBe(true);
-  });
-
-  it("no plan ever puts the same image in consecutive segments", () => {
-    for (let total = 6; total <= 40; total += 1.5) {
-      for (let images = 2; images <= 5; images++) {
-        const plan = planStillSegments({ totalSec: total, imageCount: images });
-        for (let i = 1; i < plan.length; i++) {
-          expect(plan[i]!.imageIndex, `${total}s / ${images} images`).not.toBe(plan[i - 1]!.imageIndex);
-        }
-      }
-    }
-  });
-
-  it("a sliver at the end is folded in, not shown as a flash", () => {
-    const plan = planStillSegments({ totalSec: 10.4, imageCount: 2 });
-    for (const s of plan) expect(s.durationSec).toBeGreaterThanOrEqual(MIN_STILL_SEGMENT_SEC);
-    expect(plan.reduce((a, s) => a + s.durationSec, 0)).toBeCloseTo(10.4, 2);
-  });
-
-  it("the total is always covered exactly", () => {
-    for (const total of [7, 11, 13.5, 22, 31.7]) {
-      const plan = planStillSegments({ totalSec: total, imageCount: 4 });
-      expect(plan.reduce((a, s) => a + s.durationSec, 0), `${total}s`).toBeCloseTo(total, 2);
-    }
-  });
-
-  it("the log says a gap is a gap, not a held frame", () => {
-    expect(formatStillPlan(1, 4, 12, [])).toMatch(/coverage gap, NOT a held frame/);
-    expect(formatStillPlan(1, 4, 15, planStillSegments({ totalSec: 15, imageCount: 3 }))).toContain(
-      "3 still(s)"
-    );
-  });
 });
 
 /* ═══════════ 3. contain, centre, no zoom, no crop ═══════════ */
@@ -173,38 +93,16 @@ describe("RONDE 128 — the whole picture, in the middle", () => {
     expect(f).toContain("setsar=1");
   });
 
-  it("Ken Burns is off for ordinary stills, and reversible in one setting", () => {
-    expect(stillKenBurnsEnabled()).toBe(false);
-    process.env.ENABLE_STILL_KEN_BURNS = "true";
-    expect(stillKenBurnsEnabled()).toBe(true);
-  });
-
-  it("the encoder's default branch is the contain one", () => {
+  it("RONDE 656 — the encoder's default branch contains the picture and holds it: no flag brings a baked zoom back", () => {
     const curated = src("curatedMediaSourcing.ts");
-    /**
-     * Widened from 6000 in RONDE 147 and again to 9500 in RONDE 152, which documented why the
-     * contained still now MOVES (measured offset 8109). The window is a way of saying "inside
-     * convertImageToKenBurns" and nothing more — every assertion is unchanged and each still
-     * fails if the line it names is deleted.
-     */
     const fn = curated.slice(
       curated.indexOf("async function convertImageToKenBurns("),
       curated.indexOf("async function convertImageToKenBurns(") + 9500
     );
-    // The zoom/crop path is now behind the flag...
-    expect(fn).toContain("} else if (stillKenBurnsEnabled()) {");
-    // ...and the default path contains the picture.
+    expect(fn).not.toContain("stillKenBurnsEnabled");
+    expect(fn).not.toContain("stillZoomOutExpr(");
     expect(fn).toContain("containCenterFilter({ widthPx: VIDEO_WIDTH, heightPx: VIDEO_HEIGHT })");
-    /**
-     * RONDE 152 — and it MOVES, which RONDE 128 did not require and production paid for.
-     *
-     * Removing the crop was right; removing the motion with it left this branch emitting a
-     * literally frozen picture. Video 550 measured 34.13s of unchanging image because the
-     * coverage fill looped a motionless still. The drift eases back to 1.0, so the last frame is
-     * still exactly the contained picture — whole, centred, uncropped.
-     */
-    expect(fn).toContain("stillZoomOutExpr(");
-    expect(fn).toContain('kenBurnsCenterXExpr(null, "1")');
+    expect(fn).toContain('`-vf "${contain},fps=25,format=yuv420p" `');
   });
 
   it("THE REAL TEST: a wide photo really is letterboxed and centred, not cropped", () => {

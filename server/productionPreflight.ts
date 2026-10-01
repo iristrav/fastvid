@@ -611,8 +611,6 @@ export type PreflightReport = {
  * everything else, rather than discovering it from a video that took the old path.
  */
 export const ROUTE_FLAGS = [
-  "CINEMATIC_EDITING_ENGINE",
-  "CINEMATIC_RENDER_PATH",
   "ENABLE_YOUTUBE_SOURCING",
   "AI_DIRECTOR",
 ] as const;
@@ -661,24 +659,12 @@ export async function productionPreflight(
       degradations.push(`${h.id}: ${h.detail}`);
     }
     /**
-     * RONDE 95 FINAL — a missing picture editor is fatal exactly when the gate is enforced.
-     *
-     * Not an opinion about how good the film would be: with `ENFORCE_FUNNEL_ADOPTION` on (the
-     * default since RONDE 94) a render without CLIP is GUARANTEED to be refused by RONDE 89's
-     * export gate, because no beat can hold a verified visual. Starting it wastes the whole run.
-     *
-     * With enforcement explicitly disabled the same render completes and ships unverified
-     * footage — a worse film, not an impossible one — so it degrades rather than blocks. The
-     * verdict follows the configuration rather than guessing at it.
+     * RONDE 95 FINAL — a missing picture editor is fatal: funnel adoption is always enforced (there
+     * is no switch any more), so a render without CLIP is GUARANTEED to be refused at export,
+     * because no beat can hold a verified visual. Starting it wastes the whole run.
      */
     if (!h.available && h.id === "clip_vision") {
-      const enforced = (env.ENFORCE_FUNNEL_ADOPTION ?? "") !== "false";
-      (enforced ? blockers : degradations).push(
-        `${h.id}: ${h.detail}` +
-          (enforced
-            ? " (ENFORCE_FUNNEL_ADOPTION is on, so this render would be refused at export)"
-            : " (ENFORCE_FUNNEL_ADOPTION=false, so the render ships unverified footage instead)")
-      );
+      blockers.push(`${h.id}: ${h.detail} (funnel adoption is enforced, so this render would be refused at export)`);
     }
   }
 

@@ -3,9 +3,9 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { DEFAULT_TEXT_STYLE, emptyTimeline, type ProjectTimeline, type TimelineGraphic, type TimelineText } from "./projectTimeline";
 import { MAX_REVEALS, REVEAL_MIN_GAP_SEC, directOnScreenText, formatTextDirection } from "./onScreenTextDirector";
-import { TYPE_CHAR_SEC, TYPE_DELAY_SEC, keystrokeTimesSec, typedCount, typingDurationSec } from "./remotion/components/typewriter";
-import { TYPEWRITER_GAIN_DB, intensityAtFrom, typewriterSfxClips, typewriterSoundId } from "./typewriterSound";
-import { SUPPORTED_ANIMATIONS, PROGRESSIVE_ANIMATIONS } from "./remotion/components/animation";
+import { TYPE_CHAR_SEC, TYPE_DELAY_SEC, typedCount } from "./remotion/components/typewriter";
+import { intensityAtFrom, typewriterSfxClips } from "./typewriterSound";
+import { PROGRESSIVE_ANIMATIONS } from "./remotion/components/animation";
 import { duckingEnabled } from "./timelineFilters";
 
 /**
@@ -31,25 +31,6 @@ function timeline(texts: TimelineText[], graphics: TimelineGraphic[], durationSe
 }
 const texts = (t: ProjectTimeline) => (t.tracks.find((x) => x.kind === "TEXT") as { texts: TimelineText[] }).texts;
 const graphics = (t: ProjectTimeline) => (t.tracks.find((x) => x.kind === "GRAPHICS") as { graphics: TimelineGraphic[] }).graphics;
-
-describe("a typewriter types at one fixed pace", () => {
-  it("nothing before the first key, then one character per step, then all of it", () => {
-    expect(typedCount("1945", 0)).toBe(0);
-    expect(typedCount("1945", TYPE_DELAY_SEC + 0.001)).toBe(1);
-    expect(typedCount("1945", TYPE_DELAY_SEC + 2 * TYPE_CHAR_SEC + 0.001)).toBe(3);
-    expect(typedCount("1945", 10)).toBe(4);
-    expect(typingDurationSec("1945")).toBeCloseTo(TYPE_DELAY_SEC + 4 * TYPE_CHAR_SEC, 6);
-  });
-
-  it("a space is typed but silent", () => {
-    expect(keystrokeTimesSec("A B")).toEqual([TYPE_DELAY_SEC, Number((TYPE_DELAY_SEC + 2 * TYPE_CHAR_SEC).toFixed(3))]);
-  });
-
-  it("is an animation the renderer supports, and a progressive one", () => {
-    expect(SUPPORTED_ANIMATIONS.has("typewriter")).toBe(true);
-    expect(PROGRESSIVE_ANIMATIONS.has("typewriter")).toBe(true);
-  });
-});
 
 describe("years type; key-word pop-ups stay off except at the most intense moments", () => {
   it("every year still on screen types itself in — the card and a loose year text alike", () => {
@@ -109,18 +90,6 @@ describe("years type; key-word pop-ups stay off except at the most intense momen
 });
 
 describe("the keys are heard, from the catalogue's own recording", () => {
-  it("one quiet clip per typing element, from the first key to the last, heard over the voice at -22 dB", () => {
-    expect(typewriterSoundId()).toBe("434572");
-    const [c] = typewriterSfxClips([{ id: "g_date", start: 2, text: "1945" }]);
-    expect(c!.source).toMatchObject({ provider: "freesound", providerAssetId: "434572" });
-    expect(c!.start).toBeCloseTo(2 + TYPE_DELAY_SEC, 3);
-    expect(c!.end).toBeCloseTo(2 + TYPE_DELAY_SEC + 4 * TYPE_CHAR_SEC + 0.08, 3);
-    expect(c!.gain).toBeCloseTo(10 ** (TYPEWRITER_GAIN_DB / 20), 3);
-    /** RONDE 657 — an SFX clip is not ducked (the renderer's rule); its level is what keeps it quiet. */
-    expect(c!.duckUnderVoice).toBeUndefined();
-    expect(duckingEnabled({ index: 1, kind: "SFX", startSec: c!.start, gain: c!.gain, durationSec: 1 })).toBe(false);
-    expect(TYPEWRITER_GAIN_DB).toBeLessThanOrEqual(-20);
-  });
 
   it("the film's intensity comes from the shot on screen and its beat", () => {
     const at = intensityAtFrom(
@@ -150,9 +119,10 @@ describe("the wiring", () => {
    * VIDEO 619 — the made video carries no text, so no key sound is laid either. The director still
    * decides what WOULD type, so a year the person switches on in the editor types as planned.
    */
-  it("the pipeline passes the curve to the director and lays no key sound for text that is off", () => {
+  it("the pipeline passes the curve to the director and lays key sound only under typing text that is drawn", () => {
     expect(PIPE).toContain("intensityAtFrom(videoForIntensity.clips, params.emotionalCurve)");
-    expect(PIPE).not.toContain("typewriterSfxClips(");
+    expect(PIPE).toContain("typewriterSfxClips(textDirection.typewriter.filter((e) => drawnTexts.has(e.id)))");
+    expect(PIPE).toContain("t.texts.filter((x) => !x.disabled)");
   });
   it("the date card and plain text type at the shared pace", () => {
     expect(GFX).toContain("typedCount(primary, frame / fps)");

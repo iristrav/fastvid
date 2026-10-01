@@ -23,7 +23,6 @@
  *   Editorial memory     — bonus for continuing previous-scene aesthetic
  *
  * No LLM calls. No retrieval. 100% from pre-computed metadata and state.
- * Feature flag: ASSET_DIRECTOR_ENABLED (default: "true")
  *
  * Explainability: every clip choice emits a structured log with per-signal
  * contributions so any pick can be fully traced.
@@ -58,11 +57,6 @@ import {
 } from "./documentaryPlanningEngine";
 import { normaliseShotType } from "./shotVocabulary";
 
-// ─── Feature flag ─────────────────────────────────────────────────────────────
-
-export function assetDirectorEnabled(): boolean {
-  return process.env.ASSET_DIRECTOR_ENABLED !== "false";
-}
 
 // ─── CandidateMeta ───────────────────────────────────────────────────────────
 
@@ -362,6 +356,8 @@ export type AssetScore = {
 export type AssetDirectorResult = {
   rankedPaths: string[];
   topScore: AssetScore | null;
+  /** Every candidate's own final score — the taste model blends these, never an estimate. */
+  scores: Map<string, number>;
   reordered: boolean;
   /**
    * Trim hints for candidates that have a better-matching temporal segment.
@@ -1316,8 +1312,8 @@ export function rankCandidatesWithContext(
   ctx: AssetDirectorContext,
   candidateMeta?: Map<string, CandidateMeta>
 ): AssetDirectorResult {
-  if (!assetDirectorEnabled() || candidatePaths.length <= 1) {
-    return { rankedPaths: candidatePaths, topScore: null, reordered: false };
+  if (candidatePaths.length <= 1) {
+    return { rankedPaths: candidatePaths, topScore: null, reordered: false, scores: new Map() };
   }
 
   const directive = getBlueprintDirective(ctx.blueprint, sceneIndex, beatIndex);
@@ -1349,6 +1345,7 @@ export function rankCandidatesWithContext(
   return {
     rankedPaths: scored.map((s) => s.path),
     topScore: scored[0]!.score,
+    scores: new Map(scored.map((s) => [s.path, s.score.finalScore])),
     reordered,
     trimHints: trimHints.size > 0 ? trimHints : undefined,
   };

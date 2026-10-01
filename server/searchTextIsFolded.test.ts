@@ -33,12 +33,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import {
-  evidenceStem,
-  evidenceStems,
-  validateSearchQuery,
-  type VerifiedQueryContext,
-} from "./searchQueryContract";
+import { evidenceStems, validateSearchQuery, type VerifiedQueryContext } from "./searchQueryContract";
 import { foldSearchText } from "./searchTextNormalize";
 
 /* ═══════════════ the gate proves a word the script actually says ═══════════════ */
@@ -125,19 +120,6 @@ describe("evidenceStems folds without losing its inflection rules", () => {
     expect(evidenceStems("Führerbunker")).toContain("fuhrerbunker");
     expect(evidenceStems("Führerbunker")).toEqual(evidenceStems("fuhrerbunker"));
     expect(evidenceStems("Führerbunker").every((s) => /^[a-z]+$/.test(s))).toBe(true);
-  });
-
-  /** RONDE 90's rules are untouched — these are the same expectations that file asserts. */
-  it("still stems only inflections", () => {
-    expect(evidenceStem("canals")).toBe("canal");
-    expect(evidenceStem("bus")).toBe("bus");
-    expect(evidenceStem("berlin")).toBe("berlin");
-    expect(evidenceStem("cycling")).not.toBe(evidenceStem("cyclists"));
-  });
-
-  /** Non-Latin scripts have no diacritics to strip and must survive intact. */
-  it("leaves a non-Latin word alone", () => {
-    expect(evidenceStem("Берлин")).toBe("берлин");
   });
 });
 

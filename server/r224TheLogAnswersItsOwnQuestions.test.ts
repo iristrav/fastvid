@@ -112,15 +112,15 @@ describe("R224 §1 — the scene gate says why nobody could judge", () => {
 /* ═══════════ 2. every decline still routes through one place ═══════════ */
 
 describe("R224 §2 — the seven causes remain distinguishable", () => {
-  it("ALL SEVEN DECLINES ARE STILL COUNTED BY REASON", () => {
+  it("ALL SIX DECLINES ARE STILL COUNTED BY REASON (the seventh, 'gate switched off', no longer exists)", () => {
     const declines = [...GATE.matchAll(/return declined\("([^"]+)"|return declined\(`([^`]+)`/g)];
     expect(
       declines.length,
       "a decline path stopped naming itself, so the tally can no longer tell it apart"
-    ).toBeGreaterThanOrEqual(7);
+    ).toBeGreaterThanOrEqual(6);
   });
 
-  it("EXACTLY THREE CAUSES LATCH askImpossible, and they are the three that mean nobody could look", () => {
+  it("EXACTLY TWO CAUSES LATCH askImpossible, and they are the two that mean nobody could look", () => {
     /**
      * The count is the assertion: a fourth latch would suspend the vision requirement for a cause
      * that is not "this render has no picture editor", which is the one thing this round must not
@@ -131,8 +131,10 @@ describe("R224 §2 — the seven causes remain distinguishable", () => {
      * below it was read as the whole branch. So of the seven ways to reach `vision=NOT_ASKED`,
      * three latch and four do not:
      *
-     *     latch:     gate switched off · no provider reachable · provider has no capacity
+     *     latch:     no provider reachable · provider has no capacity
      *     no latch:  no narration · render budget spent · no readable frame · frames unusable
+     *
+     * The code audit removed the third latch, "gate switched off": the gate has no switch any more.
      *
      * Which matters for render 576: the guard demanded evidence, so no latch was set, so all three
      * latching causes are excluded. `no narration` prints RONDE 215's warning (absent from that
@@ -141,7 +143,7 @@ describe("R224 §2 — the seven causes remain distinguishable", () => {
     const definition = [...GATE.matchAll(/function noteAskImpossible\(/g)].length;
     const callSites = [...GATE.matchAll(/^\s+noteAskImpossible\(/gm)].length;
     expect(definition).toBe(1);
-    expect(callSites, "a decline path started or stopped latching").toBe(3);
+    expect(callSites, "a decline path started or stopped latching").toBe(2);
   });
 
   it("a decline is still `evaluated: false`, so it still reads as NOT_ASKED", () => {

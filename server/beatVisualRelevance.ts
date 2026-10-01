@@ -61,7 +61,6 @@ import {
   reprieveAllowedFor,
 } from "./visualMismatchFeedback";
 import { JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
-import { beatImageRelevanceGateEnabled } from "./config";
 
 /**
  * Everything the judge needs to know about the beat a clip is being cut under.
@@ -393,18 +392,6 @@ export function beatRelevanceBeatKey(
 }
 
 /**
- * The prefix every key for ONE beat starts with — for a caller that wants this beat's entries and
- * has no handle to ask about.
- *
- * Here rather than at the caller, because the caller would have to re-spell the separator. A second
- * copy of a key shape is a second thing to keep in step, and a prefix that is nearly right silently
- * matches nothing.
- */
-export function beatRelevanceBeatKeyPrefix(sceneIndex: number, beatIndex: number): string {
-  return beatRelevanceBeatKey(sceneIndex, beatIndex, "path", "").slice(0, -"path:".length);
-}
-
-/**
  * Does this beat already hold a picture THIS EDITOR APPROVED, other than the one being asked about?
  *
  * The question "nothing stands behind it" made flesh — see `cardRefusalKept`, which asserted it
@@ -663,7 +650,6 @@ export async function checkBeatRelevance(
    * can now say which of its cards the editor thought did not belong; it simply does not act on it
    * where acting means leaving a hole.
    */
-  if (!beatImageRelevanceGateEnabled()) return pass("GATE_DISABLED", "unknown", "gate disabled");
   if (!ctx.beatText?.trim()) return pass("NO_NARRATION", "unknown", "no narration to judge against");
 
   const slot = beatSlotKey(ctx);
@@ -916,38 +902,6 @@ export function reprieveBeatClip(
 }
 
 /**
- * RONDE 166 §7 — the line that says why the picture that IS on screen is on screen.
- *
- * A log that only prints problems cannot distinguish "this beat's picture was approved" from
- * "nobody ever looked at this beat's picture", and video 554 contained both. Returns null only
- * when the clip is genuinely unknown to the ledger, which the render summary already counts.
- */
-export function formatAdoptedFitDecision(
-  ledger: BeatRelevanceLedger,
-  clipPath: string,
-  contentKey?: string
-): string | null {
-  const entry =
-    ledger.byClipPath.get(clipPath) ??
-    (contentKey ? ledger.byContentKey.get(contentKey) : undefined);
-  if (!entry) return null;
-  const d = entry.decision;
-  const severity =
-    d.verdict === "does_not_fit"
-      ? mismatchSeverity(classifyMismatch({ depicts: d.depicts, reason: d.reason }))
-      : "NONE";
-  return formatVisualFitDecision({
-    beatLabel: beatSlotKey(entry.ctx),
-    candidate: path.basename(clipPath),
-    verdict: d.verdict,
-    severity,
-    decision: "ADOPTED",
-    reason: d.reprieved ? "reprieved_soft_mismatch" : d.verdict,
-    fallback: d.reprieved,
-  });
-}
-
-/**
  * RENDER 563 — THE MANIFEST REPORTED ANOTHER CLIP'S VERDICT.
  *
  * ── The contradiction ───────────────────────────────────────────────────────────────────────
@@ -1159,14 +1113,6 @@ export function barrierCoverage(ledger: BeatRelevanceLedger): {
   judgedAssets: number;
 } {
   return { judgedPaths: ledger.byClipPath.size, judgedAssets: ledger.byContentKey.size };
-}
-
-/** What the gate decided about this exact file, if it has seen it. */
-export function lookupBeatRelevance(
-  ledger: BeatRelevanceLedger,
-  clipPath: string
-): BeatRelevanceEntry | null {
-  return ledger.byClipPath.get(clipPath) ?? null;
 }
 
 /**

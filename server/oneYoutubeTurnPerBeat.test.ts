@@ -227,9 +227,7 @@ describe("§15 — the vocabulary an operator can act on", () => {
   it("every ending is one of the recorded outcomes, and refusal has its own line", () => {
     const body = turnFn();
     for (const outcome of [
-      "YOUTUBE_ADOPTED",
       "YOUTUBE_NO_RESULTS",
-      "YOUTUBE_NO_USABLE_CANDIDATE",
       "YOUTUBE_TIMEOUT",
       "YOUTUBE_SEARCH_FAILED",
       "YOUTUBE_CANDIDATES_DELIVERED",
@@ -247,8 +245,11 @@ describe("§15 — the vocabulary an operator can act on", () => {
      * the point: `adoptClip` returns a path or null and does not say which gate refused, so those
      * labels could only be guesses dressed as measurements.
      */
-    expect(PIPELINE).toContain("function countBeatVisionRefusals(");
-    expect(PIPELINE).toContain('entry.decision.verdict === "does_not_fit"');
+    /**
+     * Code audit P9: the turn only supplies candidates, so it claims no refusal at all — the
+     * VisualJudge's verdict belongs to the beat's one adoptClip.
+     */
+    expect(PIPELINE).not.toContain('"YOUTUBE_VISION_REJECTED"');
     // As VALUES, not as words: the doc comment names them precisely to say they are not used.
     expect(PIPELINE).not.toContain('"YOUTUBE_RIGHTS_REJECTED"');
     expect(PIPELINE).not.toContain('"YOUTUBE_ADOPTION_REJECTED"');
@@ -328,7 +329,6 @@ describe("§18 — the static audit: no route reaches YouTube on its own", () =>
 describe("§C — RONDE 259's transfer reserve and the YouTube clock still stand", () => {
   it("the reserve taken at scope open is untouched", () => {
     expect(PIPELINE).toContain("reserveYoutubeTurn(scope);");
-    expect(PIPELINE).toContain("export function remainingNonYoutubeScopeMs()");
     expect(PIPELINE).toContain("youtubeReservedMs");
     expect(PIPELINE).toContain("youtubeTurnEndedAtMs");
   });

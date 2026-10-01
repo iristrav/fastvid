@@ -29,16 +29,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import {
-  withSceneFetchTimeout,
-  remainingScopeMs,
-  remainingNonYoutubeScopeMs,
-  scopedTimeoutMs,
-  endYoutubeTurn,
-  YOUTUBE_MIN_TURN_MS,
-  YOUTUBE_SEARCH_TIMEOUT_MS,
-  YOUTUBE_TURN_WINDOW_MS,
-} from "./videoPipeline";
+import { withSceneFetchTimeout, remainingScopeMs, endYoutubeTurn, YOUTUBE_MIN_TURN_MS, YOUTUBE_SEARCH_TIMEOUT_MS, YOUTUBE_TURN_WINDOW_MS } from "./videoPipeline";
 
 /**
  * RONDE 600 — the reserve is sized by YOUTUBE_TURN_WINDOW_MS, not YOUTUBE_MIN_TURN_MS.
@@ -73,21 +64,6 @@ const inScope = <T>(fn: () => T | Promise<T>, ms = WINDOW_MS): Promise<T> =>
 /* ═══════════ 1 — the reserve exists before anything has spent ═══════════ */
 
 describe("§1 — the reservation is made when the scope opens", () => {
-  it("a non-YouTube caller sees less than the whole clock, by exactly the turn's cost", async () => {
-    await inScope(() => {
-      const whole = remainingScopeMs();
-      const forOthers = remainingNonYoutubeScopeMs();
-      /** Within a millisecond: both readings race `Date.now()` against the same deadline. */
-      expect(Math.abs(whole - forOthers - YOUTUBE_TURN_WINDOW_MS)).toBeLessThanOrEqual(2);
-    });
-  });
-
-  it("the YouTube turn sees the whole clock — the reserve is its own", async () => {
-    await inScope(() => {
-      expect(remainingScopeMs()).toBeGreaterThan(remainingNonYoutubeScopeMs());
-      expect(remainingScopeMs()).toBeGreaterThanOrEqual(YOUTUBE_MIN_TURN_MS);
-    });
-  });
 
   it("the reserve is the turn's real cost — one search plus the download floor", () => {
     /**
@@ -99,87 +75,6 @@ describe("§1 — the reservation is made when the scope opens", () => {
     expect(PIPELINE).toContain(
       "export const YOUTUBE_MIN_TURN_MS = YOUTUBE_SEARCH_TIMEOUT_MS + YOUTUBE_MIN_DOWNLOAD_WINDOW_MS;"
     );
-  });
-
-  it("a scene too small to share is not handed to one provider", async () => {
-    /**
-     * A guaranteed turn, not a guaranteed monopoly — and RONDE 600 makes it stricter, not looser:
-     * a window that cannot pay for a whole turn now reserves NOTHING, because the turn would be
-     * declined at the door however the seconds are labelled and the held-back time is taken from
-     * sources that could have spent it. Ten seconds cannot pay for a turn, so nothing is withheld.
-     */
-    await inScope(() => {
-      const whole = remainingScopeMs();
-      expect(whole - remainingNonYoutubeScopeMs()).toBeLessThanOrEqual(Math.ceil(whole / 2) + 50);
-    }, 10_000);
-  });
-});
-
-/* ═══════════ 2 — other providers cannot spend it ═══════════ */
-
-describe("§2 — NON_YOUTUBE_SPEND <= TOTAL - RESERVED", () => {
-  it("every provider timeout is sized against the reduced clock", async () => {
-    /**
-     * `scopedTimeoutMs` is the one funnel every non-YouTube provider timeout in this pipeline goes
-     * through, which is why the reserve is honoured there and nowhere else has to remember.
-     */
-    await inScope(() => {
-      const asked = WINDOW_MS; // more than the scope can give
-      expect(scopedTimeoutMs(asked)).toBeLessThanOrEqual(remainingNonYoutubeScopeMs());
-      expect(scopedTimeoutMs(asked)).toBeLessThan(remainingScopeMs());
-    });
-  });
-
-  it("archive work cannot be granted the seconds the turn is holding", async () => {
-    await inScope(() => {
-      const granted = scopedTimeoutMs(WINDOW_MS);
-      const whole = remainingScopeMs();
-      expect(whole - granted).toBeGreaterThanOrEqual(YOUTUBE_MIN_TURN_MS);
-    });
-  });
-
-  it("outside a scope nothing is withheld — there is no clock to reserve from", () => {
-    expect(remainingNonYoutubeScopeMs()).toBe(Number.POSITIVE_INFINITY);
-    expect(remainingScopeMs()).toBe(Number.POSITIVE_INFINITY);
-  });
-});
-
-/* ═══════════ 3 — released only after the turn, and then fully ═══════════ */
-
-describe("§3 — the reserve returns to the pool when the turn ends", () => {
-  it("unused budget is released ONLY after the turn finishes, and then in full", async () => {
-    await inScope(() => {
-      const before = remainingNonYoutubeScopeMs();
-      expect(Math.abs(remainingScopeMs() - before - YOUTUBE_TURN_WINDOW_MS)).toBeLessThanOrEqual(2);
-
-      endYoutubeTurn("YOUTUBE_NO_RESULTS");
-
-      const after = remainingNonYoutubeScopeMs();
-      expect(after).toBeGreaterThan(before);
-      expect(remainingScopeMs() - after).toBeLessThanOrEqual(2);
-    });
-  });
-
-  it("the release is idempotent — a second ending cannot re-open the turn", async () => {
-    await inScope(() => {
-      endYoutubeTurn("YOUTUBE_NO_RESULTS");
-      const after = remainingNonYoutubeScopeMs();
-      endYoutubeTurn("ADOPTABLE_CANDIDATES:1");
-      expect(remainingScopeMs() - remainingNonYoutubeScopeMs()).toBeLessThanOrEqual(2);
-      expect(remainingNonYoutubeScopeMs()).toBeLessThanOrEqual(after);
-    });
-  });
-
-  it("a scope's reserve is its own — a sibling scene does not inherit the release", async () => {
-    await inScope(() => {
-      endYoutubeTurn("YOUTUBE_NO_RESULTS");
-      expect(remainingScopeMs() - remainingNonYoutubeScopeMs()).toBeLessThanOrEqual(2);
-    });
-    await inScope(() => {
-      expect(
-        Math.abs(remainingScopeMs() - remainingNonYoutubeScopeMs() - YOUTUBE_TURN_WINDOW_MS)
-      ).toBeLessThanOrEqual(2);
-    });
   });
 });
 

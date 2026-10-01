@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildHistoricalArchivalQueries, buildMediaSearchIntent, extractBeatVisualTargets, extractEventCue, inferTopicKind, isHistoricalDocumentary, realFootageFirstEnabled, mergeAiRelevanceScores, scoreMediaCandidate, type MediaCandidate } from "./mediaResearchEngine";
+import { buildHistoricalArchivalQueries, buildMediaSearchIntent, extractBeatVisualTargets, extractEventCue, inferTopicKind, isHistoricalDocumentary, type MediaCandidate } from "./mediaResearchEngine";
 
 describe("inferTopicKind", () => {
   it("detects person topics", () => {
@@ -26,79 +26,6 @@ describe("inferTopicKind", () => {
 
   it("detects space topics", () => {
     expect(inferTopicKind("The rocket launched.", "", true, false)).toBe("space");
-  });
-});
-
-describe("scoreMediaCandidate", () => {
-  const titanicIntent = buildMediaSearchIntent({
-    beatText: "In 1912 vertrok de Titanic vanuit Southampton.",
-    searchQueries: ["Titanic Southampton 1912", "RMS Titanic"],
-    keywords: ["titanic", "southampton", "1912"],
-    primaryPerson: "",
-    persons: [],
-    powerWord: "Titanic",
-    personTopicLock: false,
-    spaceTopic: false,
-  });
-
-  it("penalizes stock and stills below archival video for historical beats", () => {
-    const archive: MediaCandidate = {
-      path: "/tmp/s1_b0_archive_titanic.mp4",
-      query: "RMS Titanic archival footage 1912",
-      source: "internet_archive",
-      isVideo: true,
-    };
-    const pexels: MediaCandidate = {
-      path: "/tmp/s1_b0_pexels_ocean.mp4",
-      query: "ocean waves",
-      source: "pexels",
-      isVideo: true,
-    };
-    const unsplash: MediaCandidate = {
-      path: "/tmp/s1_b0_unsplash_titanic.mp4",
-      query: "RMS Titanic ship",
-      source: "unsplash",
-      isVideo: false,
-    };
-    expect(scoreMediaCandidate(archive, titanicIntent)).toBeGreaterThan(
-      scoreMediaCandidate(pexels, titanicIntent)
-    );
-    expect(scoreMediaCandidate(archive, titanicIntent)).toBeGreaterThan(
-      scoreMediaCandidate(unsplash, titanicIntent)
-    );
-  });
-
-  it("prefers Wikimedia video over generic Pexels for historical beats", () => {
-    const wiki: MediaCandidate = {
-      path: "/tmp/s1_b0_wikivid_titanic.mp4",
-      query: "RMS Titanic Southampton",
-      source: "wikimedia_video",
-      isVideo: true,
-    };
-    const pexels: MediaCandidate = {
-      path: "/tmp/s1_b0_pexels_ocean.mp4",
-      query: "ocean waves",
-      source: "pexels",
-      isVideo: true,
-    };
-    expect(scoreMediaCandidate(wiki, titanicIntent)).toBeGreaterThan(
-      scoreMediaCandidate(pexels, titanicIntent)
-    );
-  });
-});
-
-describe("mergeAiRelevanceScores", () => {
-  it("boosts candidates the LLM scored higher", () => {
-    const candidates: MediaCandidate[] = [
-      { path: "/a.mp4", query: "Titanic", source: "internet_archive", isVideo: true, score: 100 },
-      { path: "/b.mp4", query: "ocean", source: "pexels", isVideo: true, score: 100 },
-    ];
-    const aiScores = new Map([
-      [0, 9],
-      [1, 2],
-    ]);
-    const merged = mergeAiRelevanceScores(candidates, aiScores);
-    expect(merged[0].score).toBeGreaterThan(merged[1].score!);
   });
 });
 
@@ -203,15 +130,6 @@ describe("extractBeatVisualTargets — point 1 (multiple concrete visual targets
     });
     const targets = extractBeatVisualTargets(intent.beatText, intent, intent.videoTitle);
     expect(targets.length).toBeGreaterThan(0);
-  });
-});
-
-describe("realFootageFirstEnabled", () => {
-  it("is on by default", () => {
-    const prev = process.env.REAL_FOOTAGE_FIRST;
-    delete process.env.REAL_FOOTAGE_FIRST;
-    expect(realFootageFirstEnabled()).toBe(true);
-    process.env.REAL_FOOTAGE_FIRST = prev;
   });
 });
 

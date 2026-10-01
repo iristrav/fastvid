@@ -87,30 +87,6 @@ const ffmpeg = (): string => resolveFFmpegBin();
 const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
 
 /**
- * Fields the timeline can carry that this renderer does not yet execute.
- *
- * RONDE 148 emptied most of this list by implementing it: camera moves run through zoompan,
- * crossfade/dissolve/dip through xfade, crop/cover/scale/position/opacity through the fit chain,
- * and music now ducks under voice with the sidechain filter `cinematicAudio` already used. What
- * remains is named per-render in `skipped` with the planner's own reason — see
- * `unsupported_effect`, `unsupported_transition` and `unsupported_graphic`.
- */
-export const UNIMPLEMENTED = [
-  "visual effects other than film_grain, noise, vignette, letterbox, glow, bloom and chromatic_aberration",
-  "transitions other than hard_cut, crossfade, dissolve, dip_to_black and dip_to_white",
-  /**
-   * RONDE 150 — still true of the ASS route, and no longer the end of the story.
-   *
-   * libass draws words. A lower third with a role in a second colour underneath the name, a
-   * counter that counts, a card whose subtitle only appears when the payload has one — those are
-   * layout, and layout is what a browser is for. When a Remotion overlay is supplied (see
-   * `graphicsOverlay` on `renderTimeline`) the graphics come from there instead and this line
-   * describes only the fallback.
-   */
-  "motion graphics that are not words on screen (maps, charts, animated icons) — on the ASS route",
-] as const;
-
-/**
  * RONDE 150 §5/§6 — a pre-rendered transparent graphics layer, ready to be composited.
  *
  * Passed IN rather than produced here, for the same reason `resolveMedia` is: this module must not
@@ -357,29 +333,6 @@ export function wrapText(text: string, maxChars: number): string[] {
   }
   if (line) lines.push(line);
   return lines;
-}
-
-/**
- * Vertical placement as an ffmpeg y-expression.
- *
- * Retained and exported, unused by the ASS path: it is the drawtext equivalent of `assAlignment`,
- * and the day a build with drawtext is the one in front of us, this is the half that is hard to
- * get right. Deleting it would mean writing it again from scratch.
- */
-export function yExpressionFor(style: TextStyle, lineIndex: number, lineCount: number): string {
-  const lh = `${style.fontSizePx + 12}`;
-  const block = `(${lineCount}*${lh})`;
-  switch (style.position) {
-    case "top":
-      return `(h*0.08)+${lineIndex}*${lh}`;
-    case "center":
-      return `(h-${block})/2+${lineIndex}*${lh}`;
-    case "lower_third":
-      return `(h*0.72)+${lineIndex}*${lh}`;
-    case "bottom":
-    default:
-      return `h-(h*0.10)-${block}+${lineIndex}*${lh}`;
-  }
 }
 
 /* ═══════════════════════ probing ═══════════════════════ */

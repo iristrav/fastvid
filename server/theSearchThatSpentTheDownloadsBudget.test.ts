@@ -401,8 +401,9 @@ describe("R259 §5 — the numbers this round could have moved, and did not", ()
 
   it("the YouTube beat budget is the budget it was", async () => {
     const policy = fs.readFileSync(path.join(__dirname, "sourcingPolicy.ts"), "utf8");
-    expect(policy).toContain("const base = 45_000;");
-    expect(policy).toContain("return Math.min(Math.max(base, share), base * 2);");
+    /** The value production ran (SOURCING_YOUTUBE_FIRST defaulted on); the switch is gone. */
+    expect(policy).toContain("return YOUTUBE_FIRST_TURN_MS;");
+    expect(policy).toContain("export const YOUTUBE_FIRST_TURN_MS = 120_000;");
   });
 
   it("the download floor is the floor it was — RONDE 68's twelve seconds", () => {

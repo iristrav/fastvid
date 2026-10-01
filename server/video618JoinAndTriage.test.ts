@@ -18,7 +18,7 @@ import { promisify } from "util";
 import os from "os";
 import { execFileSync } from "child_process";
 import { ffmpegStderrSummary, oddSegmentsOut, probeSegmentShape } from "./timelineRenderer";
-import { withSceneFetchTimeout, youtubeRowsWithoutNonFootage, type YoutubeSearchRow } from "./videoPipeline";
+import { withSceneFetchTimeout, type YoutubeSearchRow } from "./videoPipeline";
 
 const RENDERER = fs.readFileSync(path.join(__dirname, "timelineRenderer.ts"), "utf8");
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
@@ -132,84 +132,3 @@ const row = (videoId: string, title: string): YoutubeSearchRow =>
   }) as YoutubeSearchRow;
 
 const beat = { beatText: "Kylie Jenner turned lip kits into a fortune.", beatIndex: 0, videoTitle: "Kardashians" } as never;
-
-describe("Video 618 (4) — the pool's look on the route that runs without a pool", () => {
-  /**
-   * VIDEO 624 — first look, then download: a row the look did not judge, or judged as footage that
-   * does not serve the sentence, is not downloaded; nor is a row past the five looked at.
-   */
-  it("commentary and text videos are not downloaded; only judged footage that serves the sentence is, in order", async () => {
-    const verdicts: Record<string, { footageType: string; servesBeats: number[] } | null> = {
-      aaaaaaaaaa1: { footageType: "text_or_graphic", servesBeats: [0] },
-      aaaaaaaaaa2: { footageType: "real_footage", servesBeats: [0] },
-      aaaaaaaaaa3: { footageType: "talking_head", servesBeats: [0] },
-      aaaaaaaaaa4: null,
-      aaaaaaaaaa5: { footageType: "archival_footage", servesBeats: [0] },
-    };
-    const look = vi.fn(async (item: { videoId: string }) => verdicts[item.videoId] ?? null);
-    const rows = [
-      row("aaaaaaaaaa1", "Kris Jenner Lifestyle: How Rich Is the Momager Queen?"),
-      row("aaaaaaaaaa2", "Kim Kardashian And Mom Kris Jenner Cause A Frenzy At LAX"),
-      row("aaaaaaaaaa3", "Kylie Jenner Lists Another Mansion - Here's What's Going On"),
-      row("aaaaaaaaaa4", "Kylie Jenner at the Met Gala"),
-      row("aaaaaaaaaa5", "Kris Jenner 1991 home video"),
-      row("aaaaaaaaaa6", "beyond the five rows looked at"),
-    ];
-    const kept = await youtubeRowsWithoutNonFootage(rows, beat, 2, look);
-    expect(kept.map((r) => r.item.id!.videoId)).toEqual(["aaaaaaaaaa2", "aaaaaaaaaa5"]);
-    expect(look).toHaveBeenCalledTimes(5);
-  });
-
-  /**
-   * ONE ROUTE — the look's "does not serve this sentence" ranks the row after the ones that do; it is
-   * no longer a refusal. Whether the picture fits is the VisualJudge's answer on the frames.
-   */
-  it("real footage the look says does not serve this sentence is ranked after the rows that do", async () => {
-    const look = vi.fn(async (item: { videoId: string }) => ({
-      footageType: "real_footage",
-      servesBeats: item.videoId === "eeeeeeeeee2" ? [0] : ([] as number[]),
-    }));
-    const kept = await youtubeRowsWithoutNonFootage([row("eeeeeeeeee1", "a street"), row("eeeeeeeeee2", "the square")], beat, 0, look);
-    expect(kept.map((r) => r.item.id?.videoId)).toEqual(["eeeeeeeeee2", "eeeeeeeeee1"]);
-  });
-
-  it("the same video is looked at once per process, whichever beat asks", async () => {
-    const look = vi.fn(async () => ({ footageType: "talking_head" }));
-    const rows = [row("bbbbbbbbbb1", "a commentary video")];
-    expect(await youtubeRowsWithoutNonFootage(rows, beat, 0, look)).toEqual([]);
-    expect(await youtubeRowsWithoutNonFootage(rows, beat, 1, look)).toEqual([]);
-    expect(look).toHaveBeenCalledTimes(1);
-  });
-
-  /** VIDEO 624 — nothing is downloaded unseen: a look that fails downloads nothing. */
-  it("a look that fails downloads nothing unseen", async () => {
-    const look = vi.fn(async () => {
-      throw new Error("vision provider down");
-    });
-    const rows = [row("cccccccccc1", "x")];
-    expect(await youtubeRowsWithoutNonFootage(rows, beat, 0, look)).toEqual([]);
-  });
-
-  it("it never spends the download's time: out of budget nothing is downloaded unseen", async () => {
-    const look = vi.fn(() => new Promise<null>(() => {}));
-    const rows = [row("dddddddddd1", "x"), row("dddddddddd2", "y")];
-    const kept = await withSceneFetchTimeout(
-      () => youtubeRowsWithoutNonFootage(rows, beat, 0, look),
-      12_300,
-      "a beat with 0.3s beyond the download floor"
-    );
-    expect(kept).toEqual([]);
-  }, 20_000);
-
-  it("wiring: only off the pool, after the ranking and before the loop; the pool's own look is the same function", () => {
-    const at = PIPE.indexOf("const ordered = await youtubeRowsRankedByThumbnail(");
-    const loop = PIPE.indexOf("for (const row of ordered.slice(0, 5)) {");
-    const call = PIPE.indexOf("(poolMode ? rows : youtubeRowsWithoutNonFootage(rows, scriptGuided, sceneIndex))");
-    expect(at).toBeGreaterThan(-1);
-    expect(call).toBeGreaterThan(at);
-    expect(call).toBeLessThan(loop);
-    expect(POOL).toContain("triageYoutubeThumbnail(item, title, sentences, llm, clipFilter);");
-    expect(POOL).toContain("export async function triageYoutubeThumbnail(");
-    expect(POOL).toContain("text: youtubeTriagePrompt(item, title, sentences),");
-  });
-});

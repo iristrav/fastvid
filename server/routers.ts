@@ -33,24 +33,10 @@ import { sendNicheApprovedEmail } from "./_core/emailService";
 import { sanitizeUser, sanitizeUsers } from "./userSanitize";
 import bcrypt from "bcryptjs";
 import { SignJWT } from "jose";
-import {
-  createVideo, getAllUsers, getAllVideos, getUserById, getUserByEmail, getUserLlmSpend,
-  searchVideos, getUserStats, getVideoById, getVideoListRowsByUserId, slimListMetadata, getVideoStats,
-  updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress, updateVideoProgressLog,
-  touchVideoProgress,
-  getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices,
-  deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos, recoverVideoCompletionState, recoverAllStuckVideos, failPipelineIfStalled, ORPHANED_PIPELINE_STATUSES,
-  createUser, updateUserLastSignedIn,
-  getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
-  createDiscountCodeRow, listDiscountCodes, getDiscountCodeById, getDiscountCodeByCode, updateDiscountCodeRow, deleteDiscountCodeRow,
-  getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
-  getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
-  countMediaArchiveAssets, filterMediaArchiveAssets, listMediaArchiveAssetsPaginated, normalizeMediaTags, readVideoMetadataObject,
-  isGenerationRunSuperseded, bumpGenerationAttempt, advanceRunningVideoStatus,
-  affectedRowCount,} from "./db";
+import { createVideo, getAllUsers, getAllVideos, getUserById, getUserByEmail, getUserLlmSpend, searchVideos, getUserStats, getVideoById, getVideoListRowsByUserId, slimListMetadata, getVideoStats, updateUserRole, updateUserSubscription, updateVideoStatus, updateVideoProgress, updateVideoProgressLog, touchVideoProgress, getAllVoices, getAllVoicesAdmin, getVoiceById, createVoice, updateVoice, deleteVoice, seedDefaultVoices, deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos, recoverVideoCompletionState, failPipelineIfStalled, ORPHANED_PIPELINE_STATUSES, createUser, updateUserLastSignedIn, getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode, createDiscountCodeRow, listDiscountCodes, getDiscountCodeById, getDiscountCodeByCode, updateDiscountCodeRow, deleteDiscountCodeRow, getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive, getMediaArchiveAssets, getMediaArchiveAssetById, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets, countMediaArchiveAssets, listMediaArchiveAssetsPaginated, normalizeMediaTags, readVideoMetadataObject, isGenerationRunSuperseded, bumpGenerationAttempt, advanceRunningVideoStatus, affectedRowCount } from "./db";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
-import { videoLengthSchema, normalizeVideoLength, isShortVideoLength, videoLengthAllowedForRole } from "@shared/videoLengths";
+import { videoLengthSchema, normalizeVideoLength, videoLengthAllowedForRole } from "@shared/videoLengths";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage, type PipelineDisplayStageKey } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 import { clearVideoGenerationCancel } from "./videoGenerationCancel";
@@ -88,17 +74,7 @@ import { trimArchiveAsset } from "./archiveTrimToScene";
 import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
-import {
-  createNicheRequest,
-  getLatestNicheRequest,
-  getLatestOnboardingRequest,
-  getNicheRequestById,
-  linkNicheRequestsToUser,
-  listAllNicheRequests,
-  listNicheRequestsByUser,
-  nicheRequestAllowsPlatformAccess,
-  updateNicheRequest,
-} from "./nicheRequestsDb";
+import { createNicheRequest, getLatestOnboardingRequest, getNicheRequestById, linkNicheRequestsToUser, listAllNicheRequests, listNicheRequestsByUser, nicheRequestAllowsPlatformAccess, updateNicheRequest } from "./nicheRequestsDb";
 import { runVideoPipeline } from "./videoPipeline";
 import {
   assertUserCanEnqueueVideo,
@@ -109,84 +85,10 @@ import {
   userQueueDepthLimit,
 } from "./queue";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
-import {
-  buildOneShotScriptUserPrompt,
-  buildOutlineUserPrompt,
-  buildScriptLengthRefinePrompt,
-  buildScriptWriterSystemPrompt,
-  buildSectionUserPrompt,
-  checkScriptMeetsBudget,
-  countNarrationWords,
-  getScriptLengthBudget,
-  scriptStillOnTopic,
-  stripVisualTagsFromScript,
-  OUTLINE_JSON_SCHEMA,
-  type ScriptOutline,
-} from "./scriptWriter";
-import { ensureScriptMeetsBudgetWithRetry } from "./pipelineSelfHeal";
+import { countNarrationWords, getScriptLengthBudget, stripVisualTagsFromScript } from "./scriptWriter";
 import { attachScriptVisualKeywords } from "./scriptVisualKeywords";
-import { runScriptEngineV2, scriptEngineV2Enabled } from "./scriptEngine";
-import type { InvokeResult } from "./_core/llm";
+import { runScriptEngineV2 } from "./scriptEngine";
 
-function llmMessageText(resp: InvokeResult | null | undefined): string {
-  const content = resp?.choices?.[0]?.message?.content ?? "";
-  return typeof content === "string" ? content.trim() : "";
-}
-
-function llmWasTruncated(resp: InvokeResult | null | undefined): boolean {
-  return resp?.choices?.[0]?.finish_reason === "length";
-}
-
-async function generateSectionNarration(
-  sec: ScriptOutline["sections"][number],
-  idx: number,
-  sectionTotal: number,
-  prompt: string,
-  title: string,
-  budget: ReturnType<typeof getScriptLengthBudget>,
-  writerSystem: string
-): Promise<string> {
-  const minChars = Math.max(120, Math.round((budget.minWords / sectionTotal) * 4));
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const resp = await invokeLLM({
-        messages: [
-          { role: "system", content: writerSystem },
-          {
-            role: "user",
-            content:
-              buildSectionUserPrompt(sec, idx, sectionTotal, prompt, title, budget) +
-              (attempt > 1
-                ? "\n\nIMPORTANT: Your previous draft was too short or cut off. Write the FULL section narration — complete sentences only, no outline bullets."
-                : ""),
-          },
-        ],
-        maxTokens: 4096,
-      });
-      const text = llmMessageText(resp);
-      if (text.length >= minChars && !llmWasTruncated(resp)) return text;
-      if (llmWasTruncated(resp)) {
-        console.warn(`[Script] Section ${idx + 1}/${sectionTotal} truncated (finish_reason=length), retry ${attempt}`);
-      } else if (text.length < minChars) {
-        console.warn(
-          `[Script] Section ${idx + 1}/${sectionTotal} too short (${text.length} chars, need ≥${minChars}), retry ${attempt}`
-        );
-      }
-    } catch (err) {
-      console.warn(`[Script] Section ${idx + 1}/${sectionTotal} LLM failed (attempt ${attempt}):`, err);
-      if (attempt === 2) break;
-    }
-  }
-  const fallback = sec.keyPoints.filter(Boolean).join(". ").trim();
-  if (fallback.length >= minChars) {
-    console.warn(`[Script] Section ${idx + 1}/${sectionTotal}: using outline key points fallback`);
-    return `${fallback}.`;
-  }
-  throw pipelineError(
-    PIPELINE_ERROR.SCRIPT_FAILED,
-    `Section "${sec.title}" could not be written — narration incomplete`
-  );
-}
 
 // Lazy Stripe initialization — prevents crash on startup when STRIPE_SECRET_KEY is not yet set
 let _stripe: Stripe | null = null;
@@ -379,7 +281,6 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
   assertProductionLlmReady();
   const videoLength = normalizeVideoLength(videoLengthRaw);
   const budget = getScriptLengthBudget(videoLength);
-  const writerSystem = buildScriptWriterSystemPrompt(videoType);
 
   // Fencing token for this run — if a stall-requeue supersedes us mid-flight (possibly from a
   // different process), our progress writes below should stop instead of clobbering the retry.
@@ -413,109 +314,34 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
       generationStartedAt: new Date(generationStartedAt),
     });
 
-    // All video lengths: use v2 engine (Story Architecture → Scene Plan → Visual Plan → Write → Review)
-    // or fall back to outline+sections when SCRIPT_ENGINE_V2=false
+    // ONE ROUTE — every video length is written by ScriptEngine v2 (Story Architecture → Scene
+    // Plan → Visual Plan → Write → Review). The legacy outline + sections engine is gone.
     let scriptContent: string;
     let title: string;
-
-    if (scriptEngineV2Enabled()) {
-      console.log(`[Script] Video ${videoId}: using ScriptEngine v2`);
-      const engineOutput = await runScriptEngineV2(
-        prompt,
-        videoType,
-        budget,
-        async (step, pct) => {
-          lastScriptProgressLabel = step;
-          scriptProgressPercent.value = 10 + Math.round(pct * 0.18);
-          await updateVideoProgress(
-            videoId,
-            progressStepWithElapsed(step, generationStartedAt),
-            scriptProgressPercent.value
-          );
-          const active = scriptLog.find((e) => e.status === "active");
-          if (active) { active.step = step; }
-          else { scriptLog.push({ step, startedAt: Date.now(), status: "active" }); }
-          await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
-        }
-      );
-      scriptContent = engineOutput.markdownScript;
-      title = engineOutput.title || prompt.slice(0, 100);
-      console.log(
-        `[Script] Video ${videoId} v2: ${countNarrationWords(scriptContent)} words · quality ${engineOutput.quality.overall}/10`
-      );
-    } else {
-      // Legacy: outline + parallel sections
-      console.log(`[Script] Video ${videoId}: using legacy outline engine`);
-      const outlineResp = await invokeLLM({
-        messages: [
-          { role: "system", content: writerSystem },
-          { role: "user", content: buildOutlineUserPrompt(prompt, videoType, budget) },
-        ],
-        response_format: OUTLINE_JSON_SCHEMA,
-      });
-
-      let outline: ScriptOutline = { title: prompt.slice(0, 80), hook: "", sections: [], cta: "" };
-      try {
-        const raw = outlineResp?.choices?.[0]?.message?.content ?? "{}";
-        outline = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)) as ScriptOutline;
-      } catch { /* use default */ }
-
-      title = outline.title || prompt.slice(0, 100);
-      scriptLog[0].completedAt = Date.now(); scriptLog[0].status = "done";
-      scriptLog.push({ step: `✍️ Writing ${outline.sections.length} sections...`, startedAt: Date.now(), status: "active" });
-      await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
-      lastScriptProgressLabel = `✍️ Writing ${outline.sections.length} sections...`;
-      scriptProgressPercent.value = 12;
-      await updateVideoProgress(videoId, progressStepWithElapsed(lastScriptProgressLabel, generationStartedAt), scriptProgressPercent.value);
-
-      const sectionTotal = outline.sections.length || budget.sectionCount;
-      const sectionTexts = await Promise.all(
-        outline.sections.map((sec, idx) =>
-          generateSectionNarration(sec, idx, sectionTotal, prompt, title, budget, writerSystem)
-        )
-      );
-
-      const scriptParts: string[] = [`# ${title}\n`, `## Opening\n${outline.hook}\n`];
-      outline.sections.forEach((sec, idx) => scriptParts.push(`## ${sec.title}\n${sectionTexts[idx] ?? ""}\n`));
-      scriptParts.push(`## CALL TO ACTION\n${outline.cta}\n`);
-      scriptContent = stripVisualTagsFromScript(scriptParts.join("\n"));
-
-      let narrationWords = countNarrationWords(scriptContent);
-      if (narrationWords < budget.minWords || narrationWords > budget.maxWords) {
-        try {
-          const refineResp = await invokeLLM({
-            messages: [
-              { role: "system", content: writerSystem },
-              { role: "user", content: buildScriptLengthRefinePrompt(scriptContent, budget, narrationWords, prompt) },
-            ],
-          });
-          const refined = refineResp?.choices?.[0]?.message?.content ?? "";
-          if (typeof refined === "string" && refined.trim().length > 200 && scriptStillOnTopic(prompt, refined)) {
-            scriptContent = stripVisualTagsFromScript(refined.trim());
-            narrationWords = countNarrationWords(scriptContent);
-            const refinedTitle = scriptContent.match(/^#\s+(.+)$/m)?.[1]?.trim();
-            if (refinedTitle) title = refinedTitle;
-          }
-        } catch (err) {
-          console.warn("[Script] Length refine failed (non-fatal):", err);
-        }
+    console.log(`[Script] Video ${videoId}: using ScriptEngine v2`);
+    const engineOutput = await runScriptEngineV2(
+      prompt,
+      videoType,
+      budget,
+      async (step, pct) => {
+        lastScriptProgressLabel = step;
+        scriptProgressPercent.value = 10 + Math.round(pct * 0.18);
+        await updateVideoProgress(
+          videoId,
+          progressStepWithElapsed(step, generationStartedAt),
+          scriptProgressPercent.value
+        );
+        const active = scriptLog.find((e) => e.status === "active");
+        if (active) { active.step = step; }
+        else { scriptLog.push({ step, startedAt: Date.now(), status: "active" }); }
+        await updateVideoProgressLog(videoId, scriptLog).catch(() => {});
       }
-
-      const expanded = await ensureScriptMeetsBudgetWithRetry(
-        scriptContent, budget, prompt,
-        async (userPrompt) => {
-          const resp = await invokeLLM({
-            messages: [{ role: "system", content: writerSystem }, { role: "user", content: userPrompt }],
-            maxTokens: 8192,
-          });
-          return llmMessageText(resp);
-        }
-      );
-      scriptContent = expanded.script;
-      if (!expanded.ok) {
-        throw pipelineError(PIPELINE_ERROR.SCRIPT_FAILED, `Script incomplete: ${expanded.words} words (need ≥${budget.minWords})`);
-      }
-    }
+    );
+    scriptContent = engineOutput.markdownScript;
+    title = engineOutput.title || prompt.slice(0, 100);
+    console.log(
+      `[Script] Video ${videoId} v2: ${countNarrationWords(scriptContent)} words · quality ${engineOutput.quality.overall}/10`
+    );
 
     // Metadata (parallel with script, or after)
     let metadata: unknown = { title, description: prompt, tags: [], chapters: [] };

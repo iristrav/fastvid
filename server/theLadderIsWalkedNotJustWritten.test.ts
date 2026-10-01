@@ -168,11 +168,14 @@ describe("§24 — the orchestrator is production-reachable, not a library", () 
     expect(at, "resolveBeatClip moved").toBeGreaterThan(-1);
     const body = PIPELINE.slice(at, PIPELINE.indexOf("\n}\n", at));
     expect(body).toContain("runCentralVisualSourcing(");
-    /** Both branches inside the scope, not one of them. */
-    expect(body.indexOf("runCentralVisualSourcing(")).toBeLessThan(body.indexOf("beatPrimaryFetch("));
+    /** One branch since the code audit (P9 removed `primaryOnly`), and it runs inside the scope. */
     expect(body.indexOf("runCentralVisualSourcing(")).toBeLessThan(
       body.indexOf("resolveBeatClipForBeat(")
     );
+    expect(body).not.toContain("primaryOnly");
+    /** The primary fetch is reached through that branch, so it runs inside the scope too. */
+    const forBeat = PIPELINE.slice(PIPELINE.indexOf("async function resolveBeatClipForBeat("));
+    expect(forBeat.slice(0, forBeat.indexOf("\n}\n"))).toContain("beatPrimaryFetch(");
   });
 
   it("the gate actually REFUSES an out-of-order provider, not merely consults the ladder", async () => {

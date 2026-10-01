@@ -57,15 +57,21 @@ describe("archive first — suppliers only on a gap", () => {
     expect(at("await archivePool;")).toBeLessThan(at("adoptHistoricalBeatVideoPool("));
   });
 
-  it("the cascade does not ask YouTube a second time while the YouTube turn runs", () => {
-    expect(ROUTE).toContain("skipYoutube: youtubeTurnRuns,");
-    expect(ROUTE).toContain("const youtubeTurnRuns = youtubeFirstEnabled();");
+  it("the cascade never asks YouTube — the YouTube turn is the only YouTube door", () => {
+    /** Code audit: no `youtube_cc` tier in the cascade, no `skipYoutube` option, no switch. */
+    expect(ROUTE).not.toContain("skipYoutube");
+    expect(ROUTE).not.toContain("youtubeFirstEnabled");
+    expect(HISTORICAL_SOURCE_TIER_ORDER).not.toContain("youtube_cc");
   });
 
-  it("tier 1 is recorded as attempted before the suppliers start, because it is", () => {
-    expect(at('if (youtubeTurnRuns) noteTierAttempted("YOUTUBE", "youtube_first_turn");')).toBeLessThan(
+  it("the YouTube tier is recorded as attempted, always, before the suppliers start", () => {
+    expect(at('noteTierAttempted("YOUTUBE", "youtube_first_turn");')).toBeLessThan(
       at("youtubeFirstBeatSlice(")
     );
+    expect(at('noteTierAttempted("YOUTUBE", "youtube_first_turn");')).toBeLessThan(
+      at("gatherHistoricalBeatVideoPool(")
+    );
+    expect(ROUTE).not.toContain('if (youtubeTurnRuns) noteTierAttempted("YOUTUBE"');
   });
 
   it("a failing source ends without a clip instead of taking the others down", () => {
@@ -76,7 +82,7 @@ describe("archive first — suppliers only on a gap", () => {
 
 describe("Video 619 — video always before a picture", () => {
   it("still images are asked only after every video source", () => {
-    const lastVideo = Math.max(at("adoptHistoricalBeatVideoPool("), at("adoptBestCelebrityClip("));
+    const lastVideo = at("adoptHistoricalBeatVideoPool(");
     expect(at("fetchBeatInternetStillsFirst(")).toBeGreaterThan(lastVideo);
     expect(at("fetchBeatAuthenticStills(")).toBeGreaterThan(lastVideo);
     expect(at("fetchBeatStockFallback(")).toBeGreaterThan(at("fetchBeatAuthenticStills("));
@@ -87,7 +93,6 @@ describe("Video 619 — video always before a picture", () => {
     expect(ROUTE).toContain("if (ownArchiveClip !== null && !ownArchiveStill) {");
     const stillReturn = at("if (ownArchiveStill) {");
     expect(stillReturn).toBeGreaterThan(at("adoptHistoricalBeatVideoPool("));
-    expect(stillReturn).toBeGreaterThan(at("adoptBestCelebrityClip("));
     expect(stillReturn).toBeLessThan(at("fetchBeatInternetStillsFirst("));
   });
 
@@ -104,10 +109,9 @@ describe("Video 619 — gathering adopts nothing", () => {
     expect(bodyOf("export async function adoptHistoricalBeatVideoPool(")).toContain("await adoptClip(boundedPool,");
   });
 
-  it("the old single call is still gather then choose, for every other caller", () => {
-    const inner = bodyOf("async function fetchHistoricalBeatVideoInner(");
-    expect(inner.indexOf("gatherHistoricalBeatVideoPoolInner(")).toBeLessThan(
-      inner.indexOf("adoptHistoricalBeatVideoPool(")
+  it("every supplier's candidates go into ONE adoption — gather first, then choose", () => {
+    expect(at("const candidates = [...(ytCandidates ?? []), ...(pool ?? []), ...(personPool ?? [])];")).toBeLessThan(
+      at("adoptHistoricalBeatVideoPool(")
     );
   });
 });
@@ -119,10 +123,18 @@ describe("Video 619 — the ladder lets the cascade run beside the YouTube turn"
   const onBeat = (body: () => void) =>
     runCentralVisualSourcing({ renderId: RENDER, sceneIndex: 0, beatIndex: 0 }, async () => body());
 
-  it("without tier 1 recorded, the Internet Archive is refused — the race this prevents", async () => {
+  it("the cascade declines the YouTube tier as NOT SERVED rather than waiting on it", async () => {
+    /** The cascade has no YouTube member any more, so it cannot hold the Internet Archive hostage. */
     await onBeat(() => {
       noteTierAttempted("OWN_ARCHIVE", "curated");
       declineTiersNotServedBy(HISTORICAL_SOURCE_TIER_ORDER, "historical_cascade");
+      expect(admitProviderForTier("internet_archive").admitted).toBe(true);
+    });
+  });
+
+  it("the own archive still comes first: without it recorded, the Internet Archive is refused", async () => {
+    await onBeat(() => {
+      noteTierAttempted("YOUTUBE", "youtube_first_turn");
       expect(admitProviderForTier("internet_archive")).toMatchObject({ admitted: false, reason: "TIER_OUT_OF_ORDER" });
     });
   });

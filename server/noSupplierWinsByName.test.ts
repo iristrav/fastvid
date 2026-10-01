@@ -20,7 +20,7 @@ describe("one adoption for every supplier of an archive gap", () => {
   it("YouTube's candidates and the cascade's pool are judged together", () => {
     const ladder = bodyOf("export async function fetchBeatArchivalThenPexels(");
     expect(ladder).not.toContain("if (ytClip) return ytClip;");
-    expect(ladder).toContain("const candidates = [...(ytOffer?.candidates ?? []), ...(pool ?? [])];");
+    expect(ladder).toContain("const candidates = [...(ytCandidates ?? []), ...(pool ?? []), ...(personPool ?? [])];");
     expect(ladder).toContain("adoptHistoricalBeatVideoPool(candidates,");
   });
 });
@@ -28,7 +28,8 @@ describe("one adoption for every supplier of an archive gap", () => {
 describe("the YouTube look ranks, the VisualJudge decides", () => {
   it("'does not serve this sentence' orders rows, it does not drop them", () => {
     expect(PIPE).not.toContain("does not serve this sentence title=\"${title}\" — not downloaded");
-    expect(PIPE).toContain("[...kept.filter((k) => k.serves), ...kept.filter((k) => !k.serves)]");
+    /** The per-beat thumbnail triage went with the per-beat YouTube search; the pool ranks by `servesBeats`. */
+    expect(PIPE).not.toContain("youtubeRowsWithoutNonFootage");
   });
 
   it("a pool video serving no beat is not unusable, and a beat is offered every usable video", () => {
@@ -41,12 +42,8 @@ describe("the archive matcher ranks; content refusals are the VisualJudge's", ()
   it("no local non-documentary filter, no reuse tier, no rotation", () => {
     expect(CURATED).not.toMatch(/isNonDocumentaryVisualHay\(/);
     expect(CURATED).toContain('judgeArchiveAssetMaterial(asset).decision === "REJECT"');
-    /**
-     * The negative-score refusal (RONDE 9) stays: its topic rules are always on in the matcher, while
-     * the VisualJudge holds them only behind ENABLE_METADATA_VISUAL_BLOCKS (default off). Moving it
-     * before that flag is decided would remove a refusal, not move it.
-     */
-    expect(CURATED).toContain("if (score < 0) continue;");
+    /** The negative-score refusal (RONDE 9) is the VisualJudge's; the matcher asks it. */
+    expect(CURATED).toContain('judgeArchiveAssetScore(score).decision === "REJECT"');
     expect(CURATED).not.toContain("allowing clip reuse");
     expect(CURATED).not.toContain("rotateCuratedCandidates");
   });

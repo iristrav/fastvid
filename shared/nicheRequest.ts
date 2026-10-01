@@ -14,5 +14,3 @@ export const ONBOARDING_PENDING_MESSAGE =
 export const ONBOARDING_APPROVED_MESSAGE =
   "Approved! You can start within 24 hours — choose your subscription and create your first video.";
 
-export const ARCHIVE_BUILDING_MESSAGE =
-  "There is still little or no footage in the archive for this topic. Generation may take longer while we expand the archive for your niche.";

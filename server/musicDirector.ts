@@ -297,24 +297,9 @@ export const EMPTY_MUSIC_CATALOGUE: MusicCatalogue = {
 
 let registered: MusicCatalogue = EMPTY_MUSIC_CATALOGUE;
 
-/**
- * Plug a catalogue in.
- *
- * The one seam a deployment with licensed music needs. Called once at startup; the module holds
- * no state beyond this, so a catalogue swapped between renders takes effect on the next one.
- */
-export function registerMusicCatalogue(catalogue: MusicCatalogue): void {
-  registered = catalogue;
-}
-
 /** The catalogue in force. `EMPTY_MUSIC_CATALOGUE` until a deployment registers one. */
 export function activeMusicCatalogue(): MusicCatalogue {
   return registered;
-}
-
-/** Restore the shipped default. For tests, and for a deployment that revokes a licence. */
-export function resetMusicCatalogue(): void {
-  registered = EMPTY_MUSIC_CATALOGUE;
 }
 
 /* ═══════════════════════ putting the two together ═══════════════════════ */
@@ -410,4 +395,10 @@ export function formatCueSheet(scored: readonly ScoredCue[], catalogueName?: str
         : "")
   );
   return lines;
+}
+
+
+/** Restore the shipped default. For tests, and for a deployment that revokes a licence. */
+export function resetMusicCatalogue(): void {
+  registered = EMPTY_MUSIC_CATALOGUE;
 }

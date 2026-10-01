@@ -160,11 +160,6 @@ export function nameRunPattern(minExtra: number, maxExtra?: number): string {
   );
 }
 
-/** Is this lower-case word a name particle rather than an ordinary word? */
-export function isNameParticle(token: string): boolean {
-  return (NAME_PARTICLES as readonly string[]).includes(token.trim().toLowerCase());
-}
-
 /** A fresh regex for a run of capitalised tokens. Fresh, because /g regexes carry lastIndex. */
 export function nameRunRegex(minExtra: number, maxExtra?: number): RegExp {
   return new RegExp(nameRunPattern(minExtra, maxExtra), "gu");
@@ -177,11 +172,6 @@ export function singleNameTokenRegex(minLength = 3): RegExp {
     `${NAME_BOUNDARY_LEFT}${NAME_UPPER}${NAME_REST}{${Math.max(1, minLength - 1)},}${NAME_BOUNDARY_RIGHT}`,
     "gu"
   );
-}
-
-/** The token pattern on its own, for callers that want to match one name rather than a run. */
-export function nameTokenRegex(): RegExp {
-  return new RegExp(`^${NAME_TOKEN}$`, "u");
 }
 
 /**

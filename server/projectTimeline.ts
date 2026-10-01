@@ -687,6 +687,24 @@ export function emptyTimeline(videoId: number, format = DEFAULT_FORMAT): Project
 
 /* ═══════════════════════ accessors ═══════════════════════ */
 
+/**
+ * Every archive asset a STORED timeline's picture track points at, read from its raw JSON (a stored
+ * timeline is not validated on read). Used before an archive asset is deleted: an asset a film still
+ * uses is switched off instead, so that film can always be rendered again.
+ */
+export function archiveAssetIdsOfStoredTimeline(raw: unknown): number[] {
+  const t = raw as { tracks?: Array<{ kind?: string; clips?: Array<{ source?: { archiveAssetId?: unknown } }> }> } | null;
+  const out: number[] = [];
+  for (const track of t?.tracks ?? []) {
+    if (track?.kind !== "VIDEO") continue;
+    for (const c of track.clips ?? []) {
+      const id = c?.source?.archiveAssetId;
+      if (typeof id === "number" && Number.isFinite(id)) out.push(id);
+    }
+  }
+  return out;
+}
+
 export function videoTrack(t: ProjectTimeline): TimelineVideoClip[] {
   const track = t.tracks.find((x) => x.kind === "VIDEO");
   return track && track.kind === "VIDEO" ? track.clips : [];
@@ -772,72 +790,3 @@ export function graphicsWithLabels(t: ProjectTimeline): TimelineGraphic[] {
   return graphicsTrack(t).filter((g) => !g.disabled && Boolean(g.label?.trim()));
 }
 
-/**
- * §3 — what the RENDERER must open for this clip, which is never the previous output.
- *
- * Returns null when the clip cannot be sourced at all. That is a refusal, not a fallback: rendering
- * a clip by re-encoding a section of the previous MP4 would bake in every earlier edit, lose a
- * generation of quality per save, and quietly make "replace this shot" impossible — the picture
- * being replaced is already burned into the file being used as the source.
- */
-export function renderSourceFor(clip: TimelineVideoClip): { url: string } | null {
-  const s = clip.source;
-  if (s.canonicalUrl) return { url: s.canonicalUrl };
-  if (s.mediaUrl) return { url: s.mediaUrl };
-  return null;
-}
-
-/*
- * "Can this clip be fetched again?" lives in `assetIdentity.identityIsRehydratable`, NOT here.
- *
- * A `canRehydrate` used to sit at this spot and it was a second, weaker answer to the same
- * question: it accepted an UNVERIFIED provider that carried a media URL, while the rehydrator
- * refuses exactly that clip. The validator asked the weak one, so a timeline could pass validation
- * and then die at rehydration — the failure the validator exists to prevent. One definition, in
- * the module that owns identities.
- */
-
-/* ═══════════════════════ versioning ═══════════════════════ */
-
-/**
- * The next version of a timeline after an edit — §10.
- *
- * `createdAt` is refreshed and the version is bumped by exactly one. Nothing else is touched, so a
- * save records that something changed without the act of saving changing anything itself.
- */
-export function bumpVersion(t: ProjectTimeline): ProjectTimeline {
-  return { ...t, version: t.version + 1, createdAt: new Date().toISOString() };
-}
-
-/**
- * A digest of everything that affects the picture — §11's determinism, made checkable.
- *
- * `version`, `createdAt` and `renderedVideoUrl` are deliberately EXCLUDED: bumping a version or
- * pointing at a different output does not change what the renderer would produce, and a hash that
- * moved when they did would make "same timeline ⇒ same edit" untestable. Two timelines with the
- * same digest must render to the same picture.
- */
-export function timelineDigest(t: ProjectTimeline): string {
-  const material = {
-    // `schemaVersion` is excluded along with `version` and `renderedVideoUrl`: a format revision
-    // that leaves every field intact renders the same picture, and a digest that moved when the
-    // schema did would make "same timeline ⇒ same edit" untestable across a build.
-    durationSec: t.durationSec,
-    format: t.format,
-    tracks: t.tracks,
-    /**
-     * RONDE 166 — the LOOK belongs here, and its absence was a real defect.
-     *
-     * This function's own contract is "two timelines with the same digest must render to the same
-     * picture", and RONDE 160 §8 measured that they do not: the same tracks graded `warm` and
-     * graded `cold` differ in every pixel, and both hashed identically. Anything using the digest
-     * to decide "same edit, no need to re-render" would have treated a colour change as no change
-     * at all.
-     *
-     * Found by RONDE 166's undo work — an edit that only changed the look was recorded as "nothing
-     * changed" and could not be undone, because the history recognises an edit by its digest.
-     */
-    look: t.look ?? null,
-  };
-  return createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 16);
-}

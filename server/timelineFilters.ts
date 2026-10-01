@@ -371,46 +371,6 @@ export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
   "monochrome", "sepia", "scanlines",
 ]);
 
-/**
- * Effects that need a real overlay ASSET and are therefore never approximated.
- *
- * `film_dust` is footage of dust and scratches on a print; `vhs` is a tape artefact chain that
- * genuinely needs a reference. ffmpeg can composite either perfectly once the asset exists — what
- * it cannot do is invent one. Reported with this reason, never faked.
- */
-export const OVERLAY_EFFECTS: Readonly<Record<string, string>> = {
-  film_dust: "needs a dust-and-scratches overlay clip; none is configured",
-  vhs: "needs a VHS artefact reference; a procedural approximation would be a different effect",
-};
-
-/** Why an effect cannot be executed, in the planner's terms. Null when it can. */
-export function effectUnsupportedReason(effectType: string): string | null {
-  if (RENDERABLE_EFFECTS.has(effectType)) return null;
-  if (effectType in OVERLAY_EFFECTS) return OVERLAY_EFFECTS[effectType]!;
-  return "no ffmpeg filter chain implements this effect";
-}
-
-/**
- * Validate an effect before it is allowed near a filtergraph.
- *
- * Returns the effect with its intensity clamped, or a reason it was refused. Deliberately
- * conservative about non-finite numbers: NaN formats as "NaN" through `toFixed`, which ffmpeg
- * parses as a filter syntax error and takes the whole render down.
- */
-export function validateEffect(
-  effect: ClipEffect
-): { ok: true; effect: ClipEffect } | { ok: false; reason: string } {
-  const reason = effectUnsupportedReason(effect.effectType);
-  if (reason) return { ok: false, reason };
-  if (!Number.isFinite(effect.intensity)) {
-    return { ok: false, reason: `intensity is ${String(effect.intensity)}, not a number` };
-  }
-  if (effect.direction != null && effect.direction !== "up" && effect.direction !== "down") {
-    return { ok: false, reason: `direction "${String(effect.direction)}" is neither up nor down` };
-  }
-  return { ok: true, effect: { ...effect, intensity: Math.max(0, Math.min(1, effect.intensity)) } };
-}
-
 /* ═══════════════════════ RONDE 149 — the look ═══════════════════════ */
 
 /**

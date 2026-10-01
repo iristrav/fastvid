@@ -36,7 +36,7 @@ const CORE = fs.readFileSync(path.join(__dirname, "_core", "index.ts"), "utf8");
 function probeBody(): string {
   const at = PIPE.indexOf("export async function probeYouTubeCcPipeline(");
   expect(at, "the probe has moved").toBeGreaterThan(-1);
-  const end = PIPE.indexOf("\n}", PIPE.indexOf("    sampleVideoId,\n    message,\n  };", at));
+  const end = PIPE.indexOf("\n}", PIPE.indexOf("    cloudStatus,\n    message,\n  };", at));
   expect(end).toBeGreaterThan(at);
   return PIPE.slice(at, end);
 }
@@ -128,11 +128,16 @@ describe("the probe tries both download routes, in the pipeline's own order", ()
 /* ═══════════════════════ it still does real work ═══════════════════════ */
 
 describe("nothing was replaced by a guess", () => {
-  /** The probe's value is that it actually calls YouTube. A config-only check would prove nothing. */
-  it("still performs a live YouTube CC search", () => {
+  /**
+   * The probe's value is that it actually calls YouTube. A config-only check would prove nothing.
+   * Code audit: it checks the key with ONE by-id lookup (1 quota unit), not a search — searching is
+   * the video pool's job alone, behind the search gate and the per-video budget.
+   */
+  it("still calls YouTube live — by id, not by search", () => {
     const body = probeBody();
-    expect(body).toContain("googleapis.com/youtube/v3/search");
-    expect(body).toContain('searchUrl.searchParams.set("videoLicense", "creativeCommon")');
+    expect(body).toContain("googleapis.com/youtube/v3/videos");
+    expect(body).toContain('lookupUrl.searchParams.set("id", PROBE_VIDEO_ID);');
+    expect(body).not.toContain("googleapis.com/youtube/v3/search");
   });
 
 
@@ -140,7 +145,7 @@ describe("nothing was replaced by a guess", () => {
   it("bounds every call it makes", () => {
     const body = probeBody();
     const calls = [...body.matchAll(/fetchWithTimeout\(/g)];
-    /** The search and the cloud service's health — RapidAPI's check left with RapidAPI. */
+    /** The key lookup and the cloud service's health — RapidAPI's check left with RapidAPI. */
     expect(calls.length, "a network call in the probe is unbounded").toBeGreaterThanOrEqual(2);
   });
 });

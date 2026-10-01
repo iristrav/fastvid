@@ -116,8 +116,8 @@ describe("RONDE 93 §3 — a bypass is attributable", () => {
   it("TEST 8 — every cachedProviderSearch call passes its own function name as the route", () => {
     for (const fn of [
       // VIDEO 619 removed Flickr, SepiaSearch, GDELT, Europeana, Vimeo, media.ccc, NASA and NARA.
+      // The per-beat YouTube search is gone (code audit P2); the pool's search is its own owner.
       "fetchPexelsClips", "fetchPixabayClips", "fetchWikimediaVideos", "fetchInternetArchiveClips",
-      "searchYoutubeVideoCandidates",
     ]) {
       expect(PIPELINE_SRC, `${fn} has no route label`).toContain(`"${fn}"\n`);
     }

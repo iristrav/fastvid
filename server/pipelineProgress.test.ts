@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  formatGenerationDuration,
-  progressStepWithElapsed,
-  resolvePipelineDisplayStage,
-  estimateRemainingGenerationSec,
-  formatRemainingGenerationLabel,
-} from "@shared/pipelineProgress";
+import { formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage } from "@shared/pipelineProgress";
 
 describe("resolvePipelineDisplayStage", () => {
   it("maps beat-level visual progress to Finding visuals", () => {
@@ -46,23 +40,6 @@ describe("formatGenerationDuration", () => {
     expect(formatGenerationDuration(42)).toBe("42s");
     expect(formatGenerationDuration(65)).toBe("1m 05s");
     expect(formatGenerationDuration(222)).toBe("3m 42s");
-  });
-});
-
-describe("estimateRemainingGenerationSec", () => {
-  it("returns null when progress is too early", () => {
-    expect(estimateRemainingGenerationSec(1, 5, 3600)).toBeNull();
-  });
-
-  it("estimates from percent and caps by max window", () => {
-    expect(estimateRemainingGenerationSec(50, 600, 3600)).toBe(600);
-    expect(estimateRemainingGenerationSec(50, 3500, 3600)).toBe(100);
-  });
-
-  it("formats remaining label", () => {
-    expect(formatRemainingGenerationLabel(null)).toBe("Estimating time left…");
-    expect(formatRemainingGenerationLabel(0)).toBe("Almost done…");
-    expect(formatRemainingGenerationLabel(125)).toBe("~2m 05s left");
   });
 });
 

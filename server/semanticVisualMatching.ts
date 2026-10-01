@@ -8,17 +8,7 @@ import { invokeLLM, describeLlmFailure } from "./_core/llm";
 import { getCachedBeatProfile, putCachedBeatProfile } from "./beatSemanticCache";
 import { ENV } from "./_core/env";
 import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
-import {
-  beatMentionsWwiiContent,
-  extractEntitySearchTags,
-  extractPrimaryVisualAnchor,
-  extractSalientBeatTokens,
-  extractSceneSearchTags,
-  extractVisualSearchTags,
-  inferVideoVisualTopic,
-  isGenericPeopleAsset,
-  isWwiiWarArchiveAsset,
-} from "./visualBeatTags";
+import { beatMentionsWwiiContent, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractSceneSearchTags, extractVisualSearchTags, inferVideoVisualTopic, isGenericPeopleAsset, isWwiiWarArchiveAsset } from "./visualBeatTags";
 import { normalizeMediaTags } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 import { asVideoTitleString } from "./stringCoercion";
@@ -133,11 +123,6 @@ export function semanticMinRelevanceScore(): number {
     if (!isNaN(n) && n >= 20 && n <= 90) return n;
   }
   return 38;
-}
-
-/** @deprecated Topic-specific floors removed — use semanticMinRelevanceScore() for all topics. */
-export function semanticMinRelevanceScoreForTopic(_topicDomain?: string): number {
-  return semanticMinRelevanceScore();
 }
 
 function beatCacheKey(text: string, videoTitle?: unknown): string {
@@ -827,7 +812,3 @@ Score each id 0-10 for visual relevance. 10 = perfect match to what is spoken.`;
   }
 }
 
-export function clearSemanticCaches(): void {
-  profileCache.clear();
-  embeddingCache.clear();
-}

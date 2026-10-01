@@ -1,11 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
-import {
-  YOUTUBE_SEARCH_PAGE_MAX,
-  youtubeSearchDurationForPass,
-  youtubeSearchPageSize,
-} from "./sourcingPolicy";
 
 /**
  * TWENTY-FIVE SEARCHES, 215 RESULTS.
@@ -28,54 +23,8 @@ afterEach(() => {
   else process.env.YOUTUBE_SEARCH_PAGE_SIZE = ENV;
 });
 
-describe("the page size", () => {
-  it("asks for the whole page the call already paid for", () => {
-    delete process.env.YOUTUBE_SEARCH_PAGE_SIZE;
-    expect(youtubeSearchPageSize()).toBe(50);
-    expect(YOUTUBE_SEARCH_PAGE_MAX, "the API's own maximum").toBe(50);
-  });
-
-  it("NEVER EXCEEDS THE API MAXIMUM", () => {
-    // `maxResults` above 50 is an API error, not a bigger page: the search would return nothing.
-    process.env.YOUTUBE_SEARCH_PAGE_SIZE = "500";
-    expect(youtubeSearchPageSize()).toBe(50);
-    process.env.YOUTUBE_SEARCH_PAGE_SIZE = "51";
-    expect(youtubeSearchPageSize()).toBe(50);
-  });
-
-  it("an operator may turn it down, and nonsense is ignored", () => {
-    process.env.YOUTUBE_SEARCH_PAGE_SIZE = "10";
-    expect(youtubeSearchPageSize()).toBe(10);
-    process.env.YOUTUBE_SEARCH_PAGE_SIZE = "0";
-    expect(youtubeSearchPageSize()).toBe(50);
-    process.env.YOUTUBE_SEARCH_PAGE_SIZE = "banana";
-    expect(youtubeSearchPageSize()).toBe(50);
-    process.env.YOUTUBE_SEARCH_PAGE_SIZE = "-4";
-    expect(youtubeSearchPageSize()).toBe(50);
-  });
-
-  it("THE ANSWER DOES NOT DEPEND ON HOW MANY CLIPS THE CALLER WANTS", () => {
-    /**
-     * That was the old rule and it is the defect. The page is what the CALL returns, not what the
-     * render keeps; sizing it to the need sizes it to the wrong quantity. A caller wanting one
-     * clip should still choose that clip from fifty candidates rather than from five.
-     */
-    delete process.env.YOUTUBE_SEARCH_PAGE_SIZE;
-    expect(youtubeSearchPageSize.length, "it takes no `needed` argument").toBe(0);
-  });
-});
-
 describe("the call site", () => {
   const src = () => readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-
-  it("the search asks the policy, not an arithmetic of its own", () => {
-    const PIPE = src();
-    /** RONDE 658 — the per-beat call now sits behind the video pool; the arguments are the same. */
-    const at = PIPE.indexOf("const items = poolMode ? await rowsFromPool() : await searchYoutubeVideoCandidates(");
-    expect(at).toBeGreaterThan(0);
-    const call = PIPE.slice(at, PIPE.indexOf(");", at));
-    expect(call).toContain("youtubeSearchPageSize()");
-  });
 
   it("the old need-shaped page size no longer reaches the API", () => {
     /**
@@ -91,105 +40,4 @@ describe("the call site", () => {
     expect(args, "the expression that asked for five").not.toContain("count - fetched");
   });
 
-
-  it("the page size is part of the query cache key", () => {
-    /**
-     * Two callers asking the same query with different page sizes must not share one payload —
-     * the smaller answer would satisfy the larger request and silently cap it again.
-     */
-    expect(src()).toContain("#n${maxResults}");
-  });
-
-});
-
-/**
- * AND NOTHING UNDER FOUR MINUTES COULD BE FOUND AT ALL.
- *
- * The search sent `videoDuration=medium` unconditionally — 4 to 20 minutes. Short archival clips,
- * the richest category on the platform and the one this pipeline is best suited to (it keeps three
- * to six seconds, and VIDRUSH_MIN_SOURCE_VIDEO_SEC is 2.8), were excluded from every YouTube
- * search this render made. It arrived in a broad "improve visual candidate selection" commit with
- * no note and no test.
- */
-describe("the duration slice", () => {
-  it("video 613 — every pass asks for medium: the under-4-minute slice is where every Short lives", () => {
-    /** The operator's rule: a YouTube Short is never downloaded. `short` is no longer asked for. */
-    expect(youtubeSearchDurationForPass(0, 3)).toBe("medium");
-    expect(youtubeSearchDurationForPass(1, 3)).toBe("medium");
-    expect(youtubeSearchDurationForPass(2, 3)).toBe("medium");
-  });
-
-  it("A SINGLE PASS KEEPS MEDIUM — rotating alone would swap a slice, not add one", () => {
-    /**
-     * With nothing to alternate against, giving the only pass `short` would not widen the
-     * render's supply; it would trade the pool this render has always had for a different one.
-     */
-    expect(youtubeSearchDurationForPass(0, 1)).toBe("medium");
-    expect(youtubeSearchDurationForPass(0, 0)).toBe("medium");
-  });
-
-  it("nonsense indices answer with the old behaviour rather than throwing", () => {
-    expect(youtubeSearchDurationForPass(-1, 3)).toBe("medium");
-    expect(youtubeSearchDurationForPass(NaN, 3)).toBe("medium");
-    expect(youtubeSearchDurationForPass(0, NaN)).toBe("medium");
-  });
-
-  it("LONG IS NEVER ASKED FOR, and that is deliberate", () => {
-    /**
-     * This route downloads the WHOLE source and only then trims, under an 80 MB ceiling. A
-     * forty-minute upload spends a download slot and the scene's remaining time to arrive at a
-     * file the size guard refuses. `long` is not missing from the type — it is excluded by it.
-     */
-    const slices = [0, 1, 2, 3, 4].map((i) => youtubeSearchDurationForPass(i, 3));
-    expect(slices).not.toContain("long");
-    /** Video 613 — nor `short`: see the Shorts rule on `YoutubeSearchDuration`. */
-    expect(slices).not.toContain("short");
-    expect(new Set(slices)).toEqual(new Set(["medium"]));
-  });
-});
-
-describe("the duration reaches the API and the cache", () => {
-  const src = () => readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-
-  it("the request carries the pass's slice, not a constant", () => {
-    const PIPE = src();
-    expect(PIPE).toContain('searchUrl.searchParams.set("videoDuration", videoDuration);');
-    expect(PIPE, "the unconditional medium is gone").not.toContain(
-      'searchUrl.searchParams.set("videoDuration", "medium")'
-    );
-  });
-
-  it("THE DURATION IS PART OF THE QUERY CACHE KEY", () => {
-    /**
-     * Without this the first pass's payload would satisfy the second pass's request, the second
-     * slice would never be fetched, and the alternation would be a no-op that still looked right
-     * in the log.
-     */
-    expect(src()).toContain("`${query}#${license}#n${maxResults}#d${videoDuration}`");
-  });
-
-  it("the pass loop hands its index to the policy", () => {
-    const PIPE = src();
-    expect(PIPE).toContain("for (const [passIndex, pass] of licensePasses.entries()) {");
-    expect(PIPE).toContain(
-      "const passDuration = youtubeSearchDurationForPass(passIndex, licensePasses.length, queryIndex);"
-    );
-  });
-
-  it("the render says which slice it searched", () => {
-    // A supply change nobody can see in the log is a supply change nobody can verify.
-    expect(src()).toContain("`duration=${passDuration} attempted=true from=${poolMode ? \"video_pool\" : \"search\"} ` +");
-  });
-
-  it("NO EXTRA SEARCH CALL WAS ADDED", () => {
-    /**
-     * The whole reason this shape was chosen over a second search per query: the passes are calls
-     * the render already makes. One search per (query, pass), exactly as before.
-     */
-    const PIPE = src();
-    const at = PIPE.indexOf("for (const [passIndex, pass] of licensePasses.entries()) {");
-    const body = PIPE.slice(at, PIPE.indexOf("[Retrieval] s${sceneIndex} source=youtube", at));
-    const calls = body.match(/await searchYoutubeVideoCandidates\(/g) ?? [];
-    expect(calls.length, "one search per pass").toBe(1);
-  });
 });

@@ -293,11 +293,6 @@ export function safeRenderTimeline(timeline: ProjectTimeline): SafeRenderResult 
   return { timeline: { ...timeline, tracks }, changes };
 }
 
-/** Whether SAFE_RENDER would actually change anything — a plain timeline needs no second attempt. */
-export function safeRenderWouldChangeAnything(timeline: ProjectTimeline): boolean {
-  return safeRenderTimeline(timeline).changes.length > 0;
-}
-
 /** The render log's account of what the safe pass gave up, and what it kept. */
 export function formatSafeRender(result: SafeRenderResult): string[] {
   if (result.changes.length === 0) {

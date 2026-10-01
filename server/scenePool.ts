@@ -1,52 +1,7 @@
-/**
- * Scene Candidate Pool — P1 optimisation.
- *
- * Performs ONE retrieval round per scene (not per beat) and returns a pool
- * of metadata-only candidates.  No downloads happen here.  Downloads occur
- * only after a winner is selected (P2 / download-after-selection).
- *
- * Entry point: buildSceneCandidatePool(request) → SceneCandidatePool
- *
- * Pipeline contract
- * ─────────────────
- *  1. Build pool   → buildSceneCandidatePool()   [all API calls happen here]
- *  2. Select beat  → selectCandidatesFromPool()   [no API calls]
- *  3. Download     → caller (videoPipeline.ts)    [only the winner]
- *
- * Feature flag: ENABLE_SCENE_CANDIDATE_POOL=true (off by default).
- */
 
-import { createHash } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { foldSearchText } from "./searchTextNormalize";
-import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
-import type { CachedCandidate, CandidateSource } from "./sceneCandidateCache";
-import { formatYoutubeLicenseLine, youtubeLicenseDecision } from "./youtubeLicenseStatus";
-/**
- * RONDE 91 (§4) — the scene candidate pool asks the same providers the beat path asks, and until
- * this round it asked them without passing the gate. It could not: videoPipeline imports this
- * module, so the gate could not be imported back out of it. searchQueryContract has no imports of
- * its own, which is why the decision now lives there and every module can reach it.
- */
-
-import type { MediaForm } from "./beatVisualIntent";
-import { type UsageLedger } from "./duplicateGuard";
-import { type YoutubeRowLike } from "./youtubePoolSource";
-
-
-import { SOURCING_TIERS, providerTier, tierNumber } from "./sourcingTiers";
-import type { YoutubeLicenseMode } from "./videoPipeline";
-import type { VisualIntent as RankingIntent } from "./visualMatchingV2/types";
-import {
-  emptyQueryContext,
-  getSearchProvenance,
-  searchGateDecision,
-  withQueryScope,
-  withSearchProvenance,
-} from "./searchQueryContract";
-import { getActiveVideoId } from "./videoGenerationCancel";
 
 export type PoolCandidateSource =
   | "pexels"

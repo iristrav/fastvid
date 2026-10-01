@@ -258,37 +258,6 @@ export function noteDuplicateAttempt(stats: VisualDedupStats, matchedOn: DedupMa
   stats.byMatch[matchedOn]++;
 }
 
-/** §2's per-rejection line. */
-export function formatVisualDedupReject(input: {
-  videoId: number | string | null | undefined;
-  beat: string;
-  asset: string;
-  matchedOn: DedupMatch;
-}): string {
-  return (
-    `[VisualDedup] video=${input.videoId ?? "-"} beat=${input.beat} asset=${input.asset} ` +
-    `status=REJECTED reason=already_used_in_video matchedOn=${input.matchedOn}`
-  );
-}
-
-/**
- * §2's controlled-reuse line.
- *
- * Reuse is allowed only when nothing else is left, and when it happens it must be loud: a silent
- * reuse is indistinguishable from the bug this round exists to fix.
- */
-export function formatControlledReuse(input: {
-  videoId: number | string | null | undefined;
-  beat: string;
-  asset: string;
-  reason: string;
-}): string {
-  return (
-    `[VisualDedup] video=${input.videoId ?? "-"} beat=${input.beat} asset=${input.asset} ` +
-    `status=CONTROLLED_REUSE reason=${input.reason}`
-  );
-}
-
 /** §2's summary line. */
 export function formatVisualDedupSummary(
   videoId: number | string | null | undefined,

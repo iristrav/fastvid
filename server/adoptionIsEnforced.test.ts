@@ -31,11 +31,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import {
-  adoptionPolicyFor,
-  adoptionGuardVerdict,
-  funnelAdoptionEnforced,
-} from "./adoptionPolicy";
+import { adoptionPolicyFor, adoptionGuardVerdict } from "./adoptionPolicy";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const LEDGER = fs.readFileSync(path.join(__dirname, "visualSourceLineage.ts"), "utf8");
@@ -70,8 +66,8 @@ describe("no adoption route reaches the montage undeclared", () => {
   /** And the intents that ARE declared must all be labels the policy table knows. */
   it("every declared intent is a label the policy table declares", () => {
     const literals = [...PIPE.matchAll(/withAdoptionIntent\(\s*"([a-z0-9_]+)"/g)].map((m) => m[1]!);
-    /** Three — the other intents were on the deleted rescue, recovery, AI, pool and funnel routes. */
-    expect(literals.length).toBeGreaterThanOrEqual(3);
+    /** The other intents were on the deleted rescue, recovery, AI, pool, funnel and motion-graphic routes. */
+    expect(literals.length).toBeGreaterThanOrEqual(2);
     for (const label of new Set(literals)) {
       expect(adoptionPolicyFor(label).category, `route "${label}" is undeclared`).not.toBe(
         "UNDECLARED"
@@ -133,11 +129,6 @@ describe("eligibility has exactly one writer and one reader", () => {
    * enforcement would refuse the pipeline's own work: the gate judges `clipPath`, the overlay
    * writes `withText`, and the guard would ask about a file with no provenance.
    */
-  it("the text overlay registers its output as a derived file", () => {
-    const at = PIPE.indexOf("async function applyVideoBeatTextOverlay(");
-    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body).toContain('linkDerivedPath(out, clipPath, "OVERLAYED"');
-  });
 });
 
 /* ═══════════════ PHASE 7 — production is strict, and only a test may say otherwise ═══════════════ */
@@ -148,7 +139,7 @@ describe("enforcement is on unless something explicitly turns it off", () => {
   it("no production default disables the gate", () => {
     /** The old opt-in spelling, which is what a regression would restore. */
     expect(POLICY).not.toContain('ENFORCE_FUNNEL_ADOPTION === "true"');
-    expect(POLICY).toContain('ENFORCE_FUNNEL_ADOPTION !== "false"');
+    expect(POLICY).not.toContain("process.env.ENFORCE_FUNNEL_ADOPTION");
   });
 
   it("no shipped config file ships the gate turned off", () => {
@@ -165,20 +156,6 @@ describe("enforcement is on unless something explicitly turns it off", () => {
       }
     }
     expect(suspects, `config disables enforcement: ${suspects.join(", ")}`).toEqual([]);
-  });
-
-  it("an unset environment enforces", () => {
-    const saved = process.env[ENV];
-    try {
-      delete process.env[ENV];
-      expect(funnelAdoptionEnforced()).toBe(true);
-      expect(
-        adoptionGuardVerdict({ source: "archive", eligible: false, vision: "APPROVED" }).allowed
-      ).toBe(false);
-    } finally {
-      if (saved === undefined) delete process.env[ENV];
-      else process.env[ENV] = saved;
-    }
   });
 });
 

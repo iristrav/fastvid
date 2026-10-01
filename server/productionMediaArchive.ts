@@ -104,10 +104,6 @@ export type ProductionArchiveFailure = {
 
 export type ProductionArchiveOutcome = ProductionArchiveStored | ProductionArchiveFailure;
 
-export function archiveStoreSucceeded(o: ProductionArchiveOutcome): o is ProductionArchiveStored {
-  return o.status === "stored";
-}
-
 /* ═══════════════════════ what it needs from the world ═══════════════════════ */
 
 /** The subset of the existing ingestion's metadata this store passes through unchanged. */
@@ -610,4 +606,9 @@ export function productionArchiveDeps(params: {
       };
     },
   };
+}
+
+
+export function archiveStoreSucceeded(o: ProductionArchiveOutcome): o is ProductionArchiveStored {
+  return o.status === "stored";
 }

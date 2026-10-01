@@ -26,14 +26,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  NAME_PARTICLES,
-  isNameShapedToken as extractionTokenShape,
-  isNameParticle,
-  nameRunRegex,
-  singleNameTokenRegex,
-  stripToNameSafeText,
-} from "./personNameChars";
+import { NAME_PARTICLES, isNameShapedToken as extractionTokenShape, nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
 import { checkPersonName, isNameParticleToken, isNameShapedToken } from "./searchQueryContract";
 import { extractPersonNamesFromText } from "./videoPipeline";
 
@@ -134,20 +127,6 @@ describe("RONDE 125 — the lower-case words inside a surname", () => {
     expect(extractPersonNamesFromText("Abdel Fattah el-Sisi spoke in Cairo")).toContain(
       "Abdel Fattah el-Sisi"
     );
-  });
-
-  it("CRITICAL: a particle is never a name on its own", () => {
-    /**
-     * The whole risk of admitting lower-case words is that one of them becomes a name. A particle
-     * is accepted only BETWEEN two of the name's own words — first or last, the old refusals
-     * apply unchanged.
-     */
-    for (const p of NAME_PARTICLES) {
-      expect(isNameParticle(p)).toBe(true);
-      expect(isNameShapedToken(p)).toBe(false);
-      expect(checkPersonName(`${p} Gaulle`, `${p} Gaulle spoke`, "", {}).ok).toBe(false);
-      expect(checkPersonName(`Charles ${p}`, `Charles ${p} spoke`, "", {}).ok).toBe(false);
-    }
   });
 
   it("the particle list is closed — not 'any lower-case word'", () => {

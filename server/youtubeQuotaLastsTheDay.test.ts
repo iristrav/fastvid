@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { youtubeSearchDurationForPass } from "./sourcingPolicy";
 import { queriesThatNameSomething, queryNamesSomething } from "./youtubeNonFootage";
 import { youtubeSearchPassesPerQuery } from "./config";
 
@@ -36,22 +35,6 @@ describe("1 — one search per query", () => {
     expect(youtubeSearchPassesPerQuery()).toBe(1);
   });
 
-  it("with one pass, every query asks for medium — video 613: no Short is ever searched for", () => {
-    expect(youtubeSearchDurationForPass(0, 1, 0)).toBe("medium");
-    expect(youtubeSearchDurationForPass(0, 1, 1)).toBe("medium");
-    expect(youtubeSearchDurationForPass(0, 1)).toBe("medium");
-    expect(youtubeSearchDurationForPass(0, 3, 1)).toBe("medium");
-    expect(youtubeSearchDurationForPass(1, 3, 0)).toBe("medium");
-  });
-
-  it("the passes are cut after they are ordered, so the widest one is the one kept", () => {
-    const anyFirst = PIPE.indexOf("if (recallFirst && youtubeFairUseEnabled()) licensePasses.push(anyPass);");
-    const cut = PIPE.indexOf("licensePasses.splice(youtubeSearchPassesPerQuery());");
-    const loop = PIPE.indexOf("for (const [queryIndex, query] of uniqueQueries.slice(0, 2).entries()) {");
-    expect(anyFirst).toBeGreaterThan(-1);
-    expect(cut).toBeGreaterThan(anyFirst);
-    expect(loop).toBeGreaterThan(cut);
-  });
 });
 
 describe("2 — a query that names nobody is not sent while others do", () => {

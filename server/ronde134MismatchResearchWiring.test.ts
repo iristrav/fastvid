@@ -62,12 +62,7 @@ import {
 } from "./mismatchResearch";
 import { classifyMismatch, mismatchFault } from "./visualMismatchFeedback";
 import { buildPrioritisedQueries, validateSearchQuery, type VerifiedQueryContext } from "./searchQueryContract";
-import {
-  buildVerifiedQueryContextForBeat,
-  createVisualDedupState,
-  fetchHistoricalBeatVideo,
-  getPipelinePerfProfile,
-} from "./videoPipeline";
+import { buildVerifiedQueryContextForBeat, createVisualDedupState, getPipelinePerfProfile } from "./videoPipeline";
 import { buildMediaSearchIntent } from "./mediaResearchEngine";
 import { resetYoutubeSearchQuotaState } from "./youtubeSearchQuota";
 import { searchGateStrict } from "./config";
@@ -134,117 +129,6 @@ describe("RONDE 134 — entity integrity survives the widening", () => {
   });
 });
 
-// ─── THE WIRING ──────────────────────────────────────────────────────────────────────────────
-
-describe("RONDE 134 — the corrected query causes a real provider request", () => {
-  beforeEach(() => {
-    mockedFetch.mockReset();
-    /** RONDE 653 — each case must reach the provider itself, not a previous case's cached answer. */
-    resetYoutubeSearchQuotaState();
-    process.env.YOUTUBE_API_KEY = "test-key-not-a-real-credential";
-    process.env.YOUTUBE_CC_DL_SERVICE = "http://ytdl.test.invalid";
-  });
-
-  /** Every URL the process tried to fetch during a call. */
-  function requestedUrls(): string[] {
-    return mockedFetch.mock.calls.map((c) => String(c[0]));
-  }
-
-  it("28. leadQueries reach an outbound provider URL", async () => {
-    // The whole point of the round, at the only place it can be observed from outside: the
-    // corrected query is handed to fetchHistoricalBeatVideo, and something leaves the process
-    // carrying it. Everything else in this file could be true of a research pass that never
-    // searches.
-    mockedFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => ({ items: [] }),
-      text: async () => "",
-    } as never);
-
-    const correctedQuery = "Hermann Göring Berlin 1945";
-    const dedup = researchDedup(999);
-    await fetchHistoricalBeatVideo(
-      RESEARCH_BEAT as never, RESEARCH_SCENE as never, "/tmp", 0, 4, dedup,
-      researchIntent(),
-      { videoTitle: VIDEO_TITLE, keywords: [] } as never,
-      "r134_wiring",
-      { leadQueries: [correctedQuery], researchPass: true }
-    ).catch(() => null);
-
-    const urls = requestedUrls();
-    expect(urls.length, "no outbound request was made at all").toBeGreaterThan(0);
-    // The corrected query, URL-encoded, in something that actually left the process.
-    const encoded = encodeURIComponent(correctedQuery).replace(/%20/g, "+");
-    const carried = urls.filter(
-      (u) => u.includes(encoded) || u.includes(encodeURIComponent(correctedQuery))
-    );
-    expect(carried.length, `corrected query never left the process. URLs: ${urls.slice(0, 5).join(" | ")}`)
-      .toBeGreaterThan(0);
-  }, 120_000);
-
-  it("29. it reaches YouTube specifically, through the existing cascade", async () => {
-    mockedFetch.mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null },
-      json: async () => ({ items: [] }), text: async () => "",
-    } as never);
-
-    const dedup = researchDedup(998);
-    await fetchHistoricalBeatVideo(
-      RESEARCH_BEAT as never, RESEARCH_SCENE as never, "/tmp", 0, 4, dedup,
-      researchIntent(),
-      { videoTitle: VIDEO_TITLE, keywords: [] } as never,
-      "r134_yt",
-      { leadQueries: ["Hermann Göring Berlin 1945"], researchPass: true }
-    ).catch(() => null);
-
-    /**
-     * Video 612/613 — a YouTube query holds only words its own sentence says. "The decision was his
-     * alone." names nobody, so the scene's "Hermann Göring Berlin 1945" is not sent to YouTube;
-     * test 28 still proves the correction leaves the process through the other providers.
-     */
-    const yt = requestedUrls().filter((u) => u.includes("googleapis.com/youtube/v3/search"));
-    expect(yt.some((u) => u.includes("G%C3%B6ring") || u.includes("Göring"))).toBe(false);
-
-    /** A sentence that says the name does reach YouTube with it, through the same cascade. */
-    mockedFetch.mockClear();
-    resetYoutubeSearchQuotaState();
-    const named = { ...RESEARCH_BEAT, text: "Hermann Göring stood in Berlin in 1945." };
-    await fetchHistoricalBeatVideo(
-      named as never, RESEARCH_SCENE as never, "/tmp", 0, 4, researchDedup(997),
-      researchIntent(),
-      { videoTitle: VIDEO_TITLE, keywords: [] } as never,
-      "r134_yt_named",
-      { leadQueries: ["Hermann Göring Berlin 1945"], researchPass: true }
-    ).catch(() => null);
-    const ytNamed = requestedUrls().filter((u) => u.includes("googleapis.com/youtube/v3/search"));
-    expect(ytNamed.length, "the research query never reached YouTube").toBeGreaterThan(0);
-    expect(ytNamed.some((u) => u.includes("G%C3%B6ring") || u.includes("Göring"))).toBe(true);
-  }, 120_000);
-
-  it("30. without leadQueries the same call asks the cascade's own questions", async () => {
-    mockedFetch.mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null },
-      json: async () => ({ items: [] }), text: async () => "",
-    } as never);
-
-    const dedup = researchDedup(997);
-    await fetchHistoricalBeatVideo(
-      RESEARCH_BEAT as never, RESEARCH_SCENE as never, "/tmp", 0, 4, dedup,
-      researchIntent(),
-      { videoTitle: VIDEO_TITLE, keywords: [] } as never,
-      "r134_nolead",
-      {}
-    ).catch(() => null);
-
-    // The corrected query is absent — proving test 28's hit came from leadQueries and not from
-    // something the cascade would have asked anyway.
-    const carried = requestedUrls().filter((u) => u.includes("1945"));
-    expect(carried.length).toBe(0);
-  }, 120_000);
-});
-
 describe("RONDE 134 — mutation guards", () => {
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
   const MOD = readFileSync(join(__dirname, "mismatchResearch.ts"), "utf8");
@@ -260,6 +144,5 @@ describe("RONDE 134 — mutation guards", () => {
     const block = PIPE.slice(idx, idx + 2000);
     expect(block).toContain("dedup.sourcingCache");
     expect(block).toContain("dedup.usedContentKeys");
-    expect(PIPE).toContain("recordAdoptedClipSource");
   });
 });

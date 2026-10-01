@@ -21,19 +21,7 @@
  */
 import { describe, expect, it, beforeEach } from "vitest";
 
-import {
-  EMPTY_MUSIC_CATALOGUE,
-  MIN_CUE_SEC,
-  activeMusicCatalogue,
-  formatCueSheet,
-  planMusicCues,
-  registerMusicCatalogue,
-  resetMusicCatalogue,
-  scoreCues,
-  type CurvePoint,
-  type MusicCatalogue,
-  type MusicTrack,
-} from "./musicDirector";
+import { EMPTY_MUSIC_CATALOGUE, MIN_CUE_SEC, activeMusicCatalogue, formatCueSheet, planMusicCues, resetMusicCatalogue, scoreCues, type CurvePoint, type MusicCatalogue, type MusicTrack } from "./musicDirector";
 
 const windows = (count: number, each = 30) =>
   Array.from({ length: count }, (_, i) => ({ startSec: i * each, endSec: (i + 1) * each }));
@@ -183,25 +171,6 @@ describe("what a deployment plugs in", () => {
     expect(activeMusicCatalogue().find({ role: "intro", intensity: 50, minDurationSec: 10 })).toBeNull();
   });
 
-  it("a registered catalogue is used, and can be revoked", () => {
-    const cat: MusicCatalogue = { name: "test", find: () => track() };
-    registerMusicCatalogue(cat);
-    expect(activeMusicCatalogue().name).toBe("test");
-    resetMusicCatalogue();
-    expect(activeMusicCatalogue().name).toBe("none");
-  });
-
-  it("a scored cue carries a real identity and a real licence", () => {
-    registerMusicCatalogue({ name: "test", find: () => track() });
-    const scored = scoreCues(
-      planMusicCues({ curve: curve([50, 50]), sceneWindows: windows(2), totalDurationSec: 60 })
-    );
-    const withTrack = scored.find((s) => s.track);
-    expect(withTrack).toBeDefined();
-    expect(withTrack!.track!.identity.provider).toBe("test_catalogue");
-    expect(withTrack!.track!.licence).toBe("CC0");
-  });
-
   /**
    * Silence is never "unavailable". Choosing not to score a passage and having nothing to score it
    * with are different facts, and a report that conflates them makes the gap invisible.
@@ -216,35 +185,11 @@ describe("what a deployment plugs in", () => {
     expect(silent!.unavailableReason).toBe("");
   });
 
-  it("an unfillable cue says which catalogue could not fill it", () => {
-    registerMusicCatalogue({ name: "house_library", find: () => null });
-    const scored = scoreCues(
-      planMusicCues({ curve: curve([50, 50]), sceneWindows: windows(2), totalDurationSec: 60 })
-    );
-    expect(scored[0]!.unavailableReason).toContain("house_library held nothing");
-  });
-
   it("with no catalogue at all the reason names that, not a search failure", () => {
     const scored = scoreCues(
       planMusicCues({ curve: curve([50, 50]), sceneWindows: windows(2), totalDurationSec: 60 })
     );
     expect(scored[0]!.unavailableReason).toContain("no music catalogue is registered");
-  });
-
-  it("the catalogue is asked for a cue long enough to cover it", () => {
-    const asked: number[] = [];
-    registerMusicCatalogue({
-      name: "spy",
-      find: (r) => {
-        asked.push(r.minDurationSec);
-        return null;
-      },
-    });
-    scoreCues(
-      planMusicCues({ curve: curve([50, 50]), sceneWindows: windows(2, 45), totalDurationSec: 90 })
-    );
-    expect(asked.length).toBeGreaterThan(0);
-    for (const d of asked) expect(d).toBeGreaterThanOrEqual(MIN_CUE_SEC);
   });
 });
 
@@ -252,30 +197,6 @@ describe("what a deployment plugs in", () => {
 
 describe("the render says what the score is, or is not", () => {
   beforeEach(() => resetMusicCatalogue());
-
-  /**
-   * The line that makes the gap a measurement. Without it a film with no music looks exactly like
-   * a film that was deliberately played dry.
-   */
-  it("an unscored film says so unmistakably", () => {
-    const lines = formatCueSheet(
-      scoreCues(planMusicCues({ curve: curve([50, 50]), sceneWindows: windows(2), totalDurationSec: 60 }))
-    );
-    const total = lines[lines.length - 1]!;
-    expect(total).toContain("THIS FILM HAS NO MUSIC");
-    expect(total).toContain("registerMusicCatalogue()");
-  });
-
-  it("a scored film names the track, its source and its licence", () => {
-    registerMusicCatalogue({ name: "test", find: () => track({ title: "Cold Open" }) });
-    const lines = formatCueSheet(
-      scoreCues(planMusicCues({ curve: curve([50, 50]), sceneWindows: windows(2), totalDurationSec: 60 }))
-    ).join("\n");
-    expect(lines).toContain('track="Cold Open"');
-    expect(lines).toContain("test_catalogue:t1");
-    expect(lines).toContain("licence=CC0");
-    expect(lines).not.toContain("THIS FILM HAS NO MUSIC");
-  });
 
   /** A film scored entirely in silence is not a failure and must not be reported as one. */
   it("a film scored only with silence is not called unmusical", () => {

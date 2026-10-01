@@ -100,11 +100,6 @@ export function cachedClipEmbedding(assetId: number): StoredClipEmbeddingRecord 
   return hit;
 }
 
-/** True when a prefetch has already established that this asset has no stored embedding. */
-export function clipEmbeddingKnownAbsent(assetId: number): boolean {
-  return knownAbsent.has(assetId);
-}
-
 /** Test hook: resets module state so each test starts from a cold store. */
 export function __resetClipEmbeddingStoreForTests(): void {
   cache.clear();

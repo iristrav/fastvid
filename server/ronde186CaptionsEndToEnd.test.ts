@@ -136,10 +136,10 @@ function planned(opts: { words?: boolean } = {}): ProjectTimeline {
 /* ═══════════════════════ the captions exist at all ═══════════════════════ */
 
 describe("R186 — the cinematic route produces narration captions", () => {
-  it("VIDEO 619 — as made, every caption is planned and off, waiting for the editor", () => {
+  it("RONDE 656 — as made, every caption is on: the subtitles are in the made video", () => {
     const captions = captionTrack(plannedAsMade());
     expect(captions.length).toBeGreaterThanOrEqual(BEATS.length);
-    for (const c of captions) expect(c).toMatchObject({ disabled: true, disabledReason: "left_to_editor" });
+    for (const c of captions) expect(c.disabled ?? false).toBe(false);
   });
 
   it("puts a subtitle on the CAPTIONS track for every beat", () => {

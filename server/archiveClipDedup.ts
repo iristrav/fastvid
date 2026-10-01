@@ -3,14 +3,10 @@
  */
 import { createHash } from "crypto";
 import fs from "fs";
-import os from "os";
-import path from "path";
 import { spawn } from "child_process";
 import { withForkRetry } from "./_core/execForkRetry";
 import { ffmpegSemaphore } from "./_core/semaphore";
-import type { VideoClipSegment } from "./archiveVideoSplitter";
 import { loadArchiveAssetFile } from "./archiveAssetLoad";
-import { LOCAL_UPLOADS_DIR, resolveLocalVideoPath } from "./storageLocal";
 
 function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
@@ -191,25 +187,6 @@ export function isNearDuplicateFingerprint(
   return matches >= needed;
 }
 
-export async function fingerprintVideoBuffer(
-  buffer: Buffer,
-  mimeType: string,
-  durationSec?: number
-): Promise<bigint[] | null> {
-  if (buffer.length < 800) return null;
-  const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("mov") ? "mov" : "mp4";
-  const tempPath = path.join(
-    os.tmpdir(),
-    `archive-fp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
-  );
-  try {
-    fs.writeFileSync(tempPath, buffer);
-    return await fingerprintMediaFileMulti(tempPath, { durationSec, mimeType });
-  } finally {
-    try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
-  }
-}
-
 export function exactBufferKey(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex").slice(0, 24);
 }
@@ -263,161 +240,11 @@ export type ArchiveFingerprintEntry = {
   exactKey?: string;
 };
 
-/** Fingerprints of clips already stored in an archive (for upload dedup). */
-export async function buildArchiveFingerprintIndex(
-  assets: Array<{
-    sourceNote?: string | null;
-    storageUrl: string;
-    storageKey: string | null;
-    mimeType: string | null;
-    mediaType: "video" | "image";
-    durationSec: number | null;
-  }>
-): Promise<ArchiveFingerprintEntry[]> {
-  const fast = assets.length > 12;
-  const entries: ArchiveFingerprintEntry[] = [];
-  const candidates = assets
-    .map((asset) => ({ asset, local: resolveArchiveAssetPath(asset) }))
-    .filter((row): row is { asset: (typeof assets)[0]; local: string } => Boolean(row.local));
-
-  const rows = await mapWithConcurrency(candidates, dedupeFingerprintConcurrency(), async ({ asset, local }) => {
-    try {
-      const mime =
-        asset.mimeType ?? (asset.mediaType === "image" ? "image/jpeg" : "video/mp4");
-      const fp = await fingerprintMediaFileMulti(local, {
-        durationSec: asset.durationSec,
-        mimeType: mime,
-        fast,
-      });
-      if (fp == null) return null;
-      return {
-        fp,
-        fragment: parseArchiveFragmentNote(asset.sourceNote),
-      } satisfies ArchiveFingerprintEntry;
-    } catch {
-      return null;
-    }
-  });
-
-  for (const row of rows) {
-    if (row) entries.push(row);
-  }
-  return entries;
-}
-
-/**
- * Drop clips that duplicate existing archive entries or earlier clips in this upload batch.
- */
-export async function dedupeSegmentsForArchiveUpload(
-  segments: VideoClipSegment[],
-  existingIndex: ArchiveFingerprintEntry[],
-  parentSource?: string | null
-): Promise<{ kept: VideoClipSegment[]; skipped: number }> {
-  const index: ArchiveFingerprintEntry[] = [...existingIndex];
-  const kept: VideoClipSegment[] = [];
-  let skipped = 0;
-
-  for (const seg of segments) {
-    const exactKey = exactBufferKey(seg.buffer);
-    const fragment = parentSource
-      ? {
-          sourceKey: parentSource.trim().toLowerCase(),
-          startSec: seg.startSec,
-          endSec: seg.endSec,
-        }
-      : null;
-
-    // Archive uploads save all footage — only reject exact byte-for-byte duplicates.
-    // Perceptual fingerprint dedup is too aggressive for documentary/archive footage
-    // where consecutive shots share the same grain, era, and color profile.
-    const exactDup = index.some((e) => e.exactKey === exactKey);
-    if (exactDup) {
-      skipped += 1;
-      console.log(
-        `[ArchiveDedup] skip exact duplicate upload clip ${seg.index + 1} ` +
-          `(${seg.startSec.toFixed(1)}–${seg.endSec.toFixed(1)}s)`
-      );
-      continue;
-    }
-    index.push({ fp: [], fragment, exactKey });
-    kept.push({ ...seg, index: kept.length });
-  }
-
-  if (skipped > 0) {
-    console.log(`[ArchiveDedup] upload filter: ${skipped} duplicate(s) skipped, ${kept.length} unique`);
-  }
-  return { kept, skipped };
-}
-
-/** Drop visually near-duplicate segments from a split batch (keeps first occurrence). */
-export async function dedupeVideoSegmentsVisually(
-  segments: VideoClipSegment[]
-): Promise<{ kept: VideoClipSegment[]; skipped: number }> {
-  const maxDist = defaultMaxHamming();
-  const kept: VideoClipSegment[] = [];
-  const fingerprints: bigint[][] = [];
-  const exactKeys = new Set<string>();
-  let skipped = 0;
-
-  for (const seg of segments) {
-    const exact = exactBufferKey(seg.buffer);
-    if (exactKeys.has(exact)) {
-      skipped += 1;
-      continue;
-    }
-
-    const overlapsKept = kept.some((k) => rangesOverlapRatio(seg, k) >= 0.65);
-    if (overlapsKept) {
-      skipped += 1;
-      continue;
-    }
-
-    const fp = await fingerprintVideoBuffer(seg.buffer, "video/mp4", seg.durationSec);
-    if (fp != null) {
-      const dup = fingerprints.some((existing) => isNearDuplicateFingerprint(existing, fp, maxDist));
-      if (dup) {
-        skipped += 1;
-        console.log(
-          `[ArchiveDedup] skip visually duplicate clip ${seg.index + 1} (${seg.startSec.toFixed(1)}–${seg.endSec.toFixed(1)}s)`
-        );
-        continue;
-      }
-      fingerprints.push(fp);
-    }
-
-    exactKeys.add(exact);
-    kept.push({ ...seg, index: kept.length });
-  }
-
-  if (skipped > 0) {
-    console.log(`[ArchiveDedup] removed ${skipped} duplicate clip(s), kept ${kept.length}`);
-  }
-  return { kept, skipped };
-}
-
 export type ArchiveVisualDedupeResult = {
   scanned: number;
   deleted: number;
   kept: number;
 };
-
-function resolveArchiveAssetPath(asset: {
-  storageUrl: string;
-  storageKey: string | null;
-}): string | null {
-  const fromUrl = resolveLocalVideoPath(asset.storageUrl);
-  if (fromUrl) return fromUrl;
-  if (asset.storageKey) {
-    const fromKey = path.join(LOCAL_UPLOADS_DIR, asset.storageKey.replace(/\//g, "_"));
-    if (fs.existsSync(fromKey)) return fromKey;
-  }
-  if (asset.storageUrl.startsWith("/local-storage/")) {
-    const fileName = asset.storageUrl.replace(/^\/local-storage\//, "");
-    const p = path.join(LOCAL_UPLOADS_DIR, fileName);
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
-}
 
 /** Remove visually duplicate clips already stored in an archive (keeps oldest id per group). */
 export async function dedupeArchiveVisualDuplicates(

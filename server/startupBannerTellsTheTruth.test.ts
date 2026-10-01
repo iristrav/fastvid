@@ -115,42 +115,17 @@ describe("the pipeline banner reports the cinematic flags", () => {
     ).not.toContain('"single-pass compose (beelden + voice + jaartallen) — geen apart edit/effecten-stadium"');
   });
 
-  it("reads both flags, because they mean different things", () => {
+  it("names the one route — there are no cinematic flags left to read", () => {
     const src = banner();
-    const at = src.indexOf('"[Fastvid] Video pipeline:"');
+    const at = src.indexOf('"[Fastvid] Video pipeline: ✓ cinematic timeline delivers the video');
     expect(at, "the pipeline status line is gone").toBeGreaterThan(-1);
-    const line = src.slice(at, at + 900);
-    expect(line).toContain("cinematicPlans");
-    expect(line).toContain("cinematicDelivers");
-    /** ONE ROUTE: the render-path flag is read from config.ts; planning still from its own module. */
-    expect(src).toContain('const { cinematicPlanningEnabled } = await import("../cinematicProduction");');
-    expect(src).toContain('const { cinematicRenderPathEnabled } = await import("../config");');
+    /** Code audit P12: CINEMATIC_EDITING_ENGINE / CINEMATIC_RENDER_PATH no longer exist. */
+    expect(src).not.toContain("CINEMATIC_RENDER_PATH");
+    expect(src).not.toContain("CINEMATIC_EDITING_ENGINE");
   });
 
-  /**
-   * Three states, not two. Planning on with the render path off is a real configuration — the
-   * timeline is stored for the editor while compose still delivers — and a two-way line would
-   * report it as one of the other two.
-   */
-  it("distinguishes planned-but-not-delivered from both extremes", () => {
+  it("does not drag the editing chain into boot", () => {
     const src = banner();
-    const at = src.indexOf('"[Fastvid] Video pipeline:"');
-    const line = src.slice(at, at + 900);
-    expect(line).toContain("cinematic timeline delivers the video");
-    expect(line).toContain("PLANNED and stored for the editor");
-    expect(line).toContain("no separate edit/effects stage");
-    // Each of the two lesser states names the variable that advances it.
-    expect(line).toContain("set CINEMATIC_RENDER_PATH=true");
-    expect(line).toContain("set CINEMATIC_EDITING_ENGINE=true");
-  });
-
-  /**
-   * `cinematicProduction` pulls in the whole editing chain. The boot banner must not be what drags
-   * it into the web process, nor what fails a boot because a describing line could not load.
-   */
-  it("loads the flags without dragging the editing chain into boot", () => {
-    const src = banner();
-    expect(src).toContain('await import("../cinematicProduction")');
     expect(src, "a static import would pull the editing chain into the web process").not.toContain(
       'from "../cinematicProduction"'
     );

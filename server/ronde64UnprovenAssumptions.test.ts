@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 import { inferClipSourceFromPath } from "./videoPipeline";
-import { buildVoiceVisualMatchSummary, isDegradedRescueSource } from "./voiceVisualMatch";
+import { buildVoiceVisualMatchSummary } from "./voiceVisualMatch";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 
 /**
@@ -24,44 +24,6 @@ import type { ClipAdoptEntry } from "./clipAdoptAudit";
  */
 
 const PIPELINE = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-
-describe("RONDE 64 — the duration comes off the file, not off a guess", () => {
-  it("the start is resolved against the downloaded source before the trim", () => {
-    const src = PIPELINE();
-    const idx = src.indexOf("export async function resolveTrimStartSec(");
-    expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 1600);
-    expect(block).toContain("probeVideoDurationSec(sourcePath)");
-    expect(block).toContain("pickLongVideoStartSec(sourceDur, takeSec, seedId)");
-  });
-
-  it("a start the transcript LOCATED is honoured, not improved on", () => {
-    const src = PIPELINE();
-    const idx = src.indexOf("export async function resolveTrimStartSec(");
-    const block = src.slice(idx, idx + 1600);
-    expect(block).toContain("const start = startIsExact\n    ? requestedStart");
-    // And only a transcript hit sets that flag.
-    expect(src).toContain('startIsExact = plan.method === "transcript";');
-  });
-
-  it("an unprobeable source keeps the caller's start rather than resetting it", () => {
-    const src = PIPELINE();
-    const idx = src.indexOf("export async function resolveTrimStartSec(");
-    const block = src.slice(idx, idx + 1600);
-    expect(block).toContain("if (!Number.isFinite(sourceDur) || sourceDur <= 0) return Math.max(0, requestedStart);");
-  });
-
-  it("the start can never point past the end of the file", () => {
-    const src = PIPELINE();
-    const idx = src.indexOf("export async function resolveTrimStartSec(");
-    const block = src.slice(idx, idx + 1600);
-    // Nothing clamped this before: a blind 12s offset on an 8s video asked ffmpeg for a second
-    // that was not there, and the size check downstream can wave a frozen frame through.
-    expect(block).toContain("const latest = Math.max(0, sourceDur - takeSec);");
-    expect(block).toContain("return Math.max(0, Math.min(start, latest));");
-  });
-
-});
 
 describe("RONDE 64 — a clip whose adoption was never recorded is still identifiable", () => {
   it("reads the provider-asset tag, which names the provider outright", () => {
@@ -107,18 +69,6 @@ describe("RONDE 64 — 'rescue-tier' was three different things in one number", 
       source,
       visionScore10: 8,
     }) as ClipAdoptEntry;
-
-  it("real footage found on a second pass is not a degradation", () => {
-    for (const s of ["rescue_archive", "rescue_wikimedia", "rescue_similar", "rescue_stock"]) {
-      expect(isDegradedRescueSource(s)).toBe(false);
-    }
-  });
-
-  it("a placeholder, a held clip, a graphic and generated footage are", () => {
-    for (const s of ["rescue_placeholder", "rescue_extend", "rescue_graphic", "rescue_ai"]) {
-      expect(isDegradedRescueSource(s)).toBe(true);
-    }
-  });
 
   it("an archive render of real footage is now ok, where it never could be before", () => {
     const summary = buildVoiceVisualMatchSummary(

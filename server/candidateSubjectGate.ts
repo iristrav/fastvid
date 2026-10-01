@@ -41,8 +41,6 @@
 
 import { AsyncLocalStorage } from "async_hooks";
 
-import { invokeLLM, isLlmPreflightRefusal, isLlmProviderUnavailable } from "./_core/llm";
-
 export type CandidateSubjectVerdict = "plausible" | "does_not_belong" | "unknown";
 
 export type CandidateSubjectDecision = {
@@ -90,31 +88,6 @@ export type CandidateSubjectGateState = {
 export function createCandidateSubjectGateState(): CandidateSubjectGateState {
   return { seen: new Map(), attempts: 0, refused: 0, plausible: 0, skipped: 0, providerUnavailable: 0 };
 }
-
-function envInt(key: string, fallback: number, min: number, max: number): number {
-  const raw = process.env[key]?.trim();
-  if (!raw) return fallback;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
-}
-
-const RESPONSE_SCHEMA = {
-  type: "json_schema" as const,
-  json_schema: {
-    name: "candidate_subject_check",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: {
-        subject: { type: "string" },
-        couldBelong: { type: "boolean" },
-        reason: { type: "string" },
-      },
-      required: ["subject", "couldBelong", "reason"],
-      additionalProperties: false,
-    },
-  },
-};
 
 /* ═══════════════════════ the gate, where the download actually happens ═══════════════════════ */
 

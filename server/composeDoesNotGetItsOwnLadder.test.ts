@@ -266,7 +266,8 @@ describe("render 592-B — a tier no route can serve must not block the ones bel
     const members = [...PIPELINE.slice(at2, PIPELINE.indexOf("] as const;", at2)).matchAll(/"([a-z_]+)"/g)]
       .map((m) => m[1]!);
     /** Nine before VIDEO 619 removed the six that never delivered to a film. */
-    expect(members.length).toBe(3);
+    /** Two since the code audit took YouTube out of the cascade (it has its own turn). */
+    expect(members.length).toBe(2);
     expect(members.some((m) => providerTier(m) === "OWN_ARCHIVE"), "add an archive member and this test should be revisited").toBe(false);
     expect(members.some((m) => providerTier(m) === "OPEN_SOURCES")).toBe(true);
   });
@@ -383,8 +384,8 @@ describe("there is still exactly one sourcing authority", () => {
     for (const m of PIPELINE.matchAll(/cachedProviderSearch\(\s*\w+,\s*"([a-z_0-9]+)"/g)) {
       names.add(m[1]!);
     }
-    /** More than fourteen before VIDEO 619 removed the providers that never delivered to a film. */
-    expect(names.size, "no provider names found — the gate helpers were renamed").toBeGreaterThan(5);
+    /** More than fourteen before VIDEO 619; five since the code audit removed the per-beat YouTube search. */
+    expect(names.size, "no provider names found — the gate helpers were renamed").toBeGreaterThanOrEqual(5);
     for (const n of names) expect(providerTier(n), `${n} has no tier`).not.toBeNull();
   });
 

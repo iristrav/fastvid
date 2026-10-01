@@ -378,22 +378,3 @@ export async function planScriptGuidedClip(
   return defaultPlan();
 }
 
-/** Rank and plan top YouTube search hits within a time budget. */
-export async function planBestScriptGuidedClip(
-  candidates: ScriptGuidedCandidate[],
-  options: ScriptGuidedOptions
-): Promise<ScriptGuidedClipPlan | null> {
-  if (!scriptGuidedClipsEnabled() || !candidates.length) return null;
-
-  const ranked = [...candidates].sort(
-    (a, b) => scoreYoutubeMetadata(b, options.keywords) - scoreYoutubeMetadata(a, options.keywords)
-  );
-  const maxTries = 4;
-
-  for (const c of ranked.slice(0, maxTries)) {
-    if (Date.now() > options.deadlineMs) break;
-    const plan = await planScriptGuidedClip(c, options);
-    if (!plan.skip) return plan;
-  }
-  return null;
-}

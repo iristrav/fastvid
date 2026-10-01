@@ -262,22 +262,6 @@ export function noteBeatVisionVerdict(
   else rec.visionNeverAsked++;
 }
 
-/**
- * Does this beat's candidate accounting hold together?
- *
- * The four verdict counters claim to partition the DISTINCT candidates this beat's pictures were
- * judged on, so their sum can never exceed the number of distinct candidates counted, and can
- * never exceed the number of lookups either. Exported so a test can assert the invariant the type
- * has always declared, rather than trusting the comment that declares it.
- */
-export function beatCandidateAccountingHolds(rec: BeatFunnelRecord): boolean {
-  const verdicts = rec.visionAccepted + rec.visionRejected + rec.visionUnclear + rec.visionNeverAsked;
-  if (verdicts > rec.lookups) return false;
-  if (rec.lookups !== verdicts + rec.lookupsRepeated) return false;
-  const counted = rec.countedCandidates?.size;
-  return counted == null || verdicts <= counted;
-}
-
 export function noteBeatVision(
   audit: BeatOutcomeAudit | undefined,
   sceneIndex: number,

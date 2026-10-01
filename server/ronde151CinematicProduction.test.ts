@@ -8,10 +8,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CINEMATIC_PLAN_ERROR, cinematicPlanningEnabled, planAndStoreCinematicTimeline } from "./cinematicProduction";
+import { CINEMATIC_PLAN_ERROR, planAndStoreCinematicTimeline } from "./cinematicProduction";
 import type { SceneFacts } from "./cinematicPipelineInputs";
 import type { Scene } from "./pipeline/types";
-import { cinematicRenderPathEnabled } from "./config";
 
 /* ═══════════════════════ fixtures ═══════════════════════ */
 
@@ -216,35 +215,10 @@ describe("RONDE 151 §5 — a plan that fails validation is NOT stored", () => {
 /* ═══════════════════════ TEST 26/27 — no silent fallback ═══════════════════════ */
 
 describe("RONDE 151 §19/§20 — the two switches, and the line that counts them", () => {
-  it("planning is off unless an operator turns it on", () => {
-    delete process.env.CINEMATIC_EDITING_ENGINE;
-    expect(cinematicPlanningEnabled()).toBe(false);
-    process.env.CINEMATIC_EDITING_ENGINE = "true";
-    expect(cinematicPlanningEnabled()).toBe(true);
-  });
 
-  /**
-   * The render cutover is a SECOND switch, deliberately. Planning is safe to enable early — the
-   * stored timeline sits beside the video the old path produced. Rendering from it changes the
-   * file a customer receives, so it waits for a real render to have been compared.
-   */
-  it("the render cutover is a separate switch from planning", () => {
-    process.env.CINEMATIC_EDITING_ENGINE = "true";
-    expect(cinematicPlanningEnabled()).toBe(true);
-    expect(cinematicRenderPathEnabled()).toBe(false);
-    process.env.CINEMATIC_RENDER_PATH = "true";
-    expect(cinematicRenderPathEnabled()).toBe(true);
-  });
-
-  it("refuses to plan at all when the route is disabled, and says which flag", async () => {
-    delete process.env.CINEMATIC_EDITING_ENGINE;
-    const { calls, persist } = recordingPersist();
-    const outcome = await planAndStoreCinematicTimeline({ videoId: 7, scenes: [sceneFacts(0)], persist });
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) return;
-    expect(outcome.code).toBe(CINEMATIC_PLAN_ERROR.ROUTE_DISABLED);
-    expect(outcome.reason).toContain("CINEMATIC_EDITING_ENGINE");
-    expect(calls).toHaveLength(0);
+  it("has no route switch to refuse on — ROUTE_DISABLED is gone", () => {
+    /** Code audit P12: CINEMATIC_EDITING_ENGINE no longer exists; planning always runs. */
+    expect((CINEMATIC_PLAN_ERROR as Record<string, string>).ROUTE_DISABLED).toBeUndefined();
   });
 
 });

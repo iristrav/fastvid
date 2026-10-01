@@ -39,19 +39,7 @@ vi.mock("./localClipVision", async (orig) => ({
   },
 }));
 
-import {
-  judgeArchiveAsset,
-  judgeArchiveAssetSubject,
-  judgeAtPush,
-  judgeCandidateMetadata,
-  judgeFootageTitle,
-  judgeFootageType,
-  judgeOnScreenText,
-  judgePicture,
-  judgeStockResult,
-  reprieveBeatClip,
-  type CandidateJudgeInput,
-} from "./visualJudge";
+import { judgeArchiveAsset, judgeAtPush, judgeCandidateMetadata, judgeFootageTitle, judgeFootageType, judgeOnScreenText, judgePicture, judgeStockResult, reprieveBeatClip, type CandidateJudgeInput } from "./visualJudge";
 import { createBeatImageGateState } from "./beatImageRelevanceGate";
 import { createBeatRelevanceLedger, type BeatVisualContext } from "./beatVisualRelevance";
 import { __resetVerdictStoreForTests } from "./beatRelevanceVerdictStore";
@@ -185,19 +173,6 @@ describe("VisualJudge — a candidate judged on what is written about it", () =>
 
 describe("VisualJudge — an own-archive asset, before it is prepared", () => {
   const asset = (tags: string[], title = "clip") => ({ title, tags, mediaType: "video" as const, mixKind: null });
-
-  it("every refusal now says WHICH rule refused it", () => {
-    const prev = process.env.ENABLE_METADATA_VISUAL_BLOCKS;
-    process.env.ENABLE_METADATA_VISUAL_BLOCKS = "true";
-    try {
-      const v = judgeArchiveAssetSubject(asset(["wehrmacht", "wwii", "soldaten"]), "The Amsterdam canals were dug in the 1600s.");
-      expect(v.decision).toBe("REJECT");
-      expect(v.reason).toMatch(/^[a-z_:]+$/);
-    } finally {
-      if (prev === undefined) delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
-      else process.env.ENABLE_METADATA_VISUAL_BLOCKS = prev;
-    }
-  });
 
   it("a non-documentary asset is refused whatever the switches say", () => {
     const v = judgeArchiveAsset({ asset: asset(["cartoon", "animation"]), beatText: LINE, score: 80, topScore: 80 });
@@ -414,7 +389,7 @@ describe("ONE ROUTE — no second content decider exists", () => {
   it("adoptClip decides nothing about content itself — it asks the gate and the judge", () => {
     const PIPE = fs.readFileSync(path.join(SERVER, "videoPipeline.ts"), "utf8");
     const at = PIPE.indexOf("async function adoptClip(");
-    const body = PIPE.slice(at, PIPE.indexOf("\nasync function tryStockSources(", at));
+    const body = PIPE.slice(at, PIPE.indexOf("\nfunction slotHasNoBeatBehindIt(", at));
     expect(body).toContain("technicalFileRefusal(p)");
     expect(body).toContain("await technicalMediaRefusal(p, MEDIA_PROBES)");
     expect(body).toContain("judgeCandidateMetadata({");

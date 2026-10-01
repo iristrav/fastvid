@@ -87,11 +87,6 @@ export function resolveFFmpegBin(): string {
   return cachedBin;
 }
 
-/** Testing seam: forget the memoised answer. */
-export function _resetFFmpegBinCache(): void {
-  cachedBin = null;
-}
-
 function resolveFFmpegBinUncached(): string {
   const envPath = process.env.FFMPEG_BIN || "";
   if (envPath && fs.existsSync(envPath)) {

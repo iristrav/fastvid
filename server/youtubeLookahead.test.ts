@@ -125,7 +125,7 @@ describe("the wiring", () => {
   it("a lookahead turn claims nothing, spends no ceiling, and never takes a lookahead itself", () => {
     const turn = SRC.slice(SRC.indexOf("export async function runCentralYoutubeTurn("));
     expect(turn).toContain("const claim: YoutubeTurnClaim = req.lookahead\n    ? { granted: true, key: turnKey, token: -1 }");
-    expect(turn).toContain("const spendsEntityBudget = !req.lookahead && req.countsAgainstEntityCeiling !== false;");
+    expect(turn).toContain("const spendsEntityBudget = !req.lookahead;");
     const finish = turn.slice(turn.indexOf("const finish = ("), turn.indexOf("YOUTUBE_OUTCOME_LEAVES_TURN_OPEN.has(outcome)"));
     expect(finish, "a lookahead ends before any turn is ended or tier declined").toContain("if (req.lookahead) {");
     expect(SRC).toContain("const ahead = req.lookahead\n      ? undefined");

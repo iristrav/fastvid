@@ -11,7 +11,7 @@
  *   5. Multi-clip storytelling — scene-level sequence coherence
  *   6. Explainability++       — full breakdown + top-5 alternatives
  *   7. Adaptive weights       — auto-tune per documentary type
- *   8. Feature flag           — DOCUMENTARY_TASTE_MODEL_ENABLED
+ *   8. Always on — one ranking chain: base → AssetDirector → this model
  *
  * ONE ROUTE — what this model does NOT own. Shot variety is the AssetDirector's
  * (`scoreShotVariety`, `computeDiversityModifier`, fed by the render's own category count).
@@ -26,13 +26,7 @@
 import path from "path";
 import type { ClipAnnotation } from "../drizzle/annotationTypes";
 import type { CandidateMeta } from "./assetDirector";
-import type { AssetScore } from "./assetDirector";
 
-// ─── Feature flag ─────────────────────────────────────────────────────────────
-
-export function documentaryTasteModelEnabled(): boolean {
-  return process.env.DOCUMENTARY_TASTE_MODEL_ENABLED !== "false";
-}
 
 // ─── Documentary type detection ────────────────────────────────────────────────
 
@@ -135,17 +129,6 @@ function resolveSourceQuality(clipPath: string): { label: string; bonus: number 
   return { label: "Unknown Source", bonus: 0 };
 }
 
-function normalizeShotType(rawShot: string): string {
-  const s = rawShot.toLowerCase();
-  if (s.includes("establishing")) return "establishing";
-  if (s.includes("extreme wide")) return "extreme wide";
-  if (s.includes("extreme close")) return "extreme close-up";
-  if (s.includes("medium close")) return "medium close-up";
-  if (s.includes("wide"))         return "wide";
-  if (s.includes("close"))        return "close-up";
-  if (s.includes("medium"))       return "medium";
-  return s;
-}
 
 // ─── Confidence-aware annotation quality ──────────────────────────────────────
 
@@ -389,48 +372,17 @@ function computeNegativePenalties(
 // ─── Scene-level storytelling check ──────────────────────────────────────────
 
 /**
- * Evaluates how well this clip contributes to the current scene's narrative arc.
- * Checks if the scene has balanced coverage: not too much of one shot type,
- * and the emotion/action in the clip complements what's already been placed.
+ * The clip's own storytelling value: its annotated storytelling potential, and a small bonus for a
+ * calm clip. ONE ROUTE — the scene-history parts (style repeats, emotion runs, static/dynamic
+ * alternation) read a memory nothing ever wrote; shot variety across a scene is the AssetDirector's.
+ * The score is exactly what those parts produced with that empty memory.
  */
-function scoreMultiClipStorytelling(
-  ann: ClipAnnotation | null | undefined,
-  recentShotHistory: string[],
-  recentEmotions: string[]
-): number {
+function scoreMultiClipStorytelling(ann: ClipAnnotation | null | undefined): number {
   if (!ann) return 60;
-
-  let score = 70; // neutral start
-
-  // Scene variety check: penalise if we already have ≥3 clips of same visual style
-  const thisStyle = ann.cinematography.visualStyle.toLowerCase();
-  const styleCount = recentShotHistory.filter(
-    (s) => normalizeShotType(s) === normalizeShotType(thisStyle)
-  ).length;
-  if (styleCount >= 3) score -= 15;
-
-  // Emotion arc: if the last 2 clips had the same emotion, this clip should vary it
-  const recentLen = recentEmotions.length;
-  const thisEmotion = ann.emotion.toLowerCase();
-  if (
-    recentLen >= 2 &&
-    recentEmotions[recentLen - 1] === thisEmotion &&
-    recentEmotions[recentLen - 2] === thisEmotion
-  ) {
-    score -= 12; // three clips with the same emotion in a row
-  }
-
-  // Reward clips with high storytelling potential
+  let score = 70;
   if (ann.editorialScore.storytellingPotential >= 75) score += 15;
   else if (ann.editorialScore.storytellingPotential >= 55) score += 8;
-
-  // Reward high motion variety (mix static and dynamic)
-  const hasStaticRecently = recentShotHistory.some((s) =>
-    normalizeShotType(s) === "establishing" || normalizeShotType(s) === "wide"
-  );
-  if (hasStaticRecently && ann.motionLevel >= 60) score += 10;
-  else if (!hasStaticRecently && ann.motionLevel < 25) score += 8;
-
+  if (ann.motionLevel < 25) score += 8;
   return Math.max(0, Math.min(100, score));
 }
 
@@ -463,10 +415,6 @@ export type TasteModelResult = {
 // ─── Context ──────────────────────────────────────────────────────────────────
 
 export type TasteModelContext = {
-  /** Shot types used in the current scene so far (most recent last). */
-  recentShotHistory: string[];
-  /** Emotions of clips placed in the current scene so far. */
-  recentEmotions: string[];
   /** Active entity from the beat narration. */
   activeEntity?: string | null;
   /** Active era from the beat narration. */
@@ -507,7 +455,7 @@ function scoreTasteCandidate(
   const sourceScore = Math.min(100, Math.max(0, 50 + sourceBonus * 2.5));
 
   // ── 5. Multi-clip storytelling ────────────────────────────────────────────
-  const storytellingScore = scoreMultiClipStorytelling(ann, ctx.recentShotHistory, ctx.recentEmotions);
+  const storytellingScore = scoreMultiClipStorytelling(ann);
 
   // ── Confidence-adjusted asset director score ──────────────────────────────
   // The upstream AssetDirector score is good, but if the annotation that generated
@@ -620,7 +568,7 @@ export function applyDocumentaryTasteModel(
   candidateMeta?: Map<string, CandidateMeta>,
   assetDirectorScores?: Map<string, number>
 ): TasteModelResult {
-  if (!documentaryTasteModelEnabled() || candidatePaths.length <= 1) {
+  if (candidatePaths.length <= 1) {
     return {
       rankedPaths: candidatePaths,
       topScore: null,
@@ -673,8 +621,3 @@ export function applyDocumentaryTasteModel(
 
 // ─── State helpers ────────────────────────────────────────────────────────────
 
-/** Reset per-scene tracking at the start of each new scene. */
-export function resetTasteModelScene(ctx: TasteModelContext): void {
-  ctx.recentShotHistory = [];
-  ctx.recentEmotions = [];
-}

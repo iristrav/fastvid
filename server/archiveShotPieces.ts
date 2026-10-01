@@ -328,11 +328,6 @@ export function queueArchiveShotSplit(assetId: number, opts: { allowInactive?: b
     .finally(() => queued.delete(assetId));
 }
 
-/** How many splits are waiting — the sweep only adds more when the queue is empty. */
-export function queuedArchiveShotSplits(): number {
-  return queued.size;
-}
-
 /**
  * The archive that was stored before this rule: a few videos at a time, only while nothing renders.
  */

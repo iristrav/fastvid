@@ -2,14 +2,6 @@
  * Geo stock queries, script expansion, and the pre-render refusal of an indefensible render.
  */
 import { hasContentAnchor } from "./searchQueryContract";
-import {
-  checkScriptMeetsBudget,
-  stripVisualTagsFromScript,
-  buildScriptLengthRefinePrompt,
-  scriptStillOnTopic,
-  countNarrationWords,
-  type ScriptLengthBudget,
-} from "./scriptWriter";
 
 /** Pexels/Pixabay queries anchored to beat + title geography (wrong-country stock avoided). */
 export function buildDocumentaryShotQueries(baseQuery: string, beatIndex: number): string[] {
@@ -46,48 +38,3 @@ export function buildDocumentaryShotQueries(baseQuery: string, beatIndex: number
 
 export type ScriptExpandFn = (userPrompt: string) => Promise<string>;
 
-/** Retry script expansion until budget met or attempts exhausted. */
-export async function ensureScriptMeetsBudgetWithRetry(
-  script: string,
-  budget: ScriptLengthBudget,
-  topicPrompt: string,
-  expandFn: ScriptExpandFn,
-  maxAttempts = 3
-): Promise<{ script: string; ok: boolean; words: number }> {
-  let current = script;
-  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
-    const check = checkScriptMeetsBudget(current, budget);
-    if (check.ok) {
-      return { script: current, ok: true, words: countNarrationWords(current) };
-    }
-    if (attempt >= maxAttempts) {
-      return { script: current, ok: false, words: check.words };
-    }
-    console.warn(
-      `[Script] Budget short (${check.words}/${budget.minWords} words) — expand attempt ${attempt + 1}/${maxAttempts}`
-    );
-    try {
-      const refined = await expandFn(
-        buildScriptLengthRefinePrompt(current, budget, check.words, topicPrompt)
-      );
-      if (typeof refined === "string" && refined.trim().length > 150 && scriptStillOnTopic(topicPrompt, refined)) {
-        current = stripVisualTagsFromScript(refined.trim());
-      }
-    } catch (err) {
-      console.warn(`[Script] Expand attempt ${attempt + 1} failed:`, (err as Error).message?.slice(0, 120));
-    }
-  }
-  const finalCheck = checkScriptMeetsBudget(current, budget);
-  if (finalCheck.ok) {
-    return { script: current, ok: true, words: countNarrationWords(current) };
-  }
-  const lenientFloor = Math.round(budget.minWords * 0.85);
-  const words = finalCheck.words;
-  if (words >= lenientFloor) {
-    console.warn(
-      `[Script] Accepting lenient budget ${words}/${budget.minWords} words (≥${lenientFloor})`
-    );
-    return { script: current, ok: true, words };
-  }
-  return { script: current, ok: false, words };
-}

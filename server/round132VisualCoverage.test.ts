@@ -32,17 +32,8 @@
  * them so no route can record one identity and miss another.
  */
 import { describe, expect, it } from "vitest";
-import {
-  createVisualDedupStats,
-  formatControlledReuse,
-  formatVisualDedupReject,
-  formatVisualDedupSummary,
-  markAssetUsedInVideo,
-  noteDuplicateAttempt,
-  type UsedAssetSets,
-} from "./visualDedupRegistry";
+import { createVisualDedupStats, formatVisualDedupSummary, markAssetUsedInVideo, noteDuplicateAttempt, type UsedAssetSets } from "./visualDedupRegistry";
 
-import type { ProvenAssetMemory } from "./visualSearchMemory";
 import type { ArchiveAssetRow } from "./curatedMediaSourcing";
 import { buildBeatVisualStatuses, neverAskedReason } from "./beatVisualStatus";
 import { formatMontageShortfallWarning } from "./videoQualityReport";
@@ -69,22 +60,6 @@ const sets = (): UsedAssetSets => ({
 
 describe("RONDE 132 §2 — a picture used once is not offered again", () => {
 
-  it("F. controlled reuse is possible but must announce itself", () => {
-    /**
-     * §2 allows reuse only when nothing else is left, and demands it be logged. A silent reuse is
-     * indistinguishable from the bug this round fixes, which is the whole reason for the line.
-     */
-    const line = formatControlledReuse({
-      videoId: 556,
-      beat: "s2b3",
-      asset: "curated:asset:101",
-      reason: "no_alternative_candidate",
-    });
-    expect(line).toContain("status=CONTROLLED_REUSE");
-    expect(line).toContain("reason=no_alternative_candidate");
-    expect(line).toContain("video=556");
-  });
-
   it("a non-integer archive id is never recorded", () => {
     const s = sets();
     markAssetUsedInVideo(s, { archiveAssetId: 1.5 });
@@ -95,19 +70,6 @@ describe("RONDE 132 §2 — a picture used once is not offered again", () => {
 /* ═══════════════════════ the log lines §2 asks for ═══════════════════════ */
 
 describe("RONDE 132 §2 — the refusal is visible", () => {
-  it("names the video, the beat, the asset and WHICH identity matched", () => {
-    expect(
-      formatVisualDedupReject({
-        videoId: 556,
-        beat: "s2b3",
-        asset: "curated:asset:101",
-        matchedOn: "archive_asset_id",
-      })
-    ).toBe(
-      "[VisualDedup] video=556 beat=s2b3 asset=curated:asset:101 " +
-        "status=REJECTED reason=already_used_in_video matchedOn=archive_asset_id"
-    );
-  });
 
   it("the summary counts unique against duplicate attempts, split by identity", () => {
     /**

@@ -148,58 +148,6 @@ describe("Points 10/11 — diversity influences ranking without overriding relev
   });
 });
 
-describe("Points 12/13 — provider suitability signals stay topic-conditional (verified, reused from mediaResearchEngine)", () => {
-  it("historical topics boost archival/wikimedia sources relative to stock, via the existing topic-aware scorer", async () => {
-    const { scoreMediaCandidate, buildMediaSearchIntent } = await import("./mediaResearchEngine");
-    const intent = buildMediaSearchIntent({
-      beatText: "Hitler's final days in the Führerbunker, Berlin, 1945.",
-      searchQueries: ["Hitler Führerbunker 1945"],
-      keywords: ["hitler", "bunker"],
-      primaryPerson: "",
-      persons: ["Hitler"],
-      powerWord: "Hitler",
-      personTopicLock: false,
-      spaceTopic: false,
-      muskTopic: false,
-    });
-    const archival = scoreMediaCandidate(
-      { path: "/tmp/a.mp4", query: "Hitler Führerbunker 1945", source: "internet_archive", isVideo: true },
-      intent
-    );
-    const stock = scoreMediaCandidate(
-      { path: "/tmp/b.mp4", query: "Hitler Führerbunker 1945", source: "pexels", isVideo: true },
-      intent
-    );
-    expect(archival).toBeGreaterThan(stock);
-  });
-
-  it("modern/person topics don't get the historical archival boost — provider preference stays topic-conditional, not a fixed universal order", async () => {
-    const { scoreMediaCandidate, buildMediaSearchIntent } = await import("./mediaResearchEngine");
-    const modernIntent = buildMediaSearchIntent({
-      beatText: "Elon Musk announced the new product today.",
-      searchQueries: ["Elon Musk announcement"],
-      keywords: ["musk"],
-      primaryPerson: "Elon Musk",
-      persons: ["Elon Musk"],
-      powerWord: "Musk",
-      personTopicLock: true,
-      spaceTopic: false,
-      muskTopic: true,
-    });
-    const modernArchival = scoreMediaCandidate(
-      { path: "/tmp/a.mp4", query: "Elon Musk", source: "internet_archive", isVideo: true },
-      modernIntent
-    );
-    const modernCelebrity = scoreMediaCandidate(
-      { path: "/tmp/b.mp4", query: "Elon Musk", source: "person_celebrity", isVideo: true },
-      modernIntent
-    );
-    // For a person-topic-locked modern beat, the celebrity-oriented source is preferred over
-    // (or at least not dominated by) the historical-archive boost that a historical beat gets.
-    expect(modernCelebrity).toBeGreaterThanOrEqual(modernArchival - 20);
-  });
-});
-
 describe("Points 15/16 — quality gate and fallback cadence stay unchanged (reused from prior hardening rounds)", () => {
   it("Test 15 — assertVisualCoverageExportGate still blocks a scene that fell back entirely to the placeholder", async () => {
     const { assertVisualCoverageExportGate } = await import("./deliveryGate");

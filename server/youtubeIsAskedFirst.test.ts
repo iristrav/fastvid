@@ -38,11 +38,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  SOURCING_RESERVE_MS,
-  youtubeBeatBudgetMs,
-  youtubeFirstEnabled,
-} from "./sourcingPolicy";
+import { SOURCING_RESERVE_MS, youtubeBeatBudgetMs } from "./sourcingPolicy";
 
 const pipeline = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -60,14 +56,6 @@ const slice = (): string => {
   return src.slice(at, end);
 };
 
-/** The one line inside it that decides whether YouTube gets a turn at all. */
-const guard = (): string => {
-  const body = slice();
-  const at = body.indexOf("if (!youtubeFirstEnabled()");
-  expect(at, "the YouTube-first guard is gone").toBeGreaterThan(-1);
-  return body.slice(at, body.indexOf("\n", at));
-};
-
 /** Every place a beat can ask for its YouTube slice. */
 const callSites = (): number =>
   (pipeline().match(/(?<!async function )youtubeFirstBeatSlice\(/g) ?? []).length;
@@ -79,14 +67,6 @@ afterEach(() => {
 /* ═══════════════════════ the order ═══════════════════════ */
 
 describe("YouTube is the first source the cascade asks", () => {
-  it("is on by default — the whole point is that it gets a turn", () => {
-    expect(youtubeFirstEnabled()).toBe(true);
-  });
-
-  it("can be turned off without touching code", () => {
-    vi.stubEnv("YOUTUBE_FIRST", "false");
-    expect(youtubeFirstEnabled()).toBe(false);
-  });
 
   /**
    * Before the curated archive. That is the ordering change, and asserting the POSITION is the
@@ -128,27 +108,6 @@ describe("YouTube is the first source the cascade asks", () => {
         .toMatch(/if \(ytFirstClip\) return ytFirstClip;/);
     }
     expect(slice(), "and the slice itself answers null rather than throwing").toContain("return null;");
-  });
-
-  /**
-   * RONDE 233 — THE TURN THAT WAS CONFIGURED, DOCUMENTED, TESTED, AND UNREACHABLE.
-   *
-   * This guard also carried `&& !curatedArchiveOnlyVisuals()`, and that flag defaults to ON, so the
-   * whole block stood down in the default configuration. Not rarely — never. Everything written
-   * above about a bounded slice and a turn before the cascade described code that did not run, and
-   * this test file asserted the dead condition verbatim, which is how it stayed dead.
-   *
-   * Render 582 is the receipt: YOUTUBE_FIRST on, proxy live, and ZERO occurrences of either of the
-   * two lines the block cannot run without emitting. Scene 2's first YouTube search lands at
-   * 17:55:02 with 11 seconds against a 12-second floor — 48 attempts refused before they began.
-   *
-   * Removing it is not a loosening. CURATED_ARCHIVE_ONLY means the archive is the source of RECORD,
-   * not that nothing may be asked before it: past the slice this returns null and the cascade runs
-   * in its original order, archive first, and the clip YouTube returns passed the same adoption
-   * guard and the same picture editor as every other route's.
-   */
-  it("no longer stands down for CURATED_ARCHIVE_ONLY", () => {
-    expect(guard()).not.toContain("curatedArchiveOnlyVisuals");
   });
 
   /** Which is what made the old condition dead rather than merely narrow. */
@@ -200,18 +159,6 @@ describe("the YouTube-first attempt cannot eat the scene", () => {
   });
 
   /** Real headroom buys a bigger slice; a capped one, so one beat cannot take the scene. */
-  it("grows with headroom and stops growing", () => {
-    /**
-     * RONDE 648 — the headroom-scaled slice is the pool route's rule. In YouTube-first mode the
-     * operator set a flat two minutes per beat (youtubeGoesFirstPerBeat.test.ts); this rule is
-     * still the one that mode's switch restores.
-     */
-    vi.stubEnv("SOURCING_YOUTUBE_FIRST", "false");
-    const base = youtubeBeatBudgetMs(0);
-    const generous = youtubeBeatBudgetMs(SOURCING_RESERVE_MS + 60 * 60_000);
-    expect(generous).toBeGreaterThan(base);
-    expect(generous).toBeLessThanOrEqual(base * 2);
-  });
 
   /** An override is an instruction — but never below the download guard's minimum. */
   it("an override is honoured within a sane range", () => {
@@ -228,10 +175,4 @@ describe("the YouTube-first attempt cannot eat the scene", () => {
    * the render relies on — a beat that finds nothing here must still reach the archive with time
    * to spare.
    */
-  it("is smaller than the archive's own beat slice", async () => {
-    /** RONDE 648 — the pool route's rule, as above; YouTube-first mode is the operator's order. */
-    vi.stubEnv("SOURCING_YOUTUBE_FIRST", "false");
-    const { archiveBeatBudgetMs } = await import("./sourcingPolicy");
-    expect(youtubeBeatBudgetMs(0)).toBeLessThan(archiveBeatBudgetMs(0) * 3);
-  });
 });

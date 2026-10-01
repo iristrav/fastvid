@@ -183,11 +183,6 @@ describe("the per-beat route reads the router — the half that was missing", ()
     const coverage = readFileSync(join(__dirname, "archiveCoverage.ts"), "utf8");
     expect(coverage).toContain("allRelevant: true");
   });
-
-  it("noUniversalFallback semantics are untouched", () => {
-    expect(SOURCING).toContain("const blockUniversalFallback =");
-    expect(SOURCING).toContain("metadataBlocks && (noUniversalFallback || geoRequired.length > 0)");
-  });
 });
 
 /* ═══════════════════ B. the scope that had time and could not use it ═══════════════════ */
@@ -292,9 +287,7 @@ describe("the invariants this round may not have touched", () => {
     expect(readFileSync(join(__dirname, "config.ts"), "utf8")).toContain(
       'return process.env.SEARCH_GATE_STRICT !== "false";'
     );
-    expect(readFileSync(join(__dirname, "adoptionPolicy.ts"), "utf8")).toContain(
-      'return process.env.ENFORCE_FUNNEL_ADOPTION !== "false";'
-    );
+    expect(readFileSync(join(__dirname, "adoptionPolicy.ts"), "utf8")).not.toContain("process.env.ENFORCE_FUNNEL_ADOPTION");
     const mismatch = readFileSync(join(__dirname, "visualMismatchFeedback.ts"), "utf8");
     expect(mismatch.slice(mismatch.indexOf("export function reprieveAllowedFor"))).toContain(
       "return false;"

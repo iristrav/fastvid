@@ -135,7 +135,7 @@ describe("vision gate — a decline is not a verdict", () => {
   });
 
   it("only a decline is marked as not evaluated", () => {
-    const declined = GATE.slice(GATE.indexOf("const declined ="), GATE.indexOf("if (!beatImageRelevanceGateEnabled())"));
+    const declined = GATE.slice(GATE.indexOf("const declined ="), GATE.indexOf("const declined =") + 800);
     /**
      * P0-7 gave the decline a leading cause, so the call gained a third argument. What is pinned
      * is unchanged: a decline returns through `unknown` with `evaluated: false` rather than posing
@@ -188,7 +188,7 @@ describe("no gate was weakened to make coverage look better", () => {
 
   /** The gate is still on by default, and the budget check still runs before any call. */
   it("the gate is still enabled by default and still checks its budget first", () => {
-    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).not.toContain("ENABLE_BEAT_IMAGE_RELEVANCE_GATE");
     /**
      * RONDE 199b — the check is unchanged and now carries exactly one named exemption.
      *

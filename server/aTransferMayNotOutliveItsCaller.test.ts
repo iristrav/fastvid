@@ -100,8 +100,9 @@ describe("the fetcher hands over the budget it is itself held to", () => {
   });
 
   it("the wrapper's own values are untouched — nothing was widened to make room", () => {
-    expect(code).toContain("if (realFootageFirstEnabled()) return IS_RAILWAY ? 55_000 : 70_000;");
-    expect(code).toContain("return 80_000;");
+    /** The code audit fixed the window to the value production ran (REAL_FOOTAGE_FIRST is gone). */
+    expect(code).toContain("return IS_RAILWAY ? 55_000 : 70_000;");
+    expect(code).not.toContain("realFootageFirstEnabled");
   });
 
   it("and the env override keeps its original bounds", () => {

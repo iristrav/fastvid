@@ -48,7 +48,6 @@ import {
   resetPermanentDownloadRefusals,
 } from "./providerFailureClass";
 import { hasContentAnchor, termProvableFrom } from "./searchQueryContract";
-import { stubPowerWordFromSceneText } from "./curatedMediaSourcing";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const SEM = fs.readFileSync(path.join(__dirname, "semanticVisualMatching.ts"), "utf8");
@@ -211,15 +210,6 @@ describe("R223 §5 — the genre word stops standing in for a subject", () => {
   it("THE GATE PROVES THESE COULD NEVER HAVE WORKED", () => {
     expect(hasContentAnchor("documentary")).toBe(false);
     expect(hasContentAnchor("establishing")).toBe(false);
-  });
-
-  it("A SCENE WITH NO USABLE WORD YIELDS NO POWER WORD", () => {
-    expect(stubPowerWordFromSceneText("")).toBe("");
-    expect(stubPowerWordFromSceneText("a of to the and")).toBe("");
-  });
-
-  it("a scene with a real subject still yields it", () => {
-    expect(stubPowerWordFromSceneText("The bunker beneath Berlin").toLowerCase()).toBeTruthy();
   });
 
   it("RONDE 88A's downstream guard still stands — this round fixed the source, not it", () => {

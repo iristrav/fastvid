@@ -14,7 +14,7 @@ import {
 } from "./searchQueryContract";
 import { foldSearchText } from "./searchTextNormalize";
 import { getPlannedShot, shotSearchTerms } from "./shotVocabulary";
-import { asVideoTitleString, coercePersonName, queryStringsMinLen, toQueryString, uniqueQueryStrings } from "./stringCoercion";
+import { asVideoTitleString, coercePersonName, queryStringsMinLen, uniqueQueryStrings } from "./stringCoercion";
 
 export type MediaTopicKind = "person" | "historical" | "space" | "news" | "general";
 
@@ -56,68 +56,11 @@ export interface MediaCandidate {
   score?: number;
 }
 
-/** Base authenticity tier per source (higher = prefer real footage over stock). */
-export const SOURCE_BASE_SCORE: Record<MediaSourceKind, number> = {
-  internet_archive: 98,
-  wikimedia_video: 96,
-  person_celebrity: 95,
-  youtube_cc: 90,
-  gdelt: 86,
-  nasa: 85,
-  wikimedia_image: 70,
-  openverse: 65,
-  unsplash: 62,
-  serpapi: 60,
-  europeana: 58,
-  flickr: 55,
-  pexels: 40,
-  pixabay: 38,
-};
-
 const HISTORICAL_TOPIC_RE =
   /\b(19\d{2}|20\d{2}|war|battle|empire|ancient|century|medieval|revolution|dynasty|civilization|archaeolog|historical|vintage|ww1|ww2|world war|colosseum|pyramid|pharaoh|roman|greek|viking|renaissance)\b/i;
 
 const NEWS_TOPIC_RE =
   /\b(interview|breaking|scandal|controversy|trial|verdict|announcement|keynote|press conference|news report)\b/i;
-
-const RELEVANCE_STOP_WORDS = new Set([
-  "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from",
-  "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "will", "would", "could",
-  "should", "may", "might", "this", "that", "these", "those", "it", "its", "we", "they", "he", "she",
-  "you", "i", "my", "our", "their", "his", "her", "your", "as", "so", "if", "not", "no", "up", "out",
-  "about", "into", "than", "then", "when", "where", "who", "which", "what", "how", "all", "each",
-  "more", "most", "also", "just", "very", "over", "after", "before", "through", "during", "between",
-  "while", "because", "since", "even", "only", "still", "now", "here", "there", "some", "any",
-  "every", "one", "two", "three", "first", "second", "third", "new", "like", "said", "says",
-]);
-
-function tokenizeForRelevance(text: string): string[] {
-  return foldSearchText(text)
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length >= 3 && !RELEVANCE_STOP_WORDS.has(w));
-}
-
-function keywordOverlap(text: string, keywords: string[]): number {
-  const hay = text.toLowerCase();
-  let score = 0;
-  for (const kw of keywords) {
-    if (kw.length >= 3 && hay.includes(kw.toLowerCase())) score++;
-  }
-  return score;
-}
-
-function mentionsPerson(haystack: string, personName: string): boolean {
-  const name = coercePersonName(personName);
-  if (!name) return false;
-  const hay = haystack.toLowerCase();
-  const parts = name.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
-  if (!parts.length) return false;
-  if (parts.length === 1) return hay.includes(parts[0]);
-  const last = parts[parts.length - 1];
-  if (hay.includes(last)) return true;
-  return parts.every((p) => hay.includes(p));
-}
 
 /** Infer topic category from beat text and context flags. */
 export function inferTopicKind(
@@ -175,96 +118,6 @@ export function buildMediaSearchIntent(params: {
     personTopicLock: params.personTopicLock,
     spaceTopic: params.spaceTopic,
   };
-}
-
-/** Topic-specific source boost (on top of SOURCE_BASE_SCORE). */
-function topicSourceBoost(source: MediaSourceKind, intent: MediaSearchIntent): number {
-  switch (intent.topicKind) {
-    case "historical":
-      if (source === "internet_archive" || source === "europeana") return 15;
-      if (source === "wikimedia_video" || source === "wikimedia_image") return 12;
-      if (source === "youtube_cc") return 6;
-      if (source === "pexels" || source === "pixabay") return -15;
-      break;
-    case "person":
-      if (source === "person_celebrity" || source === "gdelt" || source === "youtube_cc") return 10;
-      if (source === "pexels" || source === "pixabay") return intent.personTopicLock ? -20 : -5;
-      break;
-    case "space":
-      if (source === "nasa" || source === "youtube_cc") return 12;
-      if (source === "wikimedia_video") return 6;
-      break;
-    case "news":
-      if (source === "gdelt" || source === "youtube_cc") return 10;
-      if (source === "internet_archive") return 6;
-      break;
-    default:
-      break;
-  }
-  return 0;
-}
-
-/** Score one candidate against intent (Laag 3). */
-export function scoreMediaCandidate(candidate: MediaCandidate, intent: MediaSearchIntent): number {
-  const hay = `${candidate.query} ${candidate.path} ${intent.beatText}`.toLowerCase();
-  const beatTokens = tokenizeForRelevance(intent.beatText);
-  const queryTokens = tokenizeForRelevance(candidate.query);
-
-  let score = SOURCE_BASE_SCORE[candidate.source] ?? 30;
-  score += topicSourceBoost(candidate.source, intent);
-  score += keywordOverlap(hay, intent.keywords) * 3;
-  score += keywordOverlap(hay, beatTokens) * 2;
-  score += keywordOverlap(hay, queryTokens);
-
-  if (intent.powerWord && hay.includes(intent.powerWord.toLowerCase())) score += 6;
-  if (intent.primaryPerson && mentionsPerson(hay, intent.primaryPerson)) score += 8;
-
-  // Prefer real video over stills when narration describes action/events.
-  if (candidate.isVideo) score += 5;
-  else if (NEWS_TOPIC_RE.test(intent.beatText) || intent.topicKind === "person") score -= 3;
-
-  if (intent.topicKind === "historical" || intent.topicKind === "news") {
-    if (candidate.isVideo) score += 25;
-    else score -= 35;
-    if (candidate.source === "pexels" || candidate.source === "pixabay") score -= 50;
-    if (
-      candidate.source === "serpapi" ||
-      candidate.source === "unsplash" ||
-      candidate.source === "openverse" ||
-      candidate.source === "wikimedia_image"
-    ) {
-      score -= 30;
-    }
-  }
-
-  // Penalize generic stock when we have a specific topic anchor.
-  if (
-    (candidate.source === "pexels" || candidate.source === "pixabay") &&
-    intent.topicKind !== "general" &&
-    keywordOverlap(hay, beatTokens) < 2
-  ) {
-    score -= 12;
-  }
-
-  return score;
-}
-
-/**
- * Canonical clip order: Archive/Wikimedia video → real stills (vision-gated) → Pexels → AI.
- * Default on (REAL_FOOTAGE_FIRST=false disables for debugging only).
- */
-export function realFootageFirstEnabled(): boolean {
-  return process.env.REAL_FOOTAGE_FIRST !== "false";
-}
-
-/** True when beats should prefer archival/real video over Ken Burns stills. */
-export function prefersArchivalVideo(intent: MediaSearchIntent): boolean {
-  return intent.topicKind === "historical" || intent.topicKind === "news";
-}
-
-/** True when only authentic video should be adopted before stills and licensed stock. */
-export function prefersRealFootageOnly(intent: MediaSearchIntent): boolean {
-  return realFootageFirstEnabled() || prefersArchivalVideo(intent);
 }
 
 /** What kind of thing a visual target names — drives query phrasing and provider preference. */
@@ -1102,19 +955,5 @@ export function buildHistoricalArchivalQueries(
   // F3-39 note above says the provider query-cache depends on. Better queries AND the existing
   // fallbacks, not better queries INSTEAD of them.
   return asked.slice(0, 12);
-}
-
-/** Merge LLM relevance scores (0–10) into candidate scores. Exported for tests. */
-export function mergeAiRelevanceScores(
-  candidates: MediaCandidate[],
-  aiScores: Map<number, number>,
-  weight = 6
-): MediaCandidate[] {
-  return candidates.map((c, idx) => {
-    const ai = aiScores.get(idx);
-    if (ai == null || Number.isNaN(ai)) return c;
-    const clamped = Math.max(0, Math.min(10, ai));
-    return { ...c, score: (c.score ?? 0) + clamped * weight };
-  });
 }
 

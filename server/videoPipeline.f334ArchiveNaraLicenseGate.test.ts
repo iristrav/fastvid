@@ -36,7 +36,7 @@ vi.mock("./videoGenerationCancel", async (importOriginal) => {
   };
 });
 
-import { fetchInternetArchiveClips, isAllowedInternetArchiveLicense } from "./videoPipeline";
+import { fetchInternetArchiveClips } from "./videoPipeline";
 
 /**
  * RONDE 90 — this file calls provider fetchers directly, outside any beat.
@@ -56,33 +56,6 @@ import { fetchInternetArchiveClips, isAllowedInternetArchiveLicense } from "./vi
 // ORIGINAL_ENV constant while the file is being evaluated and restore it before every test, so a
 // value written later is wiped again before the first assertion runs.
 process.env.SEARCH_GATE_STRICT = "false";
-
-
-describe("isAllowedInternetArchiveLicense — F3-34 (pure license-string classifier)", () => {
-  it("accepts public domain URLs", () => {
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/publicdomain/zero/1.0/")).toBe(true);
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/publicdomain/mark/1.0/")).toBe(true);
-  });
-
-  it("accepts CC-BY and CC-BY-SA (commercial use + derivatives permitted)", () => {
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/licenses/by/4.0/")).toBe(true);
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/licenses/by-sa/3.0/")).toBe(true);
-  });
-
-  it("rejects non-commercial and no-derivatives licenses", () => {
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/licenses/by-nc/4.0/")).toBe(false);
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/licenses/by-nd/4.0/")).toBe(false);
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/licenses/by-nc-nd/4.0/")).toBe(false);
-  });
-
-  it("rejects missing, empty, or unrecognized values", () => {
-    expect(isAllowedInternetArchiveLicense(undefined)).toBe(false);
-    expect(isAllowedInternetArchiveLicense(null)).toBe(false);
-    expect(isAllowedInternetArchiveLicense("")).toBe(false);
-    expect(isAllowedInternetArchiveLicense("   ")).toBe(false);
-    expect(isAllowedInternetArchiveLicense("https://example.com/some-other-terms")).toBe(false);
-  });
-});
 
 describe("fetchInternetArchiveClips — F3-34 Test 1/2 (rights gate before download)", () => {
   beforeEach(() => {

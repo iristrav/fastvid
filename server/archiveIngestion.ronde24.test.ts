@@ -130,9 +130,6 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
       expect(named.mimeType).toBe("video/mp4");
     }
 
-    /** The public entry point's contract is unchanged for every existing caller. */
-    expect(await mod.ingestExternalClipToArchive(clip, metadata)).toBeNull();
-
     /** And nothing was stored for either call — the guard still runs before the upload. */
     expect(storagePut, "a refused clip reached storage").not.toHaveBeenCalled();
     expect(createMediaArchiveAsset, "a refused clip got a row").not.toHaveBeenCalled();

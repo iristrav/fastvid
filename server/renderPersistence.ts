@@ -185,45 +185,6 @@ export function buildNarrationPersistence(params: {
 }
 
 /**
- * Read a narration record back, tolerating everything an older row can be.
- *
- * §15: a video rendered before this round has no `narration` key at all, and one rendered during
- * a partial failure may have a record with a null URL. Both must load. `null` means "this video
- * has no stored narration", which is a fact the caller can act on — it is not an error.
- */
-export function readNarrationPersistence(
-  metadata: unknown
-): NarrationPersistence | null {
-  if (!metadata || typeof metadata !== "object") return null;
-  const raw = (metadata as { narration?: unknown }).narration;
-  if (!raw || typeof raw !== "object") return null;
-  const n = raw as Partial<NarrationPersistence>;
-  const words = Array.isArray(n.words)
-    ? n.words.filter(
-        (w): w is TtsWordTiming =>
-          Boolean(w) &&
-          typeof (w as TtsWordTiming).word === "string" &&
-          typeof (w as TtsWordTiming).startSec === "number" &&
-          typeof (w as TtsWordTiming).endSec === "number"
-      )
-    : [];
-  return {
-    voiceoverUrl: typeof n.voiceoverUrl === "string" ? n.voiceoverUrl : null,
-    durationSec: typeof n.durationSec === "number" ? n.durationSec : null,
-    provider: typeof n.provider === "string" ? n.provider : null,
-    voiceId: typeof n.voiceId === "string" ? n.voiceId : null,
-    words,
-    timingSource: words.length > 0 ? "tts_word_alignment" : null,
-    storedAt: typeof n.storedAt === "string" ? n.storedAt : "",
-  };
-}
-
-/** Can this video's audio be reproduced without calling TTS again? */
-export function narrationIsRecoverable(n: NarrationPersistence | null): boolean {
-  return Boolean(n?.voiceoverUrl);
-}
-
-/**
  * RONDE 647 — THE NARRATION REACHES THE TIMELINE WITH OR WITHOUT WORD TIMING.
  *
  * Renders 603 (twice) and 604 all logged `voiceover stored … words=0` and `audioBed voice=0`: the

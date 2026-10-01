@@ -16,7 +16,7 @@ import {
 } from "./scriptVisualKeywords";
 import { buildBeatVisualIntent, formatVisualIntent } from "./beatVisualIntent";
 import { buildVerifiedQueryContextForBeat } from "./videoPipeline";
-import { termProvenance, validateSearchQuery } from "./searchQueryContract";
+import { validateSearchQuery } from "./searchQueryContract";
 
 const TWEET = "A tweet from Musk, apparently confirming a wild rumor, blazed across the internet.";
 const VANISHED = "Minutes later, it vanished, leaving Twitter HQ buzzing.";
@@ -151,16 +151,6 @@ describe("the beat's intent record reads the plan first (video 626)", () => {
 });
 
 describe("the search gate accepts what this sentence's plan states, and nothing else (1B)", () => {
-  it("without the plan the gate refuses 'phone screen'; with it the query passes, labelled visual_plan", () => {
-    vi.spyOn(console, "log").mockImplementation(() => {});
-    expect(validateSearchQuery("Elon Musk tweet phone screen", buildVerifiedQueryContextForBeat(TWEET)).ok).toBe(false);
-    withRenderVisualPlan(metadata, () => {
-      const ctx = buildVerifiedQueryContextForBeat(TWEET);
-      expect(validateSearchQuery("Elon Musk tweet phone screen", ctx).ok).toBe(true);
-      expect(termProvenance("phone", ctx)).toMatchObject({ provenance: "visual_plan", approved: true });
-      expect(termProvenance("Musk", ctx).provenance).toBe("beat_text");
-    });
-  });
 
   it("a word neither the sentence nor its plan states is still refused", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});

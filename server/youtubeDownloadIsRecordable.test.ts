@@ -30,13 +30,7 @@ import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import {
-  beginReplayRecording,
-  loadReplayBundle,
-  recordReplayFact,
-  resetReplayRecordingForTest,
-  type ReplayDownloadFact,
-} from "./renderReplay";
+import { beginReplayRecording, recordReplayFact, resetReplayRecordingForTest, type ReplayDownloadFact } from "./renderReplay";
 
 /** The seven statuses the pipeline can end a YouTube download on. */
 const STATUSES = [
@@ -61,34 +55,6 @@ const fact = (over: Partial<ReplayDownloadFact> = {}): ReplayDownloadFact => ({
   remainingMs: 4000,
   bytes: null,
   ...over,
-});
-
-/* ═════════ 1 — every status survives a real write-and-read cycle ═════════ */
-
-describe("all seven download statuses are recordable", () => {
-  const roundTrip = (downloads: ReplayDownloadFact[]) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ytobs-"));
-    const file = path.join(dir, "b.jsonl");
-    try {
-      beginReplayRecording(572, "x", { RENDER_REPLAY_RECORD: "true", RENDER_REPLAY_BUNDLE: file });
-      for (const d of downloads) recordReplayFact(d);
-      return loadReplayBundle(file).bundle;
-    } finally {
-      resetReplayRecordingForTest();
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  };
-
-  it.each(STATUSES)("%s survives the round trip", (status) => {
-    const b = roundTrip([fact({ status })]);
-    expect(b.downloads).toHaveLength(1);
-    expect(b.downloads[0]!.status).toBe(status);
-  });
-
-  it("all seven together are distinguishable afterwards", () => {
-    const b = roundTrip(STATUSES.map((status) => fact({ status })));
-    expect(new Set(b.downloads.map((d) => d.status)).size).toBe(7);
-  });
 });
 
 /* ═════════ 2 — the decisive field: did any bytes move? ═════════ */
@@ -171,7 +137,5 @@ describe("the downloader is wired to the recorder", () => {
     expect(body).toContain('kind: "download"');
     expect(body).toContain("transferStarted,");
   });
-
-
 
 });

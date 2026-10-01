@@ -39,19 +39,6 @@ function streamLocalFileWithRange(req: Request, res: Response, filePath: string,
   createReadStream(filePath).pipe(res);
 }
 
-/**
- * RONDE 177 — pass the asset row whenever the caller has it.
- *
- * Both routes answer with a private cache directive (an hour for a streamed file, five minutes for
- * the redirect to a signed URL), and both addresses are built from the id alone — so a trimmed clip
- * kept its address and the browser kept replaying the untrimmed bytes it already had. The optional
- * `asset` appends a token that changes exactly when storagePut writes a new file. Left out, the
- * behaviour is what it always was.
- */
-export function archiveMediaStreamUrl(assetId: number, asset?: ArchiveMediaIdentity): string {
-  return withArchiveMediaVersion(`/api/admin/archive/media/${assetId}`, asset);
-}
-
 /** User-facing stream URL for the video editor (authenticated users). */
 export function editorArchiveMediaUrl(assetId: number, asset?: ArchiveMediaIdentity): string {
   return withArchiveMediaVersion(`/api/editor/archive/media/${assetId}`, asset);

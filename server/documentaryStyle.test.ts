@@ -1,26 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildBlurFillStillVF,
-  buildFitGrayVideoFilterComplex,
-  buildKenBurnsTail,
-  buildMatFramedStillVF,
-  buildPolaroidStillVF,
-  buildPerClipDocumentaryGradeVF,
-  buildMontageBranchNormVF,
-  buildFinalSceneGradeVF,
-  buildFitGrayGradedVideoVF,
-  buildSimpleKenBurnsVF,
-  buildDocumentaryColorGradeVF,
-  buildDocumentaryVignetteVF,
-  buildFilmGrainVF,
-  classifyDocGradeSourceKind,
-  isAIGeneratedClip,
-  isStockVideoClip,
-  documentaryStyleEnabled,
-  resolveStillCompositionVF,
-  usePolaroidLayout,
-  KEN_BURNS_MAX_PAN_SHARE,
-} from "./documentaryStyle";
+import { buildBlurFillStillVF, buildKenBurnsTail, buildMatFramedStillVF, buildPerClipDocumentaryGradeVF, buildMontageBranchNormVF, buildFitGrayGradedVideoVF, buildSimpleStillVF, buildDocumentaryColorGradeVF, buildDocumentaryVignetteVF, classifyDocGradeSourceKind, isAIGeneratedClip, isStockVideoClip, documentaryStyleEnabled, resolveStillCompositionVF, KEN_BURNS_MAX_PAN_SHARE } from "./documentaryStyle";
 
 describe("documentaryStyle", () => {
   it("is off by default (opt-in via ENABLE_DOC_STYLE=true)", () => {
@@ -39,38 +18,19 @@ describe("documentaryStyle", () => {
     else process.env.ENABLE_DOC_STYLE = prev;
   });
 
-  it("alternates polaroid layout", () => {
-    expect(usePolaroidLayout(0, 0)).toBe(true);
-    expect(usePolaroidLayout(1, 0)).toBe(false);
-    expect(usePolaroidLayout(1, 1)).toBe(true);
-  });
-
-  it("builds blur-fill filter with ken burns", () => {
+  it("builds blur-fill filter that holds the frame (the motion is the timeline camera's)", () => {
     const vf = buildBlurFillStillVF(4.0);
     expect(vf).toContain("gblur=sigma=42");
-    expect(vf).toContain("zoompan=");
+    expect(vf).toContain("zoompan=z=1:");
+    expect(vf).not.toContain("on/");
     expect(vf).toContain("overlay=");
   });
 
-  it("builds fast fit-gray video filter without blur", () => {
-    const vf = buildFitGrayVideoFilterComplex();
-    expect(vf).toContain("force_original_aspect_ratio=decrease");
-    expect(vf).toContain("color=0x2a2a2a");
-    expect(vf).not.toContain("gblur");
-    expect(vf).toContain("[vout]");
-  });
-
-  it("builds polaroid filter", () => {
-    const vf = buildPolaroidStillVF(3.5);
-    expect(vf).toContain("pad=960:1040");
-    expect(vf).toContain("select='eq(n\\,0)'");
-    expect(vf).toContain("[vout]");
-  });
-
-  it("builds gray mat framed still with ken burns", () => {
-    const vf = buildMatFramedStillVF(4.0, 0.74, 1, 2);
+  it("builds gray mat framed still that holds the frame", () => {
+    const vf = buildMatFramedStillVF(4.0, 0.74);
     expect(vf).toContain("color=0xCFCFCF");
-    expect(vf).toContain("zoompan=");
+    expect(vf).toContain("zoompan=z=1:");
+    expect(vf).not.toContain("on/");
     expect(vf).toContain("[vout]");
   });
 
@@ -172,18 +132,14 @@ describe("documentaryStyle", () => {
       expect(vf).toContain("x='iw/2-(iw/zoom/2)'");
     });
 
-    it("buildSimpleKenBurnsVF fallback also runs the even progress term, not a zoom+step", () => {
-      const vf = buildSimpleKenBurnsVF(4, false);
-      expect(vf).toContain("*min(on/100,1))");
-      expect(vf).not.toContain("min(zoom+");
-    });
-
-    it("buildSimpleKenBurnsVF uses a smaller zoom target for portraits than non-portraits", () => {
-      const portrait = buildSimpleKenBurnsVF(4, true);
-      const nonPortrait = buildSimpleKenBurnsVF(4, false);
-      /** VIDEO 626 — slow: 5% and 6% over the shot, where it was 10% and 15%. */
-      expect(portrait).toContain("0.0500000");
-      expect(nonPortrait).toContain("0.0600000");
+    it("buildSimpleStillVF fallback holds the frame: no baked zoom, no second motion", () => {
+      for (const portrait of [true, false]) {
+        const vf = buildSimpleStillVF(4, portrait);
+        expect(vf).toContain("zoompan=z=1:");
+        expect(vf).toContain(":d=100:");
+        expect(vf).not.toContain("on/");
+        expect(vf).not.toContain("min(zoom+");
+      }
     });
   });
 
@@ -218,17 +174,6 @@ describe("documentaryStyle", () => {
       expect(buildDocumentaryVignetteVF()).toContain("angle=0.62");
       expect(buildDocumentaryVignetteVF("ai_generated")).toContain("angle=0.55");
       expect(buildDocumentaryVignetteVF("stock")).toContain("angle=0.55");
-    });
-
-    it("adds more grain to clean digital sources than to already-grainy archive footage", () => {
-      const prev = process.env.ENABLE_FILM_GRAIN;
-      delete process.env.ENABLE_FILM_GRAIN;
-      expect(buildFilmGrainVF("archive")).toBe(",noise=alls=6:allf=t+u");
-      expect(buildFilmGrainVF()).toBe(",noise=alls=6:allf=t+u");
-      expect(buildFilmGrainVF("ai_generated")).toBe(",noise=alls=9:allf=t+u");
-      expect(buildFilmGrainVF("stock")).toBe(",noise=alls=9:allf=t+u");
-      if (prev === undefined) delete process.env.ENABLE_FILM_GRAIN;
-      else process.env.ENABLE_FILM_GRAIN = prev;
     });
   });
 });

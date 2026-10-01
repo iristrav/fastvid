@@ -367,23 +367,3 @@ export function formatAssetIdentity(
   );
 }
 
-/** How much of a finished render could be fetched again. Printed once per render. */
-export function formatIdentityCoverage(
-  identities: ReadonlyArray<AssetSourceIdentity | null>
-): string {
-  const total = identities.length;
-  const recoverable = identities.filter((i) => identityIsRehydratable(i)).length;
-  const byProvider = new Map<string, number>();
-  for (const i of identities) {
-    const key = i?.provider ?? "unknown";
-    byProvider.set(key, (byProvider.get(key) ?? 0) + 1);
-  }
-  const breakdown = [...byProvider.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([p, n]) => `${p}=${n}`)
-    .join(" ");
-  return (
-    `[AssetIdentity] TOTAL clips=${total} rehydratable=${recoverable} ` +
-    `unrecoverable=${total - recoverable} ${breakdown}`
-  );
-}

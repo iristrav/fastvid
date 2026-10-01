@@ -166,11 +166,10 @@ describe("Video 619 — wiring", () => {
 
   it("the rows are reordered after the thumbnail ranking, so the ranking cannot undo it", () => {
     const at = PIPE.indexOf("const ordered = await youtubeRowsRankedByThumbnail(");
-    const triage = PIPE.indexOf("(poolMode ? rows : youtubeRowsWithoutNonFootage(rows, scriptGuided, sceneIndex))", at);
     const byChannel = PIPE.indexOf("const { rows: byChannel, movedBack } = unreliableChannelsLast(", at);
     const loop = PIPE.indexOf("for (const row of ordered.slice(0, 5)) {", at);
-    expect(triage).toBeGreaterThan(at);
-    expect(byChannel).toBeGreaterThan(triage);
+    expect(at).toBeGreaterThan(-1);
+    expect(byChannel).toBeGreaterThan(at);
     expect(byChannel).toBeLessThan(loop);
   });
 

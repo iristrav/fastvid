@@ -51,7 +51,7 @@ import {
   type MixInput,
 } from "./timelineFilters";
 import { renderTimeline, checkRenderedFile } from "./timelineRenderer";
-import { assertRenderableTimeline, validateTimeline } from "./timelineValidator";
+import { validateTimeline } from "./timelineValidator";
 import { cameraFor, graphicLabel, RENDERABLE_EFFECTS } from "./edlToTimeline";
 
 const execFileAsync = promisify(execFile);
@@ -628,14 +628,6 @@ describe("§28 — the validator checks the geometry before ffmpeg sees it", () 
       effects: [{ effectType: "film_grain", intensity: 0.3 }],
     });
     expect(validateTimeline(t).issues).toEqual([]);
-  });
-
-  it("an unsupported effect is reported and does NOT block the render", () => {
-    const t = withClip({ effects: [{ effectType: "lens_flare", intensity: 0.5, reason: "sunset" }] });
-    const result = validateTimeline(t);
-    expect(result.issues.map((i) => i.code)).toContain("unsupported_effect");
-    // A plainer video is a real loss; refusing to render at all would be a bigger one.
-    expect(() => assertRenderableTimeline(t)).not.toThrow();
   });
 });
 

@@ -146,13 +146,6 @@ export function archiveAiTaggingEnabled(): boolean {
   return process.env.ENABLE_ARCHIVE_AI_TAGS !== "false" && Boolean(ENV.forgeApiKey);
 }
 
-/** User-supplied tags go first and NOTHING is ever truncated here — they carry deliberate
- *  context (names, events) the AI can't see and are the strongest search signal. Losing a
- *  tag silently is worse than an asset carrying a few extra ones. */
-export function mergeArchiveTags(userTags: string[], aiTags: string[]): string[] {
-  return normalizeMediaTags([...userTags, ...aiTags]);
-}
-
 /**
  * How many AI-generated tags one clip may GAIN from a single tagging pass.
  *
@@ -986,24 +979,6 @@ export async function generateArchiveAssetAiMetadataFromPath(
     bulk: opts.bulk,
   });
   return { metadata: vision.metadata, frameCount: previews.length, error: vision.error };
-}
-
-export async function generateArchiveAssetAiMetadata(
-  mediaBuffer: Buffer,
-  mimeType: string,
-  context: {
-    archiveNicheTags?: string[];
-    parentFilename?: string;
-    userTags?: string[];
-    clipLabel?: string;
-  } = {}
-): Promise<ArchiveAssetAiMetadata | null> {
-  if (!archiveAiTaggingEnabled()) return null;
-
-  const previews = await previewImagesFromMedia(mediaBuffer, mimeType);
-  if (previews.length === 0) return null;
-  const { metadata } = await invokeArchiveVisionTagging(previews, context);
-  return metadata;
 }
 
 export async function enrichArchiveAssetFields(opts: {

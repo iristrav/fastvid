@@ -71,19 +71,7 @@ vi.mock("./clipBackgroundAuditor", () => ({
   scheduleAuditForAsset: () => undefined,
 }));
 
-import {
-  __resetClipEmbeddingStoreForTests,
-  cachedClipEmbedding,
-  claimAssetForClipIndexing,
-  clipEmbeddingKnownAbsent,
-  countAssetsMissingClipEmbedding,
-  listAssetsMissingClipEmbedding,
-  persistClipEmbedding,
-  prefetchClipEmbeddings,
-  recordClipIndexFailure,
-  releaseClipIndexClaim,
-  __clipEmbeddingStoreInternals,
-} from "./archiveClipEmbeddingStore";
+import { __resetClipEmbeddingStoreForTests, cachedClipEmbedding, claimAssetForClipIndexing, countAssetsMissingClipEmbedding, listAssetsMissingClipEmbedding, persistClipEmbedding, prefetchClipEmbeddings, recordClipIndexFailure, releaseClipIndexClaim, __clipEmbeddingStoreInternals } from "./archiveClipEmbeddingStore";
 import {
   indexArchiveClipEmbedding,
   loadStoredClipEmbedding,
@@ -262,13 +250,6 @@ describe("RONDE 99 §10 — an asset with a valid embedding is never indexed aga
     await prefetchClipEmbeddings([12]);
     writeLegacyFile({ assetId: 12, model: "m", embedding: [0, 0, 0], updatedAt: "" });
     expect(loadStoredClipEmbedding(12)?.embedding).toEqual([9, 9, 9]);
-  });
-
-  it("TEST 11 — a prefetch remembers which assets have no row, so it asks the DB once", async () => {
-    await prefetchClipEmbeddings([31]);
-    expect(clipEmbeddingKnownAbsent(31)).toBe(true);
-    await prefetchClipEmbeddings([31]);
-    expect(calls("SELECT asset_id")).toHaveLength(1);
   });
 
   it("TEST 12 — an asset with no extractable frames is recorded as failed, durably", async () => {

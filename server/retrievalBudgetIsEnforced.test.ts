@@ -10,14 +10,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  BUDGETS,
-  beatSpend,
-  budgetAllows,
-  budgetExhaustedFor,
-  createRetrievalBudgetState,
-  formatRetrievalBudgets,
-} from "./retrievalBudget";
+import { BUDGETS, budgetAllows, budgetExhaustedFor, createRetrievalBudgetState, formatRetrievalBudgets } from "./retrievalBudget";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -56,15 +49,6 @@ describe("every budget is bounded and configurable", () => {
 });
 
 describe("a beat spends its own budget and no one else's", () => {
-  it("allows up to the limit and then refuses", () => {
-    process.env.MAX_BEAT_QUERIES = "3";
-    const state = createRetrievalBudgetState();
-    for (let i = 0; i < 3; i++) {
-      expect(budgetAllows(state, 0, 0, "queries")).toBe(true);
-    }
-    expect(budgetAllows(state, 0, 0, "queries")).toBe(false);
-    expect(beatSpend(state, 0, 0).queries).toBe(3);
-  });
 
   /** A render-wide ceiling starves whichever beats happen to be last. This one cannot. */
   it("a spent beat does not starve its neighbour", () => {
@@ -83,17 +67,6 @@ describe("a beat spends its own budget and no one else's", () => {
     expect(budgetAllows(state, 0, 0, "queries")).toBe(false);
     expect(budgetAllows(state, 0, 0, "downloads")).toBe(true);
     expect(budgetAllows(state, 0, 0, "preparations")).toBe(true);
-  });
-
-  /**
-   * Charging and asking are one call on purpose: a caller that could ask without charging would
-   * eventually ask twice and charge once, and the budget would drift from the work it bounds.
-   */
-  it("charges on the way in", () => {
-    const state = createRetrievalBudgetState();
-    budgetAllows(state, 0, 0, "downloads");
-    budgetAllows(state, 0, 0, "downloads");
-    expect(beatSpend(state, 0, 0).downloads).toBe(2);
   });
 });
 

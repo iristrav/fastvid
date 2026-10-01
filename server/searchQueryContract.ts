@@ -598,12 +598,6 @@ export function evidenceStems(word: string): string[] {
   return [...out];
 }
 
-/** The shortest form of a word — the single canonical stem, where one value is needed. */
-export function evidenceStem(word: string): string {
-  const stems = evidenceStems(word);
-  return stems.length ? stems.reduce((a, b) => (b.length < a.length ? b : a)) : "";
-}
-
 /**
  * Function words that are ALSO ordinary given names in English.
  *
@@ -1176,17 +1170,6 @@ export function buildBeatSearchLadder(
   return out;
 }
 
-/** One line per rung, so a render's descent is readable in the log. */
-export function formatSearchLadder(
-  ladder: Array<{ level: 1 | 2 | 3 | 4; queries: PrioritisedQuery[] }>
-): string[] {
-  return ladder.map(
-    (rung) =>
-      `[SearchLadder] level ${rung.level}: ${rung.queries.length} question(s) — ` +
-      rung.queries.map((q) => `"${q.query}"`).slice(0, 4).join(", ")
-  );
-}
-
 // ─── The validator every provider search passes through ──────────────────────
 
 export type QueryRejectReason =
@@ -1679,62 +1662,6 @@ export type TermProvenance = {
   approved: boolean;
 };
 
-export function termProvenance(term: string, ctx: VerifiedQueryContext): TermProvenance {
-  const raw = term.trim();
-  const w = raw.toLowerCase().replace(/[^\p{L}\p{N}'’-]/gu, "");
-  const deny = (): TermProvenance => ({ term: raw, provenance: "unknown", source: null, approved: false });
-  if (!w) return deny();
-
-  /** Camera and provider vocabulary is allowed without content evidence, and is never content. */
-  if (isProductionWord(w)) {
-    return { term: raw, provenance: "technical", source: "production_vocabulary", approved: true };
-  }
-  if (isFunctionWord(w)) {
-    return { term: raw, provenance: "technical", source: "function_word", approved: true };
-  }
-
-  const stems = evidenceStems(w);
-  const containsStem = (text: string | undefined): boolean => {
-    if (!text) return false;
-    for (const piece of text.split(/[^\p{L}\p{N}'’-]+/u)) {
-      if (!piece) continue;
-      const forms = evidenceStems(piece.toLowerCase());
-      if (stems.some((s) => forms.includes(s))) return true;
-    }
-    return false;
-  };
-
-  /** A typed token the extractors proved — the most specific answer available. */
-  for (const list of allTokenLists(ctx)) {
-    for (const token of list) {
-      if (!token.verified) continue;
-      if (containsStem(token.term)) {
-        return { term: raw, provenance: token.source, source: `${token.type}_token`, approved: true };
-      }
-    }
-  }
-  if (containsStem(ctx.evidence)) {
-    return { term: raw, provenance: "beat_text", source: "beat.text/scene.text", approved: true };
-  }
-  if (containsStem(ctx.topic)) {
-    return { term: raw, provenance: "topic", source: "video.prompt", approved: true };
-  }
-  if (containsStem(ctx.plan)) {
-    return { term: raw, provenance: "visual_plan", source: "metadata.visualIntents", approved: true };
-  }
-
-  /** Traceable to a route that is not allowed to introduce content — named, still refused. */
-  for (const list of allTokenLists(ctx)) {
-    for (const token of list) {
-      if (token.verified) continue;
-      if (containsStem(token.term)) {
-        return { term: raw, provenance: token.source, source: null, approved: false };
-      }
-    }
-  }
-  return deny();
-}
-
 /** Every typed list of a context, in the mandated priority order. */
 export function allTokenLists(ctx: VerifiedQueryContext): QueryToken[][] {
   return [ctx.persons, ctx.places, ctx.countries, ctx.events, ctx.actions, ctx.objects, ctx.time, ctx.years];
@@ -1754,26 +1681,6 @@ function scopeFields(meta: { renderId?: string; sceneIndex?: number; beatIndex?:
   const scene = meta.sceneIndex ?? scope.sceneIndex;
   const beat = meta.beatIndex ?? scope.beatIndex;
   return `render=${render ?? "-"} scene=${scene ?? "?"} beat=${beat ?? "?"}`;
-}
-
-export function formatSearchQueryLog(meta: {
-  renderId?: string;
-  sceneIndex?: number;
-  beatIndex?: number;
-  query: string;
-  tokens?: QueryToken[];
-  priority?: number;
-  route?: string;
-  provider?: string;
-}): string {
-  const persons = (meta.tokens ?? []).filter((t) => t.type === "person").map((t) => t.term);
-  const places = (meta.tokens ?? []).filter((t) => t.type === "place" || t.type === "country").map((t) => t.term);
-  return (
-    `[SearchQuery] ${scopeFields(meta)} ` +
-    `priority=${meta.priority ?? "?"} query="${meta.query}" ` +
-    `persons=${JSON.stringify(persons)} places=${JSON.stringify(places)} ` +
-    `verified=true route=${meta.route ?? "-"} provider=${meta.provider ?? "-"}`
-  );
 }
 
 export function formatSearchQueryRejected(meta: {
@@ -1891,32 +1798,6 @@ export function mintVerifiedQuery(
   return verdict.ok
     ? { query, tokens, verified: true, ...meta }
     : { query, tokens, verified: false, rejectReason: verdict.reason ?? "UNVERIFIED_TERM", ...meta };
-}
-
-/**
- * RONDE 90 (§12) — the ONLY sanctioned answer to a refused query, and it is not a repair.
- *
- * Stripping the offending word out of a rejected query and sending the remainder is the silent
- * repair this round forbids: the result still carries the provenance of the query it was cut
- * down from, so it claims a proof it never had, and nothing downstream can tell it apart from a
- * query that was right the first time.
- *
- * This does the opposite. The rejected query is DISCARDED. A new query is built from the
- * context's verified tokens only, in the mandated priority order, with a NEW provenance object,
- * and it goes back through validateSearchQuery like any other. If the context proves nothing, the
- * answer is null — "no reliable query" is a correct outcome, not a failure to work around.
- */
-export function rebuildFromVerifiedTokens(
-  ctx: VerifiedQueryContext | undefined,
-  meta: { route: string; renderId?: string; sceneIndex?: number; beatIndex?: number }
-): VerifiedSearchQuery | null {
-  if (!ctx) return null;
-  for (const candidate of buildPrioritisedQueries(ctx)) {
-    if (candidate.query === TECHNICAL_ARCHIVAL_TERM) continue;
-    const minted = mintVerifiedQuery(candidate.query, ctx, meta);
-    if (minted.verified) return minted;
-  }
-  return null;
 }
 
 /**
@@ -2856,20 +2737,3 @@ export function narrowToSubjectPlusConcept(
   };
 }
 
-/**
- * How many SEMANTIC concepts a query carries, counted against the subject it is about.
- *
- * The subject is one concept however many words it spans — "Kim Kardashian" is a person, not two
- * search terms — so this cannot be a word count, and §15's invariant cannot be checked with one.
- * Everything outside the subject is counted as content words, because a concept the planner typed
- * as two words ("Los Angeles") is still one thing to find a picture of.
- *
- * Function words and the empty-concept vocabulary are not counted at all: they were never terms.
- */
-export function semanticConceptCount(query: string, anchor = ""): number {
-  const qWords = conceptWords(query);
-  const aWords = new Set(conceptWords(anchor));
-  const namesAnchor = aWords.size > 0 && [...aWords].every((w) => qWords.includes(w));
-  const rest = qWords.filter((w) => !aWords.has(w) && wordCanBeConcept(w));
-  return (namesAnchor ? 1 : 0) + rest.length;
-}

@@ -16,7 +16,6 @@ const ensureAutoMediaArchiveMock = vi.fn();
 const findMediaArchiveAssetBySourceUrlHashMock = vi.fn();
 const storagePutMock = vi.fn();
 const indexArchiveAssetEmbeddingMock = vi.fn().mockResolvedValue(undefined);
-const recordVisualSearchMemoryMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("./db", () => ({
   createMediaArchiveAsset: (...args: unknown[]) => createMediaArchiveAssetMock(...args),
@@ -29,13 +28,20 @@ vi.mock("./storage", () => ({
 vi.mock("./archiveEmbeddingIndex", () => ({
   indexArchiveAssetEmbedding: (...args: unknown[]) => indexArchiveAssetEmbeddingMock(...args),
 }));
-vi.mock("./visualSearchMemory", () => ({
-  recordVisualSearchMemory: (...args: unknown[]) => recordVisualSearchMemoryMock(...args),
-}));
 
-import { ingestExternalClipToArchive } from "./archiveIngestion";
+import { ingestExternalClipToArchiveWithReason } from "./archiveIngestion";
 
-describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicate protection", () => {
+/** The production entry (`storeForProduction` calls it); an asset id on success, null on refusal. */
+async function ingestExternalClipToArchive(
+  ...args: Parameters<typeof ingestExternalClipToArchiveWithReason>
+) {
+  const outcome = await ingestExternalClipToArchiveWithReason(...args);
+  if (outcome.status !== "ingested") return null;
+  const { status: _status, ...result } = outcome;
+  return result;
+}
+
+describe("ingestExternalClipToArchiveWithReason — F3-26 structured provenance + duplicate protection", () => {
   let tmpDir: string;
   let clipPath: string;
 
@@ -47,7 +53,6 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
     findMediaArchiveAssetBySourceUrlHashMock.mockReset().mockResolvedValue(null);
     storagePutMock.mockReset().mockResolvedValue({ key: "archive-ingested/1/test.mp4", url: "https://cdn.example.com/test.mp4" });
     indexArchiveAssetEmbeddingMock.mockClear();
-    recordVisualSearchMemoryMock.mockClear();
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "f326-ingest-test-"));
     clipPath = path.join(tmpDir, "clip.mp4");
@@ -104,18 +109,6 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
     // RONDE 648 — a YouTube segment goes to the YouTube archive.
     expect(ensureAutoMediaArchiveMock).toHaveBeenCalledWith("youtube");
     expect(inserted.archiveId).toBe(7);
-
-    // The learning loop records this query/entity/source/asset combination.
-    expect(recordVisualSearchMemoryMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        entity: "Justin Bieber",
-        entityType: "person",
-        query: "Justin Bieber 2015 interview",
-        source: "youtube_cc",
-        assetId: 101,
-        success: true,
-      })
-    );
 
     // Test 15 — the new asset is indexed via the existing embedding flow, same as before F3-26.
     expect(indexArchiveAssetEmbeddingMock).toHaveBeenCalledWith(

@@ -147,15 +147,6 @@ export function budgetAllows(
   return true;
 }
 
-export function beatSpend(
-  state: RetrievalBudgetState | undefined,
-  sceneIndex: number,
-  beatIndex: number
-): BeatSpend {
-  if (!state) return { queries: 0, downloads: 0, preparations: 0 };
-  return { ...spendFor(state, sceneIndex, beatIndex) };
-}
-
 /**
  * ── RONDE 231 — THE THREE BUDGETS THAT WERE NEVER CHARGED ───────────────────────────────────
  *

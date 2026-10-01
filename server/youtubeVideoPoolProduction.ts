@@ -168,7 +168,7 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
       items?: Array<{
         id: string;
         contentDetails?: { duration?: string };
-        status?: { embeddable?: boolean };
+        status?: { embeddable?: boolean; license?: string };
         snippet?: { liveBroadcastContent?: string; title?: string; description?: string; channelTitle?: string };
       }>;
     };
@@ -181,6 +181,7 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
         title: v.snippet?.title ?? "",
         description: v.snippet?.description ?? "",
         channel: v.snippet?.channelTitle ?? "",
+        ...(v.status?.license ? { license: v.status.license } : {}),
       });
     }
     return out;

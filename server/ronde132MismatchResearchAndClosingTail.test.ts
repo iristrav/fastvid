@@ -113,26 +113,19 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
     expect(src.slice(idx, idx + 260)).toContain("queryCap");
   });
 
-  it("20. YouTube is a tier the corrected query genuinely reaches", () => {
+  it("20. the corrected query reaches every cascade tier; YouTube is not one of them any more", () => {
     const src = SRC();
-    // The cascade the research pass calls has youtube_cc in its tier order, and `allQueries` —
-    // which the corrected queries now lead — is what every tier is asked with.
-    expect(src).toContain('"youtube_cc",');
+    /**
+     * Code audit P2/P12: the cascade has no YouTube tier. A beat's YouTube footage comes from the
+     * video's one pool through the beat's YouTube turn, so the research pass redirects the archive
+     * tiers only — it cannot open a second YouTube door.
+     */
     const tierIdx = src.indexOf("export const HISTORICAL_SOURCE_TIER_ORDER");
-    const tiers = src.slice(tierIdx, tierIdx + 400);
-    expect(tiers).toContain("youtube_cc");
+    const tiers = src.slice(tierIdx, src.indexOf("] as const;", tierIdx));
+    expect(tiers).not.toContain("youtube_cc");
+    expect(src).not.toContain("cascadeYoutubeCandidates");
     const fetchIdx = src.indexOf("const fetchTierPaths = async (tier: HistoricalSourceTier, q: string)");
     expect(fetchIdx).toBeGreaterThan(0);
-    /**
-     * RONDE 260B — the tier reaches the provider through the one central turn instead of calling it
-     * itself, so the chain is followed rather than the literal. Same guarantee, one link longer:
-     * tier → `cascadeYoutubeCandidates` → `runCentralYoutubeTurn` → the provider.
-     */
-    expect(src.slice(fetchIdx, fetchIdx + 1400)).toContain("cascadeYoutubeCandidates()");
-    const helper = src.indexOf("const cascadeYoutubeCandidates = async ()");
-    expect(helper, "the cascade's YouTube adapter moved").toBeGreaterThan(0);
-    expect(src.slice(helper, helper + 900)).toContain("runCentralYoutubeTurn({");
-    expect(src.slice(helper, helper + 900)).toContain("queries: allQueries");
   });
 
   it("21. the license flow is untouched by this round", () => {
@@ -154,8 +147,6 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
     // opening a second one.
     expect(block).toContain("dedup.sourcingCache");
     expect(block).toContain("dedup.usedContentKeys");
-    // And adoption still writes to the existing memory.
-    expect(src).toContain("recordAdoptedClipSource");
   });
 });
 

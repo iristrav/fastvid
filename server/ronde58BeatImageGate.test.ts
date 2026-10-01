@@ -4,7 +4,6 @@ import os from "os";
 import path from "path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { judgeBeatImage, createBeatImageGateState, maxBeatImageJudgementsPerRender, MAX_JUDGEMENTS_PER_BEAT } from "./beatImageRelevanceGate";
-import { beatImageRelevanceGateEnabled } from "./config";
 
 /**
  * RONDE 58 — the gate that actually looks at the frame.
@@ -129,14 +128,6 @@ describe("RONDE 58 — it fails open, in every direction", () => {
 
   it("an empty narration adopts the clip — there is nothing to judge against", async () => {
     const v = await judge({ beatText: "   " });
-    expect(v.verdict).toBe("unknown");
-    expect((await llm())).not.toHaveBeenCalled();
-  });
-
-  it("the gate can be switched off entirely", async () => {
-    vi.stubEnv("ENABLE_BEAT_IMAGE_RELEVANCE_GATE", "false");
-    expect(beatImageRelevanceGateEnabled()).toBe(false);
-    const v = await judge();
     expect(v.verdict).toBe("unknown");
     expect((await llm())).not.toHaveBeenCalled();
   });

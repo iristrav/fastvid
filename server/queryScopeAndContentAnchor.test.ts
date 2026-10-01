@@ -34,16 +34,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import {
-  emptyQueryContext,
-  formatSearchQueryAudit,
-  formatSearchQueryLog,
-  formatSearchQueryRejected,
-  hasContentAnchor,
-  validateSearchQuery,
-  withQueryScope,
-  getQueryScope,
-} from "./searchQueryContract";
+import { emptyQueryContext, formatSearchQueryAudit, formatSearchQueryRejected, hasContentAnchor, validateSearchQuery, withQueryScope, getQueryScope } from "./searchQueryContract";
 import { buildDocumentaryShotQueries, buildEmergencyGeoStockQueries } from "./pipelineSelfHeal";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
@@ -95,16 +86,6 @@ describe("a query line names where it happened", () => {
     expect(withQueryScope({}, () => getQueryScope())).toEqual({});
   });
 
-  /** All three lines, so a reader can join them. */
-  it("scopes the rejected line and the admitted line too", () => {
-    withQueryScope({ videoId: 568, sceneIndex: 1, beatIndex: 6 }, () => {
-      expect(
-        formatSearchQueryRejected({ query: "q", reason: "UNVERIFIED_TERM" })
-      ).toContain("render=568 scene=1 beat=6");
-      expect(formatSearchQueryLog({ query: "q" })).toContain("render=568 scene=1 beat=6");
-    });
-  });
-
   it("does not leak a scope out of its own call", () => {
     withQueryScope({ videoId: 568, sceneIndex: 1 }, () => undefined);
     expect(audit()).toContain("render=- scene=? beat=?");
@@ -122,7 +103,6 @@ describe("the scope is opened where the beat is known", () => {
     expect(body).toContain("beatIndex: beat.index");
     expect(body).toContain("getActiveVideoId()");
   });
-
 
   /** The ticket carries it too, so anything reading a ticket sees the same answer as the log. */
   it("the gate mints its ticket with the scope", () => {

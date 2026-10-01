@@ -72,10 +72,6 @@ export {
   graphicIsRenderable,
 } from "../../graphicsVocabulary";
 
-export function unsupportedGraphicsIn(graphics: readonly GraphicSpec[]): GraphicSpec[] {
-  return graphics.filter((g) => !graphicIsRenderable(g.graphicType, g.data, g.label));
-}
-
 /** Read the first named field that is a non-empty string. Never falls back to a made-up value. */
 function readString(g: GraphicSpec, ...keys: string[]): string | null {
   if (g.label?.trim()) return g.label.trim();

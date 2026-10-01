@@ -1,25 +1,7 @@
-/**
- * Vidrush pacing, asset quality, geo-segment locks, and motion-graphics QA.
- */
-import type { BeatLabelInput } from "./cinematicEffectsEngine";
-import {
-  extractMotionOverlayCandidates,
-  standardMontageCrossfadeSec,
-  type MotionOverlayPlan,
-} from "./motionGraphicsLayer";
-import {
-  archiveVisualMaxClipSec,
-  archiveVisualMinClipSec,
-  vidrushDocumentaryQualityEnabled,
-} from "./sourcingPolicy";
-import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
-import { asVideoTitleString, toQueryString } from "./stringCoercion";
-import {
-  extractBeatGeoPlaceTags,
-  extractSalientBeatTokens,
-  extractVisualSearchTags,
-  inferVideoVisualTopic,
-} from "./visualBeatTags";
+
+import { vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
+import { asVideoTitleString } from "./stringCoercion";
+import { extractBeatGeoPlaceTags } from "./visualBeatTags";
 import {
   NL_GEO_SLUGS,
   US_GEO_SLUGS,
@@ -27,8 +9,6 @@ import {
   hayHasGeoMarker,
 } from "./worldGeoSlugs";
 
-export const VIDRUSH_OPENING_CLIP_SEC = 3.5;
-export const VIDRUSH_STOCK_MIN_CLIP_SEC = 2.5;
 export const VIDRUSH_MIN_SOURCE_VIDEO_SEC = 2.8;
 export const VIDRUSH_MIN_STILL_WIDTH = 960;
 
@@ -41,82 +21,13 @@ const NON_DOC_RE =
 export const GEO_URBAN_OFFTOPIC_RE =
   /\b(ford\b|chevrolet|cadillac|gmc\b|buick\b|dealer(?:ship)?|auto dealer|car lot|used car|showroom|walgreens|cvs\b|drugstore|pharmacy|chemist|great depression|dust bowl|florida vintage|1929 crash|electrical cabinet|breaker panel|fuse box|switchgear|distribution board|electrical panel|control panel|headshot|portrait photo|studio portrait|passport photo|linkedin|vintage storefront|1950s store|1960s store|retro shop|five and dime|classic car lot|vintage america|classic america|auto repair|mechanic shop|gas station vintage|pump attendant|cash register|checkout counter|grocery aisle|supermarket interior|electrical engineer|technician at panel|fuse board|meter box|substation interior|electrical room|portrait of man|portrait of woman|generic portrait|close.?up face|talking head interview|news anchor desk|columbus ohio|columbus city|city council meeting|city council chamber|wisconsin capitol|wisconsin state capitol|state capitol building|capitol dome|legislative chamber|municipal council|town hall meeting|county board|alderman|city hall interior)\b/i;
 
-/** Vintage US commercial/retail — wrong for NL/US city-comparison openings. */
-const GEO_URBAN_OPENING_BLOCKED_RE =
-  /\b(ford\b|chev(?:y|rolet)|cadillac|dealer(?:ship)?|auto dealer|car lot|used car|walgreens|cvs\b|drugstore|pharmacy|storefront|shop front|retail store|1950s|1960s|1970s|vintage america|classic america|great depression|florida vintage|gas station|mechanic|auto repair|showroom|classic car)\b/i;
-
 export function isOffTopicGeoUrbanVisual(hay: string): boolean {
   if (!vidrushDocumentaryQualityEnabled()) return false;
   return GEO_URBAN_OFFTOPIC_RE.test(hay.toLowerCase());
 }
 
-export function isOffTopicGeoUrbanOpeningVisual(
-  hay: string,
-  primaryGeo: BeatGeoRegion
-): boolean {
-  if (isOffTopicGeoUrbanVisual(hay)) return true;
-  if (primaryGeo !== "both" && primaryGeo !== "nl") return false;
-  return GEO_URBAN_OPENING_BLOCKED_RE.test(hay.toLowerCase());
-}
-
 const NL_TITLE_RE = /\b(netherlands|nederland|dutch|holland|amsterdam)\b/i;
 const US_TITLE_RE = /\b(u\.?s\.?|united states|america|american)\b/i;
-
-/** Hard minimum on-screen time per montage clip (seconds). */
-export function vidrushMinClipSec(): number {
-  return Math.max(VIDRUSH_OPENING_CLIP_SEC, archiveVisualMinClipSec());
-}
-
-export function vidrushOpeningClipSec(): number {
-  return Math.max(vidrushMinClipSec(), VIDRUSH_OPENING_CLIP_SEC);
-}
-
-export function vidrushClipFloorSec(clipIndex: number, sceneIndex = 0): number {
-  if (sceneIndex === 0 && clipIndex === 0) return vidrushOpeningClipSec();
-  return vidrushMinClipSec();
-}
-
-export function clampVidrushClipDuration(
-  duration: number,
-  clipIndex = 0,
-  sceneIndex = 0
-): number {
-  const min = vidrushClipFloorSec(clipIndex, sceneIndex);
-  const max = archiveVisualMaxClipSec();
-  return Math.max(min, Math.min(max, duration));
-}
-
-export function enforceMontageDurationFloors(
-  durations: number[],
-  sceneIndex = 0
-): number[] {
-  return durations.map((d, i) => clampVidrushClipDuration(d, i, sceneIndex));
-}
-
-/**
- * Max montage clips for a voice duration (Vidrush min on-screen + xfade overlap).
- * Must cover voice at min clip length — archive first per beat, then Pexels as needed.
- */
-export function maxMontageClipsForVoiceSec(
-  outDur: number,
-  xfadeSec = standardMontageCrossfadeSec()
-): number {
-  const min = vidrushMinClipSec();
-  if (outDur <= min + 0.05) return 1;
-  const netPerClip = Math.max(0.55, min - xfadeSec * 0.92);
-  const pacingCap = Math.max(1, Math.floor((outDur + xfadeSec * 0.35) / netPerClip));
-  // n*min - (n-1)*xfade >= outDur  →  enough clips when sources are short (Pexels backfill).
-  const coverageMin = Math.max(2, Math.ceil((outDur - xfadeSec) / netPerClip));
-  // +2 headroom: extra Pexels clips when probed sources run shorter than min hold.
-  return Math.max(pacingCap, coverageMin) + 2;
-}
-
-export function montageSharpScaleChain(width: number, height: number): string {
-  return (
-    `scale=${width}:${height}:flags=lanczos:force_original_aspect_ratio=decrease,` +
-    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a`
-  );
-}
 
 export function vidrushStillPhotoScale(): number {
   return 0.72;
@@ -197,82 +108,6 @@ export function isWrongRegionForSegmentLock(
   return false;
 }
 
-/** Opening beat queries — real drone/video B-roll, topic- and geo-aware for any subject. */
-export function buildVidrushOpeningQueries(videoTitle?: string, beatText?: string): string[] {
-  const hay = `${asVideoTitleString(videoTitle)} ${asVideoTitleString(beatText)}`.trim();
-  const topic = inferVideoVisualTopic(videoTitle, beatText);
-  const queries: string[] = [];
-
-  if (topic === "wwii") {
-    queries.push(
-      "world war ii archival footage establishing video",
-      "1930s europe city street documentary broll",
-      "historical war documentary aerial video",
-      "black white archive city footage video"
-    );
-  } else if (topic === "cold_war") {
-    queries.push(
-      "cold war era city documentary footage video",
-      "berlin wall archival broll video",
-      "soviet bloc urban street documentary video"
-    );
-  }
-
-  const primary = inferPrimaryGeoFromTitle(videoTitle);
-  if (primary === "both") {
-    queries.push(
-      "netherlands city aerial drone establishing shot",
-      "amsterdam canals drone video",
-      "dutch cycling street modern city",
-      "rotterdam skyline timelapse video",
-      "american city skyline aerial drone",
-      "usa downtown drone broll video",
-      "city comparison aerial documentary"
-    );
-  } else if (primary === "nl") {
-    queries.push(
-      "netherlands aerial drone landscape video",
-      "amsterdam canals drone broll",
-      "dutch city cycling street video",
-      "netherlands windmill countryside video",
-      "rotterdam skyline timelapse video"
-    );
-  } else if (primary === "us") {
-    queries.push(
-      "united states city aerial drone video",
-      "american downtown skyline timelapse",
-      "usa urban street traffic broll",
-      "new york city aerial video"
-    );
-  }
-
-  const geoTags = extractBeatGeoPlaceTags(beatText ?? hay);
-  for (const tag of geoTags.slice(0, 3)) {
-    queries.push(`${tag} aerial drone documentary video`, `${tag} city street broll video`);
-  }
-
-  const visualTags = extractVisualSearchTags(hay, videoTitle).slice(0, 5);
-  const salient = extractSalientBeatTokens(beatText ?? asVideoTitleString(videoTitle)).slice(0, 4);
-  for (const tag of [...new Set([...visualTags, ...salient])]) {
-    if (tag.length >= 4 && !/^(the|and|that|this|with|from|have|were|been)$/.test(tag)) {
-      queries.push(`${tag} documentary establishing shot video`, `${tag} aerial broll video`);
-    }
-  }
-
-  queries.push(
-    "documentary establishing shot aerial video",
-    "city aerial drone landscape video",
-    "urban skyline timelapse video",
-    "downtown street documentary broll video"
-  );
-
-  return [...new Set(
-    queries
-      .map((q) => toQueryString(q))
-      .filter((q) => q.length > 8)
-  )].slice(0, 14);
-}
-
 /** When clip metadata matches off-topic patterns, allow only if the beat narrates that subject. */
 export function offTopicVisualAllowedForBeat(visualHay: string, beatText: string): boolean {
   const beat = beatText.toLowerCase();
@@ -307,51 +142,3 @@ export function resolveBeatRegionLock(beatText: string, videoTitle?: string): Be
   return inferPrimaryGeoFromTitle(videoTitle);
 }
 
-/** Warn when voice contains overlay candidates but plan is empty. */
-export function auditMotionGraphicsCoverage(
-  beats: BeatLabelInput[],
-  overlays: MotionOverlayPlan[]
-): string[] {
-  const warnings: string[] = [];
-  const planned = new Set(overlays.map((o) => o.text.toLowerCase()));
-  for (const beat of beats) {
-    for (const c of extractMotionOverlayCandidates(beat.text, beat)) {
-      if (!planned.has(c.text.toLowerCase())) {
-        warnings.push(`overlay "${c.text}" not planned for beat "${beat.text.slice(0, 48)}…"`);
-      }
-    }
-  }
-  return warnings;
-}
-
-export function logMotionGraphicsQa(
-  sceneIndex: number,
-  beats: BeatLabelInput[],
-  overlays: MotionOverlayPlan[]
-): void {
-  if (overlays.length > 0) {
-    console.log(
-      `[MotionGraphics QA] Scene ${sceneIndex}: ${overlays.length} overlay(s) planned [${overlays.map((o) => o.text).join(" | ")}]`
-    );
-    return;
-  }
-  const warnings = auditMotionGraphicsCoverage(beats, overlays);
-  if (warnings.length > 0) {
-    const msg = `[MotionGraphics QA] Scene ${sceneIndex}: ${warnings.length} candidate(s) missing — ${warnings.slice(0, 3).join("; ")}`;
-    if (process.env.ENABLE_SCENE_CRITICAL_REVIEW !== "false" && vidrushDocumentaryQualityEnabled()) {
-      throw pipelineError(PIPELINE_ERROR.NO_SCENES, msg);
-    }
-    console.warn(msg);
-  }
-}
-
-/** Trim clip list to what voice duration can hold at Vidrush pacing. */
-export function trimMontageDurationsToMaxClips(
-  durations: number[],
-  maxClips: number,
-  sceneIndex = 0
-): number[] {
-  if (durations.length <= maxClips) return enforceMontageDurationFloors(durations, sceneIndex);
-  const trimmed = durations.slice(0, maxClips);
-  return enforceMontageDurationFloors(trimmed, sceneIndex);
-}

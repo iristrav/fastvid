@@ -100,16 +100,6 @@ describe("videos.metadata — a save must never erase the render's record", () =
    * the whole metadata object back, so a blind spread there is a data-loss bug rather than a
    * display bug.
    */
-  it("updateVideoEditorSettings reads through the canonical reader", () => {
-    const src = fs.readFileSync(path.join(__dirname, "db.ts"), "utf8");
-    const at = src.indexOf("export async function updateVideoEditorSettings(");
-    expect(at, "updateVideoEditorSettings has moved").toBeGreaterThan(-1);
-    const body = src.slice(at, src.indexOf("\n}", src.indexOf("db.update(videos).set(patch)", at)));
-    expect(body, "the editor save still spreads the raw column").not.toMatch(
-      /\{\s*\.\.\.\(\(video\.metadata/
-    );
-    expect(body).toContain("readVideoMetadataObject(video)");
-  });
 });
 
 /* ═══════════════════════ every reader now goes through it ═══════════════════════ */

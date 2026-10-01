@@ -12,14 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import {
-  YOUTUBE_FIRST_BEAT_WORST_MS,
-  YOUTUBE_FIRST_PARALLEL_BEATS,
-  YOUTUBE_FIRST_TURN_MS,
-  sceneCandidatePoolEnabled,
-  youtubeBeatBudgetMs,
-  youtubeFirstPerBeatEnabled,
-} from "./sourcingPolicy";
+import { YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_PARALLEL_BEATS, YOUTUBE_FIRST_TURN_MS, sceneCandidatePoolEnabled, youtubeBeatBudgetMs } from "./sourcingPolicy";
 import {
   applyYoutubeFirstPerf,
   beatVisualWallMs,
@@ -53,16 +46,6 @@ afterEach(() => {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
-});
-
-describe("the switch", () => {
-  it("is on by default, and SOURCING_YOUTUBE_FIRST=false turns it off", () => {
-    expect(youtubeFirstPerBeatEnabled()).toBe(true);
-    process.env.SOURCING_YOUTUBE_FIRST = "false";
-    expect(youtubeFirstPerBeatEnabled()).toBe(false);
-  });
-
-
 });
 
 describe("two minutes of YouTube per beat, and nothing above it ends them early", () => {
@@ -109,11 +92,4 @@ describe("two minutes of YouTube per beat, and nothing above it ends them early"
     expect(beatVisualWallMs(p)).toBeLessThan(YOUTUBE_FIRST_BEAT_WORST_MS);
   });
 
-  it("with the switch off, every one of those numbers is the profile's own", () => {
-    process.env.SOURCING_YOUTUBE_FIRST = "false";
-    const p = getPipelinePerfProfile("1");
-    expect(sceneVisualFlatMs(p)).toBe(p.sceneVisualTimeoutMs);
-    expect(sceneRetrieveParallelism(p)).toBe(p.sceneParallelism);
-    expect(beatVisualWallMs(p)).toBeLessThan(YOUTUBE_FIRST_BEAT_WORST_MS);
-  });
 });

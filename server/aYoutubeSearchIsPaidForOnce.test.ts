@@ -11,7 +11,6 @@ import {
   youtubeSearchCacheTtlMs,
 } from "./youtubeSearchQuota";
 import { nextQuotaResetMs } from "./youtubeApiKeys";
-import { prefetchAltSearchesPerDay } from "./youtubePrefetch";
 
 /**
  * RONDE 653 — 100 search.list calls a day for everything, and a cache that only lived as long as one
@@ -76,29 +75,22 @@ describe("every call that reaches Google is counted until Google's own reset", (
 });
 
 describe("the search uses the process cache and logs each call", () => {
-  const SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-  const at = SRC.indexOf("export async function searchYoutubeVideoCandidates(");
-  const body = SRC.slice(at, SRC.indexOf("export async function youtubeRowsRankedByThumbnail(", at));
+  /** Code audit P2: the video's pool is the one YouTube search; these hold for it. */
+  const SRC = fs.readFileSync(path.join(__dirname, "youtubeVideoPoolProduction.ts"), "utf8");
+  const at = SRC.indexOf("const search = async (query: string)");
+  const body = SRC.slice(at, SRC.indexOf("\n  };", at));
 
   it("asks the process cache before the network and stores only a successful answer", () => {
-    expect(body.indexOf("cachedYoutubeSearchPayload(processKey)")).toBeLessThan(body.indexOf('new URL("https://www.googleapis.com/youtube/v3/search")'));
-    expect(body.indexOf("storeYoutubeSearchPayload(processKey, payload);")).toBeGreaterThan(body.indexOf("markYoutubeSearchResult(true);"));
+    expect(at).toBeGreaterThan(-1);
+    expect(body.indexOf("quota.cachedYoutubeSearchPayload(key)")).toBeLessThan(body.indexOf('new URL("https://www.googleapis.com/youtube/v3/search")'));
+    expect(body.indexOf("quota.storeYoutubeSearchPayload(key, payload);")).toBeGreaterThan(body.indexOf("if (!resp.ok) return { status, items: [] };"));
   });
 
   it("counts and logs every network call, including one that fails", () => {
-    const fetchAt = body.indexOf("const searchResp = await providerLimiter(\"youtube\")");
+    const fetchAt = body.indexOf("const resp = await fetch(url");
     const after = body.slice(fetchAt, fetchAt + 700);
     expect(after).toContain('source: "network"');
-    expect(after).toContain("callsToday: countYoutubeQuotaCall()");
-    expect(after.indexOf("countYoutubeQuotaCall()")).toBeLessThan(after.indexOf("if (searchResp.status === 429)"));
-  });
-});
-
-describe("background searching gives way to renders", () => {
-  it("spends no quota unless the operator turns it on", () => {
-    vi.stubEnv("YOUTUBE_PREFETCH_ALT_SEARCHES_PER_DAY", "");
-    expect(prefetchAltSearchesPerDay()).toBe(0);
-    vi.stubEnv("YOUTUBE_PREFETCH_ALT_SEARCHES_PER_DAY", "5");
-    expect(prefetchAltSearchesPerDay()).toBe(5);
+    expect(after).toContain("callsToday: quota.countYoutubeQuotaCall()");
+    expect(after.indexOf("quota.countYoutubeQuotaCall()")).toBeLessThan(after.indexOf("if (resp.status === 429)"));
   });
 });

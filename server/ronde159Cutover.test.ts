@@ -8,8 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { cinematicPlanningEnabled, enqueueCinematicRender } from "./cinematicProduction";
-import { cinematicRenderPathEnabled } from "./config";
+import { enqueueCinematicRender } from "./cinematicProduction";
 
 const ORIGINAL_ENGINE = process.env.CINEMATIC_EDITING_ENGINE;
 const ORIGINAL_PATH = process.env.CINEMATIC_RENDER_PATH;
@@ -81,22 +80,22 @@ describe("R159 §24 — CINEMATIC_RENDER_PATH activates the new route", () => {
     expect(q.jobs[0]!.attempt).toBe(3);
   });
 
-  it("does nothing at all when the flag is off, and says which flag", async () => {
+  it("queues whatever the old flag says — CINEMATIC_RENDER_PATH no longer exists", async () => {
+    /** Code audit P12: the timeline is the only render path; no variable can turn it off. */
+    for (const v of [undefined, "false"]) {
+      if (v === undefined) delete process.env.CINEMATIC_RENDER_PATH;
+      else process.env.CINEMATIC_RENDER_PATH = v;
+      const q = recordingQueue();
+      const out = await enqueueCinematicRender({
+        videoId: 7,
+        timelineVersion: 4,
+        claimAttempt: q.claimAttempt,
+        createJob: q.createJob,
+      });
+      expect(out.ok).toBe(true);
+      expect(q.claims).toEqual([7]);
+    }
     delete process.env.CINEMATIC_RENDER_PATH;
-    const q = recordingQueue();
-    const out = await enqueueCinematicRender({
-      videoId: 7,
-      timelineVersion: 4,
-      claimAttempt: q.claimAttempt,
-      createJob: q.createJob,
-    });
-
-    expect(out.ok).toBe(false);
-    if (out.ok) return;
-    expect(out.reason).toContain("CINEMATIC_RENDER_PATH");
-    // Nothing was claimed and nothing was queued.
-    expect(q.claims).toEqual([]);
-    expect(q.jobs).toEqual([]);
   });
 
   /** A video already rendering must not get a second job. The claim is what says so. */
@@ -158,12 +157,6 @@ describe("R159 §24 — CINEMATIC_RENDER_PATH activates the new route", () => {
 /* ═══════════════════════ §25 — a refusal is never hidden ═══════════════════════ */
 
 describe("R159 §25 — a render that did not deliver is always distinguishable", () => {
-  it("planning and rendering are separate switches", () => {
-    process.env.CINEMATIC_EDITING_ENGINE = "true";
-    delete process.env.CINEMATIC_RENDER_PATH;
-    expect(cinematicPlanningEnabled()).toBe(true);
-    expect(cinematicRenderPathEnabled()).toBe(false);
-  });
 
   /**
    * The specific failure this test guards. When the flag is ON but the queue refused the job,

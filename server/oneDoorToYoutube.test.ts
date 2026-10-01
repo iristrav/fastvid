@@ -30,19 +30,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import {
-  claimYoutubeTurn,
-  endYoutubeTurnForBeat,
-  runCentralYoutubeTurn,
-  youtubeTurnKey,
-  withSceneFetchTimeout,
-  remainingScopeMs,
-  remainingNonYoutubeScopeMs,
-  scopedTimeoutMs,
-  YOUTUBE_MIN_TURN_MS,
-  YOUTUBE_TURN_WINDOW_MS,
-  type YoutubeTurnRecord,
-} from "./videoPipeline";
+import { claimYoutubeTurn, endYoutubeTurnForBeat, runCentralYoutubeTurn, youtubeTurnKey, withSceneFetchTimeout, remainingScopeMs, YOUTUBE_MIN_TURN_MS, YOUTUBE_TURN_WINDOW_MS, type YoutubeTurnRecord } from "./videoPipeline";
 
 const PIPELINE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -215,37 +203,6 @@ describe("T3 — the provider has exactly one production door", () => {
 describe("T4 — non-YouTube providers cannot spend the YouTube reserve", () => {
   const WINDOW_MS = 120_000;
 
-  it("a non-YouTube caller sees the clock less the turn's cost", async () => {
-    await withSceneFetchTimeout(
-      async () => {
-        /**
-         * Within a millisecond, not exactly equal. Both readings are computed from `Date.now()`
-         * against the scope's deadline, so a tick between the two calls shifts the difference by
-         * one — which made this fail about one run in fifty. The reserve is the claim; the
-         * millisecond is not.
-         */
-        const held = remainingScopeMs() - remainingNonYoutubeScopeMs();
-        /** RONDE 600: the reserve holds the turn's WINDOW, not the price the door charges. */
-        expect(Math.abs(held - YOUTUBE_TURN_WINDOW_MS)).toBeLessThanOrEqual(2);
-      },
-      WINDOW_MS,
-      "test scene"
-    );
-  });
-
-  it("every provider timeout is sized against the reduced clock", async () => {
-    await withSceneFetchTimeout(
-      async () => {
-        expect(scopedTimeoutMs(WINDOW_MS)).toBeLessThanOrEqual(remainingNonYoutubeScopeMs());
-        expect(remainingScopeMs() - scopedTimeoutMs(WINDOW_MS)).toBeGreaterThanOrEqual(
-          YOUTUBE_MIN_TURN_MS
-        );
-      },
-      WINDOW_MS,
-      "test scene"
-    );
-  });
-
   it("a route refused by the entity ceiling steps aside instead of taking the turn", () => {
     /**
      * Found by a test, not by reasoning. When the ceiling check moved inside the central turn, a
@@ -275,9 +232,9 @@ describe("T4 — non-YouTube providers cannot spend the YouTube reserve", () => 
      * `maxEntityYoutubePerVideo`. Making them count would tighten a gate this round was told not
      * to touch, so each route says for itself whether it draws on that ceiling.
      */
-    expect(PIPELINE).toContain("countsAgainstEntityCeiling?: boolean;");
-    expect(PIPELINE).toContain("countsAgainstEntityCeiling: false,");
-    expect(PIPELINE).toContain("req.countsAgainstEntityCeiling !== false");
+    /** Code audit: the pooling routes that never counted are gone with the cascade's YouTube tier. */
+    expect(PIPELINE).not.toContain("countsAgainstEntityCeiling");
+    expect(PIPELINE).toContain("const spendsEntityBudget = !req.lookahead;");
   });
 
   it("the reserve is taken at scope open and released only by the turn", () => {
@@ -307,7 +264,6 @@ describe("T5 — a failed turn falls through to the next tier", () => {
     const body = bodyOf("runCentralYoutubeTurn");
     for (const outcome of [
       "YOUTUBE_NO_RESULTS",
-      "YOUTUBE_NO_USABLE_CANDIDATE",
       "YOUTUBE_TIMEOUT",
       "YOUTUBE_SEARCH_FAILED",
       "YOUTUBE_CAPABILITY_UNAVAILABLE",
@@ -380,13 +336,10 @@ describe("T6-T9 — no branch loses its context at the door", () => {
     expect(topic.some((c) => c.request.includes('queryBuilder: "buildBeatYoutubeQueries"'))).toBe(true);
   });
 
-  it("T9 — an ARCHIVAL branch keeps its archival queries and its relevance floor", () => {
-    const archival = centralCalls().filter((c) => c.request.includes('visualNeed: "archival"'));
-    expect(archival.length, "no archival route reaches the central turn").toBeGreaterThanOrEqual(1);
-    expect(
-      archival.some((c) => c.request.includes("historicalCascadeQueries")),
-      "the historical cascade's queries are gone"
-    ).toBe(true);
+  it("T9 — there is no ARCHIVAL branch any more: the cascade never asks YouTube", () => {
+    /** Code audit P12: the cascade's youtube_cc tier is gone; the beat's own turn is the only door. */
+    expect(centralCalls().some((c) => c.request.includes('visualNeed: "archival"'))).toBe(false);
+    expect(PIPELINE).not.toContain("cascadeYoutubeCandidates");
   });
 });
 
@@ -411,7 +364,7 @@ describe("T10 — the central route is not an archival route", () => {
      * were removed with the rest of that subject's code.
      */
     /** One ladder per sentence: the event, research and last-resort routes are gone with it. */
-    for (const need of ["person", "topic", "archival"]) {
+    for (const need of ["person", "topic"]) {
       expect([...needs], `${need} beats no longer use the central route`).toContain(need);
     }
   });
@@ -526,12 +479,13 @@ describe("§17 — golden trace: 'Kim Kardashian appears at a Los Angeles court.
 describe("§11 — the quality gates are untouched", () => {
   it("the adapter still runs the existing adoption flow, and does not reimplement it", () => {
     const adapter = bodyOf("tryBeatRealYouTubeFootage");
-    expect(adapter).toContain("tryStockSources(");
+    /** It only fetches candidates; adoption is the beat's one adoptClip (code audit P9). */
+    expect(adapter).not.toContain("adoptClip(");
     expect(adapter).toContain("withSceneFetchTimeout(");
   });
 
   it("the central turn adopts nothing itself", () => {
-    /** Adoption lives in `adoptClip`/`tryStockSources`. A second one here would be a second engine. */
+    /** Adoption lives in `adoptClip`. A second one here would be a second engine. */
     const body = bodyOf("runCentralYoutubeTurn");
     expect(body).not.toContain("adoptClip(");
     expect(body).not.toContain("fetchYouTubeCCClips(");

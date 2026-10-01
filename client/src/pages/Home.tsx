@@ -342,7 +342,7 @@ const handleGetStarted = () => {
     },
     {
       q: "Are the videos unique and safe to upload?",
-      a: "Every script is generated for your prompt. Visuals come from licensed stock, Creative Commons YouTube clips (where available), and curated image sources — with transformative editing. You are responsible for final review before publishing.",
+      a: "Every script is generated for your prompt. Visuals come from licensed stock, archive and image sources, and YouTube clips — Creative Commons where available. YouTube clips whose licence FastVid could not prove are listed with each finished video, so you can replace them or confirm permission. You are responsible for final review before publishing.",
     },
     {
       q: "Can I add my own voice or branding?",
@@ -869,7 +869,7 @@ const handleGetStarted = () => {
                   Each beat searches for footage that fits the line being spoken — real events, named people, and topic-specific B-roll before generic stock.
                 </p>
                 <ul className="space-y-2">
-                  {["Creative Commons & licensed sources", "Person- and event-aware queries", "No duplicate clips per video", "Smooth documentary pacing"].map((item) => (
+                  {["Licence status shown per YouTube clip", "Person- and event-aware queries", "No duplicate clips per video", "Smooth documentary pacing"].map((item) => (
                     <li key={item} className="flex items-center gap-2.5 text-sm text-slate-300">
                       <Check className="w-4 h-4 text-cyan-400 shrink-0" />
                       {item}

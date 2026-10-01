@@ -156,8 +156,11 @@ describe("the message matches the gate it is standing in for", () => {
     const REPORT = readFileSync(join(__dirname, "deliveryGate.ts"), "utf8");
     expect(msg).toContain("Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied)");
     expect(REPORT).toContain("Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied)");
-    expect(msg).toContain("only if you accept unjudged footage");
-    expect(REPORT).toContain("only if you accept unjudged footage");
+    /** There is no escape hatch any more: the picture editor cannot be switched off. */
+    expect(msg).toContain("The picture editor cannot be switched off.");
+    expect(REPORT).toContain("The picture editor cannot be switched off.");
+    expect(msg).not.toContain("ENABLE_BEAT_IMAGE_RELEVANCE_GATE");
+    expect(REPORT).not.toContain("ENABLE_BEAT_IMAGE_RELEVANCE_GATE");
   });
 
   it("and says plainly that nothing was rendered", () => {
@@ -178,15 +181,11 @@ describe("where the pipeline asks it", () => {
     expect(probe, "the probe must run before the render does any work").toBeLessThan(compose);
   });
 
-  it("AND ONLY WHEN THE JUDGE IS SUPPOSED TO BE ASKED", () => {
-    /**
-     * `ENABLE_BEAT_IMAGE_RELEVANCE_GATE=false` means the operator turned the judge off on purpose,
-     * and the export gate says the same in as many words: "a render where every provider is down
-     * but the gate is switched off passes." A preflight that refused anyway would be stricter than
-     * the gate it stands in for.
-     */
+  it("AND ALWAYS — the judge has no switch, so the preflight is never skipped", () => {
+    /** The code audit removed ENABLE_BEAT_IMAGE_RELEVANCE_GATE: every render asks first. */
     const probe = PIPE.indexOf("const judge = await probeVisionJudge();");
-    expect(PIPE.slice(Math.max(0, probe - 400), probe)).toContain("if (beatImageRelevanceGateEnabled()) {");
+    expect(probe).toBeGreaterThan(-1);
+    expect(PIPE.slice(Math.max(0, probe - 400), probe)).not.toContain("beatImageRelevanceGateEnabled");
   });
 
   it("it refuses with the same error class the export gate uses", () => {

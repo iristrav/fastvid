@@ -91,12 +91,6 @@ export async function localStoragePutFile(
   return { key, url: `/local-storage/${safeFileName}` };
 }
 
-export async function localStorageGet(relKey: string): Promise<{ key: string; url: string }> {
-  const key = normalizeKey(relKey);
-  const safeFileName = key.replace(/\//g, "_");
-  return { key, url: `/local-storage/${safeFileName}` };
-}
-
 /** Resolve a /local-storage/... URL to an on-disk path, or null if missing. */
 export function resolveLocalVideoPath(videoUrl: string): string | null {
   if (!videoUrl.startsWith("/local-storage/")) return null;

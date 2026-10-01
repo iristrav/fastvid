@@ -314,10 +314,11 @@ describe("R199b — 'never looked' stopped arriving dressed as 'could not tell'"
 /* ═══════════ 8. no editor at all is a fact about the render, not about a picture ═══════════ */
 
 describe("R199b — an outage must never be able to empty a film", () => {
-  it("the three ways of having no editor all say so render-wide", async () => {
+  it("the two ways of having no editor all say so render-wide", async () => {
     const GATE = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
     /**
-     * Switched off, nothing contacted, and a provider that would not serve: the same statement.
+     * Nothing contacted, and a provider that would not serve: the same statement. (The third way,
+     * "switched off", no longer exists — the code audit removed the gate's switch.)
      *
      * Asserted as THREE CALLS rather than three sentences. RONDE 238 reworded the third — "no
      * capacity" was a wrong signpost for a 403 PERMISSION_DENIED — and the literal it used to match
@@ -325,8 +326,8 @@ describe("R199b — an outage must never be able to empty a film", () => {
      * guarantee; a fourth way of having no editor that forgets to say so still trips it.
      */
     const calls = [...GATE.matchAll(/noteAskImpossible\(state,/g)];
-    expect(calls, "every route to 'there is no editor' must announce it").toHaveLength(3);
-    expect(GATE).toContain("noteAskImpossible(state, \"the beat image gate is switched off");
+    expect(calls, "every route to 'there is no editor' must announce it").toHaveLength(2);
+    expect(GATE).not.toContain("the beat image gate is switched off");
     expect(GATE).toContain("no provider could be asked");
     expect(GATE).toContain("no provider served the call");
   });

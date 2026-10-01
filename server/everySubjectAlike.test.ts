@@ -12,7 +12,6 @@ import fs from "fs";
 import path from "path";
 import { extractBeatRealEntities, extractPersonNamesFromText, setRenderPeopleReadingForTests, stockCategoryGateForTest } from "./videoPipeline";
 import { scriptStillOnTopic } from "./scriptWriter";
-import { extractMotionOverlayCandidates } from "./motionGraphicsLayer";
 import { isRejectedStockClip } from "./visualJudge";
 
 const SERVER = __dirname;
@@ -39,7 +38,6 @@ describe("no code line names one subject", () => {
   });
 
   it("no named-person tables for labels or query expansion", () => {
-    expect(codeLines("motionGraphicsLayer.ts").join("\n")).not.toMatch(/PERSON_ENTRIES|label: "HITLER"|label: "STALIN"/);
     expect(codeLines("assetDirector.ts").join("\n")).not.toContain("KNOWLEDGE_GRAPH");
     expect(codeLines("videoPipeline.ts").join("\n")).not.toMatch(/REAL_ENTITY_RULES|isMuskTeslaTopic|GOLDEN_MUSK_QUERIES|muskTopic/);
   });
@@ -123,13 +121,6 @@ describe("the script and its labels", () => {
   it("a script without sections is read, not recursed until the stack runs out", () => {
     expect(scriptStillOnTopic("Frida Kahlo", "# Other\n\nA story about bridges and rivers.")).toBe(false);
     expect(scriptStillOnTopic("Frida Kahlo", "# Frida\n\nKahlo painted her own face again and again.")).toBe(true);
-  });
-
-  it("every named person gets an on-screen label, not fifteen of them", () => {
-    const labels = extractMotionOverlayCandidates("Nelson Mandela walked out of prison that day.")
-      .filter((c) => c.kind === "person")
-      .map((c) => c.text);
-    expect(labels).toContain("MANDELA");
   });
 
   it("the script writer has one brand rule for every subject", () => {

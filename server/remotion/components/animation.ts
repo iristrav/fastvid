@@ -171,15 +171,6 @@ export function animationAt(
   }
 }
 
-/** Every animation this build can execute. Anything else is reported, never approximated. */
-export const SUPPORTED_ANIMATIONS: ReadonlySet<string> = new Set([
-  "none", "fade", "fade_rise", "fade_scale", "pop", "scale",
-  "slide_up", "slide_down", "slide_left", "slide_right",
-  "bounce", "type_on", "word_reveal", "character_reveal", "mask_reveal",
-  /** RONDE 656 — types at one fixed pace (`typewriter.ts`), so a key sound can follow it. */
-  "typewriter",
-]);
-
 /** Animations that reveal the text progressively rather than moving the whole box. */
 export const PROGRESSIVE_ANIMATIONS: ReadonlySet<string> = new Set([
   "type_on", "word_reveal", "character_reveal", "typewriter",
@@ -286,6 +277,3 @@ export function chunkCaption(params: {
   }
 }
 
-export const SUPPORTED_CAPTION_MODES: ReadonlySet<string> = new Set([
-  "sentence", "phrase", "word_by_word", "karaoke", "highlight_word", "emphasis_word",
-]);

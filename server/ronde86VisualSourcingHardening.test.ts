@@ -23,12 +23,6 @@ import {
   scoreCandidateAgainstBeat,
 } from "./videoPipeline";
 import { buildVideoQualityReport } from "./videoQualityReport";
-import {
-  enqueueVisualSearchMemory,
-  recordSearchMisses,
-  resetVisualSearchMemoryQueue,
-  visualSearchMemoryQueueStats,
-} from "./visualSearchMemory";
 import { globalBudgetSnapshot, withGlobalMediaFetch } from "./globalResourceBudget";
 import { composeParallelismForVideo, montageSegmentParallelism } from "./sourcingPolicy";
 import { maxConcurrentRenders } from "./config";
@@ -53,7 +47,6 @@ import { maxConcurrentRenders } from "./config";
 
 const PIPELINE_SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const CURATED_SRC = fs.readFileSync(path.join(__dirname, "curatedMediaSourcing.ts"), "utf8");
-const MEMORY_SRC = fs.readFileSync(path.join(__dirname, "visualSearchMemory.ts"), "utf8");
 const BUDGET_SRC = fs.readFileSync(path.join(__dirname, "globalResourceBudget.ts"), "utf8");
 
 const ledger = () => new VisualSourceLedger({ renderId: "test", videoId: 536 });
@@ -160,68 +153,6 @@ describe("RONDE 86 §C — the curated failure route registers what failed", () 
 
 /* ═════════════ §D — the search memory stops flooding the pool ═════════════ */
 
-describe("RONDE 86 §D — search-memory writes are bounded, batched and de-duplicated", () => {
-  beforeEach(() => resetVisualSearchMemoryQueue());
-  afterEach(() => resetVisualSearchMemoryQueue());
-
-  it("TEST 19 — 248 dead ends no longer become 248 un-awaited inserts", () => {
-    // Render 536's exact burst, against a pool whose queueLimit is 100.
-    const searchedKeys: string[] = [];
-    for (let i = 0; i < 248; i++) searchedKeys.push(`pexels|query number ${i}`);
-    recordSearchMisses({
-      subject: "Adolf Hitler",
-      subjectType: "person",
-      searchedKeys,
-      adoptedByProvider: new Map(),
-    });
-    // Everything is queued, nothing is in flight per row: the drain releases at most
-    // SEARCH_MEMORY_DB_CONCURRENCY statements at a time.
-    expect(MEMORY_SRC).toContain("const wave: Array<Promise<void>> = [];");
-    expect(MEMORY_SRC).toContain("await Promise.all(wave);");
-    expect(MEMORY_SRC).not.toContain("void recordVisualSearchMemory({");
-  });
-
-  it("TEST 20 — a repeated (entity, source, query) is written once, not once per sighting", () => {
-    expect(enqueueVisualSearchMemory({
-      entity: "Adolf Hitler", entityType: "person", query: "hitler bunker", source: "pexels", success: false,
-    })).toBe(true);
-    // Same triple, different spelling and casing — canonicalEntityKey collapses them, and the
-    // database collapses them too, so sending it twice is pool pressure for no information.
-    expect(enqueueVisualSearchMemory({
-      entity: "  adolf   hitler ", entityType: "person", query: "hitler bunker", source: "PEXELS", success: false,
-    })).toBe(false);
-    expect(visualSearchMemoryQueueStats().deduped).toBe(1);
-  });
-
-  it("TEST 21 — the queue has a ceiling, and says when it hit one", () => {
-    expect(MEMORY_SRC).toContain("const SEARCH_MEMORY_QUEUE_MAX = 5_000;");
-    expect(MEMORY_SRC).toContain("droppedForBackpressure += 1;");
-    // Backpressure is reported, never silent — the failure mode this round exists to end.
-    expect(MEMORY_SRC).toContain("dropped for backpressure");
-  });
-
-  it("TEST 22 — concurrency and batch size are bounded and configurable", () => {
-    const prev = { c: process.env.SEARCH_MEMORY_DB_CONCURRENCY, b: process.env.SEARCH_MEMORY_BATCH_SIZE };
-    try {
-      expect(MEMORY_SRC).toContain('process.env.SEARCH_MEMORY_DB_CONCURRENCY');
-      expect(MEMORY_SRC).toContain('process.env.SEARCH_MEMORY_BATCH_SIZE');
-      // The defaults must stay well under the pool's queueLimit of 100 even with several renders.
-      expect(MEMORY_SRC).toContain("return 2;");
-      expect(MEMORY_SRC).toContain("return 50;");
-    } finally {
-      if (prev.c === undefined) delete process.env.SEARCH_MEMORY_DB_CONCURRENCY;
-      if (prev.b === undefined) delete process.env.SEARCH_MEMORY_BATCH_SIZE;
-    }
-  });
-
-  it("TEST 23 — a miss still never downgrades a proven success", () => {
-    // The batched writer must keep recordVisualSearchMemory's own rule.
-    const idx = MEMORY_SRC.indexOf("async function writeSearchMemoryBatch(");
-    const body = MEMORY_SRC.slice(idx, MEMORY_SRC.indexOf("\n}", MEMORY_SRC.indexOf("for (const row of individual)", idx)));
-    expect(body).toContain("usageCount: sql`${visualSearchMemory.usageCount} + 1`");
-    expect(body, "the batch must not write a success verdict at all").not.toMatch(/set:\s*\{[^}]*success:/);
-  });
-});
 
 /* ═════════════ §E — the funnel has numbers ═════════════ */
 

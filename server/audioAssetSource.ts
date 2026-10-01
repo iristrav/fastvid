@@ -47,45 +47,6 @@ export type AmbientRole =
   | "room" | "city" | "street" | "nature" | "wind" | "rain"
   | "crowd" | "battlefield" | "archive" | "office";
 
-/**
- * Semantic role → the catalog category that actually holds a recording for it.
- *
- * A `null` means the vocabulary has the word and the catalog has no sound: the request is
- * ANSWERABLE ("we know what you mean") but not FULFILLABLE ("we have nothing to play"). Those are
- * different failures and the report says which one happened.
- */
-export const SFX_TO_CATEGORY: Readonly<Record<SfxRole, SoundCategoryId | null>> = {
-  impact: "metal_clang",
-  hit: "metal_clang",
-  crowd: "crowd",
-  camera: "camera_shutter",
-  shutter: "camera_shutter",
-  ambience: "city",
-  /**
-   * No recording in the catalog. A whoosh and a riser are synthesised transitions rather than
-   * field recordings, and the catalog is a field-recording library — so these are honestly
-   * unavailable rather than approximated with something that is not them.
-   */
-  whoosh: null,
-  riser: null,
-  click: null,
-  foley: null,
-  explosion: null,
-};
-
-export const AMBIENT_TO_CATEGORY: Readonly<Record<AmbientRole, SoundCategoryId | null>> = {
-  city: "city",
-  street: "traffic",
-  nature: "forest",
-  wind: "wind",
-  rain: "rain",
-  crowd: "crowd",
-  office: "factory",
-  room: null,
-  battlefield: null,
-  archive: null,
-};
-
 /* ═══════════════════════ resolving a role to a real asset ═══════════════════════ */
 
 export type AudioAssetLookup =
@@ -195,20 +156,6 @@ export function resolveSoundEffect(
   return { ok: false, reason: `SFX_NOT_AVAILABLE "${soundType}": ${found.reason}` };
 }
 
-export function resolveSfx(role: SfxRole, variantIndex = 0): AudioAssetLookup {
-  const category = SFX_TO_CATEGORY[role];
-  const found = resolveCatalogSound(category ?? null, variantIndex);
-  if (found.ok) return found;
-  return { ok: false, reason: `asset_unavailable sfx "${role}": ${found.reason}` };
-}
-
-export function resolveAmbient(role: AmbientRole, variantIndex = 0): AudioAssetLookup {
-  const category = AMBIENT_TO_CATEGORY[role];
-  const found = resolveCatalogSound(category ?? null, variantIndex);
-  if (found.ok) return found;
-  return { ok: false, reason: `asset_unavailable ambient "${role}": ${found.reason}` };
-}
-
 /* ═══════════════════════ §16 — music ═══════════════════════ */
 
 export type MusicMood =
@@ -247,53 +194,3 @@ export interface MusicSource {
   resolve(request: MusicRequest): AudioAssetLookup;
 }
 
-/**
- * The music FastVid actually has today: a synthesised bed.
- *
- * It answers every request and honours none of them, and it says so. `mood` and `energy` are
- * carried into the identity's title so a render log shows what was ASKED for next to what was
- * delivered — which is the information somebody needs to decide whether a real library is worth
- * buying.
- */
-export class ProceduralMusicSource implements MusicSource {
-  readonly id = "procedural_sine_bed";
-
-  supports(): boolean {
-    return true;
-  }
-
-  resolve(request: MusicRequest): AudioAssetLookup {
-    return {
-      ok: true,
-      label: `synthesised bed (mood "${request.mood}" and energy "${request.energy}" not honoured)`,
-      identity: {
-        /**
-         * `provider: "procedural"` is deliberate and important. It is not a real provider, and it
-         * must never be mistaken for one — a rehydrator that saw a provider name it recognised
-         * would go looking for a file that was never downloaded. It says: this audio is generated
-         * at render time from parameters, and re-generating it is how it comes back.
-         */
-        provider: "procedural",
-        providerAssetId: `sine_bed_${request.durationSec.toFixed(0)}s`,
-        title: "Generated background bed",
-      },
-    };
-  }
-}
-
-/**
- * What the render log should say about the music it used.
- *
- * §20's rule applied to audio: a bed that ignored the requested mood is a downgrade, and a
- * downgrade is never silent.
- */
-export function formatMusicChoice(source: MusicSource, request: MusicRequest, found: AudioAssetLookup): string {
-  if (!found.ok) {
-    return `[Audio] music asset_unavailable mood=${request.mood} energy=${request.energy} — ${found.reason}`;
-  }
-  const honoured = source.id !== "procedural_sine_bed";
-  return (
-    `[Audio] music source=${source.id} mood=${request.mood} energy=${request.energy} ` +
-    `provider=${found.identity.provider} moodHonoured=${honoured}`
-  );
-}

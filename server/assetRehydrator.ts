@@ -94,10 +94,6 @@ export type RehydrationFailure = {
 
 export type RehydrationResult = RehydratedAsset | RehydrationFailure;
 
-export function rehydrationSucceeded(r: RehydrationResult): r is RehydratedAsset {
-  return r.status === "ok";
-}
-
 /* ═══════════════════════ providers ═══════════════════════ */
 
 /**

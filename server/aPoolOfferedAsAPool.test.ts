@@ -140,12 +140,10 @@ describe("4. the two loops offer their list instead of walking it", () => {
   const singleCandidateCallIn = (block: string): RegExpMatchArray[] =>
     [...codeOnly(block).matchAll(/adoptClip\(\s*\[\s*[a-zA-Z]+\.path\s*\]/g)];
 
-    it("the celebrity route offers its sorted list, not one candidate", () => {
-    const at = PIPE.indexOf("function adoptBestCelebrityClip");
-    expect(at).toBeGreaterThan(-1);
-    const block = PIPE.slice(at, at + 3600);
-    expect(singleCandidateCallIn(block)).toHaveLength(0);
-    expect(block).toContain("sorted.map((c) => c.path)");
+    it("the person route offers its list in the ONE pool — it has no adoption of its own", () => {
+    /** Code audit P3: the person's archive footage joins the pool the beat's one adoptClip ranks. */
+    expect(PIPE).not.toContain("function adoptBestCelebrityClip");
+    expect(PIPE).toContain("const candidates = [...(ytCandidates ?? []), ...(pool ?? []), ...(personPool ?? [])];");
   });
 
   /**
@@ -174,7 +172,7 @@ describe("6. nothing was loosened to achieve this", () => {
 
   it("and the vision gate is still required", () => {
     const gate = readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
-    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).not.toContain("ENABLE_BEAT_IMAGE_RELEVANCE_GATE");
     expect(gate).toContain("MAX_JUDGEMENTS_PER_BEAT");
   });
 });

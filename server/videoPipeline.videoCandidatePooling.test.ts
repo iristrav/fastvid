@@ -78,9 +78,10 @@ function extractFunctionSource(fnName: string): string {
 
 describe("Test 1 — multiple video providers can supply candidates for the same beat", () => {
   /** VIDEO 619 removed nara, flickr, sepiasearch, vimeo, media_ccc and nasa: none delivered to a film. */
-  it("fetchHistoricalBeatVideo's tier loop iterates HISTORICAL_SOURCE_TIER_ORDER (internet_archive, youtube_cc, wikimedia)", async () => {
+  it("fetchHistoricalBeatVideo's tier loop iterates HISTORICAL_SOURCE_TIER_ORDER (internet_archive, wikimedia)", async () => {
     const { HISTORICAL_SOURCE_TIER_ORDER } = await freshPipeline();
-    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual(["internet_archive", "youtube_cc", "wikimedia"]);
+    /** Code audit P2/P12: YouTube is asked only by the beat's YouTube turn, never by the cascade. */
+    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual(["internet_archive", "wikimedia"]);
   }, 30_000); // first freshPipeline() import of the whole videoPipeline.ts module is slow (cold ffmpeg-binary detection etc.) when this file runs in isolation
 });
 
@@ -190,10 +191,11 @@ describe("Test 11 — the pool stays bounded to a maximum of 5", () => {
 });
 
 describe("Test 12 — existing provider gates stay active", () => {
-  it("fetchHistoricalBeatVideo still gates archival/youtube behind the same conditions as before pooling", () => {
+  it("the cascade still gates archival behind the same condition, and has no YouTube gate left to keep", () => {
     const src = extractFunctionSource("gatherHistoricalBeatVideoPoolInner");
     expect(src).toContain("dedup.perf.enableArchival");
-    expect(src).toContain("youtubeReady");
+    /** Code audit: YouTube left the cascade; its gate lives with the beat's YouTube turn. */
+    expect(src).not.toContain("youtubeReady");
   });
 });
 

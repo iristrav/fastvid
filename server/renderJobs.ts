@@ -31,40 +31,11 @@
 
 export type RenderJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
-export const TERMINAL_STATUSES: ReadonlySet<RenderJobStatus> = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-]);
-
 /** A job in one of these is occupying the video: another render may not start (§7). */
 export const ACTIVE_STATUSES: ReadonlySet<RenderJobStatus> = new Set(["queued", "running"]);
 
 export function renderJobIsActive(status: RenderJobStatus): boolean {
   return ACTIVE_STATUSES.has(status);
-}
-
-export function renderJobIsTerminal(status: RenderJobStatus): boolean {
-  return TERMINAL_STATUSES.has(status);
-}
-
-/**
- * Legal transitions. Everything not listed is refused rather than quietly allowed.
- *
- * `queued → cancelled` and `running → cancelled` are both legal because a person may give up at
- * either point. Nothing leaves a terminal status: a completed job that could go back to running
- * would make "which render produced this file" unanswerable.
- */
-const ALLOWED_TRANSITIONS: Readonly<Record<RenderJobStatus, ReadonlyArray<RenderJobStatus>>> = {
-  queued: ["running", "cancelled", "failed"],
-  running: ["completed", "failed", "cancelled"],
-  completed: [],
-  failed: [],
-  cancelled: [],
-};
-
-export function canTransition(from: RenderJobStatus, to: RenderJobStatus): boolean {
-  return ALLOWED_TRANSITIONS[from].includes(to);
 }
 
 /* ═══════════════════════ §10 — progress that is not invented ═══════════════════════ */

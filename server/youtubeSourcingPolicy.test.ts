@@ -155,16 +155,19 @@ describe("everything a candidate has to survive is untouched", () => {
     expect(PIPELINE).toContain("finalSay: true,");
   });
 
-  it("the relevance floor and the person gate still run on every row", () => {
-    expect(PIPELINE).toContain("if (requiredPersonName && !textMentionsPersonName(hay, requiredPersonName))");
-    expect(PIPELINE).toContain("scoreVisualRelevance(hay, relevanceKeywords)");
+  it("the relevance floor still runs on every row", () => {
+    /** Rows come from the pool only (code audit P2); the person is decided by the pool's look. */
+    expect(PIPELINE).toContain("if (relevanceKeywords.length > 0 && row.rel < minRelevanceScore) {");
   });
 
   it("an unfiltered result still claims NO licence — the policy widens retrieval, not the record", () => {
     const src = read("youtubePoolSource.ts");
     expect(src).toContain('license: mode === "any" ? null : mode');
     expect(src).toContain('...(mode === "creative_common" ? { reported: "creativeCommon" } : {})');
-    expect(PIPELINE).toContain("license: youtubeLicenseMetadata(pass.license),");
+    expect(PIPELINE).toContain("license: youtubePoolRowLicense(row),");
+    expect(PIPELINE).not.toContain("youtubeLicenseMetadata(pass.license)");
+    const pool = read("youtubeVideoPoolProduction.ts");
+    expect(pool).toContain("...(v.status?.license ? { license: v.status.license } : {})");
   });
 
   it("the clip still gets its transform on adopt, and its lineage entry", () => {

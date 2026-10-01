@@ -193,9 +193,9 @@ describe("RONDE 68 TEST 6/7/8 — nothing was loosened to achieve this", () => {
   });
 
   it("TEST 7 — the candidate caps are untouched", () => {
-    const src = SRC();
     // maxVisualCandidatesPerBeatTry is read in curatedMediaSourcing; the pipeline's curated-only reader is gone.
-    expect(src).toContain("MAX_FUNNEL_CANDIDATES_TO_SCORE");
+    const curated = require("fs").readFileSync(require("path").join(__dirname, "curatedMediaSourcing.ts"), "utf8");
+    expect(curated).toContain("const maxTries = maxVisualCandidatesPerBeatTry();");
   });
 
   it("TEST 8 — no request lost its limiter or its timeout", () => {

@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
 
-import { formatGapPersonLine, gapRowLooksLikePerson, personNameForGap } from "./archiveGapNames";
+import { gapRowLooksLikePerson, personNameForGap } from "./archiveGapNames";
 
 const src = (f: string) => fs.readFileSync(path.join(process.cwd(), "server", f), "utf8");
 
@@ -47,14 +47,5 @@ describe("RONDE 127 — the existing rows are filtered, not deleted", () => {
     expect(gaps).toContain("limit(Math.min(1000, limit * 10))");
     // clearArchiveContentGaps is still the only thing that deletes.
     expect(gaps).toContain("db.delete(archiveContentGaps)");
-  });
-});
-
-describe("RONDE 127 — both recording routes are filtered", () => {
-
-  it("the admin line says what it means", () => {
-    expect(formatGapPersonLine("low-coverage:Hermann Göring", 7)).toBe(
-      "Hermann Göring (7x gevraagd, geen beeld in archief)"
-    );
   });
 });

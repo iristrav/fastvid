@@ -185,6 +185,7 @@ export async function productionMusicCatalogue(now: number = Date.now()): Promis
   return cachedPool ? catalogueFromPool("freesound-cc0", cachedPool.pool) : EMPTY_MUSIC_CATALOGUE;
 }
 
+
 /** For tests. */
 export function resetMusicPoolCache(): void {
   cachedPool = null;

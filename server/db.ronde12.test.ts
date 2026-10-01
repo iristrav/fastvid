@@ -57,9 +57,11 @@ describe("RONDE 12 — deleteMediaArchiveAssets clears dependent rows before the
   });
 
   it("still chunks and dedupes the ids exactly as before", () => {
-    expect(body).toContain("const uniqueIds = [...new Set(ids)];");
+    /** Code audit P15: assets a stored film uses are switched off first; the rest are deleted. */
+    expect(body).toContain("const requested = [...new Set(ids)];");
+    expect(body).toContain("const uniqueIds = requested.filter((id) => !inUse.has(id));");
     expect(body).toContain("const chunkSize = 500;");
     expect(body).toContain("const chunk = uniqueIds.slice(i, i + chunkSize);");
-    expect(body).toContain("return uniqueIds.length;");
+    expect(body).toContain("return requested.length;");
   });
 });

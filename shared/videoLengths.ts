@@ -75,13 +75,6 @@ export function videoLengthAllowedForRole(
   return role != null && required.includes(role);
 }
 
-/** The lengths this role may pick — what the frontend should offer. */
-export function allowedVideoLengthsForRole(
-  role: string | null | undefined
-): ReadonlyArray<VideoLength> {
-  return VIDEO_LENGTH_VALUES.filter((v) => videoLengthAllowedForRole(v, role));
-}
-
 /** Target on-screen duration (minutes) for pipeline budget scaling. Uses upper bound of each bucket. */
 export function targetVideoDurationMinutes(raw: string | null | undefined): number {
   switch (normalizeVideoLength(raw)) {

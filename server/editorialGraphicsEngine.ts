@@ -167,12 +167,9 @@ const MAP_KW      = /\b(map|country|countries|city|cities|route|invasion|migrati
 const TIMELINE_KW = /\b(timeline|chronology|history|period|era|century|decade|\d{4}.*\d{4}|from.*to.*year|war.*began|started in|ended in)\b/i;
 const COUNTER_KW  = /\b(\d[\d,]*\s*(?:million|billion|thousand|%|percent|soldiers|troops|casualties|doden|mensen|dollars|euros|km|miles))\b/i;
 const PERSON_KW   = /\b(President|Prime Minister|Premier|General|Admiral|Chancellor|Emperor|King|Queen|CEO|Director|Minister|Führer|Tsar|Marshal)\s+[A-Z]/;
-const QUOTE_KW    = /[""]([^"""]{15,180})[""]|"\s*([^"]{15,180})\s*"/;
 const COMPARE_KW  = /\b(vs\.?|versus|compared to|larger than|smaller than|more than|less than|double|half|twice|triple)\b/i;
 const STAT_KW     = /\b(\d+(?:[.,]\d+)?)\s*(%|percent|procent|million|billion|thousand|km|miles|meters)\b/i;
 const BULLET_KW   = /\b(first(?:ly)?|second(?:ly)?|third(?:ly)?|four(?:th)?|five\b|step \d|phase \d|reason\b|1\.|2\.|3\.)/i;
-const LOCATION_KW = /\bin (the )?([\w\s]{3,25}),?\s*((?:a )?\w+ (?:city|country|capital|region|province|state|island|peninsula|nation))?/i;
-
 export type GraphicDetectionResult = {
   shouldUseGraphic: boolean;
   plan: GraphicPlan | null;

@@ -26,7 +26,6 @@ import { judgeOnScreenText } from "./visualJudge";
 import { cutLocalVideoIntoShots, productionLocalShotCutter, shotSourceUrl, type LocalShotCutter } from "./archiveShotPieces";
 import * as os from "os";
 import { isArticleScreenshotFile } from "./articleScreenshot";
-import { recordVisualSearchMemory, type ClassifiedEntity } from "./visualSearchMemory";
 import { Semaphore } from "./_core/semaphore";
 import type { InsertMediaArchiveAsset } from "../drizzle/schema";
 
@@ -77,7 +76,7 @@ export type IngestMetadata = {
   /** The specific query variant that actually matched (may equal originalQuery). */
   matchedQuery?: string;
   /** Recognized entities this clip is relevant to, e.g. ["Justin Bieber"]. */
-  entities?: ClassifiedEntity[];
+  entities?: Array<{ type: "person" | "organization" | "place" | "event" | "topic"; value: string }>;
   /** General topics, e.g. ["music", "pop culture"]. */
   topics?: string[];
   /**
@@ -218,60 +217,6 @@ function qualityGateRefusal(localPath: string, metadata: IngestMetadata): Ingest
     }
   }
   return null;
-}
-
-// ─── F3-26: query/entity/source learning loop ─────────────────────────────────
-
-/** Records one visual-search-memory row per recognized entity (or a single "topic" row when no
- *  entities were recognized) so a future beat about the same entity/topic can reuse the query +
- *  source that worked here. Best-effort — never throws. */
-async function recordSearchMemoryForIngestion(
-  metadata: IngestMetadata,
-  assetId: number,
-  success: boolean
-): Promise<void> {
-  const query = metadata.matchedQuery ?? metadata.originalQuery;
-  const source = metadata.sourcePlatform;
-  if (!query || !source) return; // nothing to remember without a query + source
-
-  const entities = metadata.entities && metadata.entities.length > 0
-    ? metadata.entities
-    : metadata.topics && metadata.topics.length > 0
-      ? metadata.topics.map((t) => ({ type: "topic" as const, value: t }))
-      : [];
-  if (entities.length === 0) return;
-
-  await Promise.all(
-    entities.map((e) =>
-      recordVisualSearchMemory({
-        entity: e.value,
-        entityType: e.type,
-        query,
-        source,
-        sourceUrl: metadata.sourceUrl,
-        assetId,
-        success,
-      })
-    )
-  );
-}
-
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-/**
- * Ingests a locally available external clip into the archive.
- * Runs quality gate → uploads to R2 → persists DB record → indexes embedding.
- * Returns the new assetId on success, null on any failure.
- * Never throws.
- */
-export async function ingestExternalClipToArchive(
-  localPath: string,
-  metadata: IngestMetadata
-): Promise<IngestResult | null> {
-  const outcome = await ingestExternalClipToArchiveWithReason(localPath, metadata);
-  if (outcome.status !== "ingested") return null;
-  const { status: _ignored, ...result } = outcome;
-  return result;
 }
 
 /**
@@ -476,7 +421,6 @@ async function ingestExternalClipToArchiveInner(
           `[Ingestion] Source already archived — reusing assetId=${existing.id} instead of re-ingesting ` +
           `(${metadata.sourceUrl})`
         );
-        await recordSearchMemoryForIngestion(metadata, existing.id, true);
         return {
           status: "ingested",
           assetId: existing.id,
@@ -644,9 +588,6 @@ async function ingestExternalClipToArchiveInner(
       sourceNote: metadata.sourceNote,
     }).catch(() => {});
 
-    // F3-26: remember which query/entity/source combination found this asset — best-effort,
-    // never blocks or fails the ingestion itself.
-    void recordSearchMemoryForIngestion(metadata, assetId, true).catch(() => {});
 
 
     console.log(

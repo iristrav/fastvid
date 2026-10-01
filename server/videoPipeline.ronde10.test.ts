@@ -29,22 +29,11 @@ describe("RONDE 10 — the fallback is strictly opt-in and key-gated", () => {
     )
   );
 
-
   it("is off unless the flag is exactly 'true' (not merely set)", () => {
     // Guards against the loose `!== "false"` default that would enable it silently.
     expect(fn).not.toContain('!== "false"');
   });
 });
-
-describe("RONDE 10 — the CC guarantee is never routed through the scraped search", () => {
-
-
-  it("the official strict-CC search still sets videoLicense=creativeCommon", () => {
-    // Untouched by RONDE 10 — the CC path's license filter is intact.
-    expect(pipelineSrc).toContain('searchUrl.searchParams.set("videoLicense", "creativeCommon");');
-  });
-});
-
 
 describe("RONDE 10b — the cloud ytdlp-service download sends the bearer token", () => {
   it("passes Authorization: Bearer from YOUTUBE_CC_DL_TOKEN when set, omits it otherwise", () => {

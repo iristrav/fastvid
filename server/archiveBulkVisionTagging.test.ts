@@ -41,12 +41,9 @@ import {
   applySharedAiToClipFields,
 } from "./archiveAssetTagging";
 import { getMediaArchiveAssetById, updateMediaArchiveAsset } from "./db";
-import { autoTitleArchiveAssets, resolveAutoTitleAssetIds } from "./archiveBulkVisionTagging";
+import { autoTitleArchiveAssets } from "./archiveBulkVisionTagging";
 
 describe("archiveBulkVisionTagging", () => {
-  it("resolveAutoTitleAssetIds is exported", () => {
-    expect(typeof resolveAutoTitleAssetIds).toBe("function");
-  });
 
   describe("autoTitleArchiveAssets", () => {
     beforeEach(() => {

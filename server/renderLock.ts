@@ -101,9 +101,6 @@ export type RenderLockStore = {
  */
 export const RENDER_LOCK_LEASE_MS = 40 * 60_000;
 
-/** How often a live render should push its lease out. Comfortably inside the lease. */
-export const RENDER_LOCK_HEARTBEAT_MS = 5 * 60_000;
-
 /**
  * Take the lock for this video, or say who has it.
  *
@@ -197,21 +194,6 @@ export async function releaseRenderLock(
   productionRenderId: string
 ): Promise<boolean> {
   return store.releaseOwn(videoId, productionRenderId);
-}
-
-/** Push this render's lease out. Holder-scoped for the same reason release is. */
-export async function extendRenderLock(
-  store: RenderLockStore,
-  videoId: number,
-  productionRenderId: string,
-  opts?: { leaseMs?: number; now?: Date }
-): Promise<boolean> {
-  const now = opts?.now ?? new Date();
-  return store.extendOwn(
-    videoId,
-    productionRenderId,
-    new Date(now.getTime() + (opts?.leaseMs ?? RENDER_LOCK_LEASE_MS))
-  );
 }
 
 /* ═══════════════════════ the lines a render leaves behind ═══════════════════════ */

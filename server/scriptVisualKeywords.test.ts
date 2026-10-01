@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRelevanceKeywordsFromIntent, buildSentenceIntentMap, buildSentenceKeywordMap, beatVisualSearchSubjects, extractNarrationSentences, fallbackVisualIntent, fallbackVisualKeyword, intentSearchQueries, lookupBeatVisualIntent, sanitizeVisualKeyword, mergeVisualIntentsIntoMetadata, mergeVisualKeywordsIntoMetadata, normalizeSentenceKey, parseVisualIntentsFromMetadata, beatVisualSearchSubjects, hydrateBeatScriptVisuals, resolveBeatScriptVisualAnchor, splitBeatSentences } from "./scriptVisualKeywords";
+import { buildSentenceIntentMap, beatVisualSearchSubjects, extractNarrationSentences, fallbackVisualIntent, intentSearchQueries, sanitizeVisualKeyword, mergeVisualIntentsIntoMetadata, mergeVisualKeywordsIntoMetadata, normalizeSentenceKey, parseVisualIntentsFromMetadata, beatVisualSearchSubjects, hydrateBeatScriptVisuals, resolveBeatScriptVisualAnchor, splitBeatSentences } from "./scriptVisualKeywords";
 
 describe("scriptVisualKeywords", () => {
   it("extracts narration sentences from markdown script", () => {
@@ -24,16 +24,6 @@ Het team bespreekt de resultaten tijdens een vergadering.`;
     expect(sanitizeVisualKeyword("success")).toBe("");
     expect(sanitizeVisualKeyword("growth strategy")).toBe("");
     expect(sanitizeVisualKeyword("online shopping smartphone")).toBe("online shopping smartphone");
-  });
-
-  it("builds lookup map with normalized sentence keys", () => {
-    const entries = [
-      { sentence: "De klant bekijkt producten.", keyword: "online shopping smartphone" },
-    ];
-    const map = buildSentenceKeywordMap(entries);
-    expect(map.get(normalizeSentenceKey("  de klant bekijkt producten. "))).toBe(
-      "online shopping smartphone"
-    );
   });
 
   it("merges keywords into metadata without dropping existing fields", () => {
@@ -127,38 +117,6 @@ Het team bespreekt de resultaten tijdens een vergadering.`;
     const intent = fallbackVisualIntent("Het bedrijf groeide snel door strategie.");
     expect(intent.primary_keyword).not.toMatch(/^(success|growth|strategy|bedrijf)$/i);
     expect(intent.primary_keyword.length).toBeGreaterThan(5);
-  });
-
-  it("picks dominant intent when beat merges multiple sentences", () => {
-    const intentMap = buildSentenceIntentMap([
-      {
-        sentence: "Het weer was grijs.",
-        visual_intent: "cloudy grey sky over city",
-        primary_keyword: "cloudy sky weather",
-        secondary_keyword: "overcast city skyline",
-        fallback_keyword: "grey weather broll",
-        scene_type: "city",
-        priority_subject: "sky",
-      },
-      {
-        sentence: "In Amsterdam fietsten duizenden mensen door de regen.",
-        visual_intent: "cyclists riding through rainy amsterdam street",
-        primary_keyword: "amsterdam cyclists rain",
-        secondary_keyword: "people cycling wet street",
-        fallback_keyword: "netherlands cycling street",
-        scene_type: "street",
-        priority_subject: "cyclists",
-      },
-    ]);
-    const merged =
-      "Het weer was grijs. In Amsterdam fietsten duizenden mensen door de regen.";
-    expect(lookupBeatVisualIntent(merged, intentMap)?.primary_keyword).toBe("amsterdam cyclists rain");
-  });
-
-  it("buildRelevanceKeywordsFromIntent includes intent fields and beat text", () => {
-    const intent = fallbackVisualIntent("De ondernemer werkt laat door aan zijn webshop.");
-    const keywords = buildRelevanceKeywordsFromIntent(intent, intent.sentence, ["shop"], "Test title");
-    expect(keywords).toEqual(expect.arrayContaining([intent.primary_keyword, "ondernemer", "shop"]));
   });
 
   it("splitBeatSentences mirrors pipeline sentence splitting", () => {

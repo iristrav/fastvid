@@ -101,17 +101,17 @@ describe("RONDE 9.2 — tags describe what is SHOWN, never what is SAID", () => 
 // ─── 4. Negative curated scores are mismatches, not "no signal" ──────────────────────────────
 
 describe("RONDE 9.4 — a negative curated score can never be adopted", () => {
-  it("the primary pool floors only true no-signal (score === 0) to 1", () => {
-    expect(curatedSrc).toContain(
-      "const effectiveScore = score > 0 ? score : score < 0 || metadataBlocks ? 0 : 1;"
-    );
+  it("the primary pool asks the VisualJudge, and floors only what it accepted (score 0) to 1", () => {
+    /** Code audit P5: the refusal of a negative score is the VisualJudge's, not the matcher's. */
+    const at = curatedSrc.indexOf('if (judgeArchiveAssetScore(score).decision === "REJECT") continue;');
+    expect(at).toBeGreaterThan(-1);
+    expect(curatedSrc.slice(at, at + 300)).toContain("score: Math.max(score, 1),");
   });
 
-  it("the topic-fallback pool skips negative-scored assets entirely", () => {
-    const idx = curatedSrc.indexOf("never enters the fallback pool");
-    expect(idx).toBeGreaterThan(-1);
-    const block = curatedSrc.slice(idx, idx + 300);
-    expect(block).toContain("if (score < 0) continue;");
+  it("the topic-fallback pool asks the same judge, so a negative score never enters it", () => {
+    const at = curatedSrc.indexOf("fallback.push({ asset, score: Math.max(score, 1)");
+    expect(at).toBeGreaterThan(-1);
+    expect(curatedSrc.slice(at - 200, at)).toContain('if (judgeArchiveAssetScore(score).decision === "REJECT") continue;');
   });
 });
 

@@ -79,10 +79,6 @@ function bareMime(mimeType: string): string {
   return mimeType.trim().toLowerCase().split(";")[0]!.trim();
 }
 
-export function isVisionSupportedImageMime(mimeType: string): boolean {
-  return VISION_SUPPORTED_IMAGE_MIMES.has(bareMime(mimeType));
-}
-
 export function imageMimeToDataUrl(buffer: Buffer, mimeType: string): string {
   // Only ever emit a label the vision endpoints know. Callers that may hold an exotic format
   // must run it through prepareImageForVision first — this is the last line of defence, and it
@@ -349,68 +345,6 @@ async function extractVideoPreviewJpegs(
   return frames;
 }
 
-/** Preview frames from a source segment (for relevance / overlay checks). */
-export async function extractArchiveSegmentPreviewJpegs(
-  videoPath: string,
-  startSec: number,
-  endSec: number,
-  fastMode = false
-): Promise<Buffer[]> {
-  if (!fs.existsSync(videoPath)) return [];
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-seg-preview-"));
-  try {
-    return await extractVideoPreviewJpegs(
-      videoPath,
-      workDir,
-      sampleTimesInRange(startSec, endSec, fastMode)
-    );
-  } finally {
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  }
-}
-
-function sampleTimesInRange(startSec: number, endSec: number, fastMode = false): number[] {
-  const dur = endSec - startSec;
-  if (dur <= 0.25) return [startSec + dur * 0.5];
-  if (fastMode) return [startSec + dur * 0.5];
-  return [startSec + dur * 0.35, startSec + dur * 0.65];
-}
-
-/** Check a source-video segment before extract (start/end in seconds). */
-export async function archiveSegmentHasOnScreenText(
-  videoPath: string,
-  startSec: number,
-  endSec: number,
-  opts?: { clipCount?: number; fastMode?: boolean }
-): Promise<boolean> {
-  if (opts?.clipCount != null && !shouldRunArchiveOverlayFilter(opts.clipCount)) return false;
-  if (!archiveClipOverlayFilterEnabled()) return false;
-  if (!fs.existsSync(videoPath)) return false;
-
-  const fastMode = opts?.fastMode ?? (opts?.clipCount != null && opts.clipCount > 40);
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-overlay-seg-"));
-  try {
-    const frames = await extractVideoPreviewJpegs(
-      videoPath,
-      workDir,
-      sampleTimesInRange(startSec, endSec, fastMode)
-    );
-    if (frames.length === 0) return false;
-    const dataUrls = frames.map((buf) => imageMimeToDataUrl(buf, "image/jpeg"));
-    /**
-     * RONDE 222 — this one keeps its fail-open, and keeps it explicitly.
-     *
-     * A segment check decides whether to trim around on-screen text before extracting. Nothing is
-     * written down and no permanent claim is made, so "nobody looked" behaving as "no text found"
-     * costs a trim that was not applied and nothing more. `=== true` says that in the code rather
-     * than relying on `null` being falsy.
-     */
-    return (await detectOnScreenTextInImages(dataUrls)) === true;
-  } finally {
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  }
-}
-
 /**
  * Returns true when clip should be skipped (on-screen text detected).
  * `media` accepts either an in-memory Buffer or a path to a file already on disk — for the video
@@ -466,11 +400,6 @@ export function resetOverlayBudget(): void {
 /** Test seam: clear the shared overlay memo between cases. */
 export function __resetOverlayVerdictCacheForTest(): void {
   resetOverlayBudget();
-}
-
-/** Vision calls actually spent since the last reset — for logging and tests. */
-export function overlayChecksSpent(): number {
-  return overlayChecksPerformed;
 }
 
 /**
@@ -660,22 +589,6 @@ export async function archiveClipBakedEditTextVerdict(
   } finally {
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
-}
-
-/**
- * The boolean the beat gate has always used: does this clip carry added text?
- *
- * `not_asked` collapses to `false` here, which is the fail-open the cascade depends on — an
- * unchecked clip is allowed rather than starving a beat. Nothing about that behaviour changes.
- * What changes is that a caller who cannot afford the collapse — ingestion, which writes the
- * answer down forever — can now ask for the verdict instead.
- */
-export async function archiveClipHasBakedEditText(
-  media: Buffer | string,
-  mimeType: string,
-  opts?: { clipCount?: number }
-): Promise<boolean> {
-  return (await archiveClipBakedEditTextVerdict(media, mimeType, opts)).verdict === "has_text";
 }
 
 async function probeVideoDurationSec(filePath: string): Promise<number> {

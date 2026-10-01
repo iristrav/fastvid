@@ -26,7 +26,6 @@ vi.setConfig({ testTimeout: 30_000 });
 // value written later is wiped again before the first assertion runs.
 process.env.SEARCH_GATE_STRICT = "false";
 
-
 // Visual Deduplication Patch: the same real media asset (same provider + same provider-native
 // ID, or the same canonical URL when a provider has no stable ID) must never be adopted twice
 // within a single video render, no matter which cascade/fallback route finds it.
@@ -183,57 +182,5 @@ describe("Visual dedup — (B) pre-download skip (fetchInternetArchiveClips)", (
     await fetchInternetArchiveClips("moon landing", 6, "/tmp", 0, 2, "", "", [], usedForADifferentAsset);
     const metadataCalls = nodeFetchMock.mock.calls.filter(([u]) => String(u).includes("/metadata/new-item-999"));
     expect(metadataCalls).toHaveLength(1);
-  });
-});
-
-// The NASA and NARA pre-download skips left with those providers (VIDEO 619). The same skip is
-// pinned on Internet Archive in "(B) pre-download skip (fetchInternetArchiveClips)" above.
-
-describe("Visual dedup — cross-cascade wiring in fetchHistoricalBeatVideo (Test 4/5/7, production call site)", () => {
-  beforeEach(() => nodeFetchMock.mockReset());
-
-  it("the internet_archive tier is skipped pre-download when dedup.usedContentKeys already holds that identifier's key (as a prior acceptance elsewhere in the same render would leave it)", async () => {
-    const { fetchHistoricalBeatVideo, createVisualDedupState, getPipelinePerfProfile, providerAssetKey } =
-      await freshPipeline();
-    const { buildMediaSearchIntent } = await import("./mediaResearchEngine");
-
-    nodeFetchMock.mockImplementation((url: string) => {
-      const u = String(url);
-      if (u.includes("advancedsearch.php")) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ response: { docs: [{ identifier: "shared-asset-1", title: "Shared reel" }] } }),
-        });
-      }
-      // Every other tier (YouTube/Wikimedia/etc.) is unconfigured in this test env and returns
-      // early without a network call, so archive.org's metadata endpoint is the only thing that
-      // would ever be reached next — must never happen once the identifier is already "used".
-      return Promise.resolve({ ok: false, status: 500 });
-    });
-
-    const dedup = createVisualDedupState(getPipelinePerfProfile("8-10"));
-    // Simulates: this exact asset was already ACCEPTED earlier this render (by adoptClip, via a
-    // different beat/cascade) — the real acceptance path adds this same key to usedContentKeys.
-    dedup.usedContentKeys.add(providerAssetKey("internet_archive", "shared-asset-1"));
-
-    const beat = { index: 0, text: "A documentary beat", searchQuery: "shared reel", powerWord: "", keywords: [] as string[], holdSec: 4 };
-    const scene = { index: 0, text: "scene", visualCue: "", pexelsQuery: "", aiImagePrompt: "", duration: 10 };
-    const intent = buildMediaSearchIntent({
-      beatText: beat.text,
-      searchQueries: [beat.searchQuery],
-      keywords: [],
-      primaryPerson: "",
-      persons: [],
-      videoTitle: "Test",
-      powerWord: "",
-      personTopicLock: false,
-      spaceTopic: false,
-      muskTopic: false,
-    });
-
-    await fetchHistoricalBeatVideo(beat as any, scene as any, "/tmp", scene.index, 4, dedup, intent, {}, "test");
-
-    const metadataCalls = nodeFetchMock.mock.calls.filter(([u]) => String(u).includes("/metadata/shared-asset-1"));
-    expect(metadataCalls).toHaveLength(0); // pre-download skip fired — no metadata/license/download spend
   });
 });

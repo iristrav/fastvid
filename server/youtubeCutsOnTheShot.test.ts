@@ -10,14 +10,7 @@ import {
   shotSegments,
   type YoutubeSourceFacts,
 } from "./youtubeShotLimit";
-import {
-  cutsWithTransitions,
-  gradualTransitionWindows,
-  parseFrameDifferences,
-  scanGradualTransitionsInFile,
-  scanReachedTheEnd,
-  scanTimeoutMs,
-} from "./youtubeSoftCuts";
+import { cutsWithTransitions, gradualTransitionWindows, scanGradualTransitionsInFile, scanReachedTheEnd, scanTimeoutMs } from "./youtubeSoftCuts";
 import { formatCutCheck, timelineEditPoints, unexpectedSceneChanges } from "./deliveredCutCheck";
 import type { ProjectTimeline, TimelineVideoClip } from "./projectTimeline";
 
@@ -122,25 +115,6 @@ describe("dissolves and fades are found, camera moves are not", () => {
   it("a single jump is a hard cut, left to the hard-cut pass", () => {
     const s = Array.from({ length: 40 }, (_, i) => ({ t: i / 10, score: i === 20 ? 90 : 0 }));
     expect(gradualTransitionWindows(s)).toEqual([]);
-  });
-
-  it("reads ffmpeg's metadata print, and turns windows into cut edges", () => {
-    const out = [
-      "frame:0 pts:1 pts_time:0.1",
-      "lavfi.signalstats.YAVG=2",
-      "frame:0 pts:1 pts_time:0.1",
-      "lavfi.signalstats.UAVG=6",
-      "frame:0 pts:1 pts_time:0.1",
-      "lavfi.signalstats.VAVG=4",
-      "frame:1 pts:2 pts_time:0.2",
-      "lavfi.signalstats.YAVG=0",
-      "frame:1 pts:2 pts_time:0.2",
-      "lavfi.signalstats.UAVG=0",
-      "frame:1 pts:2 pts_time:0.2",
-      "lavfi.signalstats.VAVG=0",
-    ].join("\n");
-    expect(parseFrameDifferences(out)).toEqual([{ t: 0.1, score: 7 }, { t: 0.2, score: 0 }]);
-    expect(cutsWithTransitions([5], [{ start: 2, end: 2.9 }])).toEqual([2, 2.9, 5]);
   });
 
   it("a scan that stopped early or failed is not a scan", () => {

@@ -1,41 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  extractBeatGeoPlaceTags,
-  extractPrimaryGeoSearchTag,
-  extractPrimaryVisualAnchor,
-  extractSceneSearchTags,
-  extractVisualSearchTags,
-  extractVoiceLabelTerms,
-  inferVideoVisualTopic,
-  isGeoWelcomeBeat,
-  buildGeoWelcomeVisualQueries,
-  isCyclingBeat,
-  buildCyclingVisualQueries,
-  isGeoStatBeat,
-  extractGeoStatFromBeat,
-  buildGeoStatVisualQueries,
-  isCarBeat,
-  buildCarVisualQueries,
-  assetShowsCars,
-  isUrbanPlanningBeat,
-  buildUrbanPlanningVisualQueries,
-  assetShowsUrbanPlanning,
-  isInfrastructureBeat,
-  buildInfrastructureVisualQueries,
-  assetShowsInfrastructure,
-  isGovernmentBeat,
-  buildGovernmentVisualQueries,
-  assetShowsGovernment,
-  assetShowsCycling,
-  isProtestBeat,
-  isProtestVisualHay,
-  isOffTopicProtestForBeat,
-  assetIsOffTopicProtest,
-  isWrongGeoForBeat,
-  isWwiiWarArchiveAsset,
-  termStartInBeat,
-  expandBeatTagsWithSynonyms,
-} from "./visualBeatTags";
+import { extractBeatGeoPlaceTags, extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor, extractSceneSearchTags, extractVisualSearchTags, inferVideoVisualTopic, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, buildCyclingVisualQueries, isGeoStatBeat, extractGeoStatFromBeat, isCarBeat, buildCarVisualQueries, assetShowsCars, isUrbanPlanningBeat, buildUrbanPlanningVisualQueries, assetShowsUrbanPlanning, isInfrastructureBeat, buildInfrastructureVisualQueries, assetShowsInfrastructure, isGovernmentBeat, buildGovernmentVisualQueries, assetShowsGovernment, assetShowsCycling, isWrongGeoForBeat, isWwiiWarArchiveAsset, expandBeatTagsWithSynonyms } from "./visualBeatTags";
 
 describe("visualBeatTags", () => {
   it("maps Duitsland to germany search tags", () => {
@@ -59,29 +23,6 @@ describe("visualBeatTags", () => {
       expect.arrayContaining(["bunker", "fuhrerbunker", "hitler bunker"])
     );
     expect(extractPrimaryVisualAnchor(text)).toBe("hitler bunker");
-  });
-
-  it("extracts place label with spoken match text (no person names as labels)", () => {
-    const terms = extractVoiceLabelTerms("Hitler trok naar Berlijn in 1933.");
-    const berlin = terms.find((t) => t.label.includes("BERLIJ"));
-    expect(berlin?.searchTags).toEqual(expect.arrayContaining(["berlin", "germany"]));
-    expect(berlin?.matchText?.toLowerCase()).toBe("berlijn");
-    expect(terms.some((t) => t.label.includes("HITLER"))).toBe(false);
-  });
-
-  it("does not surface stock slugs or title words as labels", () => {
-    const terms = extractVoiceLabelTerms("De situatie escaleerde snel.");
-    expect(terms.some((t) => t.label === "GERMANY")).toBe(false);
-    expect(terms.some((t) => t.label === "HITLER")).toBe(false);
-  });
-
-  it("times label when the place name is spoken later in the beat", () => {
-    const beatText = "Eerst was het rustig, maar in Duitsland veranderde alles snel.";
-    const beatStart = 4;
-    const beatDur = 8;
-    const start = termStartInBeat(beatText, "DUITSland", beatStart, beatDur, "Duitsland");
-    expect(start).toBeGreaterThan(beatStart + 2);
-    expect(start).toBeLessThan(beatStart + beatDur - 0.5);
   });
 
   it("detects geography urban topic from Netherlands vs US title", () => {
@@ -168,22 +109,6 @@ describe("visualBeatTags", () => {
     expect(assetShowsCycling({ title: "Charlotte skyline", tags: ["usa"] })).toBe(false);
   });
 
-  it("detects geo stat beats and shows percentage instead of country label", () => {
-    const text = "In America, only 1% of trips are by bike.";
-    expect(isGeoStatBeat(text)).toBe(true);
-    expect(extractGeoStatFromBeat(text)).toMatchObject({
-      statLabel: "1%",
-      statMatchText: "1%",
-    });
-    expect(buildGeoStatVisualQueries(text)).toEqual(
-      expect.arrayContaining(["united states city aerial video", "american skyline timelapse"])
-    );
-    const terms = extractVoiceLabelTerms(text);
-    expect(terms).toHaveLength(1);
-    expect(terms[0]?.label).toBe("1%");
-    expect(terms.some((t) => /AMERIKA|AMERICA/i.test(t.label))).toBe(false);
-  });
-
   it("detects car beats and builds traffic queries", () => {
     const text = "In Amerika rijden bijna alle mensen in auto's.";
     expect(isCarBeat(text)).toBe(true);
@@ -247,32 +172,6 @@ describe("visualBeatTags", () => {
     ).toBe(true);
     expect(assetShowsInfrastructure({ title: "Charlotte skyline", tags: ["usa"] }, text)).toBe(false);
     expect(isInfrastructureBeat("De infrastructuur van Nederland is uniek.")).toBe(true);
-  });
-
-  it("blocks protest visuals for America geo beats unless script mentions protests", () => {
-    const americaBeat = "In America, only 1% of trips are by bike.";
-    const protestHay = "people protesting in washington dc demonstration";
-    expect(isProtestBeat(americaBeat)).toBe(false);
-    expect(isProtestVisualHay(protestHay)).toBe(true);
-    expect(isOffTopicProtestForBeat(americaBeat, protestHay, "geography_urban")).toBe(true);
-    expect(
-      assetIsOffTopicProtest(
-        { title: "Protest march Washington", tags: ["protest", "demonstration", "usa"] },
-        americaBeat,
-        "geography_urban"
-      )
-    ).toBe(true);
-    expect(
-      assetIsOffTopicProtest(
-        { title: "New York skyline timelapse", tags: ["usa", "skyline", "city"] },
-        americaBeat,
-        "geography_urban"
-      )
-    ).toBe(false);
-
-    const protestBeat = "Thousands joined the protest in the capital.";
-    expect(isProtestBeat(protestBeat)).toBe(true);
-    expect(isOffTopicProtestForBeat(protestBeat, protestHay, "geography_urban")).toBe(false);
   });
 
   describe("expandBeatTagsWithSynonyms (Phase 10)", () => {

@@ -451,8 +451,9 @@ describe("Test 22 — generic 'documentary' fallback only used when context is t
 
 describe("Test 23 — existing F3 tests stay green (structural sanity check)", () => {
   /** Nine tiers before VIDEO 619 removed the six that never delivered to a film. */
-  it("HISTORICAL_SOURCE_TIER_ORDER (F3/Round 7 infra) contains its three tiers, unmodified by this round's wiring", async () => {
+  it("HISTORICAL_SOURCE_TIER_ORDER (F3/Round 7 infra) contains its two tiers (YouTube left the cascade in the code audit)", async () => {
     const { HISTORICAL_SOURCE_TIER_ORDER } = await freshPipeline();
-    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual(["internet_archive", "youtube_cc", "wikimedia"]);
+    /** Code audit P2/P12: YouTube is asked only by the beat's YouTube turn, never by the cascade. */
+    expect(HISTORICAL_SOURCE_TIER_ORDER).toEqual(["internet_archive", "wikimedia"]);
   });
 });

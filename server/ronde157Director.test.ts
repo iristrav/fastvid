@@ -7,19 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  ALL_SHOT_TYPES,
-  ATTENTION_EFFECTS,
-  MAX_RUN_BEFORE_VARIETY,
-  SHOT_SCALE_ORDER,
-  SHOT_SEMANTICS,
-  applyShotVariety,
-  classifyAttentionMoment,
-  formatAttentionMoment,
-  scaleDistance,
-  suggestVariedShot,
-  type AttentionMoment,
-} from "./shotVocabulary";
+import { ALL_SHOT_TYPES, ATTENTION_EFFECTS, MAX_RUN_BEFORE_VARIETY, SHOT_SCALE_ORDER, SHOT_SEMANTICS, applyShotVariety, classifyAttentionMoment, scaleDistance, suggestVariedShot, type AttentionMoment } from "./shotVocabulary";
 import { planShotOrder } from "./aiDirector/shotOrderPlanner";
 import { runAIDirector, toDirectorGuidance } from "./aiDirector";
 import type { ShotType } from "./cinematicEditingEngine/types";
@@ -323,19 +311,5 @@ describe("RONDE 157 §9 — attention moments are first-class", () => {
     expect(ATTENTION_EFFECTS.statistic.suggestsGraphic).toBe("statistic");
     // The table names a TYPE. It carries no values, so nothing here can fabricate a chart.
     expect(JSON.stringify(ATTENTION_EFFECTS.statistic)).not.toMatch(/\bvalues?\b/);
-  });
-
-  it("the log line names the moment and its evidence", () => {
-    const found = classifyAttentionMoment({
-      text: "Apple spent 3 billion dollars.",
-      beatIndexInVideo: 0,
-      beatStartSec: 0,
-      videoDurationSec: 120,
-    })!;
-    const line = formatAttentionMoment("s0b0", found);
-    expect(line).toContain("[Director]");
-    expect(line).toContain("hook");
-    expect(line).toContain("s0b0");
-    expect(line).toContain(ATTENTION_EFFECTS.hook.why);
   });
 });

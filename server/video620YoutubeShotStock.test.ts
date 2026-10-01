@@ -176,7 +176,7 @@ describe("Video 620 — the render uses the stock", () => {
   });
 
   it("a beat takes the stock before any download slot is claimed, and never downloads a stocked video twice", () => {
-    const stockAt = src.indexOf("if (poolMode && isStocked(poolVideoId!, videoId))");
+    const stockAt = src.indexOf("if (poolVideoId != null && isStocked(poolVideoId, videoId))");
     const claimAt = src.indexOf("if (!claimDownloadSlot()) {");
     expect(stockAt).toBeGreaterThan(0);
     expect(stockAt).toBeLessThan(claimAt);

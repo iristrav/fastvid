@@ -22,8 +22,7 @@ import type { ChildProcess } from "child_process";
 import { ffmpegSemaphore } from "./_core/semaphore";
 
 /** Conservative fallback used only before RenderBudget is computed. */
-export const WATCHDOG_RENDER_MAX_MS   = 18 * 60_000;  // 18 min fallback
-export const WATCHDOG_SCENE_MAX_MS    =  2 * 60_000;  //  2 min per scene (fallback)
+export const WATCHDOG_RENDER_MAX_MS   = 18 * 60_000;  //  2 min per scene (fallback)
 export const WATCHDOG_COMPOSE_MAX_MS  = 90_000;        // 90s compose (fallback)
 export const WATCHDOG_RETRIEVE_MAX_MS = 45_000;        // 45s retrieval (fallback)
 export const WATCHDOG_CONCAT_MAX_MS   = 120_000;       // 120s concat (fallback)

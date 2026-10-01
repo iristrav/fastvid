@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { execFileSync, execSync } from "child_process";
+import { execFileSync, execSync, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import {
-  buildSimpleKenBurnsVF,
+  buildSimpleStillVF,
   buildStillEncodeArgs,
   resolveStillCompositionVF,
   stillOutputFrameCount,
@@ -69,6 +69,13 @@ function extractFramePng(videoPath: string, tSec: number, outPng: string): void 
   );
 }
 
+/** PSNR in dB between two frames: "inf" (identical) or high for a held still, low once the picture moves. */
+function framePsnr(a: string, b: string): number {
+  const out = spawnSync(FFMPEG, ["-i", a, "-i", b, "-lavfi", "psnr", "-f", "null", "-"], { encoding: "utf8" }).stderr;
+  const m = /average:(inf|[\d.]+)/.exec(out);
+  return m ? (m[1] === "inf" ? Infinity : Number(m[1])) : 0;
+}
+
 function pngSampleHash(pngPath: string): string {
   const buf = fs.readFileSync(pngPath);
   const sample = buf.subarray(Math.floor(buf.length * 0.3), Math.floor(buf.length * 0.5));
@@ -88,7 +95,7 @@ describe.skipIf(!FFMPEG)("documentary still encode (ffmpeg integration)", () => 
     // `tmp-video-analysis/` scratch folder that is not in the repository, so even with ffmpeg
     // present this file could only run on the machine it was written on. They are generated
     // here instead — two visibly different noisy frames, which is all the assertions need
-    // (they compare sampled pixels between frames to prove the Ken Burns motion is real).
+    // (they compare sampled pixels between frames).
     for (const [img, seed] of [[imgA, 1], [imgB, 7]] as const) {
       if (fs.existsSync(img)) continue;
       fs.mkdirSync(path.dirname(img), { recursive: true });
@@ -104,7 +111,7 @@ describe.skipIf(!FFMPEG)("documentary still encode (ffmpeg integration)", () => 
     if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
   });
 
-  it("encodes documentary blur-fill still with correct duration and motion", () => {
+  it("encodes documentary blur-fill still with correct duration, held still (the timeline camera moves it)", () => {
     const duration = 4;
     const out = path.join(workDir, "still_blur.mp4");
     const fc = resolveStillCompositionVF(duration, 1, 0, false);
@@ -119,7 +126,8 @@ describe.skipIf(!FFMPEG)("documentary still encode (ffmpeg integration)", () => 
     const f2 = path.join(workDir, "blur_f2.png");
     extractFramePng(out, 0.2, f0);
     extractFramePng(out, 2.5, f2);
-    expect(pngSampleHash(f0)).not.toBe(pngSampleHash(f2));
+    // Encoder noise only — no zoom or pan baked in (a 6% zoom on this noise drops PSNR far below 30).
+    expect(framePsnr(f0, f2)).toBeGreaterThan(30);
     // RONDE 30: real ffmpeg encodes; the default 5s vitest timeout is not enough for them.
   }, 60_000);
 
@@ -161,10 +169,10 @@ describe.skipIf(!FFMPEG)("documentary still encode (ffmpeg integration)", () => 
     expect(pngSampleHash(early)).not.toBe(pngSampleHash(late));
   }, 120_000);
 
-  it("falls back to simple Ken Burns when blur filter string is invalid", () => {
+  it("falls back to a simple held still when blur filter string is invalid", () => {
     const duration = 3;
     const out = path.join(workDir, "fallback.mp4");
-    const fc = buildSimpleKenBurnsVF(duration, false);
+    const fc = buildSimpleStillVF(duration, false);
     runStillEncode(imgA, out, duration, fc);
     expect(stillOutputFrameCount(duration)).toBe(75);
     expect(probeDuration(out)).toBeGreaterThan(2.8);

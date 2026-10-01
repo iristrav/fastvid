@@ -49,13 +49,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  adoptionGuardVerdict,
-  currentAdoptionIntent,
-  funnelAdoptionEnforced,
-  visionVerdictFromGate,
-  withAdoptionIntent,
-} from "./adoptionPolicy";
+import { adoptionGuardVerdict, currentAdoptionIntent, visionVerdictFromGate, withAdoptionIntent } from "./adoptionPolicy";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -120,35 +114,6 @@ describe("the montage guard refuses only what it can justify refusing", () => {
   it("still blocks it with the flag on", () => {
     process.env[ENV] = "true";
     expect(verdict({ source: "route_nobody_declared" }).allowed).toBe(false);
-  });
-
-  /**
-   * RONDE 94 — THE DEFAULT ITSELF IS THE ASSERTION.
-   *
-   * With no environment variable set at all, production is strict. A regression that returns this
-   * to "opt in" would make every check below pass while enforcing nothing, so it is checked
-   * separately from any behaviour that depends on it.
-   */
-  it("is enforced when nothing is configured", () => {
-    delete process.env[ENV];
-    expect(funnelAdoptionEnforced()).toBe(true);
-  });
-
-  it("only the explicit string \"false\" turns it off", () => {
-    process.env[ENV] = "false";
-    expect(funnelAdoptionEnforced()).toBe(false);
-    process.env[ENV] = "0";
-    expect(funnelAdoptionEnforced()).toBe(true);
-    process.env[ENV] = "";
-    expect(funnelAdoptionEnforced()).toBe(true);
-  });
-
-  /** VID-0568 CASE 2 and 3: unbacked funnel claims, which the opt-out still lets through. */
-  it("lets an unbacked funnel claim through only when explicitly disabled", () => {
-    process.env[ENV] = "false";
-    expect(funnelAdoptionEnforced()).toBe(false);
-    expect(verdict({ source: "wikimedia", eligible: false, vision: "APPROVED" }).allowed).toBe(true);
-    expect(verdict({ source: "wikimedia", eligible: true, vision: "NOT_ASKED" }).allowed).toBe(true);
   });
 
   it("blocks a funnel claim with no eligibility once enforced", () => {

@@ -1,11 +1,5 @@
-/**
- * Reference-documentary visual style (history-short aesthetic):
- * blur-fill stills, polaroid collages, film grain, orange name badges,
- * yellow highlight captions, vintage color grade.
- */
-import * as fs from "fs";
+
 import * as path from "path";
-import { sanitizeForDrawtext } from "./ffmpegSanitize";
 import { vidrushStillPhotoScale } from "./vidrushQuality";
 import { ffmpegThreadFlag } from "./sourcingPolicy";
 
@@ -15,17 +9,6 @@ export const DOC_STYLE_VIDEO_HEIGHT = 1080;
 /** Off by default; set ENABLE_DOC_STYLE=true to enable. */
 export function documentaryStyleEnabled(): boolean {
   return process.env.ENABLE_DOC_STYLE === "true";
-}
-
-/** Film grain — on by default for documentary look (ENABLE_FILM_GRAIN=false to disable). */
-export function filmGrainEnabled(): boolean {
-  return process.env.ENABLE_FILM_GRAIN !== "false";
-}
-
-/** Every 4th still uses polaroid-on-grid layout instead of blur-fill (skip on Railway — rotate/gblur can fail). */
-export function usePolaroidLayout(sceneIndex: number, beatIndex = 0): boolean {
-  if (process.env.IS_RAILWAY === "true" || process.env.RAILWAY_ENVIRONMENT) return false;
-  return (sceneIndex * 3 + beatIndex) % 4 === 0;
 }
 
 /** Phase 10: clip source, so grading can differ instead of applying one fixed look to every
@@ -59,15 +42,6 @@ export function buildDocumentaryVignetteVF(sourceKind?: DocGradeSourceKind): str
   return `vignette=angle=${angle}:mode=forward`;
 }
 
-export function buildFilmGrainVF(sourceKind?: DocGradeSourceKind): string {
-  if (!filmGrainEnabled()) return "";
-  // Real archive footage is frequently already grainy from the source scan — don't stack
-  // synthetic grain on top of that. Clean digital sources (AI-generated, stock) get more
-  // grain specifically to disguise how smooth/artifact-free they are.
-  const amount = sourceKind === "ai_generated" || sourceKind === "stock" ? 9 : 6;
-  return `,noise=alls=${amount}:allf=t+u`;
-}
-
 /** Color + vignette only — applied on each montage clip so sources match before xfade. */
 export function buildPerClipDocumentaryGradeVF(sourceKind?: DocGradeSourceKind): string {
   return `${buildDocumentaryColorGradeVF(sourceKind)},${buildDocumentaryVignetteVF(sourceKind)}`;
@@ -78,13 +52,6 @@ export function buildFitGrayGradedVideoVF(sourceKind?: DocGradeSourceKind): stri
   const base = buildFitGrayVideoVF();
   if (!documentaryStyleEnabled()) return base;
   return `${base},${buildPerClipDocumentaryGradeVF(sourceKind)}`;
-}
-
-/** Final scene pass — grain only when doc style is on, otherwise pass through. */
-export function buildFinalSceneGradeVF(sourceKind?: DocGradeSourceKind): string {
-  if (!documentaryStyleEnabled()) return "copy";
-  const grain = buildFilmGrainVF(sourceKind);
-  return grain ? grain.replace(/^,/, "") : "copy";
 }
 
 /** AI-generated clip path (used only as last-resort after stock search). Moved here from
@@ -319,26 +286,34 @@ export function buildKenBurnsTail(
   );
 }
 
-/** Simple Ken Burns fallback when blur/polaroid filters fail on the host FFmpeg.
- *  Phase 10: eased zoom (see buildKenBurnsTail's doc comment) — this fallback path renders
- *  real user-facing frames too, so it gets the same easing rather than staying linear. */
-export function buildSimpleKenBurnsVF(
+/**
+ * A HELD STILL — the photograph encoded without any movement.
+ *
+ * A still's camera move belongs to the timeline (`cameraPlanner` → `clip.camera` → `cameraChain`),
+ * which gives every still a slow move at render. A zoom baked in here as well moved the photograph
+ * twice. `zoompan` at a constant zoom of 1 is kept only for what it does besides moving: it turns
+ * one image into the clip's frames at the output size.
+ */
+export function buildStillHoldTail(duration: number): string {
+  const fps = 25;
+  const totalFrames = stillOutputFrameCount(duration, fps);
+  return (
+    `select='eq(n\\,0)',` +
+    `zoompan=z=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+    `d=${totalFrames}:s=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:fps=${fps}`
+  );
+}
+
+/** Simple still fallback when blur/polaroid filters fail on the host FFmpeg: cover-crop, held. */
+export function buildSimpleStillVF(
   duration: number,
   personPortrait: boolean
 ): string {
-  const fps = 25;
-  const totalFrames = stillOutputFrameCount(duration, fps);
-  const zoomEnd = personPortrait ? 1.05 : STILL_MAX_ZOOM;
-  const yExpr = personPortrait ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
   const cropY = personPortrait ? "0" : `(ih-${DOC_STYLE_VIDEO_HEIGHT})/2`;
-  const zExpr = `(1.0+(${(zoomEnd - 1.0).toFixed(7)})*${easeOutProgress(totalFrames)})`;
   return (
     `[0:v]scale=${DOC_STYLE_VIDEO_WIDTH}:${DOC_STYLE_VIDEO_HEIGHT}:force_original_aspect_ratio=increase,` +
     `crop=${DOC_STYLE_VIDEO_WIDTH}:${DOC_STYLE_VIDEO_HEIGHT}:(iw-${DOC_STYLE_VIDEO_WIDTH})/2:${cropY},` +
-    `select='eq(n\\,0)',` +
-    `zoompan=z='${zExpr}':` +
-    `x='iw/2-(iw/zoom/2)':y='${yExpr}':` +
-    `d=${totalFrames}:s=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:fps=${fps}[vout]`
+    `${buildStillHoldTail(duration)}[vout]`
   );
 }
 
@@ -348,13 +323,12 @@ export function buildBlurFillStillVF(
   foregroundScale = 0.78,
   yAnchor: "center" | "top" = "center",
   blurMode: "gblur" | "boxblur" = "gblur",
-  variant: KenBurnsVariant = "zoom-in",
 ): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
   const fgY = yAnchor === "top" ? "(H-h)/4" : "(H-h)/2";
-  const baseZoom = yAnchor === "top" ? 1.05 : STILL_MAX_ZOOM;
-  const ken = buildKenBurnsTail(duration, baseZoom, yAnchor, variant);
+  /** Held: the still's camera move is the timeline's (see `buildStillHoldTail`). */
+  const ken = buildStillHoldTail(duration);
   const blurFilter =
     blurMode === "boxblur"
       ? "boxblur=luma_radius=32:luma_power=2:chroma_radius=16:chroma_power=1"
@@ -368,16 +342,6 @@ export function buildBlurFillStillVF(
   );
 }
 
-/** Archive B-roll: full clip in frame on dark gray — fast (no gblur). */
-export function buildFitGrayVideoFilterComplex(): string {
-  const w = DOC_STYLE_VIDEO_WIDTH;
-  const h = DOC_STYLE_VIDEO_HEIGHT;
-  return (
-    `[0:v]scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
-    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0x2a2a2a,format=yuv420p[vout]`
-  );
-}
-
 /** Single -vf chain for archive clip trim (fast encode). */
 export function buildFitGrayVideoVF(): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
@@ -388,33 +352,15 @@ export function buildFitGrayVideoVF(): string {
   );
 }
 
-/** Polaroid white frame on light gray canvas (no rotate — fragile on minimal FFmpeg builds). */
-export function buildPolaroidStillVF(duration: number): string {
-  const w = DOC_STYLE_VIDEO_WIDTH;
-  const h = DOC_STYLE_VIDEO_HEIGHT;
-  const ken = buildKenBurnsTail(duration, 1.03, "center");
-  return (
-    `[0:v]scale=920:-1,` +
-    `pad=960:1040:20:80:white,` +
-    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2+30:color=0xD8D8D8,` +
-    `${ken}[vout]`
-  );
-}
-
 /** Photo on neutral gray mat — smaller than frame (reference-doc / City Beautiful style). */
 export function buildMatFramedStillVF(
   duration: number,
-  photoScale = vidrushStillPhotoScale(),
-  sceneIndex = 0,
-  beatIndex = 0
+  photoScale = vidrushStillPhotoScale()
 ): string {
   const w = DOC_STYLE_VIDEO_WIDTH;
   const h = DOC_STYLE_VIDEO_HEIGHT;
-  const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
-  const zoomEnd = autoMotionGraphicsKenBurnsLocked()
-    ? standardArchiveKenBurnsZoomEnd(duration)
-    : Math.max(1.06, documentaryKenBurnsZoomEnd(duration));
-  const ken = buildKenBurnsTail(duration, zoomEnd, "center", variant);
+  /** Held: the still's camera move is the timeline's (see `buildStillHoldTail`). */
+  const ken = buildStillHoldTail(duration);
   return (
     `[0:v]scale='min(${w}*${photoScale}/iw\\,${h}*${photoScale}/ih)*iw':-2,` +
     `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0xCFCFCF[mat];` +
@@ -452,11 +398,10 @@ export function buildArchiveStillFilterComplex(
   personPortrait = false
 ): string {
   const scale = vidrushStillPhotoScale();
-  const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
   if (process.env.ARCHIVE_BLUR_FILL_STILLS === "false") {
-    return buildMatFramedStillVF(duration, scale, sceneIndex, beatIndex);
+    return buildMatFramedStillVF(duration, scale);
   }
-  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "gblur", variant);
+  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "gblur");
 }
 
 /** Boxblur variant for hosts where gblur is unavailable or fails. */
@@ -467,11 +412,10 @@ export function buildArchiveStillFilterComplexBoxBlur(
   personPortrait = false
 ): string {
   const scale = vidrushStillPhotoScale();
-  const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
   if (process.env.ARCHIVE_BLUR_FILL_STILLS === "false") {
-    return buildMatFramedStillVF(duration, scale, sceneIndex, beatIndex);
+    return buildMatFramedStillVF(duration, scale);
   }
-  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "boxblur", variant);
+  return buildBlurFillStillVF(duration, scale, personPortrait ? "top" : "center", "boxblur");
 }
 
 export interface TimedOverlay {
@@ -492,49 +436,5 @@ export interface TimedOverlay {
   /** Yellow interval label (year/keyword) — small positioned clip. */
   isScreenLabel?: boolean;
   isVideoOverlay?: boolean;
-}
-
-export async function renderHighlightCaptionOverlay(
-  highlightWord: string,
-  sceneIndex: number,
-  workDir: string,
-  ffmpegBin: string,
-  execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>,
-  sceneDuration: number
-): Promise<TimedOverlay | null> {
-  const word = highlightWord.trim();
-  if (!word) return null;
-
-  const safeWord = sanitizeForDrawtext(word.toUpperCase(), 24);
-  const FONT_SIZE = 52;
-  const PAD_X = 22;
-  const PAD_Y = 12;
-  const estTextW = Math.min(safeWord.length * FONT_SIZE * 0.58, DOC_STYLE_VIDEO_WIDTH / 2);
-  const boxW = Math.round(estTextW + PAD_X * 2);
-  const boxH = FONT_SIZE + PAD_Y * 2;
-  const boxX = Math.round((DOC_STYLE_VIDEO_WIDTH - boxW) / 2);
-  const boxY = Math.round(DOC_STYLE_VIDEO_HEIGHT * 0.42);
-
-  const pngPath = path.join(workDir, `scene_${sceneIndex}_highlight_caption.png`);
-  const startTime = Math.max(0.8, sceneDuration * 0.25);
-  const endTime = Math.min(sceneDuration - 0.3, startTime + 2.2);
-
-  try {
-    await execWithTimeout(
-      `${ffmpegBin} -y ` +
-        `-f lavfi -i "color=c=black@0:size=${DOC_STYLE_VIDEO_WIDTH}x${DOC_STYLE_VIDEO_HEIGHT}:rate=1" ` +
-        `-vf "drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=FFD200@0.97:t=fill,` +
-        `drawtext=text='${safeWord}':fontcolor=black:fontsize=${FONT_SIZE}:x=${boxX + PAD_X}:y=${boxY + PAD_Y}" ` +
-        `-frames:v 1 -pix_fmt rgba "${pngPath}"`,
-      8_000,
-      `Highlight caption scene ${sceneIndex}`
-    );
-    if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 100) {
-      return { path: pngPath, startTime, endTime, fullFrame: true };
-    }
-  } catch {
-    /* non-fatal */
-  }
-  return null;
 }
 

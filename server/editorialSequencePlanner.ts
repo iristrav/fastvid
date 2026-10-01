@@ -48,10 +48,6 @@ export type SceneStoryboard = {
 
 const _storyboardCache = new Map<string, SceneStoryboard>();
 
-export function clearStoryboardCache(): void {
-  _storyboardCache.clear();
-}
-
 /** Evict only one video's entries — safe to call when that video's render finishes even
  *  though other videos may still be rendering concurrently in the same process (a blanket
  *  clearStoryboardCache() would wipe their still-in-progress cached storyboards too). Without

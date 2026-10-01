@@ -26,16 +26,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  acquireRenderLock,
-  extendRenderLock,
-  formatRenderLock,
-  formatRenderLockRelease,
-  releaseRenderLock,
-  RENDER_LOCK_LEASE_MS,
-  type RenderLockRow,
-  type RenderLockStore,
-} from "./renderLock";
+import { acquireRenderLock, formatRenderLock, formatRenderLockRelease, releaseRenderLock, RENDER_LOCK_LEASE_MS, type RenderLockRow, type RenderLockStore } from "./renderLock";
 
 /**
  * A store with MySQL's two guarantees and nothing else.
@@ -190,20 +181,6 @@ describe("a crashed worker does not make a video unrenderable", () => {
       acquireRenderLock(store, { videoId: 570, productionRenderId: "C", now: later }),
     ]);
     expect([b.acquired, c.acquired].filter(Boolean)).toHaveLength(1);
-  });
-
-  it("a live render keeps its lease by extending it", async () => {
-    const store = fakeStore();
-    await acquireRenderLock(store, { videoId: 570, productionRenderId: "A", now: NOW });
-    await extendRenderLock(store, 570, "A", { now: later });
-    const b = await acquireRenderLock(store, { videoId: 570, productionRenderId: "B", now: later });
-    expect(b.acquired).toBe(false);
-  });
-
-  it("a render that no longer holds the lock cannot extend it", async () => {
-    const store = fakeStore();
-    await acquireRenderLock(store, { videoId: 570, productionRenderId: "A", now: NOW });
-    expect(await extendRenderLock(store, 570, "SOMEONE_ELSE", { now: NOW })).toBe(false);
   });
 });
 

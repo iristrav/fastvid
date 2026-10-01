@@ -1,20 +1,6 @@
-/**
- * Per-beat literal viewer visual — what the camera shows (subject + action + setting),
- * resolved BEFORE any archive or stock search. Abstract concepts ("AI automation") are
- * translated into filmable shots ("person working on laptop").
- *
- * Workflow: answer the documentary-editor question → one concrete scene → search on that
- * scene only (never on voice-over words).
- */
-import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
+
 import type { ScriptVisualIntentEntry } from "./scriptVisualKeywords";
-import {
-  fallbackVisualIntent,
-  hasDirectorPlan,
-  resolveBeatVisualIntent,
-  sanitizeVisualIntentText,
-  sanitizeVisualKeyword,
-} from "./scriptVisualKeywords";
+import { fallbackVisualIntent, hasDirectorPlan, sanitizeVisualIntentText, sanitizeVisualKeyword } from "./scriptVisualKeywords";
 import { extractVisualSearchTags } from "./visualBeatTags";
 
 export type ArchiveMatchTier = "exact" | "semantic" | "related";
@@ -292,17 +278,6 @@ export function inferLiteralViewerVisual(
   };
 }
 
-export function literalVisualSearchTags(literal: LiteralViewerVisual): string[] {
-  const tags = new Set<string>();
-  for (const t of extractVisualSearchTags(literal.description)) tags.add(t);
-  for (const t of extractVisualSearchTags(literal.searchQuery)) tags.add(t);
-  for (const w of [literal.subject, literal.action]) {
-    const s = w.trim().toLowerCase();
-    if (s.length >= 3) tags.add(s);
-  }
-  return [...tags];
-}
-
 export type BeatWithLiteralVisual = {
   text: string;
   searchQuery: string;
@@ -311,36 +286,3 @@ export type BeatWithLiteralVisual = {
   visualIntent?: ScriptVisualIntentEntry;
 };
 
-/** Set beat.visualDescription + searchQuery from literal viewer visual (call before archive search). */
-export function applyLiteralViewerVisualToBeat(
-  beat: BeatWithLiteralVisual,
-  videoTitle?: string,
-  intentMap?: Map<string, ScriptVisualIntentEntry>
-): LiteralViewerVisual {
-  const stored = resolveBeatVisualIntent(beat.text, intentMap);
-  const literal = inferLiteralViewerVisual(beat.text, videoTitle, stored);
-  beat.visualDescription = literal.description;
-  beat.searchQuery = literal.searchQuery;
-  beat.powerWord = literal.subject.split(/\s+/)[0] ?? beat.powerWord;
-  beat.visualIntent = {
-    ...stored,
-    visual_intent: literal.description,
-    visual_description: literal.description,
-    search_query: literal.searchQuery,
-    primary_keyword: literal.searchQuery,
-    priority_subject: literal.subject,
-  };
-  console.log(
-    `[ViewerVisual] ${DOCUMENTARY_EDITOR_VIEWER_QUESTION} → "${literal.description.slice(0, 80)}" ` +
-      `(zoek: ${literal.searchQuery})`
-  );
-  return literal;
-}
-
-export const ARCHIVE_MATCH_TIER_ORDER: ArchiveMatchTier[] = ["exact", "semantic", "related"];
-
-export function archiveTierLabel(tier: ArchiveMatchTier): string {
-  if (tier === "exact") return "exact archive match";
-  if (tier === "semantic") return "semantic archive match";
-  return "related archive match";
-}

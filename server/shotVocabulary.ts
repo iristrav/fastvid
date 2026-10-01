@@ -533,17 +533,6 @@ export function classifyAttentionMoment(params: {
   return null;
 }
 
-/** One line per attention moment, for the render log. */
-export function formatAttentionMoment(
-  beatId: string,
-  found: { moment: AttentionMoment; evidence: string }
-): string {
-  return (
-    `[Director] attention ${found.moment} at ${beatId} — ${found.evidence}; ` +
-    ATTENTION_EFFECTS[found.moment].why
-  );
-}
-
 /* ═══════════════════════ the planned shot, where the search can reach it ═══════════════════════ */
 
 /**

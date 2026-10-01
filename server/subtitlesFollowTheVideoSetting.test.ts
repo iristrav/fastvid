@@ -62,7 +62,7 @@ describe("the video's subtitle setting decides", () => {
    * VIDEO 619 — planned, and switched OFF: they are on the timeline for the editor to turn on, and
    * none of them is in the made video.
    */
-  it("subtitles planned: they are there, and every one of them is off until the editor turns it on", async () => {
+  it("subtitles planned: they are there, and every one of them is on in the made video", async () => {
     const outcome = await planAndStoreCinematicTimeline({
       videoId: 606, scenes: [sceneFacts(0), sceneFacts(1)], persist, includeSubtitles: true,
     });
@@ -70,7 +70,7 @@ describe("the video's subtitle setting decides", () => {
     if (!outcome.ok) return;
     const captions = captionTrack(outcome.timeline);
     expect(captions.length).toBeGreaterThan(0);
-    for (const c of captions) expect(c).toMatchObject({ disabled: true, disabledReason: "left_to_editor" });
+    for (const c of captions) expect(c.disabled ?? false).toBe(false);
   });
 });
 

@@ -407,33 +407,6 @@ describe("R232 §5 — no route claims more than it can show", () => {
     expect(v.reason).toContain("eligibility");
   });
 
-  it("THIS FILE HAS TEETH — with enforcement off, the same four candidates all pass", () => {
-    /**
-     * A suite that goes green on its first run is worth doubting, so this proves the assertions
-     * above depend on the guard actually enforcing rather than on the fixture being agreeable.
-     * `ENFORCE_FUNNEL_ADOPTION=false` is the operator's documented incident switch; flipping it
-     * for the length of one assertion changes nothing in production and nothing on disk.
-     *
-     * With it off, all four — including the beach holiday — are allowed. That is the measurement:
-     * every refusal above is the guard's doing, not the scenario's.
-     */
-    const saved = process.env.ENFORCE_FUNNEL_ADOPTION;
-    try {
-      process.env.ENFORCE_FUNNEL_ADOPTION = "false";
-      const { steps } = walkOneBeat(CANDIDATES);
-      expect(
-        steps.filter((s) => s.allowed).map((s) => s.id),
-        "the guard was not what refused the wrong footage"
-      ).toEqual(["A", "B", "C", "D"]);
-    } finally {
-      if (saved === undefined) delete process.env.ENFORCE_FUNNEL_ADOPTION;
-      else process.env.ENFORCE_FUNNEL_ADOPTION = saved;
-    }
-    /** And the default is restored, so the strict path is what the rest of the suite sees. */
-    const { steps } = walkOneBeat(CANDIDATES);
-    expect(steps.filter((s) => s.allowed).map((s) => s.id)).toEqual(["B"]);
-  });
-
   it("A FALLBACK IS NOT PRESENTED AS VERIFIED EVENT FOOTAGE", () => {
     /**
      * The categories are the claim. Whatever a fallback route is allowed to do, it must not be

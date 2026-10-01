@@ -35,35 +35,6 @@ describe("buildVideoQualityReport", () => {
     expect(report.score).toBeLessThan(100);
   });
 
-  it("records geo violations in the report, where they are a warning and never a block", () => {
-    // RONDE 30: criticalGeoViolations is produced by isArchiveGeoBlockedForBeat, which opens
-    // with `if (!metadataVisualBlocksEnabled()) return false;` — and that flag is off by
-    // default, so with shipped settings the quality report can never report a geo violation at
-    // all. The case is about the detection logic, so it enables the gate explicitly.
-    const prevBlocks = process.env.ENABLE_METADATA_VISUAL_BLOCKS;
-    process.env.ENABLE_METADATA_VISUAL_BLOCKS = "true";
-    const report = buildVideoQualityReport(
-      ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],
-      "Why the Netherlands Is the Opposite of the U.S.",
-      {
-        adoptAudit: [
-          {
-            sceneIndex: 0,
-            beatIndex: 0,
-            beatText: "In cities across the Netherlands, bike lanes are everywhere.",
-            basename: "scene_0_b0_hist_archive_kansas.mp4",
-            source: "archive",
-            assetTitle: "Kansas City metropolitan area map 1972",
-            segmentGeoLock: "nl",
-          },
-        ],
-      }
-    );
-    expect(report.criticalGeoViolations?.length).toBeGreaterThanOrEqual(1);
-    if (prevBlocks === undefined) delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
-    else process.env.ENABLE_METADATA_VISUAL_BLOCKS = prevBlocks;
-  });
-
   it("archive-only wwii scores high with vision-tracked adopts", () => {
     const report = buildVideoQualityReport(
       [
@@ -175,34 +146,6 @@ describe("buildVideoQualityReport", () => {
       ],
     });
     expect(perfect.score).toBe(verdict.score);
-  });
-
-  it("Singapore geo violations are detected in report", () => {
-    // RONDE 30: criticalGeoViolations is produced by isArchiveGeoBlockedForBeat, which opens
-    // with `if (!metadataVisualBlocksEnabled()) return false;` — and that flag is off by
-    // default, so with shipped settings the quality report can never report a geo violation at
-    // all. The case is about the detection logic, so it enables the gate explicitly.
-    const prevBlocks = process.env.ENABLE_METADATA_VISUAL_BLOCKS;
-    process.env.ENABLE_METADATA_VISUAL_BLOCKS = "true";
-    const report = buildVideoQualityReport(
-      ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],
-      "Why Singapore is the Blueprint for Future Cities",
-      {
-        adoptAudit: [
-          {
-            sceneIndex: 0,
-            beatIndex: 0,
-            beatText: "Affordable public housing shapes daily life.",
-            basename: "scene_0_b0_hist_archive_kansas.mp4",
-            source: "archive",
-            assetTitle: "Historical Map of Kansas City with Railroads",
-          },
-        ],
-      }
-    );
-    expect(report.criticalGeoViolations?.length).toBeGreaterThanOrEqual(1);
-    if (prevBlocks === undefined) delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
-    else process.env.ENABLE_METADATA_VISUAL_BLOCKS = prevBlocks;
   });
 
   it("reports no geo violations with the shipped default — the metadata gate is off", () => {

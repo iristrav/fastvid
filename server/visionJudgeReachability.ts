@@ -115,6 +115,6 @@ export function formatVisionJudgeUnreachable(result: VisionJudgeReachability): s
     `nobody and the export gate would refuse the finished film. ` +
     `${result.reason ?? "No provider answered."} ` +
     `Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied) and ` +
-    `re-render; set ENABLE_BEAT_IMAGE_RELEVANCE_GATE=false only if you accept unjudged footage.`
+    `re-render. The picture editor cannot be switched off.`
   );
 }

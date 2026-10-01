@@ -95,7 +95,7 @@ import {
   formatDeliveryBlock,
   TIMELINE_ARCHIVE_REFERENCE,
 } from "./deliveryGate";
-import { youtubeVideoIdsForArchiveAssets } from "./youtubeFootageInFilm";
+import { footageSourceForArchiveAssets } from "./youtubeFootageInFilm";
 import type { ProjectTimeline } from "./projectTimeline";
 import { audioTrackOf, videoTrack } from "./projectTimeline";
 import { maxConcurrentRenderJobs } from "./config";
@@ -1086,7 +1086,7 @@ export async function runRenderJob(params: {
       footageRefusal: finalTimelineFootageRefusal(
         videoTrack(timeline),
         undefined,
-        await youtubeVideoIdsForArchiveAssets(videoTrack(timeline), getMediaArchiveAssetById)
+        await footageSourceForArchiveAssets(videoTrack(timeline), getMediaArchiveAssetById)
       ),
     });
     for (const line of gate.lines) {
@@ -1253,7 +1253,3 @@ export function startRenderJobWorker(): void {
   pollTimer = setInterval(() => void processRenderJobTick(), intervalMs);
 }
 
-export function stopRenderJobWorker(): void {
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = null;
-}

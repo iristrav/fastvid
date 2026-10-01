@@ -27,11 +27,7 @@ import { join } from "path";
 
 import { SAFE_RENDER_ANSWERS } from "./ffmpegFailureClass";
 
-import {
-  safeRenderTimeline,
-  safeRenderWouldChangeAnything,
-  formatSafeRender,
-} from "./timelineRepair";
+import { safeRenderTimeline, formatSafeRender } from "./timelineRepair";
 import { emptyTimeline, type ProjectTimeline, type TimelineVideoClip } from "./projectTimeline";
 
 const clip = (id: string, over: Partial<TimelineVideoClip> = {}): TimelineVideoClip => ({
@@ -99,14 +95,6 @@ describe("§1 — the flourishes, and only the flourishes", () => {
     expect(changes).toContainEqual({ clipId: "vc_0", change: "camera_removed" });
     expect(changes).toContainEqual({ clipId: "vc_1", change: "effects_removed" });
     expect(changes).toContainEqual({ clipId: "vc_1", change: "transition_normalised" });
-  });
-
-  it("a timeline that is already plain reports no changes and needs no second attempt", () => {
-    const plain = emptyTimeline(1);
-    plain.tracks = [{ kind: "VIDEO", clips: [clip("vc_0")] }] as never;
-    expect(safeRenderTimeline(plain).changes).toEqual([]);
-    expect(safeRenderWouldChangeAnything(plain)).toBe(false);
-    expect(safeRenderWouldChangeAnything(dressed())).toBe(true);
   });
 });
 

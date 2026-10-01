@@ -169,11 +169,6 @@ export function sanitizePrioritySubject(subject: unknown): string {
   return words.join(" ") || "scene";
 }
 
-/** Heuristic fallback when LLM output is missing or invalid. */
-export function fallbackVisualKeyword(sentence: string): string {
-  return fallbackVisualIntent(sentence).primary_keyword;
-}
-
 function inferSceneTypeFromSentence(sentence: string, primaryKeyword: string): string {
   const hay = `${sentence} ${primaryKeyword}`.toLowerCase();
   if (/\b(office|kantoor|vergader|meeting|laptop|desk|werk)\b/.test(hay)) return "office";
@@ -436,48 +431,6 @@ export function directorSearchQueries(intent: ScriptVisualIntentEntry): string[]
   return keepProvableDirectorQueries(built, intent);
 }
 
-export function buildRelevanceKeywordsFromIntent(
-  intent: ScriptVisualIntentEntry,
-  beatText: string,
-  sceneTokens: string[] = [],
-  videoTitle?: string
-): string[] {
-  const directorMode = hasDirectorPlan(intent);
-  const parts = [
-    ...intentSearchQueries(intent),
-    ...tokenizeForRelevance(intent.visual_description ?? intent.visual_intent),
-    ...tokenizeForRelevance(intent.camera_shot ?? ""),
-    ...tokenizeForRelevance(intent.emotion ?? ""),
-    ...tokenizeForRelevance(intent.priority_subject),
-    ...tokenizeForRelevance(intent.scene_type),
-    ...(directorMode ? [] : tokenizeForRelevance(beatText)),
-    ...(directorMode ? [] : sceneTokens),
-    ...tokenizeForRelevance(videoTitle ?? ""),
-  ];
-  return Array.from(new Set(parts.filter((p) => p.length >= 3))).slice(0, 24);
-}
-
-function tokenizeForRelevance(text: unknown): string[] {
-  const raw = typeof text === "string" ? text : text == null ? "" : String(text);
-  return raw
-    .toLowerCase()
-    /** Same reason again — a split contraction would score relevance against a fragment. */
-    .replace(/["'`\u2018\u2019\u02BC\u00B4]/g, "")
-    .replace(/[^\w\s-]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length >= 3);
-}
-
-export function buildSentenceKeywordMap(entries: ScriptVisualKeywordEntry[]): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const entry of entries) {
-    const key = normalizeSentenceKey(entry.sentence);
-    const kw = sanitizeVisualKeyword(entry.keyword) || fallbackVisualKeyword(entry.sentence);
-    if (key && kw) map.set(key, kw);
-  }
-  return map;
-}
-
 export function buildSentenceIntentMap(entries: ScriptVisualIntentEntry[]): Map<string, ScriptVisualIntentEntry> {
   const map = new Map<string, ScriptVisualIntentEntry>();
   for (const entry of entries) {
@@ -588,17 +541,6 @@ function lookupPartialSentenceIntent(
     if (!best || overlap > best.overlap) best = { intent, overlap };
   }
   return best?.intent;
-}
-
-/**
- * Resolve the best stored visual intent for a beat — exact match, merged beats (dominant
- * sentence), or partial match when a sentence was split for timing.
- */
-export function lookupBeatVisualIntent(
-  beatText: string,
-  map: Map<string, ScriptVisualIntentEntry>
-): ScriptVisualIntentEntry | undefined {
-  return matchBeatVisualIntent(beatText, map)?.entry;
 }
 
 /** `found` — the beat is a planned sentence (or holds one); `partial` — it overlaps one. */
@@ -713,14 +655,6 @@ export function resolveBeatVisualIntent(
   }
   reportPlanUse(scope, beatText, match.plan);
   return normalized;
-}
-
-/** Always returns an English stock search phrase for a beat. */
-export function resolveBeatVisualKeyword(
-  beatText: string,
-  intentMap?: Map<string, ScriptVisualIntentEntry>
-): string {
-  return resolveBeatVisualIntent(beatText, intentMap).primary_keyword;
 }
 
 export function parseVisualIntentsFromMetadata(metadata: unknown): ScriptVisualIntentEntry[] {

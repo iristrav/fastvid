@@ -235,12 +235,3 @@ export function manifestRehydrationSummary(scenes: readonly EditorScene[]): {
   return { total, rehydratable, schemaVersion: versions.length ? Math.min(...versions) : 1 };
 }
 
-/** Resolve preview/play URL for client (handles legacy temp paths). */
-export function resolveEditorClipPreviewUrl(clip: EditorClip): string {
-  // The manifest holds the storageUrl the clip had when the video was rendered — a snapshot, not
-  // the live row. Versioning from it still breaks the cache the manifest itself was stored with;
-  // a clip trimmed AFTER the manifest was written needs the manifest rebuilt, which
-  // editorClipFromArchiveAsset above does from the current row.
-  if (clip.archiveAssetId) return editorArchiveMediaUrl(clip.archiveAssetId, clip);
-  return clip.thumbnailUrl ?? clip.url;
-}

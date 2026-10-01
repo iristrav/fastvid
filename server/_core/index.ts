@@ -20,15 +20,12 @@ import { archiveUploadRequestTimeoutMs } from "../archiveVideoSplitter";
 import { getConfiguredAppUrl, registerCanonicalAppUrl } from "./appUrl";
 import {
   archivePexelsFallbackEnabled,
-  externalVisualSourcingEnabled,
   elevenLabsOnlyVoice,
-  facelessSubtitlesEnabled,
   fishAudioFallbackEnabled,
   googleTtsFallbackEnabled,
   youtubeSourcingEnabled,
   formatYoutubeReadiness,
   youtubeReadinessWarnings,
-  europeanaSourcingEnabled,
 } from "../sourcingPolicy";
 import { ENV, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus, mergeWorkerClipVisionStatus } from "../visualQualityGate";
@@ -239,12 +236,6 @@ async function startServer() {
   );
   console.log("[Fastvid] STABILITY_AI_API_KEY:", process.env.STABILITY_AI_API_KEY ? "✓ set" : "✗ NOT SET");
   console.log("[Fastvid] LEONARDO_API_KEY:", process.env.LEONARDO_API_KEY ? "✓ set" : "✗ NOT SET");
-  console.log(
-    "[Fastvid] Faceless typewriter keywords on B-roll:",
-    facelessSubtitlesEnabled()
-      ? "✓ on (% / years / € — ENABLE_FACELESS_SUBTITLES=false to disable)"
-      : "✗ off"
-  );
   const maxStock = process.env.MAX_STOCK_BEATS_PER_VIDEO?.trim();
   console.log(
     "[Fastvid] Minimize licensed stock:",
@@ -309,9 +300,6 @@ async function startServer() {
     "[Fastvid] Local vision QA:",
     visionQa.ready ? `✓ ${visionQa.hint}` : `✗ ${visionQa.hint}`
   );
-  if (externalVisualSourcingEnabled()) {
-    console.warn("[Fastvid] External visual sourcing should be off — check sourcingPolicy");
-  }
   const ttsFallbackChain = [
     fishAudioFallbackEnabled() ? "Fish Audio" : null,
     googleTtsFallbackEnabled() ? "Google Cloud TTS" : null,
@@ -334,37 +322,12 @@ async function startServer() {
    * and it is the more damaging of the two, because it describes the ARCHITECTURE: it states that
    * this build has no separate edit/effects stage.
    *
-   * That is false whenever `CINEMATIC_EDITING_ENGINE` and `CINEMATIC_RENDER_PATH` are on. Then the
-   * delivered MP4 is produced by `runRenderJob` → `renderTimeline` — a real edit stage, with
-   * transitions, camera moves, captions and a graphics overlay — and the banner would still have
-   * claimed single-pass compose.
-   *
-   * The two flags are separate on purpose and the line says both, because they mean different
-   * things: planning alone stores a timeline the editor can open while the delivered video still
-   * comes from compose. Read from the predicates, never from `process.env` here, so the line cannot
-   * drift away from the behaviour it describes — the same rule `formatProductionRoute` follows for
-   * the per-render `[ProductionRoute]` line.
+   * Since the code audit there is one render path and no switch for it: the delivered MP4 is always
+   * produced by `runRenderJob` → `renderTimeline`, a real edit stage with transitions, camera moves,
+   * captions and a graphics overlay. The line states that one route; nothing here imports the
+   * editing chain into the web process.
    */
-  /**
-   * Imported dynamically, for the reason `videoPipeline` states where it prints
-   * `[ProductionRoute]`: `cinematicProduction` pulls in the whole editing chain, and the boot
-   * banner must never be the thing that drags it into the web process — or that fails a boot
-   * because a describing line could not load.
-   */
-  const { cinematicPlanningEnabled } = await import("../cinematicProduction");
-  const { cinematicRenderPathEnabled } = await import("../config");
-  const cinematicPlans = cinematicPlanningEnabled();
-  const cinematicDelivers = cinematicRenderPathEnabled();
-  console.log(
-    "[Fastvid] Video pipeline:",
-    cinematicPlans && cinematicDelivers
-      ? "✓ cinematic timeline delivers the video (plan → render job → transitions/camera/captions/graphics)"
-      : cinematicPlans
-        ? "◐ cinematic timeline PLANNED and stored for the editor, but compose still delivers the video " +
-          "(set CINEMATIC_RENDER_PATH=true to deliver from the timeline)"
-        : "✗ single-pass compose (beelden + voice + jaartallen) — no separate edit/effects stage " +
-          "(set CINEMATIC_EDITING_ENGINE=true, then CINEMATIC_RENDER_PATH=true)"
-  );
+  console.log("[Fastvid] Video pipeline: ✓ cinematic timeline delivers the video (plan → render job → transitions/camera/captions/graphics)");
   console.log("[Fastvid] SERPAPI_KEY:", process.env.SERPAPI_KEY ? "✓ set" : "✗ NOT SET — celebrity image search disabled");
   console.log("[Fastvid] UNSPLASH_ACCESS_KEY:", process.env.UNSPLASH_ACCESS_KEY?.trim() ? "✓ set" : "✗ NOT SET — Unsplash image search disabled");
   // ─────────────────────────────────────────────────────────────────────────
@@ -609,7 +572,6 @@ async function startServer() {
         ),
         fishAudioFallback: fishAudioFallbackEnabled(),
         googleTtsFallback: googleTtsFallbackEnabled(),
-        externalVisualSourcingEnabled: externalVisualSourcingEnabled(),
         // Legacy keys below — configured but unused while archive-only visuals are enforced
         PEXELS_API_KEY: !!process.env.PEXELS_API_KEY,
         PIXABAY_API_KEY: !!process.env.PIXABAY_API_KEY,
@@ -617,9 +579,7 @@ async function startServer() {
         SERPAPI_KEY: !!process.env.SERPAPI_KEY,
         UNSPLASH_ACCESS_KEY: !!process.env.UNSPLASH_ACCESS_KEY?.trim(),
         youtubeSourcingEnabled: youtubeSourcingEnabled(),
-        europeanaReady: europeanaSourcingEnabled() && Boolean(process.env.EUROPEANA_API_KEY?.trim()),
         falKeySet: Boolean(process.env.FAL_KEY?.trim() || process.env.FAL_API_KEY?.trim()),
-        facelessSubtitles: facelessSubtitlesEnabled(),
         extraOnScreenText: process.env.ENABLE_EXTRA_ONSCREEN_TEXT !== "false",
         stockFootageReady:
           archivePexelsFallbackEnabled() &&
@@ -647,8 +607,7 @@ async function startServer() {
       const ok =
         probe.ready &&
         probe.sourcingEnabled &&
-        probe.searchStatus === 200 &&
-        probe.ccResultCount > 0 &&
+        probe.keyStatus === 200 &&
         probe.downloadRoute !== null;
       res.status(ok ? 200 : 503).json({ ok, ...probe });
     } catch (err) {

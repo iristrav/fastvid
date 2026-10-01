@@ -119,13 +119,6 @@ export function providerTier(provider: string): SourcingTier | null {
   return PROVIDER_TIER[provider.trim().toLowerCase()] ?? null;
 }
 
-/** Every provider on one tier, for a caller that wants to ask a whole tier at once. */
-export function providersInTier(tier: SourcingTier): string[] {
-  return Object.keys(PROVIDER_TIER)
-    .filter((p) => PROVIDER_TIER[p] === tier)
-    .sort();
-}
-
 /**
  * May `provider` be searched when `attempted` is everything tried for this beat so far?
  *
@@ -172,20 +165,3 @@ export function tierMayRun(
   return skipped.length === 0 ? { ok: true } : { ok: false, skipped };
 }
 
-/** One line, for a render log that has to be readable as a ladder. */
-export function formatTierAttempt(
-  sceneIndex: number,
-  beatIndex: number,
-  provider: string,
-  verdict: ReturnType<typeof tierMayRun>
-): string {
-  const tier = providerTier(provider);
-  const head =
-    `[SourcingTier] s${sceneIndex}b${beatIndex} provider=${provider} ` +
-    `tier=${tier ? `${tierNumber(tier)}:${tier}` : "UNTIERED"}`;
-  return verdict.ok
-    ? `${head} order=OK`
-    : `${head} order=OUT_OF_ORDER skipped=${verdict.skipped
-        .map((t) => `${tierNumber(t)}:${t}`)
-        .join(",")}`;
-}

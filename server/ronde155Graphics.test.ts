@@ -12,13 +12,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import {
-  DATA_DRIVEN_GRAPHICS,
-  RENDERABLE_GRAPHICS,
-  SHAPE_GRAPHICS,
-  graphicIsRenderable,
-  unsupportedGraphicsIn,
-} from "./remotion/components/Graphics";
+import { DATA_DRIVEN_GRAPHICS, RENDERABLE_GRAPHICS, SHAPE_GRAPHICS, graphicIsRenderable } from "./remotion/components/Graphics";
 import {
   SHAPE_PATHS,
   chartPayloadIsRenderable,
@@ -105,24 +99,6 @@ describe("RONDE 155B — renderability is decided by the payload, not the name",
     const one = { points: [{ normX: 0.1, normY: 0.2 }] };
     expect(chartPayloadIsRenderable("route", one)).toBe(false);
     expect(chartPayloadIsRenderable("multi_point", one)).toBe(true);
-  });
-
-  /**
-   * §14, as an assertion. A map with only a place name has no geography in it, so it is reported
-   * — it does not become the word "map" or a picture of a coastline nobody has data for.
-   */
-  it("a map with a NAME but no coordinate is unsupported, not approximated", () => {
-    const graphics = [
-      {
-        id: "m1", graphicType: "map_point", label: "Cupertino", data: {},
-        fromFrame: 0, durationInFrames: 48, style: null,
-        reason: "the narration names a place",
-      },
-    ];
-    const unsupported = unsupportedGraphicsIn(graphics);
-    expect(unsupported).toHaveLength(1);
-    // The payload and the planner's reason survive for a future component.
-    expect(unsupported[0]!.reason).toContain("narration");
   });
 
   it("a shape is renderable only if this build has a path for it", () => {

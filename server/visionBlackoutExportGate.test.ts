@@ -218,7 +218,7 @@ describe("providerUnavailable counts outages and nothing else", () => {
   });
 
   /** The ordinary declines must stay out of it, or a thrifty render reads as a blind one. */
-  it("budget, frame and disabled declines do not count as an outage", async () => {
+  it("budget, frame and narration declines do not count as an outage", async () => {
     const fs = await import("fs");
     const path = await import("path");
     const src = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
@@ -228,7 +228,6 @@ describe("providerUnavailable counts outages and nothing else", () => {
      * and the message is prose that may legitimately be reworded.
      */
     for (const decline of [
-      'declined("GATE_DISABLED"',
       'declined("RENDER_BUDGET_SPENT"',
       'declined("NO_FRAME"',
       'declined("NO_NARRATION"',
@@ -258,7 +257,7 @@ describe("the gate still fails open per clip", () => {
     const path = await import("path");
     const gate = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
     expect(gate, "the gate no longer fails open").toContain("Fail open, always.");
-    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).not.toContain("ENABLE_BEAT_IMAGE_RELEVANCE_GATE");
 
     const quality = fs.readFileSync(path.join(__dirname, "deliveryGate.ts"), "utf8");
     expect(quality, "the export gate is missing").toContain("assertVisionCoverageExportGate");
@@ -283,10 +282,11 @@ describe("the gate still fails open per clip", () => {
      */
     const thrown = pipe.indexOf("assertVisionCoverageExportGate(visionCoverageParams)");
     expect(thrown, "the gate is decided but never thrown").toBeGreaterThan(-1);
-    expect(
-      pipe.slice(thrown, pipe.indexOf("recordBlockedExport(videoId, url,")),
-      "the refusal no longer reaches the blocked-export recorder"
-    ).toContain("catch (gateError)");
+    /** It throws before any render job is queued, so a refused film is never rendered or published. */
+    expect(thrown, "the gate runs after the render job is queued").toBeLessThan(
+      pipe.indexOf("cutover = await enqueueCinematicRender({")
+    );
+    expect(pipe, "the refusal is caught and swallowed").not.toContain("catch (gateError)");
   });
 
   /** The existing coverage gate keeps its own job — this is a second question, not a rewrite. */

@@ -131,39 +131,6 @@ export function getBlueprintDirective(
   return blueprint.beatDirectives.get(`${sceneIndex}_${beatIndex}`) ?? null;
 }
 
-export function getBlueprintSoundCues(
-  blueprint: VideoBlueprint | null | undefined,
-  sceneIndex: number,
-  beatIndex: number
-): SoundDesignCue[] {
-  if (!blueprint) return [];
-  return blueprint.soundDesign.filter(
-    (c) => c.sceneIndex === sceneIndex && c.beatIndex === beatIndex
-  );
-}
-
-export function getBlueprintTextOverlays(
-  blueprint: VideoBlueprint | null | undefined,
-  sceneIndex: number,
-  beatIndex: number
-): TextOverlayPlan[] {
-  if (!blueprint) return [];
-  return blueprint.textOverlays.filter(
-    (t) => t.sceneIndex === sceneIndex && t.beatIndex === beatIndex
-  );
-}
-
-export function getBlueprintAnimations(
-  blueprint: VideoBlueprint | null | undefined,
-  sceneIndex: number,
-  beatIndex: number
-): AnimationCue[] {
-  if (!blueprint) return [];
-  return blueprint.animations.filter(
-    (a) => a.sceneIndex === sceneIndex && a.beatIndex === beatIndex
-  );
-}
-
 // ─── Visual repetition prevention ─────────────────────────────────────────────
 
 /**

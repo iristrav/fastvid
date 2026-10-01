@@ -50,8 +50,6 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
 
-import { createArchiveSourcingAudit } from "./archiveSourcingAudit";
-
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
 describe("RONDE 170 #2 — the funnel's curated clips carry their provenance", () => {

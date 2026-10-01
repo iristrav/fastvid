@@ -265,9 +265,4 @@ describe("RONDE 110 — an uploaded video is split at scenes, not at a stopwatch
     expect(SPLITTER).toContain("ranges = await rescanRangesForInteriorCuts(");
   });
 
-  it("an extracted clip that still holds two shots is split again", () => {
-    expect(SPLITTER).toContain("async function enforceSingleSceneClipSegments(");
-    expect(SPLITTER).toContain("still has ");
-    expect(SPLITTER).toContain("interior cut(s) → splitting into ");
-  });
 });

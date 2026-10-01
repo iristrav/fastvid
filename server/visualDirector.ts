@@ -11,9 +11,6 @@ import { inferLiteralViewerVisual } from "./viewerVisualPlan";
 import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
 import type { ScriptVisualIntentEntry } from "./scriptVisualKeywords";
 
-export const VISUAL_DIRECTOR_MIN_SEC = 3.5;
-export const VISUAL_DIRECTOR_MAX_SEC = 5;
-
 /**
  * RONDE 17: the video's overall subject, threaded into the director prompt so search queries
  * resolve pronouns and anchor to real named entities (person/place/org/event/year) instead of

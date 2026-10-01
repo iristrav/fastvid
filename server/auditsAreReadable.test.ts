@@ -39,8 +39,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import { PIPELINE_SECTION_TITLES } from "./renderReport";
-
 const read = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");
 
 /* ═══════════════════════ P24 — a name that counts what it says ═══════════════════════ */
@@ -102,15 +100,6 @@ describe("severity cannot come from the console level", () => {
     expect(onStderr).toContain("W");
     expect(onStderr).toContain("E");
     expect(onStderr).not.toContain("L");
-  });
-
-  /**
-   * So the record that CAN carry severity is the stored pipeline report, which has its own section
-   * for it. A reader looking for what went wrong should be sent there, not to a grep of the log.
-   */
-  it("the stored report has a section for warnings", () => {
-    expect(PIPELINE_SECTION_TITLES.warnings).toBeTruthy();
-    expect(Object.keys(PIPELINE_SECTION_TITLES)).toContain("warnings");
   });
 
   /** And the finding is written down where the next person will look for it. */

@@ -176,7 +176,8 @@ describe("the environment that renders checks itself before it renders", () => {
     const at = PREFLIGHT.indexOf('h.id === "clip_vision"');
     expect(at).toBeGreaterThan(-1);
     const block = PREFLIGHT.slice(at, at + 900);
-    expect(block).toContain("ENFORCE_FUNNEL_ADOPTION");
-    expect(block).toContain("enforced ? blockers : degradations");
+    /** Adoption is always enforced: there is no switch left that turns this into a degradation. */
+    expect(block).not.toContain("ENFORCE_FUNNEL_ADOPTION");
+    expect(block).toContain("blockers.push(");
   });
 });

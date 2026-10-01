@@ -6,12 +6,7 @@ import {
   detectInteriorCutTimesInFile,
   probeVideoDurationSec,
 } from "./archiveVideoSplitter";
-import {
-  filterMediaArchiveAssets,
-  getMediaArchiveAssetById,
-  getMediaArchiveAssets,
-  getMediaArchiveById,
-} from "./db";
+import { getMediaArchiveAssetById, getMediaArchiveById } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 
 export type ArchiveSceneAuditStatus =
@@ -168,16 +163,3 @@ export async function auditArchiveAssetScenes(opts: {
   return summary;
 }
 
-/** Resolve asset ids for a full-archive audit (respects search filter). */
-export async function resolveArchiveAuditTargetIds(opts: {
-  archiveId: number;
-  search?: string;
-  ids?: number[];
-}): Promise<number[]> {
-  if (opts.ids?.length) {
-    return Array.from(new Set(opts.ids));
-  }
-  const assets = await getMediaArchiveAssets(opts.archiveId);
-  const filtered = filterMediaArchiveAssets(assets, { search: opts.search });
-  return filtered.filter((a) => a.mediaType === "video").map((a) => a.id);
-}

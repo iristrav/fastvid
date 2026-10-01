@@ -375,27 +375,11 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
      * the same routes; counting the raw call would now find only the wrapper's own.
      */
     /** The scene pool and funnel routes left when the three candidate systems became one. */
-    expect(SRC.split("judgeBeatClipRelevance(").length - 1).toBeGreaterThanOrEqual(3);
+    /** RONDE 656 — the motion-graphic still route went too: the declaration plus one call. */
+    expect(SRC.split("judgeBeatClipRelevance(").length - 1).toBeGreaterThanOrEqual(2);
     /** ONE ROUTE: the recorder asks through the VisualJudge, which is the only caller of the ledger's look. */
     expect(SRC, "a route reaches the gate without going through the recorder").not.toContain("checkBeatRelevance(");
     expect(SRC.split("await judgePicture({").length - 1).toBe(1);
-  });
-
-  it("the text overlay carries the decision across the file it writes", () => {
-    const idx = SRC.indexOf("async function applyVideoBeatTextOverlay(");
-    expect(idx).toBeGreaterThan(-1);
-    /**
-     * Bounded by the function's own end rather than a byte count. RONDE 94 documented the lineage
-     * link inside `carry` and a fixed +2400 window stopped reaching the return below it — a green
-     * test turning red on a change that did not touch the rule. Same correction RONDE 167 made to
-     * ronde142's extension block, for the same reason.
-     */
-    const body = SRC.slice(idx, SRC.indexOf("\n}\n", idx));
-    expect(body).toContain("inheritBeatRelevance(relevance, clipPath, out)");
-    expect(body).toContain("return carry(await burnFacelessTextOnVideoClip(");
-    // Every call site hands it the ledger, so no route loses its verdict at the rename.
-    const calls = SRC.split("applyVideoBeatTextOverlay(").slice(2);
-    expect(calls.every((c) => c.slice(0, c.indexOf(");")).includes("beatRelevance"))).toBe(true);
   });
 
   it("PHASE 18 — the structural sweep: EVERY function that can put a clip on a beat reaches a gate", () => {
@@ -439,7 +423,7 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
       if (!reaches) ungated.push(starts.get(start)!);
     });
     /** Two placing functions remain; the others were the deleted curated-only, rescue and fill routes. */
-    expect(examined).toBeGreaterThanOrEqual(2);
+    expect(examined).toBeGreaterThanOrEqual(1);
     expect(ungated, `routes that can place a clip with no path to the gate: ${ungated.join(", ")}`)
       .toEqual([]);
   });

@@ -2,14 +2,9 @@ import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 import { decideModernContentMismatch } from "./localClipVision";
-import {
-  detectImageMimeFromBuffer,
-  imageMimeToDataUrl,
-  isVisionSupportedImageMime,
-  prepareImageForVision,
-} from "./archiveClipFilter";
+import { detectImageMimeFromBuffer, imageMimeToDataUrl, prepareImageForVision } from "./archiveClipFilter";
 import { expandAnchorToKnownPerson } from "./mediaResearchEngine";
-import { stubPowerWordFromSceneText } from "./curatedMediaSourcing";
+
 import { hasContentAnchor } from "./searchQueryContract";
 
 // RONDE 26 — four defects found by re-reading the renders 525/526/527 logs end to end.
@@ -125,14 +120,6 @@ const tiffBytes = (): Buffer =>
   Buffer.concat([Buffer.from([0x49, 0x49, 0x2a, 0x00]), Buffer.alloc(300)]);
 
 describe("RONDE 26b — only formats the vision models accept ever reach them", () => {
-  it("knows which mimes are safe", () => {
-    expect(isVisionSupportedImageMime("image/jpeg")).toBe(true);
-    expect(isVisionSupportedImageMime("IMAGE/PNG")).toBe(true);
-    expect(isVisionSupportedImageMime("image/webp; charset=binary")).toBe(true);
-    expect(isVisionSupportedImageMime("image/tiff")).toBe(false);
-    expect(isVisionSupportedImageMime("image/svg+xml")).toBe(false);
-    expect(isVisionSupportedImageMime("image/bmp")).toBe(false);
-  });
 
   it("never labels a data URL with a mime the endpoint rejects", () => {
     // This is the exact shape that produced 38 x "400 unsupported image": the declared label was
@@ -175,10 +162,14 @@ describe("RONDE 26b — both image call sites are guarded, and both still fail o
     );
     expect(fn).toContain("prepareImageForVision(buf, mimeType)");
     expect(fn).toContain("if (!prepared) return NOT_ASKED(");
-    /** And the boolean the callers use still collapses that to "no text found". */
-    expect(filterSrc).toContain(
-      `return (await archiveClipBakedEditTextVerdict(media, mimeType, opts)).verdict === "has_text";`
-    );
+    /** And the one judge every caller asks still collapses that to "no text found". */
+    const judge = readFileSync(path.join(__dirname, "visualJudge.ts"), "utf8");
+    const at = judge.indexOf("export async function judgeOnScreenText(");
+    const body = judge.slice(at, judge.indexOf("\n/**", at));
+    /** The one reader (VisualJudge, code audit): "nobody looked" is an accept, never a refusal. */
+    expect(body).toContain('if (result.verdict === "not_asked") {');
+    expect(body).toContain('...accept("on_screen_text", "not_asked", 0)');
+    expect(body).toContain('if (result.verdict === "has_text") {');
   });
 });
 
@@ -217,54 +208,6 @@ describe("RONDE 26c — a first name is completed, never replaced", () => {
   it("handles empty input without throwing", () => {
     expect(expandAnchorToKnownPerson("", names)).toBe("");
     expect(expandAnchorToKnownPerson("   ", names)).toBe("");
-  });
-});
-
-describe("RONDE 26c — the scene-pool stand-in topic is about the subject", () => {
-  it("picks the named subject, not the first longish word", () => {
-    // The old rule, "first word longer than four letters", returned "chaos" here.
-    const text = "In the dim chaos of the Fuhrerbunker, Adolf Hitler's plans collapsed.";
-    expect(stubPowerWordFromSceneText(text)).toBe("Adolf Hitler");
-  });
-
-  it("falls back to a single mid-sentence proper noun", () => {
-    expect(stubPowerWordFromSceneText("The bunker beneath Berlin was silent.")).toBe("Berlin");
-  });
-
-  it("does not glue two names together across a comma", () => {
-    // "…the Fuhrerbunker, Adolf Hitler's plans…" must not yield "Fuhrerbunker Adolf".
-    expect(stubPowerWordFromSceneText("Inside the Fuhrerbunker, Adolf Hitler waited.")).toBe(
-      "Adolf Hitler",
-    );
-  });
-
-  it("ignores the sentence-initial capital, which is grammar not meaning", () => {
-    expect(stubPowerWordFromSceneText("Hitler returned to Berlin.")).toBe("Berlin");
-  });
-
-  it("falls back to a content word rather than a connective", () => {
-    const picked = stubPowerWordFromSceneText("although everything changed between those moments");
-    expect(picked).toBe("everything");
-  });
-
-  it("still yields a defined value for text with nothing in it", () => {
-    /**
-     * RONDE 223 re-anchor. The intent stays — this function answers for empty input instead of
-     * throwing — and the answer changes, because the old one was never usable.
-     *
-     * It returned the literal "documentary", and `hasContentAnchor("documentary")` is false: the
-     * search gate refuses it on sight, so that value could not once have become a query. Render
-     * 575 sent it 80 times and was refused 80 times while the scene it was for ran out of time.
-     * "A usable value" was the claim; the gate had already disproved it.
-     *
-     * `powerWord` is optional at every reader — `beat.powerWord?.trim()`, `?? searchQuery ?? ""`,
-     * `if (powerWord?.trim() && powerWord.length >= 3)` — so an empty string is a value they
-     * already handle, and it is the honest one when the scene offers no subject.
-     */
-    expect(stubPowerWordFromSceneText("")).toBe("");
-    expect(stubPowerWordFromSceneText("a b c d")).toBe("");
-    /** The reason the old answer was wrong, asserted rather than described. */
-    expect(hasContentAnchor("documentary")).toBe(false);
   });
 });
 

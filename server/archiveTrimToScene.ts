@@ -161,10 +161,3 @@ export async function trimArchiveAsset(
   }
 }
 
-/** Backwards-compatible alias: cut everything after `cutSec`. */
-export async function trimArchiveAssetToFirstScene(
-  asset: MediaArchiveAsset,
-  cutSec: number
-): Promise<{ assetId: number; newDurationSec: number }> {
-  return trimArchiveAsset(asset, { startSec: 0, endSec: cutSec });
-}

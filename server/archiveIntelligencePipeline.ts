@@ -66,15 +66,7 @@ import { promisify } from "util";
 import { annotateAsset, buildEnrichedSemanticDocument, ANNOTATION_VERSION } from "./clipAnnotator";
 import { computeEditorialIntent, editorialIntentEnabled } from "./editorialIntentEngine";
 import { buildTemporalSceneProfile, temporalSceneEnabled } from "./temporalSceneIntelligence";
-import {
-  ingestionV2Enabled,
-  refineShotBoundaries,
-  deriveShotClassification,
-  detectTimedAudioEvents,
-  filterAudioEventsForClip,
-  extractOcrNamedEntities,
-  buildIngestionLog,
-} from "./archiveIngestionV2";
+import { ingestionV2Enabled, refineShotBoundaries, deriveShotClassification, filterAudioEventsForClip, extractOcrNamedEntities, buildIngestionLog } from "./archiveIngestionV2";
 import { invokeLLM } from "./_core/llm";
 import type {
   ClipAnnotation,

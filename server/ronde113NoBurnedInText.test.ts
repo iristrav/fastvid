@@ -104,7 +104,6 @@ describe("RONDE 113 — the default is no text", () => {
 describe("RONDE 113 — every text engine is held off", () => {
   const gates: Array<[string, () => Promise<boolean>]> = [
     ["editorialGraphics", async () => (await import("./editorialGraphicsEngine")).editorialGraphicsEnabled()],
-    ["facelessSubtitles", async () => (await import("./sourcingPolicy")).facelessSubtitlesEnabled()],
     ["extraOnScreenText", async () => (await import("./sourcingPolicy")).extraOnScreenTextEnabled()],
     ["motionGraphics", async () => (await import("./sourcingPolicy")).motionGraphicsInVideosEnabled()],
   ];
@@ -134,24 +133,11 @@ describe("RONDE 113 — every text engine is held off", () => {
 
 describe("RONDE 113 — the cinematic overlays draw nothing", () => {
 
-  it("the two label builders refuse on their own too, not only at the call site", () => {
-    /**
-     * buildIntervalScreenLabelOverlays and buildBeatAlignedYearOverlays were reachable only
-     * through screenLabelsEnabled() at the call site. That gate is closed now as well, but a
-     * call-site gate is one `if` a future caller can forget and these builders' whole output is
-     * text — so they refuse for themselves.
-     */
-    for (const fn of ["buildIntervalScreenLabelOverlays", "buildBeatAlignedYearOverlays"]) {
-      const idx = CINEMATIC.indexOf(`export async function ${fn}(`);
-      expect(idx, fn).toBeGreaterThan(-1);
-      expect(CINEMATIC.slice(idx, idx + 900), fn).toContain("if (!burnedInTextAllowed()) return [];");
-    }
-  });
-
-  it("both motion-graphics entry points refuse independently", () => {
+  it("RONDE 656 — the motion-graphic stills are gone: no module draws text into a clip before the timeline", () => {
     const mg = fs.readFileSync(path.join(__dirname, "motionGraphicsEngine.ts"), "utf8");
-    expect(mg).toContain("if (!plan || !motionGraphicsEnabled()) return false;");
-    expect(mg).toContain("if (!motionGraphicsEnabled()) return null;");
+    expect(mg).not.toContain("drawtext");
+    expect(PIPELINE).not.toContain("pushMotionGraphicBeatClipIfAny");
+    expect(PIPELINE).not.toContain("resolveStillImageFilterComplex");
   });
 });
 
@@ -165,7 +151,6 @@ describe("RONDE 113 — every drawtext module is accounted for", () => {
    */
   const REACHABLE_AND_GATED = [
     "editorialGraphicsEngine.ts",
-    "motionGraphicsEngine.ts",
     "cinematicEffectsEngine.ts",
     "documentaryStyle.ts",
     "videoPipeline.ts",
@@ -216,11 +201,11 @@ describe("RONDE 113 — every drawtext module is accounted for", () => {
 
 describe("RONDE 113 — what this deliberately does not touch", () => {
   /**
-   * VIDEO 619 — subtitles are no longer a per-video switch in the dashboard. Every text, subtitles
-   * included, arrives switched off and is turned on in the editor (`leaveOnScreenTextToTheEditor`),
-   * so there is no request field left for this policy to override.
+   * VIDEO 619 — subtitles are no longer a per-video switch in the dashboard. RONDE 656: they are
+   * always in the made video (`leaveOnScreenTextToTheEditor` leaves CAPTIONS on), so there is no
+   * request field left for this policy to override.
    */
-  it("subtitles are turned on in the editor, not by a per-video switch", () => {
+  it("subtitles are not a per-video switch", () => {
     const routers = fs.readFileSync(path.join(__dirname, "routers.ts"), "utf8");
     expect(routers).not.toContain("enableSubtitles: z.boolean()");
     expect(routers).toContain("enableSubtitles: 0,");

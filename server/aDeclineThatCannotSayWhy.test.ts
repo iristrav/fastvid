@@ -63,36 +63,26 @@ describe("P0-7 §1 — every decline says which decline it is", () => {
   it("EVERY `declined(` CALL PASSES A CAUSE — the parameter is leading and required", () => {
     /** Offsets, so a failure names the line rather than leaving it to be hunted. */
     const sites = callSitesOf(GATE, "declined");
-    expect(sites.length, "the gate stopped declining anywhere").toBeGreaterThanOrEqual(7);
+    expect(sites.length, "the gate stopped declining anywhere").toBeGreaterThanOrEqual(6);
     for (const at of sites) {
       const site = GATE.slice(at, at + 60);
       expect(site, `a decline named no cause at line ${lineOf(GATE, at)}`).toMatch(
-        /declined\(\s*"(GATE_DISABLED|NO_NARRATION|RENDER_BUDGET_SPENT|BEAT_LOOK_CEILING|NO_FRAME|FRAMES_UNREADABLE|PROVIDER_UNREACHABLE|PROVIDER_UNAVAILABLE)"/
+        /declined\(\s*"(NO_NARRATION|RENDER_BUDGET_SPENT|BEAT_LOOK_CEILING|NO_FRAME|FRAMES_UNREADABLE|PROVIDER_UNREACHABLE|PROVIDER_UNAVAILABLE)"/
       );
     }
   });
 
   it("and the relevance layer's own two declines do the same", () => {
-    for (const cause of ["GATE_DISABLED", "NO_NARRATION", "BEAT_LOOK_CEILING"]) {
+    for (const cause of ["NO_NARRATION", "BEAT_LOOK_CEILING"]) {
       expect(RELEVANCE, `pass() lost its ${cause} cause`).toContain(`pass("${cause}"`);
     }
   });
 
-  it("A GATE THAT IS OFF DECLINES WITH GATE_DISABLED — the one decline reachable without a model", async () => {
-    const before = process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE;
-    try {
-      process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE = "false";
-      const j = await judgeBeatImage({
-        framePaths: [],
-        beatText: "a line of narration",
-        contentKey: "test:1",
-        state: createBeatImageGateState(),
-      });
-      expect(j.evaluated).toBe(false);
-      expect(j.declineCause).toBe("GATE_DISABLED");
-    } finally {
-      if (before === undefined) delete process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE;
-      else process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE = before;
+  it("THE GATE CANNOT BE SWITCHED OFF — so no decline means 'it was off'", () => {
+    /** The code audit removed ENABLE_BEAT_IMAGE_RELEVANCE_GATE: the picture judge is always asked. */
+    for (const src of [GATE, RELEVANCE]) {
+      expect(src).not.toContain("GATE_DISABLED");
+      expect(src).not.toContain("ENABLE_BEAT_IMAGE_RELEVANCE_GATE");
     }
   });
 
@@ -153,7 +143,6 @@ describe("P0-7 §2 — a taxonomy member with no producer is a comment, not a me
     "VISION_BUDGET_EXHAUSTED",
     "PREPARATION_FAILURE",
     "VISION_UNAVAILABLE",
-    "VISION_GATE_DISABLED",
     "NO_NARRATION_TO_JUDGE",
   ];
 
@@ -166,7 +155,6 @@ describe("P0-7 §2 — a taxonomy member with no producer is a comment, not a me
     const produced = new Set(
       (
         [
-          "GATE_DISABLED",
           "NO_NARRATION",
           "RENDER_BUDGET_SPENT",
           "BEAT_LOOK_CEILING",
@@ -185,14 +173,6 @@ describe("P0-7 §2 — a taxonomy member with no producer is a comment, not a me
   it("both look ceilings are the same finding for the funnel, and it is the budget one", () => {
     expect(notAskedReasonForDecline("RENDER_BUDGET_SPENT")).toBe("VISION_BUDGET_EXHAUSTED");
     expect(notAskedReasonForDecline("BEAT_LOOK_CEILING")).toBe("VISION_BUDGET_EXHAUSTED");
-  });
-
-  it("A DISABLED GATE IS NOT AN OUTAGE — the two would send an operator to opposite places", () => {
-    expect(notAskedReasonForDecline("GATE_DISABLED")).toBe("VISION_GATE_DISABLED");
-    expect(notAskedReasonForDecline("PROVIDER_UNREACHABLE")).toBe("VISION_UNAVAILABLE");
-    expect(notAskedReasonForDecline("GATE_DISABLED")).not.toBe(
-      notAskedReasonForDecline("PROVIDER_UNREACHABLE")
-    );
   });
 
   it("undecodable bytes are a PREPARATION failure, not a provider one", () => {
@@ -287,9 +267,8 @@ describe("P0-7 §4 — which kind of decline, as three numbers", () => {
   it("A RENDER WITH NO PICTURE EDITOR IS BLIND, AND NOTHING ELSE", () => {
     const c = census([
       ["VISION_UNAVAILABLE", 219],
-      ["VISION_GATE_DISABLED", 9],
     ]);
-    expect(c.blind).toBe(228);
+    expect(c.blind).toBe(219);
     expect(c.starved).toBe(0);
     expect(c.settled).toBe(0);
   });
@@ -325,7 +304,7 @@ describe("P0-7 §4 — which kind of decline, as three numbers", () => {
       "SHORTLIST_SOURCE_SHARE", "VISION_BUDGET_EXHAUSTED", "VISION_UNAVAILABLE", "DUPLICATE",
       "REJECTED_BY_EDITOR", "UNCLEAR_BY_EDITOR", "PROVIDER_FAILURE", "DOWNLOAD_FAILURE",
       "PREPARATION_FAILURE", "NOT_REACHED", "POLICY_BLOCKED", "ADOPTED_WITHOUT_JUDGEMENT",
-      "VISION_GATE_DISABLED", "NO_NARRATION_TO_JUDGE", "DECLINE_CAUSE_NOT_REPORTED",
+      "NO_NARRATION_TO_JUDGE", "DECLINE_CAUSE_NOT_REPORTED",
     ];
     const c = census(ALL.map((r) => [r, 1] as [NotAskedReason, number]));
     expect(c.blind + c.starved + c.settled + c.unattributed).toBe(ALL.length);

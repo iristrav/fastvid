@@ -145,24 +145,3 @@ export function maxGenerationEstimateSec(videoLength?: string | null): number {
   return generationBudgetMinutes(videoLength, ratio) * 60;
 }
 
-/** Estimate seconds remaining from elapsed time and progress percent. */
-export function estimateRemainingGenerationSec(
-  progressPercent: number,
-  elapsedSec: number,
-  maxTotalSec?: number
-): number | null {
-  if (progressPercent >= 99) return 0;
-  if (progressPercent < 3 || elapsedSec < 8) return null;
-
-  const fromPercent = Math.round((elapsedSec * (100 - progressPercent)) / progressPercent);
-  if (maxTotalSec != null) {
-    return Math.max(0, Math.min(fromPercent, maxTotalSec - elapsedSec));
-  }
-  return Math.max(0, fromPercent);
-}
-
-export function formatRemainingGenerationLabel(remainingSec: number | null): string {
-  if (remainingSec === null) return "Estimating time left…";
-  if (remainingSec <= 0) return "Almost done…";
-  return `~${formatGenerationDuration(remainingSec)} left`;
-}

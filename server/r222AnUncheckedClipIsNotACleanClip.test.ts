@@ -122,12 +122,6 @@ describe("R222 §2 — the verdict function names why nobody looked", () => {
 
 describe("R222 §3 — the cascade still fails open", () => {
 
-  it("the standalone boolean does too", () => {
-    const at = FILTER.indexOf("export async function archiveClipHasBakedEditText(");
-    const fn = FILTER.slice(at, at + 500);
-    expect(fn).toContain(`.verdict === "has_text"`);
-  });
-
   it("NO NEW REJECTION was introduced anywhere in the filter", () => {
     /**
      * The one place a clip is refused is ingestion, and only on a real `has_text`. If a second
@@ -141,11 +135,6 @@ describe("R222 §3 — the cascade still fails open", () => {
     expect(refusals.length).toBe(1);
   });
 
-  it("the segment check keeps its fail-open, and says so explicitly", () => {
-    const at = FILTER.indexOf("export async function archiveSegmentHasOnScreenText(");
-    const fn = FILTER.slice(at, at + 1600);
-    expect(fn).toContain("=== true");
-  });
 });
 
 /* ═══════════ 4. the permanent row stops lying ═══════════ */

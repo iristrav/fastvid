@@ -51,21 +51,3 @@ export async function summarizeArchiveHealthCached(): Promise<ArchiveHealthSumma
   return data;
 }
 
-/** Run bulk geo-retag across all archives (optional admin script — not required for matching). */
-export async function runBulkGeoRetagAllArchives(): Promise<{
-  archives: number;
-  processed: number;
-  updated: number;
-}> {
-  const { bulkRetagArchiveGeo } = await import("./archiveBulkGeoRetag");
-  const { getAllMediaArchives } = await import("./db");
-  const archives = await getAllMediaArchives();
-  let processed = 0;
-  let updated = 0;
-  for (const archive of archives) {
-    const result = await bulkRetagArchiveGeo({ archiveId: archive.id });
-    processed += result.processed;
-    updated += result.updated;
-  }
-  return { archives: archives.length, processed, updated };
-}

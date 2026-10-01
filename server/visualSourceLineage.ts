@@ -3055,19 +3055,6 @@ export type ClipOutcomeIdentity = {
   contentKey?: string;
 };
 
-export function resolveClipOutcomeIdentity(
-  ledger: VisualSourceLedger | undefined,
-  clipPath: string,
-  contentKey?: string
-): ClipOutcomeIdentity {
-  if (!ledger || !clipPath) return { record: null, via: "none", contentKey };
-  const record = ledger.resolve(clipPath, contentKey);
-  if (!record) return { record: null, via: "none", contentKey };
-  if (record.localPath === clipPath) return { record, via: "path", contentKey };
-  if (ledger.derivationOriginOf(clipPath)) return { record, via: "derived", contentKey };
-  return { record, via: "contentKey", contentKey: contentKey ?? record.contentKey };
-}
-
 /**
  * RONDE 167 §8 — the hard invariant: a chosen asset owes the render an ending.
  *

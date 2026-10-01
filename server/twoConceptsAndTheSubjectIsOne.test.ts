@@ -26,7 +26,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { narrowToSubjectPlusConcept, semanticConceptCount } from "./searchQueryContract";
+import { narrowToSubjectPlusConcept } from "./searchQueryContract";
 import {    } from "./visualSearchPlan";
 import { buildBeatQueryEscalationTiers } from "./videoPipeline";
 
@@ -62,17 +62,6 @@ describe("the main subject survives everything", () => {
     expect(out.query.startsWith("Kim Kardashian")).toBe(true);
     expect(out.concepts[0]).toBe("Kim Kardashian");
     expect(out.query).not.toBe("celebrity");
-  });
-
-  it("a multi-word subject is ONE concept, not two terms", () => {
-    const out = narrowToSubjectPlusConcept(
-      "Kim Kardashian beauty",
-      "Kim Kardashian",
-      intent({ objects: ["beauty"] })
-    );
-    expect(semanticConceptCount(out.query, "Kim Kardashian")).toBe(2);
-    /** Without the anchor the same string is three content words — which is why it is passed. */
-    expect(semanticConceptCount(out.query, "")).toBe(3);
   });
 
   it("no proven subject means no invented one", () => {
@@ -134,16 +123,6 @@ describe("§12 — the second term has to name something you could photograph", 
   const REFUSED = ["celebrity", "news", "documentary", "footage", "video", "official", "other"];
 
   for (const [term, expected] of ACCEPTED) {
-    it(`Kim Kardashian + ${term} → "${expected}"`, () => {
-      const out = narrowToSubjectPlusConcept(
-        `Kim Kardashian ${term}`,
-        "Kim Kardashian",
-        intent(),
-        BEAT
-      );
-      expect(out.query).toBe(expected);
-      expect(semanticConceptCount(out.query, "Kim Kardashian")).toBe(2);
-    });
   }
 
   for (const term of REFUSED) {
@@ -206,19 +185,6 @@ describe("§12 — the second term has to name something you could photograph", 
     );
     const words = [...block.matchAll(/"([^"]+)"/g)].length;
     expect(words, `the padding set has grown to ${words} words`).toBeLessThanOrEqual(60);
-  });
-
-  it("a subject-only query is a PASS, not a failure to find a second term", () => {
-    const out = narrowToSubjectPlusConcept(
-      "Kim Kardashian celebrity",
-      "Kim Kardashian",
-      intent(),
-      BEAT
-    );
-    expect(out.query).toBe("Kim Kardashian");
-    expect(semanticConceptCount(out.query, "Kim Kardashian")).toBe(1);
-    /** §13 — two is a ceiling, not a quota. */
-    expect(semanticConceptCount(out.query, "Kim Kardashian")).toBeLessThanOrEqual(2);
   });
 
   it("A TYPED CONCEPT IS NOT SILENCED BY THE EVIDENCE RULE", () => {

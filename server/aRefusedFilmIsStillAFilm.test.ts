@@ -59,8 +59,8 @@ describe("the refusal itself is unchanged", () => {
   it("and the message still names the way out without recommending the shortcut", () => {
     const refusal = visionCoverageRefusal(RENDER_580)!;
     expect(refusal).toContain("Restore a vision provider");
-    /** The escape hatch is named with its price attached, never as advice. */
-    expect(refusal).toContain("only if you accept unjudged footage");
+    /** There is no escape hatch: the picture editor cannot be switched off. */
+    expect(refusal).toContain("The picture editor cannot be switched off.");
   });
 
   it("BOTH CONDITIONS ARE STILL REQUIRED — a thrifty render is not a blind one", () => {
@@ -107,11 +107,11 @@ describe("the refused film is kept where the operator can see it", () => {
 
   it("the operator hears about it at the moment it is decided, not only at the end", () => {
     /**
-     * Sixty-three minutes is a long time to be told nothing. The render still finishes the assembly
-     * — that is the point — but the log says why from the moment the evidence is in.
+     * Sixty-three minutes is a long time to be told nothing: the log says why from the moment the
+     * evidence is in, and the render then ends as failed at the export gates.
      */
     expect(PIPE).toContain("[VisionCoverage] EXPORT WILL BE BLOCKED");
-    expect(PIPE).toContain("finishing the assembly anyway so the refused film can be looked at");
+    expect(PIPE).toContain("the render ends as failed at the export gates; nothing is uploaded");
   });
 
   it("IT IS REPORTED BEFORE THE OTHER EXPORT GATES", () => {
@@ -130,11 +130,17 @@ describe("nothing was weakened to stop losing the film", () => {
   const REPORT = readFileSync(join(__dirname, "deliveryGate.ts"), "utf8");
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("A BLOCKED EXPORT IS STILL failed, NEVER completed", () => {
+  /**
+   * RONDE 656 — a refused film is not uploaded at all: the DeliveryGate refuses before the upload,
+   * so there is no "refused but watchable" record to keep (recordBlockedExport is gone).
+   */
+  it("A BLOCKED EXPORT IS failed and never uploaded", () => {
     const DB = readFileSync(join(__dirname, "db.ts"), "utf8");
-    const fn = DB.slice(DB.indexOf("export async function recordBlockedExport"));
-    expect(fn.slice(0, 900)).toContain('status: "failed"');
-    expect(fn.slice(0, 900)).toContain("videoUrl,");
+    expect(DB).not.toContain("recordBlockedExport");
+    const WORKER = readFileSync(join(__dirname, "renderJobWorker.ts"), "utf8");
+    const refuse = WORKER.indexOf("return await fail(RENDER_ERROR.RENDER_FAILED, formatDeliveryBlock(gate, job.videoId));");
+    expect(refuse).toBeGreaterThan(-1);
+    expect(refuse).toBeLessThan(WORKER.indexOf('await phase("uploading");'));
   });
 
   it("the gate keeps both of its conditions in the source, not only in the tests", () => {

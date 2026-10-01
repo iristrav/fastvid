@@ -23,10 +23,6 @@ import {
   buildScriptLengthRefinePrompt,
 } from "./scriptWriter";
 
-export function scriptEngineV2Enabled(): boolean {
-  return process.env.SCRIPT_ENGINE_V2 !== "false";
-}
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type SceneFunction =

@@ -1,26 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildClipRanges,
-  capClipRanges,
-  combineShotCutTimes,
-  archiveUploadRequestTimeoutMs,
-  enforceMinClipDuration,
-  mapPool,
-  maxArchiveClips,
-  maxArchiveUploadBytes,
-  maxArchiveVideoDurationSec,
-  mergeFlashFragmentsOnly,
-  mergeNearbyCuts,
-  normalizeWindowCutTimes,
-  parsePtsTimesFromFfmpeg,
-  parseScdetTimesFromFfmpeg,
-  refineClipRangesWithInteriorCuts,
-  splitBudgetMs,
-  splitRangeAtInteriorCuts,
-  filterClipRangesBelowMinDuration,
-  archiveStoredDurationSec,
-  minSavedArchiveClipSec,
-} from "./archiveVideoSplitter";
+import { buildClipRanges, capClipRanges, combineShotCutTimes, archiveUploadRequestTimeoutMs, enforceMinClipDuration, mapPool, maxArchiveClips, maxArchiveUploadBytes, mergeFlashFragmentsOnly, mergeNearbyCuts, parsePtsTimesFromFfmpeg, parseScdetTimesFromFfmpeg, refineClipRangesWithInteriorCuts, splitBudgetMs, splitRangeAtInteriorCuts, filterClipRangesBelowMinDuration, archiveStoredDurationSec, minSavedArchiveClipSec } from "./archiveVideoSplitter";
 
 describe("archiveVideoSplitter", () => {
   it("mergeNearbyCuts dedupes duplicate detections of the same cut", () => {
@@ -180,20 +159,6 @@ describe("archiveVideoSplitter", () => {
     // RONDE 30: was 300. DEFAULT_MAX_CLIPS is deliberately "no practical limit" now — the
     // video's own length decides how many clips it yields, not a fixed ceiling.
     expect(maxArchiveClips()).toBeGreaterThan(300);
-  });
-
-  it("normalizeWindowCutTimes offsets relative window timestamps", () => {
-    expect(normalizeWindowCutTimes([1.5, 4.2], 10, 20)).toEqual([11.5, 14.2]);
-  });
-
-  it("defaults support long source video within the 60 min split budget", () => {
-    // RONDE 30: was an exact 7200 (2 hours); the ceiling has been raised well past that.
-    // Asserting the property — at least two hours of source is accepted — instead of the number.
-    expect(maxArchiveVideoDurationSec()).toBeGreaterThanOrEqual(7200);
-    expect(splitBudgetMs()).toBe(3_600_000);
-    // RONDE 30: was an exact 2 GiB; the upload ceiling has been raised since.
-    expect(maxArchiveUploadBytes()).toBeGreaterThanOrEqual(2048 * 1024 * 1024);
-    expect(archiveUploadRequestTimeoutMs()).toBeGreaterThan(splitBudgetMs());
   });
 
   it("filterClipRangesBelowMinDuration drops sub-min shots without merging scenes", () => {

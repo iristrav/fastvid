@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decadeOf, dropSubsumedTerms } from "./semanticVisualMatching";
-import { isOffTopicProtestForBeat, isProtestVisualHay, inferVideoVisualTopic } from "./visualBeatTags";
+import { inferVideoVisualTopic } from "./visualBeatTags";
 import { rapidApiYoutubeMetaDurationSec } from "./videoPipeline";
 
 /**
@@ -78,10 +78,10 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
 
   it("it fails open, like every other copy of this gate", () => {
     const mod = MODULE();
-    // Every decline — gate off, no narration, no frame, budget spent, ceiling reached, a model
+    // Every decline — no narration, no frame, budget spent, ceiling reached, a model
     // outage — returns allowed:true. Only a definite refusal does not.
     /** P0-7: `pass` gained a leading cause. It still passes — that is what this guards. */
-    expect(mod).toContain('if (!beatImageRelevanceGateEnabled()) return pass("GATE_DISABLED", "unknown", "gate disabled");');
+    expect(mod).not.toContain("GATE_DISABLED");
     expect(mod).toContain('if (!ctx.beatText?.trim()) return pass("NO_NARRATION", "unknown", "no narration to judge against");');
     expect(mod).toContain("allowed: true");
     /**
@@ -123,8 +123,6 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
 });
 
 describe("RONDE 62 #2 — the YouTube duration comes from the call that works", () => {
-
-
 
   it("the planner is handed the length the caller already knows", () => {
     const src = PIPELINE();
@@ -206,53 +204,6 @@ describe("RONDE 62 #4 — the queries stop containing nonsense", () => {
     expect(src).toContain("dropSubsumedTerms(");
   });
 });
-
-describe("RONDE 62 #6 — the protest gate can finally fire", () => {
-  const BEAT = "In April 1945, Adolf Hitler married Eva Braun";
-  const topic = () => inferVideoVisualTopic("Why Hitler Chose Death", BEAT);
-
-  it("recognises the two clips that actually got into render 532", () => {
-    for (const hay of [
-      "white lives matter alabama roadside activism",
-      "white lives matter montana activism in b",
-    ]) {
-      expect(isProtestVisualHay(hay)).toBe(true);
-      expect(isOffTopicProtestForBeat(BEAT, hay, topic())).toBe(true);
-    }
-  });
-
-  it("'activism' was the word it could not see — 'activists' it always could", () => {
-    expect(isProtestVisualHay("climate activism")).toBe(true);
-    expect(isProtestVisualHay("climate activists")).toBe(true);
-  });
-
-  it("catches the movement names and rallies too", () => {
-    for (const hay of ["black lives matter march", "a blm rally", "antifa counter-protest", "placards raised"]) {
-      expect(isProtestVisualHay(hay)).toBe(true);
-    }
-  });
-
-  it("genuine period footage still survives the era escape hatch", () => {
-    // A Nazi rally reel says so in its own metadata, and is kept.
-    expect(isOffTopicProtestForBeat(BEAT, "Nazi party rally Nuremberg 1934", topic())).toBe(false);
-    expect(isOffTopicProtestForBeat(BEAT, "Bundesarchiv demonstration reel", topic())).toBe(false);
-    expect(isOffTopicProtestForBeat(BEAT, "1953 East Berlin uprising newsreel", topic())).toBe(false);
-  });
-
-  it("a beat that IS about protests still accepts protest footage", () => {
-    expect(
-      isOffTopicProtestForBeat("Crowds took to the streets in protest", "white lives matter activism", topic())
-    ).toBe(false);
-  });
-
-  it("ordinary footage is not suddenly protest footage", () => {
-    for (const hay of ["berlin street 1945", "a bunker corridor", "soldiers marching", "typewriter close up"]) {
-      expect(isProtestVisualHay(hay)).toBe(false);
-    }
-  });
-
-});
-
 
 describe("RONDE 62 #5 — the stock rescue stops asking once the answer is clearly no", () => {
 

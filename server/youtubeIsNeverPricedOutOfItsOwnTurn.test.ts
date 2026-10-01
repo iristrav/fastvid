@@ -42,19 +42,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import {
-  withSceneFetchTimeout,
-  remainingScopeMs,
-  remainingNonYoutubeScopeMs,
-  reserveYoutubeTurn,
-  transferReserveFor,
-  youtubeBeatFetchTimeoutMs,
-  youtubeBeatWallSupplementMs,
-  TRANSFER_RESERVE_MS,
-  YOUTUBE_MIN_TURN_MS,
-  YOUTUBE_SEARCH_TIMEOUT_MS,
-  YOUTUBE_TURN_WINDOW_MS,
-} from "./videoPipeline";
+import { withSceneFetchTimeout, remainingScopeMs, reserveYoutubeTurn, transferReserveFor, youtubeBeatFetchTimeoutMs, youtubeBeatWallSupplementMs, TRANSFER_RESERVE_MS, YOUTUBE_MIN_TURN_MS, YOUTUBE_SEARCH_TIMEOUT_MS, YOUTUBE_TURN_WINDOW_MS } from "./videoPipeline";
 
 const PIPELINE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -133,12 +121,11 @@ describe("§1 — a window handed to a turn is never below what a turn needs", (
   it("a window that could already pay is untouched — this is a floor, not a raise", () => {
     const saved = { ...process.env };
     try {
-      delete process.env.REAL_FOOTAGE_FIRST; // REAL_FOOTAGE_FIRST defaults ON
-      /** 55s on Railway, 70s elsewhere, and 80s by default: all above the floor. */
+      /** 55s on Railway, 70s elsewhere: both above the floor (REAL_FOOTAGE_FIRST's value, now fixed). */
       expect(youtubeBeatFetchTimeoutMs()).toBeGreaterThanOrEqual(55_000);
-      /** The asks themselves are the ones that were always there. */
-      expect(PIPELINE).toContain("if (realFootageFirstEnabled()) return IS_RAILWAY ? 55_000 : 70_000;");
-      expect(PIPELINE).toContain("return 80_000;");
+      /** The asks themselves are the ones production always made; the switch is gone. */
+      expect(PIPELINE).toContain("return IS_RAILWAY ? 55_000 : 70_000;");
+      expect(PIPELINE).not.toContain("realFootageFirstEnabled");
     } finally {
       process.env = saved;
     }
@@ -239,31 +226,6 @@ describe("§3 — the reservation is all of the turn's window, or none of it", (
     expect(reserveYoutubeTurn(scope), "a part-reserve reserves nothing").toBe(0);
   });
 
-  it("a scope that cannot pay withholds nothing from the tiers that can spend it", async () => {
-    await withSceneFetchTimeout(
-      async () => {
-        expect(remainingNonYoutubeScopeMs()).toBe(remainingScopeMs());
-      },
-      10_000,
-      "a window too small for a turn"
-    );
-  });
-
-  it("and a scope that can pay leaves the cascade exactly what it had before", async () => {
-    /**
-     * The whole claim of the additive supplement, measured: widen the beat BY a turn and the
-     * non-YouTube share is the wall the cascade always ran on.
-     */
-    await withSceneFetchTimeout(
-      async () => {
-        const forOthers = remainingNonYoutubeScopeMs();
-        expect(Math.abs(forOthers - RENDER_596_BEAT_WALL_MS)).toBeLessThanOrEqual(50);
-      },
-      RENDER_596_BEAT_WALL_MS + YOUTUBE_TURN_WINDOW_MS,
-      "beat fill with YouTube available"
-    );
-  });
-
   it("the transfer's own share inside that window is untouched", () => {
     /** RONDE 259's rule, unchanged, applied to the window this round guarantees. */
     expect(transferReserveFor(YOUTUBE_TURN_WINDOW_MS)).toBe(
@@ -320,7 +282,8 @@ describe("§4 — the two empty answers stopped wearing one label", () => {
     const body = PIPELINE.slice(at, PIPELINE.indexOf("\nfunction buildTopicDocumentaryYoutubeQueries", at));
     expect(body.length).toBeGreaterThan(500);
     const returns = (body.match(/\n\s*return \{/g) ?? []).length;
-    expect(returns).toBe(3);
+    /** Two since code audit P9 removed the attempt's own adoption branch. */
+    expect(returns).toBe(2);
     expect((body.match(/searched: searchedSince\(\),/g) ?? []).length).toBe(returns);
   });
 });

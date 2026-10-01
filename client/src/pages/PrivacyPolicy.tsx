@@ -59,8 +59,8 @@ export default function PrivacyPolicy() {
         <ul className="list-disc pl-5 space-y-2">
           <li>
             <strong className="text-slate-200">YouTube Data API v3:</strong> We use the API only to
-            search for videos licensed under Creative Commons, matching script topics (e.g. public
-            figures or events). We do not offer a public YouTube downloader. Search queries and
+            search for videos matching script topics (e.g. public figures or events), preferring
+            videos licensed under Creative Commons. We do not offer a public YouTube downloader. Search queries and
             returned metadata (titles, video IDs) are used solely to select clips for your project.
             Use of YouTube services is subject to the{" "}
             <a
@@ -84,7 +84,7 @@ export default function PrivacyPolicy() {
           </li>
           <li>
             <strong className="text-slate-200">Stock and media APIs:</strong> e.g. Pexels, Pixabay,
-            SerpAPI, and licensed download services for Creative Commons YouTube clips, to fetch
+            SerpAPI, and download services for YouTube clips, to fetch
             imagery or footage aligned with your script.
           </li>
           <li>

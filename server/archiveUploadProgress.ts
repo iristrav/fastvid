@@ -145,20 +145,3 @@ export function finishArchiveUploadJobCancelled(jobId: string | undefined): void
   });
 }
 
-export const ARCHIVE_UPLOAD_STAGE_LABELS: Record<ArchiveUploadProgressStage, string> = {
-  queued: "Queued",
-  validating: "Validating file",
-  split_ffmpeg: "Checking FFmpeg",
-  split_probe: "Measuring duration",
-  split_detect: "Detecting shots",
-  split_rescan: "Scanning extra cuts",
-  split_filter: "Filtering by topic",
-  split_extract: "Extracting clips",
-  filter_overlay: "Filtering editor text",
-  filter_subject: "Matching archive subject",
-  ai_tags: "Generating AI tags",
-  save_clips: "Saving clips",
-  done: "Done",
-  cancelled: "Cancelled",
-  error: "Error",
-};

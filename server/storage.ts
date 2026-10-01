@@ -2,16 +2,10 @@
 // Enable R2 later by setting S3_* env vars — until then everything stays on disk/volume.
 
 import { ENV } from "./_core/env";
-import {
-  getStorageBackend,
-  hasForgeStorageConfig,
-  isS3StorageEnabled,
-  normalizeStorageKey,
-  objectStorageUrl,
-} from "./storageBackend";
+import { getStorageBackend, normalizeStorageKey, objectStorageUrl } from "./storageBackend";
 import * as fs from "fs";
 import { s3GetSignedUrl, s3PutObject, s3PutObjectFromFile } from "./storageS3";
-import { localStoragePut, localStoragePutFile, localStorageGet } from "./storageLocal";
+import { localStoragePut, localStoragePutFile } from "./storageLocal";
 
 export { getStorageBackend, isS3StorageEnabled } from "./storageBackend";
 
@@ -116,17 +110,6 @@ export async function storagePutFromFile(
   // this backend; not the production path).
   const data = await fs.promises.readFile(filePath);
   return storagePut(relKey, data, contentType);
-}
-
-export async function storageGet(relKey: string): Promise<{ key: string; url: string }> {
-  const backend = getStorageBackend();
-  const key = normalizeStorageKey(relKey);
-
-  if (backend === "local") {
-    return localStorageGet(relKey);
-  }
-
-  return { key, url: objectStorageUrl(key) };
 }
 
 export async function storageGetSignedUrl(relKey: string): Promise<string> {

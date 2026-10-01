@@ -47,7 +47,6 @@ const MILITARY_KW = /\b(battle|war|attack|invasion|siege|bombing|troops|soldiers
 const SCIENCE_KW  = /\b(experiment|theory|discovery|atom|molecule|gravity|quantum|evolution|dna|gene|protein|virus|bacteria|climate|carbon|energy|radiation|orbit|rocket|satellite)\b/i;
 const ECONOMY_KW  = /\b(economy|gdp|inflation|recession|stock|market|trade|export|import|billion|million|currency|bank|debt|growth|unemployment|investment|profit|revenue|budget)\b/i;
 
-const LIST_RE = /\b(?:first(?:ly)?|second(?:ly)?|third(?:ly)?|fourth(?:ly)?|ten|1\.|2\.|3\.)/i;
 const LIST_BULLET_RE = /[•\-–]\s+([^\n]+)/g;
 
 // ── Extractors ────────────────────────────────────────────────────────────────

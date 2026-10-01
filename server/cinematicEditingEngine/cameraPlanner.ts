@@ -10,8 +10,8 @@
  *  same idea; rather than resurrecting a second still-only planner, this one supersedes it for
  *  Phase 4's purposes while keeping the same movement names it already established (ken_burns,
  *  pan_left/right) so a future renderer's image-card path can stay unchanged where reused.
- *  Live production's own Ken Burns (documentaryStyle.ts's buildSimpleKenBurnsVF) is the actual
- *  renderer this maps onto once wired — not duplicated, just planned ahead of it here.
+ *  This plan is the only motion a still gets: the photo encoder holds the frame
+ *  (documentaryStyle.ts's buildStillHoldTail) and cameraChain moves it in renderTimeline.
  */
 import type { CandidateAsset } from "../visualMatchingV2/types";
 import type { CameraInstruction, CameraMovementType, PacingProfile, ShotInstruction } from "./types";

@@ -32,12 +32,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
-import {
-  getRenderTopic,
-  validateSearchQuery,
-  withRenderTopic,
-  termProvenance,
-} from "./searchQueryContract";
+import { getRenderTopic, validateSearchQuery, withRenderTopic } from "./searchQueryContract";
 import { buildVerifiedQueryContextForBeat } from "./videoPipeline";
 
 /** The beat from the production render, verbatim in shape: it names the people, not the era. */
@@ -71,24 +66,6 @@ describe("§6 — a term the person asked for is admitted on a beat that does no
       const ctx = buildVerifiedQueryContextForBeat(BEAT, { sceneText: BEAT });
       expect(ctx.topic).toBe(PROMPT);
       expect(validateSearchQuery(QUERY, ctx).ok).toBe(true);
-    });
-  });
-
-  /**
-   * And the audit can still say WHY. The whole point of a separate channel is that a log
-   * distinguishes the beat's own words from the person's — a topic-proven term must not read as if
-   * the sentence had proven it.
-   */
-  it("records the term as topic-proven, not as beat-proven", () => {
-    withRenderTopic(PROMPT, () => {
-      const ctx = buildVerifiedQueryContextForBeat(BEAT, { sceneText: BEAT });
-      expect(termProvenance("WWII", ctx)).toMatchObject({
-        provenance: "topic",
-        source: "video.prompt",
-        approved: true,
-      });
-      /** A name the beat states is proven by the beat, not demoted to the topic channel. */
-      expect(termProvenance("Stauffenberg", ctx).provenance).not.toBe("topic");
     });
   });
 });

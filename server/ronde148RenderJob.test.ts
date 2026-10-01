@@ -20,19 +20,7 @@ import * as os from "os";
 import * as path from "path";
 import ffmpegStatic from "ffmpeg-static";
 
-import {
-  ACTIVE_STATUSES,
-  RENDER_ERROR,
-  RENDER_PHASES,
-  canTransition,
-  formatRenderJob,
-  mayCreateRenderJob,
-  mayPublishRender,
-  progressForPhase,
-  renderJobIsActive,
-  renderJobIsTerminal,
-  type RenderJobStatus,
-} from "./renderJobs";
+import { ACTIVE_STATUSES, RENDER_ERROR, RENDER_PHASES, formatRenderJob, mayCreateRenderJob, mayPublishRender, progressForPhase, renderJobIsActive, type RenderJobStatus } from "./renderJobs";
 import {
   editTimelineText,
   nextTimelineToStore,
@@ -200,38 +188,6 @@ function goodTimeline(videoId = 1): ProjectTimeline {
   t.durationSec = 6;
   return t;
 }
-
-/* ═══════════════════════ §1 — the status machine ═══════════════════════ */
-
-describe("RenderJob lifecycle", () => {
-  it("a job moves queued → running → completed and no further", () => {
-    expect(canTransition("queued", "running")).toBe(true);
-    expect(canTransition("running", "completed")).toBe(true);
-    expect(canTransition("completed", "running")).toBe(false);
-    expect(canTransition("failed", "running")).toBe(false);
-    expect(canTransition("cancelled", "queued")).toBe(false);
-  });
-
-  it("a person may give up at either point", () => {
-    expect(canTransition("queued", "cancelled")).toBe(true);
-    expect(canTransition("running", "cancelled")).toBe(true);
-  });
-
-  it("queued and running occupy the video; the rest are done with it", () => {
-    expect(renderJobIsActive("queued")).toBe(true);
-    expect(renderJobIsActive("running")).toBe(true);
-    for (const s of ["completed", "failed", "cancelled"] as RenderJobStatus[]) {
-      expect(renderJobIsActive(s), s).toBe(false);
-      expect(renderJobIsTerminal(s), s).toBe(true);
-    }
-    expect(ACTIVE_STATUSES.size).toBe(2);
-  });
-
-  it("a job never skips straight from queued to completed", () => {
-    // Completing without ever running would mean an output nobody produced.
-    expect(canTransition("queued", "completed")).toBe(false);
-  });
-});
 
 /* ═══════════════════════ §10 — progress that is not invented ═══════════════════════ */
 
@@ -662,7 +618,6 @@ describe("the render worker, end to end", () => {
   };
 
   const uploads: Array<{ key: string; bytes: number }> = [];
-
 
   const runWith = async (over: Partial<Row> = {}) => {
     dbState.job = {

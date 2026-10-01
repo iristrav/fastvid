@@ -447,11 +447,6 @@ const UNDECLARED: AdoptionPolicy = {
   exceptionReason: "no adoption policy is declared for this route — see adoptionPolicy.ts",
 };
 
-/** True when this label has a declared policy. A `false` here is a gap in the vocabulary. */
-export function isDeclaredAdoptSource(source: string): boolean {
-  return Object.prototype.hasOwnProperty.call(POLICIES, normalise(source));
-}
-
 function normalise(source: string): string {
   return (source ?? "").trim().toLowerCase();
 }
@@ -476,11 +471,6 @@ export function adoptionPolicyFor(source: string): AdoptionPolicy {
    */
   if (key.startsWith("rescue_similar")) return POLICIES.rescue_similar!;
   return UNDECLARED;
-}
-
-/** Every declared label, for the structural test and for reporting. */
-export function declaredAdoptSources(): string[] {
-  return Object.keys(POLICIES).sort();
 }
 
 /**
@@ -668,16 +658,6 @@ export type AdoptionGuardVerdict =
   | { allowed: false; code: "UNDECLARED_ADOPT_ROUTE" | "FUNNEL_WITHOUT_EVIDENCE"; reason: string };
 
 /**
- * Is this adoption backed by an editor's yes?
- *
- * The one question a caller should ask before calling something a verified visual. A suspension is
- * not a yes, and neither is a policy that never asked for one.
- */
-export function adoptionIsVisionVerified(verdict: AdoptionGuardVerdict): boolean {
-  return verdict.allowed && verdict.visionEvidence === "APPROVED";
-}
-
-/**
  * RONDE 94 — WHAT THE PICTURE EDITOR ACTUALLY SAID.
  *
  * RONDE 93's guard asked a boolean: was there a verdict? That is not the question. The gate's own
@@ -784,22 +764,6 @@ export function adoptionGuardVerdict(input: {
     };
   }
 
-  /**
-   * RONDE 266: enforcement off is not evidence either. The route's own policy still says whether
-   * it ever claimed an editor, so the answer here is the honest one rather than a blanket yes.
-   */
-  if (!funnelAdoptionEnforced()) {
-    return {
-      allowed: true,
-      visionEvidence:
-        input.vision === "APPROVED"
-          ? "APPROVED"
-          : policy.visionRequirement === "none"
-            ? "NOT_REQUIRED"
-            : "SATISFIED_WITHOUT_APPROVAL",
-    };
-  }
-
   const missing: string[] = [];
   if (policy.requiresEligibility && !input.eligible) missing.push("eligibility");
   /**
@@ -862,26 +826,14 @@ export function adoptionGuardVerdict(input: {
   };
 }
 
-/**
- * RONDE 94 — ON IN PRODUCTION, AND THE DEFAULT SAYS SO.
- *
- * RONDE 93 shipped this off, waiting for one production render to prove that eligibility was
- * registered widely enough for enforcement not to refuse the pipeline's own work. That reasoning
- * was sound and it is now spent: RONDE 94 fixed the thing the measurement was going to measure.
- * `ELIGIBLE` is no longer written at two sites out of thirty-five — `beatClipPassesVisionGate`
- * records it centrally, for every route that reaches the picture editor, which is every real
- * adoption route in the file.
- *
- * So the default inverts. `ENFORCE_FUNNEL_ADOPTION=false` still disables it, because a few tests
- * need to assert the permissive behaviour explicitly and because an operator must be able to turn
- * a gate off in an incident. Absent that explicit opt-out, production is strict: a route that
- * claims REAL_FUNNEL without eligibility and an APPROVED verdict does not reach the montage.
- *
- * What this costs is stated plainly rather than hidden: if a real render turns out to judge fewer
- * pictures than this assumes, the refusals cascade into RONDE 89's export gate and the render
- * fails instead of shipping unverified footage as verified. That is the failure direction this
- * whole sequence of rounds was for.
- */
-export function funnelAdoptionEnforced(): boolean {
-  return process.env.ENFORCE_FUNNEL_ADOPTION !== "false";
+
+/** True when this label has a declared policy. A `false` here is a gap in the vocabulary. */
+export function isDeclaredAdoptSource(source: string): boolean {
+  return Object.prototype.hasOwnProperty.call(POLICIES, normalise(source));
+}
+
+
+/** Every declared label, for the structural test and for reporting. */
+export function declaredAdoptSources(): string[] {
+  return Object.keys(POLICIES).sort();
 }

@@ -70,7 +70,8 @@ describe("the vision gate's answer is counted wherever it is asked", () => {
     const wrapped = [...CODE.matchAll(/await judgeBeatClipRelevance\(/g)];
     /** Three — `generateGuaranteedBeatClip` and `beatClipPassesVisionGate` (only reached from the deleted curated-only `adoptArchiveBeatClip`) were deleted. */
     /** The scene pool and funnel routes left when the three candidate systems became one. */
-    expect(wrapped.length, "the gate's call sites are not all wrapped").toBe(2);
+    /** RONDE 656 — and the motion-graphic still route, which pushed a card past resolveBeatClip. */
+    expect(wrapped.length, "the gate's call sites are not all wrapped").toBe(1);
   });
 
   /** And the wrapper is the ONLY thing that calls the gate itself. */
@@ -196,7 +197,7 @@ describe("this round only changed who counts", () => {
   });
 
   it("the gate is still on by default", () => {
-    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
+    expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).not.toContain("ENABLE_BEAT_IMAGE_RELEVANCE_GATE");
   });
 
 });

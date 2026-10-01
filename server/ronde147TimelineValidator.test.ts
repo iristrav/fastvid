@@ -31,13 +31,15 @@ import {
 import {
   NON_BLOCKING_ISSUES,
   TRACK_POLICY,
-  TimelineValidationError,
-  assertRenderableTimeline,
   formatTimelineIssue,
-  formatTimelineValidation,
   validateTimeline,
   type TimelineIssueCode,
 } from "./timelineValidator";
+
+
+/** The render's own predicate (cinematicProduction, timelineRepair): what is left after the advisory codes. */
+const blockingIssues = (t: Parameters<typeof validateTimeline>[0]) =>
+  validateTimeline(t).issues.filter((i) => !NON_BLOCKING_ISSUES.has(i.code));
 
 /* ═══════════════════════ fixtures ═══════════════════════ */
 
@@ -142,8 +144,7 @@ describe("TEST 13 — a valid timeline passes", () => {
       expect(result.issues).toEqual([]);
       expect(result.ok).toBe(true);
     });
-    expect(() => assertRenderableTimeline(t)).not.toThrow();
-    expect(formatTimelineValidation(validateTimeline(t))).toEqual(["[TimelineValidator] ok — no issues"]);
+    expect(blockingIssues(t)).toEqual([]);
   });
 
   it("a full timeline — video, voice, music, captions, text — also passes", () => {
@@ -170,7 +171,7 @@ describe("TEST 14 — a negative duration is caught", () => {
     expect(issue.reason).toContain("before it starts");
     // and it BLOCKS: a negative segment is what ffmpeg answers with a zero-frame file.
     expect(NON_BLOCKING_ISSUES.has("negative_duration")).toBe(false);
-    expect(() => assertRenderableTimeline(t)).toThrow(TimelineValidationError);
+    expect(blockingIssues(t).length).toBeGreaterThan(0);
   });
 
   it("on an audio clip too", () => {
@@ -212,7 +213,7 @@ describe("TEST 16 — NaN and Infinity are caught with their own code", () => {
     expect(issue).toBeDefined();
     expect(issue.elementId).toBe("vc_0");
     expect(issue.reason).toContain("NaN");
-    expect(() => assertRenderableTimeline(t)).toThrow(TimelineValidationError);
+    expect(blockingIssues(t).length).toBeGreaterThan(0);
   });
 
   it("Infinity likewise", () => {
@@ -252,7 +253,7 @@ describe("TEST 17 — VIDEO overlap is a fault, because the track is concatenate
     expect(issue.elementId).toBe("vc_1");
     expect(issue.reason).toContain("overlaps vc_0");
     expect(issue.reason).toContain("1.500s");
-    expect(() => assertRenderableTimeline(t)).toThrow(TimelineValidationError);
+    expect(blockingIssues(t).length).toBeGreaterThan(0);
   });
 
   it("the policy says WHY, and the policy is what the check follows", () => {
@@ -338,7 +339,7 @@ describe("TEST 19 — TEXT overlap is allowed; CAPTIONS overlap is reported but 
     expect(issue.elementId).toBe("cap_1");
     expect(issue.reason).toContain("two lines of narration");
     expect(NON_BLOCKING_ISSUES.has("caption_overlap")).toBe(true);
-    expect(() => assertRenderableTimeline(t)).not.toThrow();
+    expect(blockingIssues(t)).toEqual([]);
     expect(TRACK_POLICY.CAPTIONS.overlapAdvisory).toBe(true);
   });
 
@@ -379,7 +380,7 @@ describe("TEST 20 — a VIDEO gap is reported; a gap on every other track is not
     clips[1]!.timelineEnd = 9;
     t.durationSec = 9;
     expect(NON_BLOCKING_ISSUES.has("video_gap")).toBe(true);
-    expect(() => assertRenderableTimeline(t)).not.toThrow();
+    expect(blockingIssues(t)).toEqual([]);
     expect(validateTimeline(t).ok).toBe(false); // reported all the same
   });
 
@@ -405,7 +406,7 @@ describe("TEST 20 — a VIDEO gap is reported; a gap on every other track is not
     const t = goodTimeline({ durationSec: 30 });
     const issue = issueFor(t, "duration_mismatch")!;
     expect(issue.reason).toContain("never silently get a different length");
-    expect(() => assertRenderableTimeline(t)).toThrow(TimelineValidationError);
+    expect(blockingIssues(t).length).toBeGreaterThan(0);
   });
 });
 
@@ -417,7 +418,7 @@ describe("TEST 21 — a negative sourceIn is caught", () => {
     (t.tracks[0] as { kind: "VIDEO"; clips: TimelineVideoClip[] }).clips[0]!.sourceIn = -2;
     const issue = issueFor(t, "negative_source_in")!;
     expect(issue.reason).toContain("-2.000");
-    expect(() => assertRenderableTimeline(t)).toThrow(TimelineValidationError);
+    expect(blockingIssues(t).length).toBeGreaterThan(0);
   });
 
   it("a NaN trim is caught as an invalid source range", () => {
@@ -495,7 +496,7 @@ describe("TEST 24 — a legacy timeline with no schemaVersion reads as v1", () =
     const t = goodTimeline();
     delete t.schemaVersion;
     expect(validateTimeline(t).issues).toEqual([]);
-    expect(() => assertRenderableTimeline(t)).not.toThrow();
+    expect(blockingIssues(t)).toEqual([]);
   });
 
   it("the current version validates", () => {
@@ -507,7 +508,7 @@ describe("TEST 24 — a legacy timeline with no schemaVersion reads as v1", () =
     const issue = issueFor(t, "unsupported_schema_version")!;
     expect(issue).toBeDefined();
     expect(issue.reason).toContain("silently drop");
-    expect(() => assertRenderableTimeline(t)).toThrow(TimelineValidationError);
+    expect(blockingIssues(t).length).toBeGreaterThan(0);
   });
 
   it("a nonsense version is caught too", () => {
@@ -527,7 +528,7 @@ describe("TEST 25 — a clip with no recoverable identity is reported, and nothi
     expect(issue.reason).toContain("provider=wikimedia");
     expect(issue.reason).toContain("providerAssetId=null");
     expect(issue.reason).toContain("archiveAssetId=null");
-    expect(() => assertRenderableTimeline(t)).toThrow(TimelineValidationError);
+    expect(blockingIssues(t).length).toBeGreaterThan(0);
   });
 
   it("THE VALIDATOR DOES NOT FILL IN A SUBSTITUTE — the timeline comes back byte-identical", () => {
@@ -575,7 +576,7 @@ describe("TEST 26 — the whole-document faults", () => {
   it("a format that cannot render is caught", () => {
     const t = goodTimeline({ format: { widthPx: 0, heightPx: 1080, fps: 30 } });
     expect(codes(t)).toContain("out_of_track_range");
-    expect(() => assertRenderableTimeline(t)).toThrow(TimelineValidationError);
+    expect(blockingIssues(t).length).toBeGreaterThan(0);
   });
 
   it("EVERY issue is reported at once, not one at a time", () => {
@@ -596,23 +597,14 @@ describe("TEST 26 — the whole-document faults", () => {
     }
   });
 
-  it("the error message and the log lines name every blocking issue", () => {
+  it("the blocking issues name every blocking element", () => {
     const t = goodTimeline();
     const clips = (t.tracks[0] as { kind: "VIDEO"; clips: TimelineVideoClip[] }).clips;
     clips[0]!.timelineEnd = -1;
-    let thrown: TimelineValidationError | null = null;
-    try {
-      assertRenderableTimeline(t);
-    } catch (e) {
-      thrown = e as TimelineValidationError;
-    }
-    expect(thrown).toBeInstanceOf(TimelineValidationError);
-    expect(thrown!.message).toContain("negative_duration");
-    expect(thrown!.issues.every((i) => !NON_BLOCKING_ISSUES.has(i.code))).toBe(true);
+    const blocking = blockingIssues(t);
+    expect(blocking.map((i) => i.code)).toContain("negative_duration");
 
-    const lines = formatTimelineValidation(validateTimeline(t));
-    expect(lines[0]).toContain("blocking");
-    expect(lines.join("\n")).toContain("vc_0");
+    expect(blocking.map(formatTimelineIssue).join("\n")).toContain("vc_0");
     expect(formatTimelineIssue(validateTimeline(t).issues[0]!)).toContain("VIDEO/vc_0");
   });
 

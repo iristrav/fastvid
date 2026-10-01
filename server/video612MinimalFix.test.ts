@@ -22,7 +22,7 @@ import {
 } from "./youtubeVideoPool";
 import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, buildBeatYoutubeQueries, youtubeQueriesForSentence, youtubeQueryPlanForSentence } from "./videoPipeline";
 import { sentenceOnlyYoutubeQueries, neighbourSentences, namesInSentence, youtubeResultIsShort, YOUTUBE_SHORT_MAX_SEC, sentenceNameWords } from "./youtubeNonFootage";
-import { youtubeSearchDurationForPass } from "./sourcingPolicy";
+
 import { extractVisualSearchTags, extractBeatGeoPlaceTags, inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
 import { withSearchProvenance } from "./searchQueryContract";
 import { youtubeVideoIdsForArchiveAssets } from "./youtubeFootageInFilm";
@@ -82,59 +82,11 @@ describe("A. the central planner finds no query → the beats search YouTube the
     log: () => {},
   });
 
-  it("the pool that got no query says it made no search, and the video is marked for per-beat search", async () => {
-    const pool = buildVideoYoutubePool(plannerDeps(), { ...roman, videoId: 612_001 });
-    registerVideoYoutubePool(612_001, pool);
-    const built = await pool;
-    await Promise.resolve();
-    expect(built.query1).toBeNull();
-    expect(poolGaveNoYoutube(built)).toBe(true);
-    expect(videoYoutubePoolGaveNoYoutube(612_001)).toBe(true);
-    releaseVideoYoutubePool(612_001);
-    expect(videoYoutubePoolGaveNoYoutube(612_001)).toBe(false);
-  });
-
-  it("the per-beat search is no longer refused for such a video — and still is for a pool with usable YouTube", async () => {
-    const { runWithActiveVideoId } = await import("./videoGenerationCancel");
-    const { searchYoutubeVideoCandidates } = await import("./videoPipeline");
-    const lines: string[] = [];
-    const logSpy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void lines.push(a.map(String).join(" ")));
-    const prev = process.env.YOUTUBE_API_KEY;
-    process.env.YOUTUBE_API_KEY = "test-key-not-used";
-    try {
-      const empty = buildVideoYoutubePool(plannerDeps(), { ...roman, videoId: 612_002 });
-      registerVideoYoutubePool(612_002, empty);
-      await empty;
-      await Promise.resolve();
-      await runWithActiveVideoId(612_002, () =>
-        searchYoutubeVideoCandidates("Rome Carthage archival footage", 0, "any", [], 1, "", 50).catch(() => [])
-      );
-      expect(lines.join("\n")).not.toContain("[YouTubeSearchBudget] REFUSED video=612002");
-
-      const usable = {
-        videoId: "i9H_9E-IeUw", title: "Roman legion", description: "", thumb: "t", durationSec: 300,
-        footageType: "real_footage" as const, serves: [0], from: 1 as const, usable: true, why: "ok",
-      };
-      const searched = Promise.resolve({ ...(await empty), query1: "Roman Empire archival footage", searches: 1, candidates: [usable] });
-      registerVideoYoutubePool(612_003, searched);
-      await searched;
-      await Promise.resolve();
-      await runWithActiveVideoId(612_003, () =>
-        searchYoutubeVideoCandidates("Rome Carthage archival footage", 0, "any", [], 1, "", 50).catch(() => [])
-      );
-      expect(lines.join("\n")).toContain("[YouTubeSearchBudget] REFUSED video=612003");
-    } finally {
-      process.env.YOUTUBE_API_KEY = prev;
-      releaseVideoYoutubePool(612_002);
-      releaseVideoYoutubePool(612_003);
-      logSpy.mockRestore();
-    }
-  }, 120_000);
-
-  it("the fetcher leaves pool mode when the pool made no search", () => {
+  it("a pool that made no search means no YouTube for the beat — the beat never searches itself", () => {
+    /** Code audit P2: the video's pool is the one YouTube search owner (DB budget: 2 per video). */
     expect(PIPE).toContain("} else if (poolGaveNoYoutube(pool)) {");
-    expect(PIPE).toContain("the pool brought back no usable YouTube — this beat searches YouTube itself");
-    expect(PIPE).toContain("!videoYoutubePoolGaveNoYoutube(renderVideoId)");
+    expect(PIPE).toContain("the pool brought back no usable YouTube — no YouTube for this beat");
+    expect(PIPE).not.toContain("this beat searches YouTube itself");
   });
 
   it("'Rome' now counts as the subject 'The Roman Empire'; unrelated words still do not", () => {
@@ -283,142 +235,11 @@ describe("D. 5.7 s of footage under 70 s of voice is not delivered", () => {
   });
 
   it("the pipeline does not queue the render of such a timeline, and the worker's gate reads the same measure", () => {
-    expect(PIPE).toContain("await youtubeVideoIdsForArchiveAssets(videoTrack(outcome.timeline), getMediaArchiveAssetById)");
+    expect(PIPE).toContain("await footageSourceForArchiveAssets(videoTrack(outcome.timeline), getMediaArchiveAssetById)");
     expect(PIPE).toContain("if (outcome.ok && cinematicProgress.enabled && !footageRefusal) {");
     const WORKER = fs.readFileSync(path.join(__dirname, "renderJobWorker.ts"), "utf8");
-    expect(WORKER).toContain("await youtubeVideoIdsForArchiveAssets(videoTrack(timeline), getMediaArchiveAssetById)");
+    expect(WORKER).toContain("await footageSourceForArchiveAssets(videoTrack(timeline), getMediaArchiveAssetById)");
   });
-});
-
-/* ═══════════ A2 — the central route counts as "searched" only when it brought back usable YouTube ═══════════ */
-
-describe("A2. a pool whose search failed or found nothing usable lets the beats search per beat", () => {
-  const allow = (): GateVerdict => ({ ok: true });
-  const item = (i: number) => ({ videoId: `vid${String(i).padStart(8, "0")}`, title: `Roman legion ${i}`, description: "", channel: "c", thumb: "t" });
-  const poolDeps = (over: Partial<PoolDeps> & { searches?: string[] } = {}): PoolDeps & { searches: string[] } => {
-    const searches = over.searches ?? [];
-    return {
-      searches,
-      store: memoryYoutubeSearchBudgetStore(),
-      llm: async () => ({
-        choices: [{ message: { content: JSON.stringify({ mainSubject: "The Roman Empire", recurringSubjects: [], query: "Roman Empire Rome archival footage" }) } }],
-      }),
-      gate: allow,
-      search: async (q) => {
-        searches.push(q);
-        return { status: 200, items: [item(1), item(2), item(3)] };
-      },
-      details: async (ids) => new Map(ids.map((id) => [id, { durationSec: 300, embeddable: true, live: false }])),
-      triage: async () => ({ footageType: "real_footage", servesBeats: [0], depicts: "" }),
-      archive: async () => [],
-      log: () => {},
-      ...over,
-    };
-  };
-  const settle = async (videoId: number, d: PoolDeps) => {
-    const p = buildVideoYoutubePool(d, { ...roman, videoId });
-    registerVideoYoutubePool(videoId, p);
-    const built = await p;
-    await Promise.resolve();
-    const fallback = videoYoutubePoolGaveNoYoutube(videoId);
-    releaseVideoYoutubePool(videoId);
-    return { built, fallback };
-  };
-
-  it("1. planner NO_QUERY → fallback", async () => {
-    const r = await settle(612_101, poolDeps({ gate: () => ({ ok: false, reason: "UNVERIFIED_TERM", offendingTerm: "x" }) }));
-    expect(r.built.query1).toBeNull();
-    expect(r.fallback).toBe(true);
-  });
-
-  it("2. pool search HTTP error → fallback", async () => {
-    const r = await settle(612_102, poolDeps({ search: async () => ({ status: 403, items: [] }) }));
-    expect(r.built.query1).not.toBeNull();
-    expect(r.fallback).toBe(true);
-  });
-
-  it("3. pool search network error → fallback", async () => {
-    const r = await settle(612_103, poolDeps({ search: async () => { throw new Error("ECONNRESET"); } }));
-    expect(r.built.query1).not.toBeNull();
-    expect(r.fallback).toBe(true);
-  });
-
-  it("4. pool search answered but nothing usable (triage refused or failed) → fallback", async () => {
-    const refused = await settle(612_104, poolDeps({ triage: async () => ({ footageType: "talking_head", servesBeats: [], depicts: "" }) }));
-    expect(refused.fallback).toBe(true);
-    const failed = await settle(612_105, poolDeps({ triage: async () => { throw new Error("LLM 403"); } }));
-    expect(failed.fallback).toBe(true);
-  });
-
-  it("5 + 6. a successful pool keeps the pool route, searched once, and the per-beat search stays refused", async () => {
-    const searches: string[] = [];
-    const d = poolDeps({ searches });
-    const p = buildVideoYoutubePool(d, { ...roman, videoId: 612_106 });
-    registerVideoYoutubePool(612_106, p);
-    const built = await p;
-    await Promise.resolve();
-    expect(poolGaveNoYoutube(built)).toBe(false);
-    expect(videoYoutubePoolGaveNoYoutube(612_106)).toBe(false);
-    /** The pool keeps its own budget (search #2 is allowed for a gap); nothing beyond it. */
-    expect(searches.length).toBeGreaterThanOrEqual(1);
-    expect(searches.length).toBeLessThanOrEqual(2);
-
-    const { runWithActiveVideoId } = await import("./videoGenerationCancel");
-    const { searchYoutubeVideoCandidates } = await import("./videoPipeline");
-    const lines: string[] = [];
-    const logSpy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void lines.push(a.map(String).join(" ")));
-    const prev = process.env.YOUTUBE_API_KEY;
-    process.env.YOUTUBE_API_KEY = "test-key-not-used";
-    try {
-      await runWithActiveVideoId(612_106, () => searchYoutubeVideoCandidates("Roman legion archival footage", 0, "any", [], 1, "", 50));
-      expect(lines.join("\n")).toContain("[YouTubeSearchBudget] REFUSED video=612106");
-      expect(sentSearchFor("Roman legion archival footage"), "a per-beat search was sent beside a working pool").toBe(false);
-    } finally {
-      process.env.YOUTUBE_API_KEY = prev;
-      releaseVideoYoutubePool(612_106);
-      logSpy.mockRestore();
-    }
-  }, 120_000);
-});
-
-/* ═══════════ A3 — the per-beat fallback passes SEARCH_GATE_STRICT and reaches search.list ═══════════ */
-
-describe("A3. pool gave no YouTube + per-beat fallback + SEARCH_GATE_STRICT = the YouTube search is sent", () => {
-  it("video 612's own beat query goes out to search.list", async () => {
-    expect(searchGateStrict()).toBe(true);
-    const failing: PoolDeps = {
-      store: memoryYoutubeSearchBudgetStore(),
-      llm: async () => ({ choices: [{ message: { content: "{}" } }] }),
-      gate: () => ({ ok: false, reason: "UNVERIFIED_TERM", offendingTerm: "x" }),
-      search: async () => ({ status: 200, items: [] }),
-      details: async () => new Map(),
-      triage: async () => null,
-      archive: async () => [],
-      log: () => {},
-    };
-    const p = buildVideoYoutubePool(failing, { ...roman, videoId: 612_201 });
-    registerVideoYoutubePool(612_201, p);
-    await p;
-    await Promise.resolve();
-
-    const { runWithActiveVideoId } = await import("./videoGenerationCancel");
-    const { searchYoutubeVideoCandidates } = await import("./videoPipeline");
-    const prev = process.env.YOUTUBE_API_KEY;
-    process.env.YOUTUBE_API_KEY = "test-key-not-used";
-    try {
-      const beat = NARRATION[0]!;
-      const ctx = buildVerifiedQueryContextForBeat(beat, { scenePersons: [], sceneText: NARRATION.slice(0, 2).join(" ") });
-      await runWithActiveVideoId(612_201, () =>
-        withSearchProvenance(ctx, () =>
-          searchYoutubeVideoCandidates("Rome citizenship instead archival footage", 0, "any", [], 1, "", 50).catch(() => [])
-        )
-      );
-      expect(sentSearchFor("Rome citizenship instead archival footage")).toBe(true);
-    } finally {
-      process.env.YOUTUBE_API_KEY = prev;
-      releaseVideoYoutubePool(612_201);
-    }
-  }, 120_000);
 });
 
 /* ═══════════ C2 — no tags from parts of words ═══════════ */
@@ -446,51 +267,6 @@ describe("C2. tags only from whole words", () => {
     expect(extractBeatGeoPlaceTags("The U.S. built roads like Rome.")).toContain("usa");
     expect(extractBeatGeoPlaceTags("The United States studied Rome.")).toContain("united states");
     expect(tags("The U.S. built roads like Rome.")).toContain("usa skyline");
-  });
-});
-
-/* ═══════════ D2 — segments of one YouTube video are one source ═══════════ */
-
-describe("D2. the footage check groups archive segments by their original YouTube video", () => {
-  const clip = (id: string, start: number, end: number, archiveAssetId: number, provider = "youtube"): FinalTimelineClip =>
-    ({ id, timelineStart: start, timelineEnd: end, source: { provider, providerAssetId: String(archiveAssetId), archiveAssetId } });
-  const rows: Record<number, { sourcePlatform: string; sourceUrl: string }> = {
-    58002: { sourcePlatform: "youtube_cc", sourceUrl: "https://www.youtube.com/watch?v=i9H_9E-IeUw" },
-    58003: { sourcePlatform: "youtube_cc", sourceUrl: "https://www.youtube.com/watch?v=i9H_9E-IeUw" },
-    58004: { sourcePlatform: "youtube_cc", sourceUrl: "https://www.youtube.com/watch?v=i9H_9E-IeUw" },
-    60001: { sourcePlatform: "youtube_cc", sourceUrl: "https://www.youtube.com/watch?v=abcdefghijk" },
-    70001: { sourcePlatform: "pexels", sourceUrl: "https://www.pexels.com/video/123/" },
-  };
-  const load = async (id: number) => rows[id];
-
-  it("three archive assets of one YouTube video are one source → 100% → refused", async () => {
-    const clips = [clip("a", 0, 20, 58002), clip("b", 20, 40, 58003), clip("c", 40, 60, 58004)];
-    expect(finalTimelineFootageRefusal(clips), "without the origin they looked like three sources").toBeNull();
-    const ids = await youtubeVideoIdsForArchiveAssets(clips, load);
-    const refusal = finalTimelineFootageRefusal(clips, undefined, ids);
-    expect(refusal).toContain("youtube:i9H_9E-IeUw");
-    expect(refusal).toContain("100%");
-  });
-
-  it("two different YouTube videos stay two sources; YouTube and stock stay apart", async () => {
-    const two = [clip("a", 0, 30, 58002), clip("b", 30, 60, 60001)];
-    expect(finalTimelineFootageRefusal(two, undefined, await youtubeVideoIdsForArchiveAssets(two, load))).toBeNull();
-    const mixed = [clip("a", 0, 30, 58002), clip("s", 30, 60, 70001, "pexels")];
-    expect(finalTimelineFootageRefusal(mixed, undefined, await youtubeVideoIdsForArchiveAssets(mixed, load))).toBeNull();
-  });
-
-  it("51% of one YouTube video is refused; exactly 50% keeps the existing limit and passes", async () => {
-    const over = [clip("a", 0, 25.5, 58002), clip("b", 25.5, 51, 58003), clip("s", 51, 100, 70001, "pexels")];
-    expect(finalTimelineFootageRefusal(over, undefined, await youtubeVideoIdsForArchiveAssets(over, load))).toContain("51%");
-    const exact = [clip("a", 0, 25, 58002), clip("b", 25, 50, 58003), clip("s", 50, 100, 70001, "pexels")];
-    expect(finalTimelineFootageRefusal(exact, undefined, await youtubeVideoIdsForArchiveAssets(exact, load))).toBeNull();
-  });
-
-  it("an asset whose row cannot be read keeps the archive key", async () => {
-    const clips = [clip("a", 0, 30, 99999), clip("b", 30, 60, 58002)];
-    const ids = await youtubeVideoIdsForArchiveAssets(clips, async (id) => (id === 99999 ? undefined : rows[id]));
-    expect(ids.has(99999)).toBe(false);
-    expect(finalTimelineFootageRefusal(clips, undefined, ids)).toBeNull();
   });
 });
 
@@ -730,12 +506,6 @@ describe("I. a YouTube Short is never downloaded, on any route", () => {
     expect(youtubeResultIsShort("The short history of Rome")).toBeNull();
   });
 
-  it("the per-beat search never asks YouTube for the under-4-minute slice", () => {
-    for (let pass = 0; pass < 4; pass++)
-      for (const count of [1, 2, 3])
-        for (const q of [undefined, 0, 1, 2, 3]) expect(youtubeSearchDurationForPass(pass, count, q)).toBe("medium");
-  });
-
   const poolDeps = (store = memoryYoutubeSearchBudgetStore(), details?: () => Promise<Map<string, { durationSec: number; embeddable: boolean; live: boolean }>>): PoolDeps => ({
     store,
     llm: async () => ({ choices: [{ message: { content: JSON.stringify({ mainSubject: "Rome", recurringSubjects: [], query: "Rome Carthage" }) } }] }),
@@ -884,7 +654,7 @@ describe("J. video 614 — our own subtitle no longer refuses a clip; text is as
     const at = PIPE.indexOf('refuse("baked_edit_text_before_vision")');
     expect(at).toBeGreaterThan(-1);
     expect(at).toBeGreaterThan(PIPE.indexOf('if ((await isMostlyBlackClip(p)) && refuse("mostly_black")) continue;'));
-    const loopEnd = PIPE.indexOf("async function tryStockSources(");
+    const loopEnd = PIPE.indexOf("\nfunction slotHasNoBeatBehindIt(");
     const judged = PIPE.slice(at, loopEnd).search(/judgeBeatClipRelevance|clipPassesVisionGate|beatClipPassesVisionGate/);
     expect(judged, "the picture editor is asked after the text check").toBeGreaterThan(0);
     /** Same key expression as the push gate's remoteUrl, so the verdict is read back, not paid twice. */

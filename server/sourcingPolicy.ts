@@ -5,10 +5,6 @@ import fs from "fs";
 import os from "os";
 import { targetVideoDurationMinutes } from "../shared/videoLengths";
 
-/** Full external sourcing (YouTube, internet stills, Serp) — off by default; stock fallbacks still run in archive-first mode. */
-export function externalVisualSourcingEnabled(): boolean {
-  return process.env.ENABLE_EXTERNAL_VISUAL_SOURCING === "true";
-}
 
 /** When true, voiceover uses ElevenLabs only (no Fish Audio). */
 export function elevenLabsOnlyVoice(): boolean {
@@ -32,13 +28,6 @@ export function googleTtsFallbackEnabled(): boolean {
   return Boolean(process.env.GOOGLE_TTS_API_KEY?.trim() || process.env.GOOGLE_CLOUD_TTS_API_KEY?.trim());
 }
 
-/** Burn typewriter keywords on clips — default OFF (footage + voice only). Set ENABLE_FACELESS_SUBTITLES=true to enable. */
-export function facelessSubtitlesEnabled(): boolean {
-  // RONDE 113: one rule, asked first — see onScreenTextPolicy.
-  if (!burnedInTextAllowed()) return false;
-  return process.env.ENABLE_FACELESS_SUBTITLES === "true";
-}
-
 /** Extra on-screen overlays (stat pills, film grain, motion graphics cards). Default OFF. */
 export function extraOnScreenTextEnabled(): boolean {
   // RONDE 113: one rule, asked first — see onScreenTextPolicy.
@@ -54,11 +43,6 @@ export function yearsOnlyOnScreen(): boolean {
 /** When true (default), use Pexels stock if no archive clip matches a sentence. */
 export function archivePexelsFallbackEnabled(): boolean {
   return process.env.ARCHIVE_PEXELS_FALLBACK !== "false";
-}
-
-/** Pexels/Pixabay after Wikimedia + archive misses (default on). */
-export function archivePexelsHybridEnabled(): boolean {
-  return process.env.ARCHIVE_PEXELS_HYBRID !== "false" && archivePexelsFallbackEnabled();
 }
 
 /** Generation wall-clock minutes allowed per 1 minute of finished video (default 10:1). */
@@ -270,12 +254,6 @@ export function ffmpegThreadFlag(isRailway = !process.env.BUILT_IN_FORGE_API_KEY
   return `-threads ${clampInt(availableCpuCount() / concurrent, 2, 6)}`;
 }
 
-/** Burn faceless subtitles during montage segment encode (only when faceless subs enabled). */
-export function deferFacelessSubtitlesToCompose(): boolean {
-  if (!facelessSubtitlesEnabled()) return false;
-  return process.env.ENABLE_DEFER_FACELESS_SUBTITLES !== "false";
-}
-
 /**
  * Strict voice↔visual CLIP matching — every beat must pass vision gate (default ON).
  * Set STRICT_VOICE_VISUAL_MATCH=false to restore relaxed fast-path scoring.
@@ -284,14 +262,6 @@ export function strictVoiceVisualMatchEnabled(): boolean {
   return process.env.STRICT_VOICE_VISUAL_MATCH !== "false";
 }
 
-/**
- * Hard metadata blocks (geo tags, WWII, cycling-only, title domain rules, vision geo gate).
- * Default OFF — only the CLIP vision gate decides topic/script/voiceover fit.
- * Set ENABLE_METADATA_VISUAL_BLOCKS=true to restore legacy pre-filters.
- */
-export function metadataVisualBlocksEnabled(): boolean {
-  return process.env.ENABLE_METADATA_VISUAL_BLOCKS === "true";
-}
 
 /** Skip LLM semantic rerank when CLIP pre-rank top score ≥ this (default 8). */
 export function semanticRerankClipSkipMin(): number {
@@ -523,49 +493,6 @@ export function youtubeMaxDownloadsPerRender(): number {
   return 60;
 }
 
-/** The most `search.list` will return in one call. Asking for more is an API error. */
-export const YOUTUBE_SEARCH_PAGE_MAX = 50;
-
-/**
- * ONE SEARCH CALL COSTS THE SAME WHETHER IT RETURNS 5 RESULTS OR 50.
- *
- * ── What render 577 measured ────────────────────────────────────────────────────────────────
- *
- *     youtube_cc:        searches=25  results=215     — 8.6 results per search
- *     pexels:            searches=17  results=4468    — 263 per search
- *     internet_archive:  searches=25  results=309
- *
- * YouTube was asked as often as the Internet Archive and answered with a fraction of the supply,
- * and the reason is not the platform: it is the number this render asked for. The call site
- * computed `Math.max(5, (count - fetched) * 4)`, and `count` is 1 or 2 at every production call
- * site — so almost every YouTube search in that render asked for FIVE.
- *
- * The YouTube Data API charges `search.list` 100 quota units PER CALL, for any `maxResults`
- * between 1 and 50. Asking for five bought a tenth of what the call had already paid for. The
- * RapidAPI fallback is the same shape: it returns a whole page and the client slices it down.
- *
- * ── Why this is a supply fix and not a budget rise ──────────────────────────────────────────
- *
- * Nothing here spends more: the same searches, the same quota, the same number of network calls,
- * one larger JSON body each. No gate moves, no threshold moves, and the download ceiling still
- * bounds the expensive half — a render may now CHOOSE from ten times the candidates and still
- * download no more of them than before. That is the point: `eligible=1 of 215` is a choice made
- * from a thin pool, and the best of fifty is not the best of five.
- *
- * The answer deliberately does NOT depend on how many clips the caller wants. That was the old
- * rule and it is the bug: the page is what the call returns, not what the render keeps, and
- * sizing it to the need is sizing it to the wrong quantity. The one number that matters is the
- * API's maximum, because anything below it discards supply already paid for.
- */
-export function youtubeSearchPageSize(): number {
-  const raw = process.env.YOUTUBE_SEARCH_PAGE_SIZE?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 1 && n <= YOUTUBE_SEARCH_PAGE_MAX) return n;
-  }
-  return YOUTUBE_SEARCH_PAGE_MAX;
-}
-
 /**
  * The two duration slices this pipeline can actually use.
  *
@@ -581,75 +508,6 @@ export function youtubeSearchPageSize(): number {
  * measured length before any download (`youtubeVideoPool.ts`).
  */
 export type YoutubeSearchDuration = "medium";
-
-/**
- * BOTH SLICES GET SEARCHED, WITHOUT ONE EXTRA API CALL.
- *
- * ── What was being excluded ─────────────────────────────────────────────────────────────────
- *
- * The search sent `videoDuration=medium` unconditionally, which is 4 to 20 minutes. Everything
- * shorter than four minutes — the single richest category of archival footage on the platform,
- * and the category this pipeline is best suited to, since it keeps three to six seconds and
- * `VIDRUSH_MIN_SOURCE_VIDEO_SEC` is 2.8 — could not be found at all. It arrived in a broad
- * "improve visual candidate selection" commit with no note explaining it and no test guarding it.
- *
- * ── Why the pass index, and not a second search ─────────────────────────────────────────────
- *
- * The API takes ONE duration per call, so covering both slices normally means two calls per query
- * and twice the quota — at 100 units a search, that is the difference between roughly four renders
- * a day and two. But the licence passes (`any`, `creative_common`, `youtube`) are ALREADY separate
- * calls. Giving each its own duration covers both slices for exactly the calls the render was
- * making anyway.
- *
- * The first pass gets `short` because it is the one that most often decides the beat: every pass
- * loop breaks on `fetched >= count`, so a pass that fills the beat is the last one to run. `short`
- * is also the kinder half for this downloader — smaller files, faster transfers, and render 577's
- * dominant failure was the transfer running out of time.
- *
- * A render with only ONE pass enabled keeps `medium`: with nothing to alternate against, rotating
- * would not widen the render's supply, it would swap one slice for the other.
- */
-export function youtubeSearchDurationForPass(
-  _passIndex: number,
-  _passCount: number,
-  _queryIndex?: number
-): YoutubeSearchDuration {
-  /** Video 613 — never `short`: see `YoutubeSearchDuration`. */
-  return "medium";
-}
-
-/**
- * ASK YOUTUBE FIRST, BEFORE THE ARCHIVE AND EVERYTHING ELSE.
- *
- * ── What the production log showed ──────────────────────────────────────────────────────────
- *
- * YouTube contributed nothing, and not for any of the reasons anyone assumed. Seventeen videos
- * were FOUND, seventeen downloads were refused, and every single refusal read:
- *
- *     [Pipeline] Scene 1: skipping YouTube download of 9V7Zgx4rDDA
- *                — 0s left in the scene budget, not enough to finish
- *
- * Seventeen out of seventeen at `0s left`. Not "too little" — nothing. The picture editor judged
- * none of them, so no clip was ever refused on its merits, and not one byte was ever fetched. The
- * RONDE 68 guard ("do not start a transfer the budget cannot finish") was working perfectly and
- * never got a turn.
- *
- * That is an ORDERING problem. YouTube sits at the back of the cascade, behind the curated archive,
- * Wikimedia and the internet stills, and by the time it is asked the scene has nothing left.
- *
- * ── Why it is not simply moved to the front ─────────────────────────────────────────────────
- *
- * Because the same log says the budget is the binding constraint everywhere: 45 scope aborts, 56
- * clips refused for want of time, and `[ArchiveFilter] overlay budget spent (40/40)`. YouTube over
- * RapidAPI is the slowest source in the cascade — that render had `cloudService=MISSING`, so the
- * fast yt-dlp route was not even available — and putting the slowest source first with no bound
- * would starve the archive, which is the source that actually delivers footage today.
- *
- * So it goes first WITH ITS OWN SLICE. Past that slice the cascade continues exactly as it did.
- */
-export function youtubeFirstEnabled(): boolean {
-  return process.env.YOUTUBE_FIRST !== "false";
-}
 
 /**
  * How long the YouTube-first attempt may spend on one beat before the cascade moves on.
@@ -674,30 +532,7 @@ export function youtubeBeatBudgetMs(
     if (!isNaN(n) && n >= 15_000 && n <= 120_000) return n;
   }
   /** RONDE 648 — the operator's two minutes, when a beat asks YouTube first itself. */
-  if (youtubeFirstPerBeatEnabled()) return YOUTUBE_FIRST_TURN_MS;
-  /**
-   * ── Why the base grew ─────────────────────────────────────────────────────────────────────
-   *
-   * The note above says this slice is "deliberately SMALLER" than the archive's, so a beat that
-   * finds nothing on YouTube still reaches the archive with time to spare. That reasoning holds
-   * and the slice is still smaller — but the numbers it was set against have moved.
-   *
-   * The download guard refuses to start a whole-video transfer with under 12s left, and the
-   * RapidAPI route downloads the entire source before it trims. Inside a 30s slice that leaves
-   * one real attempt, sometimes none: render 576 spent 20 attempts and started zero transfers,
-   * and 75 of the 79 refusals in the production logs read `0s left`.
-   *
-   * 45s is two attempts' worth of room rather than one, and it is still well under the archive's
-   * own slice. The cap stays at twice the base, so a beat can never take a whole scene, and the
-   * slice is a CEILING rather than a spend — YouTube answering early returns immediately and the
-   * cascade never runs.
-   */
-  const base = 45_000;
-  if (remainingWallClockMs == null || !Number.isFinite(remainingWallClockMs)) return base;
-  const headroom = remainingWallClockMs - SOURCING_RESERVE_MS;
-  if (headroom <= 0) return base;
-  const share = Math.floor(headroom / BEATS_ASSUMED_REMAINING);
-  return Math.min(Math.max(base, share), base * 2);
+  return YOUTUBE_FIRST_TURN_MS;
 }
 
 /**
@@ -753,16 +588,6 @@ export function youtubeDownloadTimeoutMs(capMs?: number): number {
 
 /** Below this a transfer has no chance at all, and an instant abort would misreport the cause. */
 export const YOUTUBE_DOWNLOAD_TIMEOUT_FLOOR_MS = 8_000;
-
-/** Target on-screen duration per archive clip (seconds). */
-export function archiveVisualBeatSec(): number {
-  const raw = process.env.ARCHIVE_VISUAL_BEAT_SEC?.trim();
-  if (raw) {
-    const n = parseFloat(raw);
-    if (!isNaN(n) && n >= 5 && n <= 8) return n;
-  }
-  return 6;
-}
 
 /** Hard limits for archive clip length in generated videos. */
 export function archiveVisualMinClipSec(): number {
@@ -839,14 +664,6 @@ export function archiveCrossVideoVarietyEnabled(_videoLength?: string | null): b
   return process.env.ARCHIVE_CROSS_VIDEO_VARIETY !== "false";
 }
 
-/** Phase 10: reject a candidate that matches neither the beat's literal visual-cue tags nor
- *  any broader fallback tag, for beats where the director/script gave an explicit visual
- *  description or search query (hasLiteralVisual). Previously computed but never wired to
- *  any caller — every call site passed literalVisualTags=[] regardless, so the gate was
- *  dead code. Env-tunable in case it turns out to lower beat-fill success rate in production. */
-export function literalVisualGateEnabled(): boolean {
-  return process.env.LITERAL_VISUAL_GATE !== "false";
-}
 
 /** How many recent same-topic videos contribute to the cross-video exclude set. */
 export function archiveCrossVideoCooldownVideos(): number {
@@ -980,14 +797,6 @@ export function archiveTagsPrimaryMatching(): boolean {
   return process.env.ENABLE_ARCHIVE_TAG_MATCH !== "false";
 }
 
-/** Europeana EU heritage API — real, license-verified video (F3-30 web-wide discovery tier).
- *  Default ON, but only takes effect with EUROPEANA_API_KEY configured (still required) — same
- *  reasoning as the F3-27 flag flips: this doesn't turn anything on by itself, it just removes
- *  the need to also set a second flag once the key is present. Set ENABLE_EUROPEANA=false to
- *  opt back out. */
-export function europeanaSourcingEnabled(): boolean {
-  return process.env.ENABLE_EUROPEANA !== "false";
-}
 
 // ─── Performance optimisation — caches ───────────────────────────────────────
 
@@ -1017,26 +826,6 @@ export function beatSemanticCacheEnabled(): boolean {
   return process.env.ENABLE_BEAT_SEMANTIC_CACHE !== "false";
 }
 
-/**
- * RONDE 648 — YOUTUBE FIRST, PER BEAT, LIVE.
- *
- * The operator's order, 2026-09-24: every beat searches YouTube itself, downloads what it finds and
- * uses it; only when YouTube yields nothing usable does the beat go on, one tier at a time — own
- * archive, open sources, stock — stopping at the first picture the editor approves. The scene-level
- * pool and funnel (every provider at once, prefetched during TTS) are off in this mode.
- *
- * Render 605 is why: of its 15 minutes of retrieval, the scene pools spent 1.5–2 minutes per scene
- * on YouTube downloads they abandoned at a 45-second cap measured on 2-second Wikimedia fetches,
- * while the per-beat YouTube turn adopted five live YouTube shots.
- *
- * ONE ROUTE — the scene pool is gone, so `SOURCING_YOUTUBE_FIRST=false` no longer restores any
- * route. What it still changes is time: the beat's YouTube turn (`YOUTUBE_FIRST_TURN_MS`), the
- * scene's visual timeout, the beats run at once and the YouTube lookahead. Whether YouTube is asked
- * at all is `ENABLE_YOUTUBE_SOURCING` and `YOUTUBE_FIRST`.
- */
-export function youtubeFirstPerBeatEnabled(): boolean {
-  return process.env.SOURCING_YOUTUBE_FIRST !== "false";
-}
 
 /** The operator's choice: how long one beat may spend on YouTube before it moves on. */
 export const YOUTUBE_FIRST_TURN_MS = 120_000;

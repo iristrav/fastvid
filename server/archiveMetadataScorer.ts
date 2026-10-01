@@ -48,7 +48,6 @@ import {
   temporalSceneEnabled,
   selectBestWindowForBeat,
 } from "./temporalSceneIntelligence";
-import type { TemporalSceneProfile } from "../drizzle/annotationTypes";
 
 const execPromise = promisify(execCb);
 
@@ -117,83 +116,6 @@ export type ArchiveMetadataScores = {
   /** The best-matching temporal segment, used to produce a TrimHint. */
   bestSegment: SegmentSimilarity | null;
 };
-
-// ─── Cosine similarity ────────────────────────────────────────────────────────
-
-function cosineSim(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot   += a[i]! * b[i]!;
-    normA += a[i]! * a[i]!;
-    normB += b[i]! * b[i]!;
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
-}
-
-// ─── Segment similarity computation ──────────────────────────────────────────
-
-const SEG_FILE_RE = /^(\d+)_seg_(\d+)\.json$/;
-
-/**
- * Load segment embedding files for one asset and compute cosine similarity
- * against the beat embedding. Returns sorted by similarity (highest first).
- *
- * Called by the pipeline when building CandidateMeta — purely local I/O, no network.
- */
-export function computeSegmentSimilarities(
-  assetId: number,
-  annotation: ClipAnnotation,
-  beatEmbedding: number[],
-  embeddingDir: string
-): SegmentSimilarity[] {
-  if (!archiveV4ScoringEnabled()) return [];
-  if (!beatEmbedding || beatEmbedding.length === 0) return [];
-  if (!annotation.timeline?.length) return [];
-
-  const results: SegmentSimilarity[] = [];
-
-  try {
-    if (!fs.existsSync(embeddingDir)) return [];
-
-    const segFiles = fs.readdirSync(embeddingDir).filter((f) => {
-      const m = SEG_FILE_RE.exec(f);
-      return m && parseInt(m[1]!, 10) === assetId;
-    });
-
-    for (const file of segFiles) {
-      const m = SEG_FILE_RE.exec(file);
-      if (!m) continue;
-      const segIndex = parseInt(m[2]!, 10);
-      const seg = annotation.timeline?.[segIndex];
-      if (!seg) continue;
-
-      try {
-        const stored = JSON.parse(fs.readFileSync(path.join(embeddingDir, file), "utf8")) as {
-          embedding?: number[];
-          startSec?: number;
-          endSec?: number;
-        };
-        if (!Array.isArray(stored.embedding) || stored.embedding.length !== beatEmbedding.length) continue;
-        const similarity = cosineSim(beatEmbedding, stored.embedding);
-        results.push({
-          segmentIndex: segIndex,
-          startSec: stored.startSec ?? seg.startSec,
-          endSec: stored.endSec ?? seg.endSec,
-          similarity,
-        });
-      } catch { /* corrupt file — skip */ }
-    }
-  } catch (err) {
-    console.warn(
-      `[ArchiveV4] segment similarity load failed for asset ${assetId}:`,
-      (err as Error).message?.slice(0, 80)
-    );
-  }
-
-  return results.sort((a, b) => b.similarity - a.similarity);
-}
 
 // ─── Scoring: segment bonus ───────────────────────────────────────────────────
 

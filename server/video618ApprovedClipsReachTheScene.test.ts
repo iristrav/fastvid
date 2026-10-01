@@ -101,6 +101,7 @@ describe("Video 618 fix 2 — a picture being judged when the slice ends is judg
     const only = bodyOf("async function fetchBeatYoutubeOnly(");
     expect(only).toContain("runCentralYoutubeTurn({");
     expect(only).not.toContain("adoptClip(");
-    expect(only).toContain("return { completed: null, candidates: turn.candidatePaths };");
+    /** Code audit P9: the slice only ever supplies candidates. */
+    expect(only).toContain("return turn.candidatePaths;");
   });
 });

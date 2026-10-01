@@ -226,10 +226,11 @@ describe("RONDE 87 §C — a rename never creates a new source", () => {
     expect(l.providerFor("/w/derived.mp4")).toBeNull();
   });
 
-  it("TEST 12 — both pipeline rename sites pass the stage that describes them", () => {
-    // The PADDED site went with `padShortClipWithNext`, only called from the deleted curated-only adopter.
-    // Both original sites were in the deleted curated-only adopter; the overlay rename that remains passes its stage too.
-    expect(PIPELINE_SRC).toContain('linkDerivedPath(out, clipPath, "OVERLAYED"');
+  it("TEST 12 — no pipeline rename site is left without its stage", () => {
+    // The PADDED site went with `padShortClipWithNext`; the OVERLAYED site went with the
+    // pre-timeline text overlay (RONDE 656). Any linkDerivedPath that remains names its stage.
+    expect(PIPELINE_SRC).toContain('linkDerivedPath(finalPath, p, "TRANSFORMED")');
+    expect(PIPELINE_SRC).not.toContain('"OVERLAYED"');
   });
 });
 

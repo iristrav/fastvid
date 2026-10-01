@@ -57,12 +57,6 @@ let cached: { at: number; verdict: Exclude<YoutubeEgressVerdict, null> } | null 
 /** One in-flight probe at a time, so a hundred simultaneous callers produce one request. */
 let inFlight: Promise<YoutubeEgressVerdict> | null = null;
 
-/** Test-only, and used by a render that wants the question asked fresh. */
-export function resetYoutubeEgressProbeCache(): void {
-  cached = null;
-  inFlight = null;
-}
-
 /**
  * HOW LONG THE ANSWER TOOK, BECAUSE THE NEXT DECISION DEPENDS ON IT AND NOBODY HAS MEASURED IT.
  *
@@ -153,4 +147,11 @@ export async function egressRefusalReason(
   const verdict = await askYoutubeEgress(timeoutMs);
   if (!verdict || verdict.ok) return null;
   return `cloud_egress_${verdict.reason ?? "blocked"}`;
+}
+
+
+/** Test-only, and used by a render that wants the question asked fresh. */
+export function resetYoutubeEgressProbeCache(): void {
+  cached = null;
+  inFlight = null;
 }

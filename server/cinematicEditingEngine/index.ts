@@ -4,16 +4,14 @@
  * import. Nothing here reshapes what the internal planners already produce — this file only
  * re-exports.
  *
- * Gated behind cinematicEditingEngineEnabled() (featureFlags.ts) and NOT wired into the live
- * production pipeline — see the Phase 4 migration summary. Wiring an EDL into an actual
- * renderer is explicitly Phase 5 scope; nothing in this directory renders pixels or audio.
+ * The cinematic timeline is FastVid's one render path; this module plans its edit decisions.
+ * Nothing in this directory renders pixels or audio.
  */
 
 // ─── Main entry point ───────────────────────────────────────────────────────
 export { generateEDL } from "./edlGenerator";
 
 // ─── Feature flag ───────────────────────────────────────────────────────────
-export { cinematicEditingEngineEnabled } from "./featureFlags";
 
 // ─── Input contract (Scene / Visual Intent / Best Candidate / Timeline / Word Timestamps /
 // Video Context / Visual Continuity — the literal Phase 4 INPUT list) ───────────────────────

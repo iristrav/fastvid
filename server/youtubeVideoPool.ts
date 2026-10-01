@@ -36,6 +36,8 @@ export type ItemDetails = {
   title?: string;
   description?: string;
   channel?: string;
+  /** YouTube's own licence for the video (`status.license`: "youtube" or "creativeCommon"), same call. */
+  license?: string;
 };
 export type FootageType = "real_footage" | "archival_footage" | "talking_head" | "text_or_graphic" | "animation_or_game" | "other";
 export type Triage = { footageType: FootageType; servesBeats: number[]; depicts: string };
@@ -55,6 +57,8 @@ export type PoolCandidate = {
   why: string;
   /** VIDEO 619 — the channel YouTube's search named; absent in pools stored before it was kept. */
   channel?: string;
+  /** YouTube's own licence for the video, from `videos.list`; absent when it was not reported. */
+  license?: string;
 };
 
 export type VideoYoutubePool = {
@@ -171,6 +175,7 @@ async function judge(
       usable,
       why,
       ...(it.channel ? { channel: it.channel } : {}),
+      ...(d?.license ? { license: d.license } : {}),
     };
   });
 }
@@ -493,14 +498,6 @@ export function hasVideoYoutubePool(videoId: number | undefined | null): boolean
   return videoId != null && pools.has(videoId);
 }
 
-/**
- * True once this video's pool has finished without usable YouTube. Its beats then search YouTube
- * per beat, through the existing per-beat route, instead of reading an empty pool.
- */
-export function videoYoutubePoolGaveNoYoutube(videoId: number | undefined | null): boolean {
-  return videoId != null && poolsWithoutYoutube.has(videoId);
-}
-
 export function releaseVideoYoutubePool(videoId: number): void {
   pools.delete(videoId);
   poolTopUps.delete(videoId);
@@ -553,6 +550,8 @@ export type PoolRow = {
   rel: number;
   /** VIDEO 616 — measured by `videos.list` when the pool was judged; 0 when unknown. */
   durationSec: number;
+  /** YouTube's own licence for the video, as the pool recorded it; absent when not reported. */
+  license?: string;
 };
 
 /**
@@ -591,6 +590,7 @@ export function poolRowsForBeat(
       thumb: c.thumb,
       rel: Math.max(3, text + 3),
       durationSec: c.durationSec > 0 ? c.durationSec : 0,
+      ...(c.license ? { license: c.license } : {}),
     });
   }
   const serving = (r: PoolRow) => (servesMine.has(r.item.id.videoId) ? 1 : 0);

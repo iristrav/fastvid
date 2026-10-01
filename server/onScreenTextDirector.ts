@@ -346,42 +346,38 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
 }
 
 /**
- * VIDEO 619 — THE MADE VIDEO CARRIES NO TEXT; THE PERSON EDITING IT DECIDES WHAT GOES ON SCREEN.
+ * VIDEO 619 — TEXT AND CARDS ARE THE EDITOR'S; THE SUBTITLES AND THE TYPED YEARS ARE IN THE MADE VIDEO.
  *
- * The planners still write their names, places, years, captions and cards, and the director above
- * still chooses among them — so the editor opens with good suggestions already timed to the
- * narration. What changes is that every one of them starts switched OFF, with this reason, and the
- * renderer (which skips a disabled element) draws none of them. Switching one back on in the editor
- * is the whole of "adding it": nothing has to be retyped or re-timed.
+ * The planners still write their names, places, years and cards, and the director above still
+ * chooses among them — so the editor opens with good suggestions already timed to the narration.
+ * Every one of those starts switched OFF, with this reason, and the renderer (which skips a disabled
+ * element) draws none of them. Switching one back on in the editor is the whole of "adding it".
+ *
+ * Left as planned, and so in the made video:
+ *  - the subtitles (CAPTIONS track), timed on the narration's measured word timing;
+ *  - RONDE 656 — the elements the director above made type in (`animation: "typewriter"` text, a
+ *    date card marked `data.typewriter`): the years and reveals, with their key sound on the SFX track.
  *
  * Returns how many elements it switched off, for the render log.
  */
 export const LEFT_TO_EDITOR = "left_to_editor";
 
 export function leaveOnScreenTextToTheEditor(timeline: ProjectTimeline): {
-  captions: number;
   texts: number;
   graphics: number;
 } {
-  const out = { captions: 0, texts: 0, graphics: 0 };
+  const out = { texts: 0, graphics: 0 };
   for (const track of timeline.tracks) {
-    if (track.kind === "CAPTIONS") {
-      for (const c of track.captions) {
-        if (c.disabled) continue;
-        c.disabled = true;
-        c.disabledReason = LEFT_TO_EDITOR;
-        out.captions += 1;
-      }
-    } else if (track.kind === "TEXT") {
+    if (track.kind === "TEXT") {
       for (const t of track.texts) {
-        if (t.disabled) continue;
+        if (t.disabled || t.animation === "typewriter") continue;
         t.disabled = true;
         t.disabledReason = LEFT_TO_EDITOR;
         out.texts += 1;
       }
     } else if (track.kind === "GRAPHICS") {
       for (const g of track.graphics) {
-        if (g.disabled) continue;
+        if (g.disabled || g.data?.typewriter === true) continue;
         g.disabled = true;
         g.disabledReason = LEFT_TO_EDITOR;
         out.graphics += 1;

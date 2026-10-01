@@ -83,6 +83,7 @@ export async function claimYoutubeSearch(
   return granted;
 }
 
+
 /** An in-process store with the same contract, for tests and for a deployment without a database. */
 export function memoryYoutubeSearchBudgetStore(): YoutubeSearchBudgetStore & { rows: Map<number, YoutubeSearchBudgetRow> } {
   const rows = new Map<number, YoutubeSearchBudgetRow>();

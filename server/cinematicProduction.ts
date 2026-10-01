@@ -31,7 +31,6 @@ import {
   type SceneFacts,
 } from "./cinematicPipelineInputs";
 import {
-  cinematicRouteEnabled,
   formatCinematicGraphics,
   formatCinematicGraphicsLifecycle,
   formatCinematicPlan,
@@ -61,20 +60,10 @@ import { formatYoutubeReadiness } from "./sourcingPolicy";
 import { aiDirectorEnabled } from "./aiDirector/featureFlags";
 
 import { formatTextDirection } from "./onScreenTextDirector";
-import { cinematicRenderPathEnabled, searchGateStrict } from "./config";
+import { searchGateStrict } from "./config";
 
 /* ═══════════════════════ §19/§20 — the two switches ═══════════════════════ */
 
-/**
- * Should this render PLAN with the cinematic engine?
- *
- * `CINEMATIC_EDITING_ENGINE=true`. Planning is safe to turn on ahead of rendering: the timeline is
- * stored alongside the render the old path produced, the editor can open it, and nothing about the
- * delivered video changes.
- */
-export function cinematicPlanningEnabled(): boolean {
-  return cinematicRouteEnabled();
-}
 
 /**
  * How long a render may wait for its own cinematic pass before the watchdog is allowed back in.
@@ -97,7 +86,6 @@ export function inProcessCinematicRenderBudgetMs(): number {
 /* ═══════════════════════ what a planning attempt reports ═══════════════════════ */
 
 export const CINEMATIC_PLAN_ERROR = {
-  ROUTE_DISABLED: "CINEMATIC_ROUTE_DISABLED",
   NO_PLANNABLE_BEATS: "CINEMATIC_NO_PLANNABLE_BEATS",
   TIMELINE_INVALID: "CINEMATIC_TIMELINE_INVALID",
   /**
@@ -208,15 +196,6 @@ export async function planAndStoreCinematicTimeline(
   params: CinematicPlanParams
 ): Promise<CinematicPlanOutcome> {
   const log: string[] = [];
-
-  if (!cinematicPlanningEnabled()) {
-    return {
-      ok: false,
-      code: CINEMATIC_PLAN_ERROR.ROUTE_DISABLED,
-      reason: "CINEMATIC_EDITING_ENGINE is not enabled for this deployment",
-      log,
-    };
-  }
 
   let built;
   let result;
@@ -557,19 +536,9 @@ export function formatSfxPlan(
  * cannot drift away from the behaviour it claims to describe.
  */
 export function formatProductionRoute(videoId: number): string {
-  const planning = cinematicPlanningEnabled();
-  const renderPath = cinematicRenderPathEnabled();
-  /** Both flags are needed; without them there is no render path, and the render is refused. */
-  const route = planning && renderPath ? "cinematic_timeline" : "none";
-  const why =
-    route === "cinematic_timeline"
-      ? ""
-      : ` reason=${!planning ? "CINEMATIC_EDITING_ENGINE is not enabled" : "CINEMATIC_RENDER_PATH is not enabled"}` +
-        " — the render will be refused";
   const on = (b: boolean) => (b ? "on" : "off");
   return (
-    `[ProductionRoute] video=${videoId} route=${route}${why}` +
-    ` CINEMATIC_EDITING_ENGINE=${on(planning)} CINEMATIC_RENDER_PATH=${on(renderPath)}` +
+    `[ProductionRoute] video=${videoId} route=cinematic_timeline` +
     ` ${formatYoutubeReadiness()} aiDirector=${on(aiDirectorEnabled())}` +
     ` searchGateStrict=${on(searchGateStrict())}`
   );
@@ -611,14 +580,6 @@ export async function enqueueCinematicRender(params: {
   }) => Promise<{ id: number } | null>;
 }): Promise<CutoverOutcome> {
   const log: string[] = [];
-
-  if (!cinematicRenderPathEnabled()) {
-    return {
-      ok: false,
-      reason: "CINEMATIC_RENDER_PATH is not enabled",
-      log,
-    };
-  }
 
   const attempt = await params.claimAttempt(params.videoId);
   if (attempt == null) {

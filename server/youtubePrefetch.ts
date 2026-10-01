@@ -107,9 +107,6 @@ export const PREFETCH_SEGMENT_SEC = 30;
 export function prefetchWindowMs(): number {
   return intEnv("YOUTUBE_PREFETCH_WINDOW_MIN", 10, 2, 30) * 60_000;
 }
-/** The default, kept as a name for readers of the log and the tests. */
-export const PREFETCH_DOWNLOAD_WINDOW_MS = 10 * 60_000;
-
 /** After this many tries a video is left alone. `failed` rows past it are never claimed again. */
 export const PREFETCH_MAX_ATTEMPTS = 4;
 
@@ -124,8 +121,6 @@ export const PREFETCH_MAX_ATTEMPTS = 4;
 export function prefetchStaleClaimMs(): number {
   return 2 * prefetchWindowMs() + 5 * 60_000;
 }
-export const PREFETCH_STALE_CLAIM_MS = 2 * PREFETCH_DOWNLOAD_WINDOW_MS + 5 * 60_000;
-
 /** 15 min, 1 h, 4 h, then a day: a route that is down now is often up in an hour. */
 export function prefetchBackoffMs(attempts: number): number {
   const base = 15 * 60_000;
@@ -639,16 +634,6 @@ export function formatPrefetchLine(
       ? ` segmentMs=${fetched.segments.map((s) => s.downloadMs ?? "?").join(",")}`
       : "")
   );
-}
-
-/** Alternative searches one worker may spend per UTC day. 0 switches the feature off. */
-export function prefetchAltSearchesPerDay(): number {
-  /**
-   * RONDE 653 — off by default. Every alternative search comes out of the same 100 a day the
-   * renders need, and a counter per worker that resets on every deploy is not a budget. Set it
-   * when the project's quota has room for background searching.
-   */
-  return intEnv("YOUTUBE_PREFETCH_ALT_SEARCHES_PER_DAY", 0, 0, 200);
 }
 
 /* ═══════════════════════ which route first, in the background ═══════════════════════ */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeForDrawtext, sanitizeForDrawtextStrict, escapeForFFmpegFilter } from './ffmpegSanitize';
+import { sanitizeForDrawtext } from './ffmpegSanitize';
 
 describe('FFmpeg Drawtext Sanitization', () => {
   describe('sanitizeForDrawtext', () => {
@@ -105,50 +105,6 @@ describe('FFmpeg Drawtext Sanitization', () => {
       const text = "Test's #1: \"Quote\" [Bracket] {Brace} <Angle> $Price";
       const result = sanitizeForDrawtext(text);
       expect(result).not.toMatch(/[':#{}<>$\[\]]/);
-    });
-  });
-
-  describe('sanitizeForDrawtextStrict', () => {
-    it('should only allow alphanumeric and safe punctuation', () => {
-      const result = sanitizeForDrawtextStrict('Hello World! Test-123.');
-      expect(result).toBe('Hello World! Test-123.');
-    });
-
-    it('should remove all special characters', () => {
-      const result = sanitizeForDrawtextStrict('Test@#$%^&*()_+={}[]|:;"<>,.?/');
-      expect(result).toBe('Test & ,.?');
-    });
-
-    it('should preserve spaces', () => {
-      const result = sanitizeForDrawtextStrict('Multiple   spaces');
-      expect(result).toBe('Multiple spaces');
-    });
-
-    it('should limit length', () => {
-      const longText = 'a'.repeat(100);
-      expect(sanitizeForDrawtextStrict(longText, 50).length).toBeLessThanOrEqual(50);
-    });
-  });
-
-  describe('escapeForFFmpegFilter', () => {
-    it('should remove single quotes', () => {
-      expect(escapeForFFmpegFilter("It's")).toBe('Its');
-    });
-
-    it('should remove double quotes', () => {
-      expect(escapeForFFmpegFilter('He said "hi"')).toBe('He said hi');
-    });
-
-    it('should replace colons', () => {
-      expect(escapeForFFmpegFilter('Time: 12:30')).toBe('Time  12 30');
-    });
-
-    it('should escape dollar signs', () => {
-      expect(escapeForFFmpegFilter('Price $99')).toBe('Price \\$99');
-    });
-
-    it('should escape backticks', () => {
-      expect(escapeForFFmpegFilter('`code`')).toBe('\\`code\\`');
     });
   });
 

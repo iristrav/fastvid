@@ -26,15 +26,3 @@ export function typedCount(text: string, elapsedSec: number): number {
   return Math.min(n, Math.floor((elapsedSec - TYPE_DELAY_SEC) / TYPE_CHAR_SEC) + 1);
 }
 
-/** When, after the element appeared, the last character lands. */
-export function typingDurationSec(text: string): number {
-  return TYPE_DELAY_SEC + typedLength(text) * TYPE_CHAR_SEC;
-}
-
-/** The moments (after the element appeared) at which a visible character lands. Spaces are silent. */
-export function keystrokeTimesSec(text: string): number[] {
-  return [...text]
-    .map((ch, i) => ({ ch, at: TYPE_DELAY_SEC + i * TYPE_CHAR_SEC }))
-    .filter((k) => k.ch.trim() !== "")
-    .map((k) => Number(k.at.toFixed(3)));
-}

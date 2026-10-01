@@ -1,9 +1,9 @@
 /**
  * RONDE 652 — HEALTH PROBES THAT SPEND MONEY OR QUOTA ARE FOR THE OPERATOR ONLY.
  *
- * `/api/health/youtube-probe` sends one real YouTube `search.list` per request, and the project
- * has 100 a day for every customer together: a hundred anonymous requests — a monitor, a crawler,
- * anyone who read the URL — and nobody gets YouTube footage until the quota resets.
+ * `/api/health/youtube-probe` reads one YouTube video by id per request (it used to send a real
+ * `search.list`, of which the project has 100 a day for every customer together), and it still
+ * spends quota the renders share.
  * `/api/health/stability-probe` pays for a Stability image per request, `/api/health/llm-smoke` for
  * an LLM call. None of them asked who was calling.
  *

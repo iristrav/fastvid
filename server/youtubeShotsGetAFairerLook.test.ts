@@ -92,10 +92,9 @@ describe("B — what render 606 downloaded, refused before a byte moves", () => 
     expect(askForFootage("  ")).toBe("");
   });
 
-  it("the filter sits in the one search every YouTube route uses", () => {
-    const fn = PIPE.slice(PIPE.indexOf("export async function searchYoutubeVideoCandidates("));
-    const body = fn.slice(0, fn.indexOf("\n}\n"));
-    expect(body).toContain("const byTitle = judgeFootageTitle(item.snippet?.title);");
+  it("the filter sits in the one search every YouTube route uses — the video's pool", () => {
+    const POOL = readFileSync(join(__dirname, "youtubeVideoPool.ts"), "utf8");
+    expect(POOL).toContain("const byTitle = judgeFootageTitle(it.title);");
   });
 
   it("every beat query asks for footage", () => {

@@ -13,13 +13,7 @@ import { emptyTimeline, type ProjectTimeline, type TimelineGraphic, type Timelin
 import { DEFAULT_TEXT_STYLE } from "./projectTimeline";
 import { MAX_TEXTS_AT_ONCE, MIN_TEXT_ON_SCREEN_SEC, directOnScreenText, looksLikePersonName } from "./onScreenTextDirector";
 import { MAX_SHOT_SEC, limitLongShots } from "./longShotLimit";
-import {
-  __resetYoutubeKeysForTests,
-  markYoutubeKeySpent,
-  nextQuotaResetMs,
-  usableYoutubeSearchKeys,
-  youtubeSearchKeys,
-} from "./youtubeApiKeys";
+import { nextQuotaResetMs } from "./youtubeApiKeys";
 
 /* ═══════════════════════ fixtures in the shape translateEdl writes ═══════════════════════ */
 
@@ -249,49 +243,17 @@ describe("3 — the search keys", () => {
   beforeEach(() => {
     saved = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
     for (const n of NAMES) delete process.env[n];
-    __resetYoutubeKeysForTests();
   });
   afterEach(() => {
     for (const n of NAMES) {
       if (saved[n] === undefined) delete process.env[n];
       else process.env[n] = saved[n];
     }
-    __resetYoutubeKeysForTests();
-  });
-
-  it("reads the keys in order and skips duplicates and blanks", () => {
-    process.env.YOUTUBE_API_KEY = "k1";
-    process.env.YOUTUBE_API_KEY_2 = "k2";
-    process.env.YOUTUBE_API_KEY_3 = "k1";
-    process.env.YOUTUBE_API_KEY_4 = "  ";
-    expect(youtubeSearchKeys().map((k) => k.position)).toEqual([1, 2]);
-  });
-
-  it("a spent key is set aside until the reset and the next one is used", () => {
-    process.env.YOUTUBE_API_KEY = "k1";
-    process.env.YOUTUBE_API_KEY_2 = "k2";
-    const now = Date.UTC(2026, 8, 24, 18, 18);
-    expect(markYoutubeKeySpent(1, now)?.position).toBe(2);
-    expect(usableYoutubeSearchKeys(now).map((k) => k.position)).toEqual([2]);
-    expect(usableYoutubeSearchKeys(nextQuotaResetMs(now) + 1).map((k) => k.position)).toEqual([1, 2]);
-    expect(markYoutubeKeySpent(2, now)).toBeNull();
   });
 
   it("the reset is the next midnight in Pacific time", () => {
     // 18:18 UTC on 24 Sep 2026 is 11:18 PDT; the reset is 07:00 UTC on the 25th.
     expect(new Date(nextQuotaResetMs(Date.UTC(2026, 8, 24, 18, 18))).toISOString()).toBe("2026-09-25T07:00:00.000Z");
-  });
-
-  it("the search tries the next key on a 429 before the render's cooldown starts", () => {
-    const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
-    const at = PIPE.indexOf("let searchKey = usableYoutubeSearchKeys()[0] ?? { key: youtubeApiKey, position: 1 };");
-    expect(at).toBeGreaterThan(-1);
-    const body = PIPE.slice(at, at + 2500);
-    const next = body.indexOf("const nextKey = markYoutubeKeySpent(searchKey.position);");
-    const cooldown = body.indexOf("markYoutubeRateLimited(");
-    expect(next).toBeGreaterThan(-1);
-    expect(cooldown).toBeGreaterThan(next);
-    expect(body).toContain('searchUrl.searchParams.set("key", searchKey.key);');
   });
 
   it("a key is never printed", () => {

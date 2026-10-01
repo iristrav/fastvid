@@ -30,8 +30,3 @@ export function gapRowLooksLikePerson(keyword: string): boolean {
   return true;
 }
 
-/** One line for the admin list. */
-export function formatGapPersonLine(keyword: string, hitCount: number): string {
-  const bare = keyword.replace(/^low-coverage:/i, "").trim();
-  return `${bare} (${hitCount}x gevraagd, geen beeld in archief)`;
-}

@@ -1,26 +1,4 @@
-/**
- * RONDE 97 §7/§8/§11 — WHAT THE RENDER PROMISED, AND WHAT IT ACTUALLY DID.
- *
- * Three questions that turn out to be one question asked at three scales:
- *
- *   §7  For ONE BEAT, in what order may the pipeline give up? (the fallback ladder)
- *   §8  For ONE BEAT, what did it end up with, and may that be called verified? (coverage)
- *   §11 For ONE FEATURE, across the render, is it planned or is it in the file? (the matrix)
- *
- * All three exist to stop the same thing: a claim that outruns the evidence. RONDE 89 blocked the
- * export of a film whose beats hold no verified visual; RONDE 94 blocked an adoption that claims
- * REAL_FUNNEL without one. What neither could do is say, in one place, "music was planned and is
- * not in the delivered file" — because nothing distinguished PLANNED from DELIVERED.
- *
- * ── Why this is a contract module and not an engine ─────────────────────────────────────────
- *
- * It decides nothing and renders nothing. `adoptionPolicy` already says what a route may claim,
- * `beatVisualStatus` already reads coverage, the cinematic planners already plan. This writes down
- * the ORDER those existing answers must come in, and the vocabulary for reporting the distance
- * between a plan and a file. A second selection engine, a second coverage mapping or a second
- * planner would each be the mistake this codebase repeats most.
- */
-import { adoptionPolicyFor, type AdoptCategory } from "./adoptionPolicy";
+
 
 /* ═══════════════════════ §7 — the fallback ladder ═══════════════════════ */
 
@@ -43,50 +21,6 @@ export const FALLBACK_LADDER = [
 ] as const;
 
 export type FallbackRung = (typeof FALLBACK_LADDER)[number];
-
-/** Which rung a declared adopt route lands on. Derived from the policy, never re-decided here. */
-export function rungForAdoptSource(source: string): FallbackRung | null {
-  const category: AdoptCategory = adoptionPolicyFor(source).category;
-  switch (category) {
-    case "REAL_FUNNEL":
-      return "APPROVED_REAL";
-    case "RESCUE_REAL":
-      return "RESCUE_REAL";
-    case "FALLBACK_SUBJECT":
-      return "FALLBACK_SUBJECT";
-    case "BACKFILL_TIME":
-      return "BACKFILL";
-    case "GENERATED":
-      return "GENERATED";
-    case "GRAPHIC":
-      return "GRAPHIC";
-    case "PLACEHOLDER":
-      return "PLACEHOLDER";
-    /** An undeclared route has no rung, which is why RONDE 94 refuses it outright. */
-    default:
-      return null;
-  }
-}
-
-export function rungRank(rung: FallbackRung): number {
-  return FALLBACK_LADDER.indexOf(rung);
-}
-
-/**
- * MAY THIS ROUTE TAKE THE BEAT, GIVEN WHAT THE BEAT ALREADY HAS?
- *
- * The rule is one sentence: a lower rung may never displace a higher one. A placeholder cannot
- * replace approved real footage, and a subject fallback cannot replace a rescue — which is the
- * "fallback mag nooit een goede approved visual verdringen" the brief states twice.
- *
- * The same rung IS allowed to replace itself: two approved real clips competing for one beat is
- * an ordinary editorial choice and not this rule's business.
- */
-export function fallbackMayReplace(current: FallbackRung | null, candidate: FallbackRung | null): boolean {
-  if (!candidate) return false;
-  if (!current) return true;
-  return rungRank(candidate) <= rungRank(current);
-}
 
 /* ═══════════════════════ §8 — the beat coverage contract ═══════════════════════ */
 
@@ -121,63 +55,6 @@ export type BeatCoverage = {
   /** The last lifecycle stage the beat's asset is known to have reached. */
   lifecycle: string;
 };
-
-/**
- * THE ONE PLACE A BEAT'S STATE IS DECIDED.
- *
- * `verified` is an input rather than a derivation, and that is the whole point: a REAL_FUNNEL
- * route whose picture was never approved is NOT `VERIFIED_REAL`. Render 568 had seventeen beats
- * whose route said REAL_FUNNEL and whose pictures nobody had looked at, and every reader that
- * derived "verified" from the route alone reported them as verified footage.
- */
-export function beatCoverage(input: {
-  sceneIndex: number;
-  beatIndex: number;
-  source: string;
-  approved: boolean;
-  reason?: string;
-  lifecycle?: string;
-}): BeatCoverage {
-  const rung = rungForAdoptSource(input.source);
-  const base = {
-    sceneIndex: input.sceneIndex,
-    beatIndex: input.beatIndex,
-    source: input.source,
-    reason: input.reason ?? "",
-    lifecycle: input.lifecycle ?? "UNKNOWN",
-  };
-
-  if (!input.source) {
-    return { ...base, state: "NO_VISUAL", verified: false, reason: input.reason || "NO_VISUAL" };
-  }
-  /** An undeclared route has no rung. It cannot be verified and it cannot be classified. */
-  if (!rung) {
-    return { ...base, state: "NO_VISUAL", verified: false, reason: input.reason || "UNDECLARED_ROUTE" };
-  }
-  if (rung === "APPROVED_REAL") {
-    return input.approved
-      ? { ...base, state: "VERIFIED_REAL", verified: true }
-      : /**
-         * A funnel route without an approval is real media that nobody vouched for. It is reported
-         * as a rescue — the nearest honest rung — rather than as verified, and never the reverse.
-         */
-        { ...base, state: "RESCUE_REAL", verified: false, reason: input.reason || "NOT_APPROVED" };
-  }
-  return { ...base, state: rung as BeatCoverageState, verified: false };
-}
-
-/** VERIFIED_REAL is the only state that may be counted as a beat's own verified visual. */
-export function coverageIsVerified(state: BeatCoverageState): boolean {
-  return state === "VERIFIED_REAL";
-}
-
-export function formatBeatCoverage(c: BeatCoverage): string {
-  return (
-    `[BeatCoverage] s${c.sceneIndex}b${c.beatIndex} state=${c.state} verified=${c.verified} ` +
-    `source=${c.source || "none"} lifecycle=${c.lifecycle}` +
-    (c.reason ? ` reason=${c.reason}` : "")
-  );
-}
 
 /* ═══════════════════════ §11 — the feature matrix ═══════════════════════ */
 
@@ -468,7 +345,7 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
             : "the route is on and no timeline was planned",
         }
       : !f.cinematicEnabled
-        ? { reason: "CINEMATIC_RENDER_PATH is off — compose delivered this film" }
+        ? { reason: "the render failed before the cinematic route started" }
         : {}),
   });
 
@@ -700,61 +577,3 @@ export type ProviderFunnelCounts = {
 
 export type FunnelFinding = { provider: string; code: string; message: string };
 
-/**
- * The three impossibilities, per provider.
- *
- * ELIGIBLE_EXCEEDS_RESULTS and COMPOSED_EXCEEDS_ADOPTED are monotonicity: a stage cannot produce
- * more than the stage before it fed it. UNEXPLAINED_FUNNEL_ADOPTION is the render-568 line — more
- * adoptions than eligibility and the declared exceptions together can account for.
- *
- * A provider with `results=0` is deliberately NOT flagged for having adopted: several routes
- * adopt an asset the render already holds (the curated pool, a local archive row) without ever
- * issuing a search, and reporting those as broken would train the reader to scroll past the line
- * that finally matters.
- */
-export function reconcileProviderFunnel(
-  byProvider: Record<string, ProviderFunnelCounts>
-): FunnelFinding[] {
-  const out: FunnelFinding[] = [];
-  for (const [provider, c] of Object.entries(byProvider)) {
-    if (c.results > 0 && c.eligible > c.results) {
-      out.push({
-        provider,
-        code: "ELIGIBLE_EXCEEDS_RESULTS",
-        message: `eligible=${c.eligible} from results=${c.results}`,
-      });
-    }
-    if (c.composed > c.adopted) {
-      out.push({
-        provider,
-        code: "COMPOSED_EXCEEDS_ADOPTED",
-        message: `composed=${c.composed} from adopted=${c.adopted}`,
-      });
-    }
-    if (c.finalVideo > c.composed && c.composed > 0) {
-      out.push({
-        provider,
-        code: "DELIVERED_EXCEEDS_COMPOSED",
-        message: `finalVideo=${c.finalVideo} from composed=${c.composed}`,
-      });
-    }
-    /** The declared ways to adopt without eligibility. Anything beyond them is unexplained. */
-    const declaredExceptions = c.rescue + c.fallback + c.backfill;
-    const unexplained = c.adopted - c.eligible - declaredExceptions;
-    if (unexplained > 0) {
-      out.push({
-        provider,
-        code: "UNEXPLAINED_FUNNEL_ADOPTION",
-        message:
-          `adopted=${c.adopted} eligible=${c.eligible} rescue=${c.rescue} ` +
-          `fallback=${c.fallback} backfill=${c.backfill} — ${unexplained} adoption(s) claim the ` +
-          `funnel without eligibility and without a declared exception`,
-      });
-    }
-  }
-  return out;
-}
-
-export function formatFunnelReconciliation(findings: FunnelFinding[]): string[] {
-  return findings.map((f) => `[ProviderFunnelInvariant] ${f.provider} ${f.code} ${f.message}`);
-}

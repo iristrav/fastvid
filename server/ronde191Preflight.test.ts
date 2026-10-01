@@ -262,11 +262,6 @@ describe("R191 — a service that is configured but down is not ready", () => {
 /* ═══════════════════════ the route it would actually take ═══════════════════════ */
 
 describe("R191 — the flags are reported, not required", () => {
-  it("shows each route flag as it is set right now", async () => {
-    const report = await productionPreflight(ALL_GOOD, { ...fullyConfigured("v"), AI_DIRECTOR: "false" });
-    expect(report.routes.find((r) => r.flag === "AI_DIRECTOR")!.on).toBe(false);
-    expect(report.routes.find((r) => r.flag === "CINEMATIC_EDITING_ENGINE")!.on).toBe(true);
-  });
 
   /**
    * Flags off is a valid deployment — the legacy route — so it must not be a blocker. What it must
@@ -280,7 +275,6 @@ describe("R191 — the flags are reported, not required", () => {
     expect(report.routes.every((r) => !r.on)).toBe(true);
   });
 });
-
 
 /* ═══════════════ RONDE 95 FINAL — the dependency RONDE 94 made critical ═══════════════ */
 
@@ -325,19 +319,15 @@ describe("RONDE 95 — a host that cannot load the picture editor is reported be
     expect(report.verdict).toBe("PRODUCTION_RENDER_BLOCKED");
   });
 
-  /**
-   * With enforcement explicitly off the same render completes and ships unverified footage — a
-   * worse film, not an impossible one. The verdict follows the configuration rather than guessing.
-   */
-  it("degrades rather than blocks when enforcement is explicitly disabled", async () => {
+  /** Adoption is always enforced; the old flag no longer turns a missing picture editor into a degradation. */
+  it("still blocks when the retired ENFORCE_FUNNEL_ADOPTION=false is set: there is no switch any more", async () => {
     const report = await productionPreflight(noVision, {
       ...fullyConfigured("v"),
       ENFORCE_FUNNEL_ADOPTION: "false",
     });
-    expect(report.verdict).toBe("PRODUCTION_RENDER_DEGRADED");
-    expect(report.blockers.join(" ")).not.toContain("clip_vision");
-    expect(report.degradations.join(" ")).toContain("clip_vision");
-    expect(report.degradations.join(" ")).toContain("unverified footage");
+    expect(report.verdict).toBe("PRODUCTION_RENDER_BLOCKED");
+    expect(report.blockers.join(" ")).toContain("clip_vision");
+    expect(report.degradations.join(" ")).not.toContain("clip_vision");
   });
 
   /** The report must say what it means for the film, not merely name a component. */

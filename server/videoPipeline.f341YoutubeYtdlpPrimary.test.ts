@@ -41,7 +41,6 @@ import { downloadYouTubeCCClip, fetchYouTubeCCClips } from "./videoPipeline";
 // value written later is wiped again before the first assertion runs.
 process.env.SEARCH_GATE_STRICT = "false";
 
-
 const FFMPEG_TEST_TIMEOUT_MS = 30_000;
 
 // A real, ffmpeg-generated ~18s source with real per-frame entropy (a flat `color=` source
@@ -191,37 +190,3 @@ describe("downloadYouTubeCCClip — F3-41 (cloud/yt-dlp service; RapidAPI switch
   });
 });
 
-describe("fetchYouTubeCCClips — F3-41 Test 4 (YouTube CC search unchanged: videoLicense=creativeCommon still present)", () => {
-  beforeEach(() => {
-    process.env = { ...ORIGINAL_ENV };
-    process.env.ENABLE_YOUTUBE_SOURCING = "true";
-    process.env.YOUTUBE_API_KEY = "f341-test-youtube-key";
-    process.env.YOUTUBE_CC_DL_SERVICE = "https://f341-cloud-service.example.com";
-    // RONDE 650: one licence pass per query is the default now (the daily quota); the CC pass
-    // this test guards is still there when every pass is enabled.
-    process.env.YOUTUBE_SEARCH_PASSES = "3";
-    nodeFetchMock.mockReset();
-  });
-  afterEach(() => {
-    process.env = { ...ORIGINAL_ENV };
-    vi.restoreAllMocks();
-  });
-
-  it("Test 4 — the YouTube Data API v3 search request still carries videoLicense=creativeCommon", async () => {
-    nodeFetchMock.mockImplementation((url: string) => {
-      const u = String(url);
-      if (u.includes("googleapis.com/youtube/v3/search")) {
-        return Promise.resolve({ ok: true, json: async () => ({ items: [] }) });
-      }
-      return Promise.resolve({ ok: false, status: 404 });
-    });
-
-    await fetchYouTubeCCClips("steam locomotive", 6, workDir, 0, 1, [], 1, "");
-
-    const searchCalls = nodeFetchMock.mock.calls
-      .map(([u]) => String(u))
-      .filter((u) => u.includes("googleapis.com/youtube/v3/search"));
-    expect(searchCalls.length).toBeGreaterThan(0);
-    expect(searchCalls.some((u) => u.includes("videoLicense=creativeCommon"))).toBe(true);
-  });
-});

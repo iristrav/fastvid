@@ -246,16 +246,6 @@ export function withoutProductionWords(query: string): string {
     .trim();
 }
 
-/** "archival" only for a historical subject; a modern one asks for footage of the thing itself. */
-export function applyArchivalRule(query: string, historical: boolean): string {
-  if (historical) return query.trim();
-  return query
-    .replace(/\barchival\s+footage\b/gi, "footage")
-    .replace(/\b(archival|archive|newsreel)\b/gi, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-}
-
 /**
  * The checks a query must pass, in the order a person would explain them. Null when it passes;
  * otherwise the reason, in words the model can act on.

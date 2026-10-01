@@ -57,9 +57,7 @@ import {
   DEFAULT_CAPTION_STYLE,
   DEFAULT_FORMAT,
   DEFAULT_TEXT_STYLE,
-  bumpVersion,
   emptyTimeline,
-  timelineDigest,
   type ProjectTimeline,
   type TextStyle,
   type TimelineText,
@@ -72,6 +70,14 @@ import {
   renderTimeline,
   TimelineRenderError,
 } from "./timelineRenderer";
+
+
+/** What saving an edit does to the document: version + 1, a fresh `createdAt`, nothing else. */
+const bumpVersion = <T extends { version: number; createdAt: string }>(t: T): T => ({
+  ...t,
+  version: t.version + 1,
+  createdAt: new Date().toISOString(),
+});
 
 const execFileAsync = promisify(execFile);
 const FFMPEG = (ffmpegStatic as unknown as string) || "ffmpeg";
@@ -436,19 +442,6 @@ describe("TEST 4 — same timeline + same assets + same settings = same output",
       }
     }
   }, 300_000);
-
-  it("the digest tracks what changes the picture and ignores what does not", () => {
-    const t = buildTimeline([media.shotA, media.shotB]);
-    const same = { ...bumpVersion(structuredClone(t)), renderedVideoUrl: "https://example/x.mp4" };
-    expect(timelineDigest(same), "a version bump changed the digest").toBe(timelineDigest(t));
-
-    const edited = structuredClone(t);
-    const tt = edited.tracks.find((x) => x.kind === "TEXT");
-    if (tt?.kind === "TEXT") tt.texts[0]!.text = "SOMETHING ELSE";
-    expect(timelineDigest(edited), "a text edit did not change the digest").not.toBe(
-      timelineDigest(t)
-    );
-  });
 });
 
 /* ═════════════════════════════ LIBASS ═════════════════════════════ */

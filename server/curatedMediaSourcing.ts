@@ -13,9 +13,9 @@ import {
   parseSourceFloorFailure,
   sourceFloorWouldFailAgain,
 } from "./sourceFloorMemo";
-import { containCenterFilter, stillImageMaxSec, stillKenBurnsEnabled, stillZoomOutExpr } from "./stillImagePolicy";
+import { containCenterFilter, stillImageMaxSec } from "./stillImagePolicy";
 import { preparationKey, runPreparation } from "./preparationCache";
-import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, expandBeatTagsWithTranslations, expandBeatTagsWithSynonyms, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, extractBeatCyclingTags, assetShowsCycling, isCarBeat, extractBeatCarTags, assetShowsCars, isGovernmentBeat, extractBeatGovernmentTags, assetShowsGovernment, isUrbanPlanningBeat, extractBeatUrbanPlanningTags, buildUrbanPlanningVisualQueries, assetShowsUrbanPlanning, isInfrastructureBeat, extractBeatInfrastructureTags, buildInfrastructureVisualQueries, assetShowsInfrastructure, beatMentionsWwiiContent, isClipTitleIrrelevantToBeat, type VideoVisualTopic } from "./visualBeatTags";
+import { extractVisualSearchTags, extractSceneSearchTags, extractEntitySearchTags, extractPrimaryVisualAnchor, extractSalientBeatTokens, extractBeatGeoPlaceTags, isGenericPeopleAsset, isWrongGeoForBeat, inferVideoVisualTopic, isWwiiWarArchiveAsset, refineVisualSearchTagsForTopic, expandBeatTagsWithTranslations, expandBeatTagsWithSynonyms, isGeoWelcomeBeat, buildGeoWelcomeVisualQueries, isCyclingBeat, extractBeatCyclingTags, assetShowsCycling, isCarBeat, extractBeatCarTags, assetShowsCars, isGovernmentBeat, extractBeatGovernmentTags, assetShowsGovernment, isUrbanPlanningBeat, extractBeatUrbanPlanningTags, buildUrbanPlanningVisualQueries, assetShowsUrbanPlanning, isInfrastructureBeat, extractBeatInfrastructureTags, buildInfrastructureVisualQueries, assetShowsInfrastructure, beatMentionsWwiiContent, type VideoVisualTopic } from "./visualBeatTags";
 import { promisify } from "util";
 import { pipeline } from "stream/promises";
 import { withForkRetry } from "./_core/execForkRetry";
@@ -25,13 +25,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { resolveLocalVideoPath, LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
-import { buildArchiveStillFilterComplex, buildArchiveStillFilterComplexBoxBlur, buildFitGrayGradedVideoVF, classifyDocGradeSourceKind, buildMatFramedStillVF, buildStillEncodeArgs, resolveStillKenBurnsVariant, standardArchiveKenBurnsZoomEnd, kenBurnsCenterXExpr } from "./documentaryStyle";
-import {
-  resolveStillImageFilterComplex,
-  type MotionGraphicsBudget,
-  type StillStyleContext,
-} from "./motionGraphicsEngine";
-import { archiveBlurFillStillsEnabled, archiveVisualMinClipSec, archivePreferVideoClips, framedArchiveStillsEnabled, archivePexelsHybridEnabled, maxVisualCandidatesPerBeatTry, visualFootageFocusEnabled, archiveTagsPrimaryMatching, semanticRerankClipSkipMin, metadataVisualBlocksEnabled, ffmpegThreadFlag, literalVisualGateEnabled } from "./sourcingPolicy";
+import { buildArchiveStillFilterComplex, buildArchiveStillFilterComplexBoxBlur, buildFitGrayGradedVideoVF, classifyDocGradeSourceKind, buildMatFramedStillVF, buildStillEncodeArgs } from "./documentaryStyle";
+import { type MotionGraphicsBudget, type StillStyleContext } from "./motionGraphicsEngine";
+import { archiveBlurFillStillsEnabled, archiveVisualMinClipSec, archivePreferVideoClips, framedArchiveStillsEnabled, maxVisualCandidatesPerBeatTry, visualFootageFocusEnabled, archiveTagsPrimaryMatching, semanticRerankClipSkipMin, ffmpegThreadFlag } from "./sourcingPolicy";
 import { asVideoTitleString, coerceVisionString } from "./stringCoercion";
 import { hydrateBeatScriptVisuals } from "./scriptVisualKeywords";
 import { vidrushStillPhotoScale, VIDRUSH_MIN_SOURCE_VIDEO_SEC, type BeatGeoRegion } from "./vidrushQuality";
@@ -61,7 +57,6 @@ import {
 import { applyBackgroundClipAuditScore } from "./clipBackgroundAuditor";
 import { buildDocumentaryShotQueries } from "./pipelineSelfHeal";
 import { pickInClipStartSec } from "./clipInClipOffset";
-import type { ArchiveMatchTier } from "./viewerVisualPlan";
 import {
   getAllMediaArchives,
   getMediaArchiveAssets,
@@ -72,17 +67,7 @@ import type { MediaArchiveAsset } from "../drizzle/schema";
 import { STOCK_ARCHIVE_SLUG } from "./stockArchive";
 import { preferLessUsed } from "./usageDiversity";
 import { throwIfActiveRenderCancelled } from "./videoGenerationCancel";
-import {
-  countVisualTagHits,
-  isCuratedHistoricalFootage,
-  isCuratedInterviewAsset,
-  isGeographyIncompatibleArchiveAsset,
-  judgeArchiveAsset,
-  judgeArchiveAssetMaterial,
-  judgeArchiveAssetSubject,
-  judgeOnScreenText,
-  hasKnownBakedEditText,
-} from "./visualJudge";
+import { countVisualTagHits, isCuratedHistoricalFootage, isCuratedInterviewAsset, judgeArchiveAsset, judgeArchiveAssetMaterial, judgeArchiveAssetScore, judgeOnScreenText, hasKnownBakedEditText } from "./visualJudge";
 import { pipelineWallClockLimitEnabled } from "./config";
 
 /** getMediaArchiveAssets() excludes annotationJson from the SQL query (large, no bulk caller
@@ -326,7 +311,6 @@ export function buildBeatMatchTags(
 
   const visualSource = bestQuery;
   const visualTags = extractVisualSearchTags(visualSource, videoTitle);
-  const visualAnchor = extractPrimaryVisualAnchor(visualSource);
   const mergedBeat = beatTags;
   const beatLower = beatText.toLowerCase();
   const scopedTopicAnchors = topicAnchors.filter(
@@ -355,47 +339,6 @@ export function buildBeatMatchTags(
     hasLiteralVisual,
     literalVisualTags: hasLiteralVisual ? normalizeMediaTags(visualTags).slice(0, 5) : [],
   };
-}
-
-/**
- * Archive search priority tiers (internal library only):
- * 1 exact — literal visual tag hits + tier-1/2 semantic
- * 2 semantic — strong semantic / partial literal match
- * 3 related — same topic, looser match
- */
-export function filterCandidatesByArchiveTier(
-  picks: CuratedCandidatePick[],
-  tier: ArchiveMatchTier,
-  literalTags: string[]
-): CuratedCandidatePick[] {
-  if (!picks.length) return [];
-  const minSem = semanticMinRelevanceScore();
-
-  return picks.filter((p) => {
-    const literalHits = literalTags.length > 0 ? countVisualTagHits(p.asset, literalTags) : 0;
-    const sem = p.semantic;
-
-    if (tier === "exact") {
-      return (
-        literalHits >= 2 ||
-        (sem != null && sem.tier <= 2 && sem.relevanceScore >= Math.max(60, minSem + 8)) ||
-        (literalHits >= 1 && sem != null && sem.tier <= 2)
-      );
-    }
-
-    if (tier === "semantic") {
-      if (sem != null && sem.tier <= 3 && sem.relevanceScore >= minSem) return true;
-      if (literalHits >= 1 && p.score >= 38) return true;
-      if (sem != null && sem.tier <= 2 && sem.relevanceScore >= 50) return true;
-      return false;
-    }
-
-    // related
-    if (sem != null && sem.tier <= 4 && sem.relevanceScore >= 30) return true;
-    if (literalHits >= 1) return true;
-    if (p.score >= 22 && countVisualTagHits(p.asset, literalTags.slice(0, 2)) > 0) return true;
-    return p.score >= Math.max(18, Math.round((picks[0]?.score ?? 40) * 0.22));
-  });
 }
 
 /**
@@ -930,16 +873,6 @@ export function scoreCuratedAsset(
   score += curatedStaticInteriorPenalty(asset);
   score += curatedInterviewPenalty(asset);
 
-  score += curatedOffTopicPenalty(asset, topicAnchors, beatTags, videoVisualTopic);
-  if (metadataVisualBlocksEnabled()) {
-    if (beatText && judgeArchiveAssetSubject(asset, beatText).decision === "REJECT") return 0;
-    if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText ?? "") && videoVisualTopic !== "wwii") {
-      score = Math.max(0, score - 400);
-    }
-    if (beatText && isClipTitleIrrelevantToBeat(asset, beatText)) {
-      return 0;
-    }
-  }
   // Hard-zero clips with pre-burned production notation titles (defense-in-depth)
   if (hasProductionNotationTitle(asset)) {
     return 0;
@@ -996,57 +929,6 @@ function curatedSceneContextScore(
   return score;
 }
 
-/** Obvious era/topic mismatches (e.g. medieval sign in WWII Hitler doc). */
-function curatedOffTopicPenalty(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
-  topicAnchors: string[],
-  beatTags: string[],
-  videoVisualTopic: VideoVisualTopic = "general"
-): number {
-  return isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic) ? -250 : 0;
-}
-
-export function isCuratedOffTopicAsset(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
-  topicAnchors: string[],
-  beatTags: string[],
-  videoVisualTopic: VideoVisualTopic = "general"
-): boolean {
-  if (!metadataVisualBlocksEnabled()) return false;
-  const beatHay = beatTags.join(" ");
-  // Round 13: this check used to fire off beatTags alone, so a beat whose (possibly
-  // LLM-truncated) beatTags lack an explicit WWII keyword — e.g. beatTags=["berlin"] for "In
-  // Berlin's heart, Adolf Hitler, trapped beneath ground, gave orders." — incorrectly flagged a
-  // genuinely on-topic WWII archive asset as off-topic and applied a -250 penalty, even though
-  // the whole video is already classified videoVisualTopic==="wwii" (used correctly a few lines
-  // below in this same function). Guard with that existing, reliable, LLM-independent signal.
-  if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatHay) && videoVisualTopic !== "wwii") {
-    return true;
-  }
-  // Round 13: isGeographyIncompatibleArchiveAsset's own first check is isWwiiWarArchiveAsset
-  // (see that function, a few lines below) — so this block is the same beatTags-only WWII-vs-
-  // video-topic gap as the one just above, reached via a different classifier. Same guard.
-  if (
-    isGeographyIncompatibleArchiveAsset(asset) &&
-    !beatMentionsWwiiContent(beatHay) &&
-    !/\b(18\d{2}|19\d{2}|20[01]\d|histor(y|ical)|archief|archive)\b/i.test(beatHay) &&
-    videoVisualTopic !== "wwii"
-  ) {
-    return true;
-  }
-
-  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
-  const beatContextWwii =
-    videoVisualTopic === "wwii" ||
-    topicAnchors.some((a) =>
-      /hitler|nazi|wwii|world.?war|oorlog|1945|1944|holocaust|duitsland|third reich/i.test(a)
-    ) ||
-    beatTags.some((t) => /hitler|nazi|1945|1944|holocaust|wehrmacht|bunker|fuhrer|third reich|wwii|ww2/i.test(t));
-  if (!beatContextWwii) return false;
-  return /\b(middeleeuws|medieval|uithangbord|prehistoric|steentijd|dinosaur|sprookje|fantasy|mytholog)\b/i.test(
-    hay
-  );
-}
 
 function curatedVideoFootageBoost(
   asset: Pick<MediaArchiveAsset, "mediaType" | "durationSec">,
@@ -1165,10 +1047,8 @@ export async function listCuratedArchiveCandidates(
   });
   if (!archives.length) return [];
 
-  const geoRequired = beatText ? extractBeatGeoPlaceTags(beatText) : [];
   const scored: CuratedCandidatePick[] = [];
   const fallback: CuratedCandidatePick[] = [];
-  const metadataBlocks = metadataVisualBlocksEnabled();
   // beatText is fixed for this whole call — compute its derived tags/classifiers once instead
   // of re-deriving them from scratch for every candidate asset scored below (can be hundreds).
   const beatCtx = computeBeatScoringContext(beatText);
@@ -1184,28 +1064,22 @@ export async function listCuratedArchiveCandidates(
       if (hasKnownBakedEditText(asset)) continue;
       /** ONE ROUTE: not documentary material is the VisualJudge's rule, asked here before scoring. */
       if (judgeArchiveAssetMaterial(asset).decision === "REJECT") continue;
-      if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
-      if (metadataBlocks && geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic, beatCtx);
       // RONDE 9 (render 519): a NEGATIVE score is active evidence of a mismatch — it must never
       // be laundered into the score=1 "no signal" floor (assets scoring -65 were adopted for
       // beats they demonstrably did not fit). Only a true no-signal (score === 0) may floor to 1.
-      const effectiveScore = score > 0 ? score : score < 0 || metadataBlocks ? 0 : 1;
-      if (effectiveScore > 0) {
-        scored.push({
-          asset,
-          score: effectiveScore,
-          archiveName: archive.name,
-          archiveNicheTags: nicheTags,
-        });
-      }
+      // ONE ROUTE — the refusal of a negative score is the VisualJudge's (`judgeArchiveAssetScore`).
+      if (judgeArchiveAssetScore(score).decision === "REJECT") continue;
+      scored.push({
+        asset,
+        score: Math.max(score, 1),
+        archiveName: archive.name,
+        archiveNicheTags: nicheTags,
+      });
     }
   }
 
-  const blockUniversalFallback =
-    metadataBlocks && (noUniversalFallback || geoRequired.length > 0);
-
-  if (scored.length === 0 && fallback.length === 0 && archives.length > 0 && !blockUniversalFallback) {
+  if (scored.length === 0 && fallback.length === 0 && archives.length > 0) {
     // Still score every candidate against the video's general topic (nicheTags, videoVisualTopic)
     // instead of a flat score=1 for the whole archive — a beat with no exact tag match should
     // fall back to the archive's next-most-relevant clip, not a literally random one. tryOrder
@@ -1220,11 +1094,9 @@ export async function listCuratedArchiveCandidates(
         if (hasKnownBakedEditText(asset)) continue; // RONDE 22 — unadoptable, see above
         /** ONE ROUTE: not documentary material is the VisualJudge's rule, asked here before scoring. */
         if (judgeArchiveAssetMaterial(asset).decision === "REJECT") continue;
-        if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
         const score = scoreCuratedAsset(asset, nicheTags, [], [], beatText, videoVisualTopic, beatCtx);
-        // RONDE 9: same rule as the primary pool — a negative score is an active mismatch and
-        // never enters the fallback pool either.
-        if (score < 0) continue;
+        // RONDE 9: same rule as the primary pool — the VisualJudge refuses a negative score.
+        if (judgeArchiveAssetScore(score).decision === "REJECT") continue;
         fallback.push({ asset, score: Math.max(score, 1), archiveName: archive.name, archiveNicheTags: nicheTags });
       }
     }
@@ -1455,22 +1327,6 @@ async function convertImageToKenBurns(
     );
     duration = cap;
   }
-  const styled = resolveStillImageFilterComplex(duration, sceneIndex, beatIndex, styleContext);
-  if (styled) {
-    await exec(
-      `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, styled.filterComplex)}`,
-      EXEC_TIMEOUT_ENCODE_MS
-    );
-    if (styled.consumedBudget && styleContext?.motionGraphicsBudget) {
-      styleContext.motionGraphicsBudget.used++;
-    }
-    const outDur = await probeMediaDurationSec(outPath);
-    if (outDur < duration * 0.85) {
-      throw new Error(`Styled still clip too short (${outDur.toFixed(2)}s < ${duration.toFixed(2)}s)`);
-    }
-    return;
-  }
-
   if (framedArchiveStillsEnabled()) {
     const filterComplex = buildArchiveStillFilterComplex(
       duration,
@@ -1508,7 +1364,7 @@ async function convertImageToKenBurns(
         console.warn(
           `[Curated] Scene ${sceneIndex} beat ${beatIndex}: boxblur still failed, retrying gray mat`
         );
-        const matFc = buildMatFramedStillVF(duration, vidrushStillPhotoScale(), sceneIndex, beatIndex);
+        const matFc = buildMatFramedStillVF(duration, vidrushStillPhotoScale());
         await exec(
           `${ffmpegBin()} ${buildStillEncodeArgs(imgPath, outPath, duration, matFc)}`,
           EXEC_TIMEOUT_ENCODE_MS
@@ -1517,47 +1373,6 @@ async function convertImageToKenBurns(
         throw err;
       }
     }
-  } else if (stillKenBurnsEnabled()) {
-    /**
-     * The previous behaviour, kept behind ENABLE_STILL_KEN_BURNS so RONDE 128 is reversible in
-     * production without a redeploy. Off by default from that round on — see stillImagePolicy.ts
-     * for why a five-second cap makes the motion unnecessary rather than the motion making the
-     * length bearable.
-     */
-    const fps = 25;
-    const totalFrames = Math.max(50, Math.round(duration * fps));
-    const zoomEnd =
-      process.env.ENABLE_AUTO_MOTION_GRAPHICS !== "false"
-        ? standardArchiveKenBurnsZoomEnd(duration)
-        : 1.1;
-    const zoomStep = (zoomEnd - 1.0) / totalFrames;
-    const padW = Math.round(VIDEO_WIDTH * 1.12);
-    const padH = Math.round(VIDEO_HEIGHT * 1.12);
-    const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
-    const yExpr = "ih/2-(ih/zoom/2)";
-    /**
-     * RONDE 147 — the same quadratic overshoot as buildKenBurnsTail had, fixed the same way.
-     *
-     * `on * round(totalFrames * 0.04)` reaches `0.04 * totalFrames²` by the last frame: 500px on a
-     * 5-second still, against roughly 37px of room at this zoom. The frame slid to the edge of the
-     * picture and stayed there. kenBurnsCenterXExpr bounds the drift by what the zoom affords at
-     * each frame, so the image stays centred and whole.
-     */
-    const xExpr = kenBurnsCenterXExpr(
-      variant === "pan-left" ? "left" : null,
-      `min(on/${totalFrames},1)`
-    );
-    const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
-    await exec(
-      `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
-        `-vf "scale=${padW}:${padH}:force_original_aspect_ratio=increase,` +
-        `crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2,` +
-        `zoompan=z='min(zoom+${zoomStep.toFixed(7)},${zoomEnd})':` +
-        `x='${xExpr}':y='${yExpr}':` +
-        `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-        `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an -pix_fmt yuv420p "${outPath}"`,
-      EXEC_TIMEOUT_ENCODE_MS
-    );
   } else {
     /**
      * RONDE 128 — the whole picture, in the middle, at its own shape.
@@ -1572,52 +1387,22 @@ async function convertImageToKenBurns(
      * after a contain scale there is nothing outside the frame to cut. No zoompan at all.
      */
     /**
-     * RONDE 152 — the whole picture, in the middle, and MOVING.
-     *
-     * RONDE 128 removed the crop and the zoom together, because the zoom of the day was the thing
-     * sliding around inside a cropped photograph. Removing the crop was right. Removing the motion
-     * with it left this branch — the one that actually runs, since ENABLE_STILL_KEN_BURNS is unset
-     * in production — emitting a literally frozen picture for up to five seconds.
-     *
-     * Video 550 measured what that costs once the coverage fill gets hold of one:
-     *
-     *     scene 1 montage:  loop=loop=3:size=124, setpts=2.0*PTS, trim=38.245
-     *                       → 4.96s of source, looped 4× and slowed 2×
-     *     stillness audit:  longest still 34.13s at 23.25s, imagesOver5Sec 3, passed NO
-     *
-     * Looping a motionless source produces a motionless montage. RONDE 130 replaced the frozen
-     * tail-pad with a loop precisely to avoid held frames, and that fix is sound — but it can only
-     * work if the footage it loops actually moves. This is the missing half.
-     *
-     * ── Why a zoom OUT ───────────────────────────────────────────────────────────────────────
-     *
-     * The photograph has to end whole, which is RONDE 128's rule and still right. A zoom that
-     * pushes IN finishes on a cropped picture; a zoom that eases OUT finishes on exactly the
-     * contained frame — the same last frame this branch produced before, arrived at through
-     * movement instead of stillness. The motion is applied AFTER the contain, so it works on the
-     * padded 1920×1080 composite: for any image narrower than 16:9 the early frames eat padding
-     * rather than picture.
-     *
-     * `kenBurnsCenterXExpr(null, …)` is RONDE 147/149's centred expression, so the frame cannot
-     * drift toward an edge at any zoom or duration — the defect that made the old zoom worth
-     * removing cannot come back through this door.
+     * RONDE 656 — held, like every still: the camera move is the timeline's (cameraPlanner →
+     * cameraChain), so the encoder bakes none in. RONDE 152's frozen-picture concern is answered
+     * there — edlToTimeline gives every still a camera move.
      */
     const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
     const contain = containCenterFilter({ widthPx: VIDEO_WIDTH, heightPx: VIDEO_HEIGHT });
-    const stillFrames = Math.max(2, Math.round(duration * 25));
-    const drift = stillZoomOutExpr(stillFrames);
     await exec(
       `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
-        `-vf "${contain},zoompan=z='${drift}':` +
-        `x='${kenBurnsCenterXExpr(null, "1")}':y='ih/2-(ih/zoom/2)':` +
-        `d=${stillFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25,format=yuv420p" ` +
+        `-vf "${contain},fps=25,format=yuv420p" ` +
         `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an "${outPath}"`,
       EXEC_TIMEOUT_ENCODE_MS
     );
   }
   const outDur = await probeMediaDurationSec(outPath);
   if (outDur < duration * 0.85) {
-    throw new Error(`Ken Burns clip too short (${outDur.toFixed(2)}s < ${duration.toFixed(2)}s)`);
+    throw new Error(`Still clip too short (${outDur.toFixed(2)}s < ${duration.toFixed(2)}s)`);
   }
 }
 
@@ -2165,78 +1950,6 @@ export function rankCuratedCandidatesForBeat(
   return ranked;
 }
 
-/** Phase 10: bias which near-tied-score candidate is tried first toward archives used less
- *  often so far this video, without ever letting a lower-scoring candidate be preferred over
- *  a higher-scoring one — candidates are grouped into descending score bands (bandWidth points
- *  wide) first, and only reordered *within* a band, so this can never lower match quality to
- *  gain diversity. Sort is stable, so ties within a band keep their original relative order. */
-
-/** Words that are long enough to pass a naive length filter but say nothing about a subject. */
-const STUB_POWER_WORD_STOPWORDS = new Set([
-  "about", "after", "again", "against", "along", "already", "although", "always", "among",
-  "another", "because", "before", "began", "behind", "being", "below", "between", "beyond",
-  "could", "during", "every", "final", "first", "found", "still", "their", "there", "these",
-  "thing", "things", "those", "through", "under", "until", "where", "which", "while", "whose",
-  "would", "within", "without",
-]);
-
-/**
- * RONDE 26: a scene-level stand-in topic, chosen by what a scene is ABOUT.
- *
- * This used to be `text.split(/\s+/).find((w) => w.length > 4)` — the first word longer than four
- * letters — which for "In the dim chaos of the Führerbunker, Adolf Hitler's crumbling…" yields
- * "chaos". That word then travels on as the pool's topic anchor. Named subjects are what a
- * documentary scene is actually about, so they come first; a content word is the fallback, and
- * "documentary" only when the text carries nothing usable at all.
- */
-export function stubPowerWordFromSceneText(text: string): string {
-  const stripPossessive = (w: string): string => w.replace(/['’]s$/iu, "").replace(/['’]$/u, "");
-  // Capitalisation at the very start of a sentence is grammar, not meaning, so those are skipped.
-  const isSentenceStart = (at: number): boolean =>
-    /(^|[.!?]["'’)\]]?)\s*$/u.test(text.slice(0, at));
-
-  // Matched against the RAW text rather than punctuation-stripped words, because the punctuation
-  // is the signal: "…the Führerbunker, Adolf Hitler's plans…" contains the name "Adolf Hitler",
-  // and emphatically not "Führerbunker Adolf" — the comma between them says they are not one name.
-  for (const m of text.matchAll(/(\p{Lu}[\p{L}'’-]*)[ \t]+(\p{Lu}[\p{L}'’-]*)/gu)) {
-    if (isSentenceStart(m.index ?? 0)) continue;
-    return `${stripPossessive(m[1]!)} ${stripPossessive(m[2]!)}`;
-  }
-  // Then a single mid-sentence capitalised word — a place, an organisation, a surname alone.
-  for (const m of text.matchAll(/\p{Lu}[\p{L}'’-]{2,}/gu)) {
-    if (isSentenceStart(m.index ?? 0)) continue;
-    return stripPossessive(m[0]);
-  }
-  // Then the longest ordinary content word, which at least beats picking whichever came first.
-  let best = "";
-  for (const raw of text.split(/\s+/)) {
-    const w = stripPossessive(raw.replace(/[^\p{L}\p{N}'’-]/gu, ""));
-    const lower = w.toLowerCase();
-    if (lower.length > 4 && !STUB_POWER_WORD_STOPWORDS.has(lower) && lower.length > best.length) {
-      best = w;
-    }
-  }
-  /**
-   * RONDE 223 — NO POWER WORD IS AN ANSWER; "documentary" IS NOT.
-   *
-   * RONDE 88A P4 found this exact line and described what it causes — a subject collapsed to a
-   * genre word, producing "documentary wide establishing aerial", which asks for aerial footage of
-   * the world in general. Render 568 built 128 such queries and the gate refused all 128. That
-   * round guarded the CONSUMER (`buildDocumentaryShotQueries` now returns nothing without a
-   * content anchor) and left the source returning the genre word to everything else that reads it.
-   *
-   * Render 575 (rmtulyr50) shows the rest of the family still arriving at the providers:
-   *
-   *     query="documentary"   reason=NO_CONTENT_ANCHOR  × 80
-   *     query="establishing"  reason=NO_CONTENT_ANCHOR  × 74
-   *
-   * `powerWord` is optional at every one of its readers, so absence is a value they already
-   * handle. RONDE 100B settled the principle for the identical case one file over: no subject
-   * means no query.
-   */
-  return best;
-}
-
 /** Per-sentence archive search — scores all assets against this beat's narration. */
 export async function searchCuratedCandidatesForBeat(
   beat: CuratedBeatContext,
@@ -2287,9 +2000,8 @@ export async function searchCuratedCandidatesForBeat(
     ...anchoredBeat,
     searchQuery: shotQueries[0] || anchoredBeat.searchQuery,
   };
-  const { beatTags, mainSubject, topicAnchors, allTags, videoVisualTopic, hasLiteralVisual, literalVisualTags } =
+  const { beatTags, topicAnchors, allTags, videoVisualTopic } =
     buildBeatMatchTags(beatForMatch, scene, videoTitle);
-  const literalGateTags = literalVisualGateEnabled() && hasLiteralVisual ? literalVisualTags : [];
 
   console.log(
     `[ArchiveSearch] zin ${beat.index} "${beat.text.slice(0, 60)}"` +
@@ -2475,52 +2187,19 @@ export async function searchCuratedCandidatesForBeat(
     archiveUsesThisRender: options?.usedArchiveNames,
   });
 
-  const topScore = ranked[0]?.score ?? 0;
-  const segmentLock = options?.segmentLock ?? null;
   let filtered = ranked.filter((p) =>
-    judgeArchiveAsset({
-      asset: p.asset, beatText: beat.text, videoTitle, score: p.score, topScore, semantic: p.semantic,
-      videoVisualTopic, segmentLock, literalVisualTags: literalGateTags,
-    }).decision === "ACCEPT"
+    judgeArchiveAsset({ asset: p.asset, score: p.score }).decision === "ACCEPT"
   );
   if (options?.videosOnly) {
     filtered = filtered.filter((p) => p.asset.mediaType === "video");
     ranked = ranked.filter((p) => p.asset.mediaType === "video");
   }
+  /**
+   * ONE ROUTE — what the VisualJudge refused is not offered again under a looser name. The former
+   * "medium" and "relaxed" tiers asked the same judge about a subset of what it had just refused
+   * (always empty); "main subject only" offered refused assets with no judgement at all.
+   */
   if (filtered.length > 0) return filtered;
-
-  if (topScore > 0) {
-    const medium = ranked.filter(
-      (p) =>
-        p.score >= Math.max(40, Math.round(topScore * 0.5)) &&
-        judgeArchiveAsset({
-      asset: p.asset, beatText: beat.text, videoTitle, score: p.score, topScore, semantic: p.semantic,
-      videoVisualTopic, segmentLock, literalVisualTags: literalGateTags,
-    }).decision === "ACCEPT"
-    );
-    if (medium.length > 0) return medium;
-  }
-
-  if (topScore > 0) {
-    const relaxed = ranked.filter(
-      (p) =>
-        p.score >= Math.max(18, Math.round(topScore * 0.28)) &&
-        countVisualTagHits(p.asset, matchTags.length > 0 ? matchTags : beatTags) > 0 &&
-        !isGenericPeopleAsset(p.asset) &&
-        judgeArchiveAsset({
-      asset: p.asset, beatText: beat.text, videoTitle, score: p.score, topScore, semantic: p.semantic,
-      videoVisualTopic, segmentLock, literalVisualTags: literalGateTags,
-    }).decision === "ACCEPT"
-    );
-    if (relaxed.length > 0) return relaxed;
-  }
-
-  // Fallback: retry with main subject only (drop the specifier)
-  if (mainSubject.length > 0 && beatTags.length > 1) {
-    console.log(`[ArchiveSearch] zin ${beat.index}: no match with [${beatTags.join(", ")}] — retrying with main subject only: [${mainSubject[0]}]`);
-    const subjectOnly = ranked.filter((p) => countVisualTagHits(p.asset, mainSubject) > 0);
-    if (subjectOnly.length > 0) return subjectOnly;
-  }
 
   // No match at all — return empty so the pipeline falls back to Pexels/Pixabay stock.
   // We must never pick a random archive clip that has nothing to do with this sentence.
@@ -2571,7 +2250,6 @@ export async function fetchCuratedArchiveBeatClip(
   imageBudget?: { used: number; max: number },
   motionGraphicsBudget?: MotionGraphicsBudget,
   options?: {
-    relaxed?: boolean;
     /** Recent same-subject videos' uses per archive asset (usageDiversity.recentUsageCounts). */
     crossVideoUsage?: ReadonlyMap<number, number>;
     assetsCache?: Map<number, ArchiveAssetRow[]>;
@@ -2616,9 +2294,7 @@ export async function fetchCuratedArchiveBeatClip(
     };
   }
 ): Promise<string | null> {
-  const relaxed = options?.relaxed === true;
-  const { beatTags, videoVisualTopic, hasLiteralVisual, literalVisualTags } = buildBeatMatchTags(beat, scene, videoTitle);
-  const literalGateTags = literalVisualGateEnabled() && hasLiteralVisual ? literalVisualTags : [];
+  const { beatTags } = buildBeatMatchTags(beat, scene, videoTitle);
   const candidates = await searchCuratedCandidatesForBeat(
     beat,
     scene,
@@ -2644,7 +2320,7 @@ export async function fetchCuratedArchiveBeatClip(
   }
 
   const topScore = candidates[0]?.score ?? 0;
-  const minAcceptScore = relaxed ? Math.max(12, Math.round(topScore * 0.25)) : Math.max(28, Math.round(topScore * 0.4));
+  const minAcceptScore = Math.max(28, Math.round(topScore * 0.4));
   /** ONE ROUTE: the ranked order, never rotated for variety — variety is `preferLessUsed`, applied in the search. */
   const tryOrder = candidates;
   const maxTries = maxVisualCandidatesPerBeatTry();
@@ -2652,21 +2328,11 @@ export async function fetchCuratedArchiveBeatClip(
   const eligible: CuratedCandidatePick[] = [];
   for (const picked of tryOrder) {
     if (eligible.length >= maxTries) break;
-    const judged = judgeArchiveAsset({
-      asset: picked.asset,
-      beatText: beat.text,
-      videoTitle,
-      score: picked.score,
-      topScore,
-      videoVisualTopic,
-      segmentLock: options?.segmentLock ?? null,
-      literalVisualTags: literalGateTags,
-      checkCountry: true,
-    });
+    const judged = judgeArchiveAsset({ asset: picked.asset, score: picked.score });
     if (judged.decision === "REJECT") {
       continue;
     }
-    if (!relaxed && picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
+    if (picked.score < minAcceptScore && topScore > minAcceptScore + 6) {
       continue;
     }
     if (usedAssetIds.has(picked.asset.id) || usedStorageUrls.has(picked.asset.storageUrl)) {
@@ -2836,56 +2502,6 @@ export async function prepareInScoreOrder<T extends { score: number }>(
     });
   }
   return successes;
-}
-
-/** Geo beats (Netherlands, US, Berlin…) — Pexels has better location B-roll than a mismatched archive clip. */
-export function shouldTryPexelsFirstForBeat(
-  beatText: string,
-  videoVisualTopic: VideoVisualTopic
-): boolean {
-  if (visualFootageFocusEnabled()) return false;
-  if (!archivePexelsHybridEnabled()) return false;
-  if (isGeoWelcomeBeat(beatText)) return true;
-  if (isCyclingBeat(beatText) || isCarBeat(beatText) || isGovernmentBeat(beatText) || isUrbanPlanningBeat(beatText) || isInfrastructureBeat(beatText)) {
-    return true;
-  }
-  const geoTags = extractBeatGeoPlaceTags(beatText);
-  return geoTags.length > 0;
-}
-
-/** Use Pexels when the best archive candidate is weak or geographically wrong. */
-export function shouldPreferPexelsOverArchive(
-  beatText: string,
-  ranked: CuratedCandidatePick[],
-  videoVisualTopic: VideoVisualTopic,
-  segmentLock: BeatGeoRegion | null = null,
-  videoTitle?: string
-): boolean {
-  if (!archivePexelsHybridEnabled()) return false;
-  if (!metadataVisualBlocksEnabled()) {
-    return ranked.length === 0;
-  }
-  if (visualFootageFocusEnabled()) {
-    return ranked.length === 0;
-  }
-  if (ranked.length === 0) return true;
-
-  const top = ranked[0]!;
-  const geoTags = extractBeatGeoPlaceTags(beatText);
-  if (geoTags.length > 0) {
-    if (isWrongGeoForBeat(top.asset, geoTags)) return true;
-    if (countVisualTagHits(top.asset, geoTags) < 2) return true;
-  }
-  if (
-    judgeArchiveAsset({
-      asset: top.asset, beatText, videoTitle, score: top.score, topScore: top.score, semantic: top.semantic,
-      videoVisualTopic, segmentLock,
-    }).decision === "REJECT"
-  ) {
-    return true;
-  }
-  const minScore = 45;
-  return top.score < minScore;
 }
 
 /** Targeted Pexels queries from beat geography + urban context. */

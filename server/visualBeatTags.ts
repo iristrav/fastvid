@@ -11,7 +11,6 @@ import {
 } from "./worldGeoSlugs";
 import { asVideoTitleString } from "./stringCoercion";
 import { normalizeMediaTags } from "./db";
-import { metadataVisualBlocksEnabled } from "./sourcingPolicy";
 
 /** Drives archive filtering — geography videos must not pull WWII/Hiter footage. */
 export type VideoVisualTopic = "wwii" | "cold_war" | "geography_urban" | "general";
@@ -227,152 +226,8 @@ export function isWwiiWarArchiveAsset(
   return false;
 }
 
-/**
- * Clip-title domain rules.
- *
- * Each rule defines a "domain" that a clip can belong to (via titleRe matching
- * the clip's title/tags) and the condition under which that domain is ALLOWED
- * for a given beat (beatAllowRe matching the beat text).
- *
- * If a clip's title/tags match a domain's titleRe, but the current beat text
- * does NOT match that domain's beatAllowRe, the clip is irrelevant to this beat
- * and must be blocked.
- *
- * Rules are intentionally conservative: they only block when the clip title
- * NAMES a specific person, conflict, or graphic situation that is completely
- * absent from the beat text. This prevents e.g. "Hitler youth rally" appearing
- * in an Amsterdam post-war reconstruction beat.
- */
-type ClipTitleDomainRule = {
-  id: string;
-  /** Matches clip title / tags when clip belongs to this domain. */
-  titleRe: RegExp;
-  /** Matches beat text when this domain is contextually allowed for this beat. */
-  beatAllowRe: RegExp;
-};
 
-const CLIP_TITLE_DOMAIN_RULES: ClipTitleDomainRule[] = [
-  // ── Named totalitarian / war figures ─────────────────────────────────────────
-  // Only show clips of these figures when the beat explicitly discusses them.
-  {
-    id: "hitler",
-    titleRe: /\b(hitler|adolf hitler|der führer|der fuhrer|mein kampf)\b/i,
-    beatAllowRe: /\b(hitler|nazi|third reich|gestapo|\bss\b|nsdap|führer|fuhrer|fascism)\b/i,
-  },
-  {
-    id: "stalin",
-    titleRe: /\b(stalin|joseph stalin)\b/i,
-    beatAllowRe: /\b(stalin|soviet union|ussr|gulag|bolshevik|politburo|red army|purges)\b/i,
-  },
-  {
-    id: "mussolini",
-    titleRe: /\b(mussolini|benito mussolini|il duce)\b/i,
-    beatAllowRe: /\b(mussolini|fascist italy|fascism|duce|blackshirts|march on rome)\b/i,
-  },
-  {
-    id: "mao",
-    titleRe: /\b(mao zedong|mao tse-tung|chairman mao)\b/i,
-    beatAllowRe: /\b(mao|cultural revolution|great leap forward|communist china|ccp|red guards)\b/i,
-  },
-  {
-    id: "pol_pot",
-    titleRe: /\b(pol pot|khmer rouge|killing fields)\b/i,
-    beatAllowRe: /\b(pol pot|khmer rouge|cambodia(n)? genocide|killing fields|angkar)\b/i,
-  },
-  {
-    id: "kim_jong",
-    titleRe: /\b(kim jong( un| il| nam)?|north korea(n)? (leader|dictator|parade))\b/i,
-    beatAllowRe: /\b(kim jong|north korea|dprk|pyongyang|north korean)\b/i,
-  },
-  {
-    id: "pinochet",
-    titleRe: /\b(pinochet|augusto pinochet|chilean junta)\b/i,
-    beatAllowRe: /\b(pinochet|chilean coup|junta|chile (1973|dictatorship)|allende)\b/i,
-  },
-  {
-    id: "franco",
-    titleRe: /\b(francisco franco|\bfranco\b (dictator|regime|spain)|falangist)\b/i,
-    beatAllowRe: /\b(franco|spanish civil war|falangism|falangist|nationalists spain)\b/i,
-  },
-  {
-    id: "saddam",
-    titleRe: /\b(saddam hussein|saddam)\b/i,
-    beatAllowRe: /\b(saddam|iraq (war|invasion|dictator)|hussein|gulf war|baath)\b/i,
-  },
-  // ── Named conflict events (non-WWII, extends existing WWII check) ─────────────
-  {
-    id: "iraq_war_footage",
-    titleRe: /\b(iraq war|fallujah (battle|siege)|baghdad (battle|fall)|operation iraqi freedom)\b/i,
-    beatAllowRe: /\b(iraq war|iraq invasion|fallujah|baghdad (fell|captured)|saddam|gulf war)\b/i,
-  },
-  {
-    id: "my_lai",
-    titleRe: /\b(my lai|napalm (girl|bombing photo)|nick ut)\b/i,
-    beatAllowRe: /\b(my lai|napalm|vietnam (war|atrocity)|kent state)\b/i,
-  },
-  {
-    id: "apartheid_violence",
-    titleRe: /\b(necklacing|soweto (massacre|uprising \d)|apartheid (execution|killing))\b/i,
-    beatAllowRe: /\b(apartheid|soweto|necklacing|south africa oppression|township violence)\b/i,
-  },
-  // ── Graphic / disturbing content identifiable by title ────────────────────────
-  {
-    id: "public_execution",
-    titleRe: /\b(public execution|public hanging|firing squad execution|guillotine execution|lynching)\b/i,
-    beatAllowRe: /\b(execution|public hanging|guillotine|lynching|capital punishment|death penalty|hanged)\b/i,
-  },
-  {
-    id: "graphic_atrocity",
-    titleRe: /\b(beheading video|torture footage|atrocity footage|war crimes footage|mass grave)\b/i,
-    beatAllowRe: /\b(beheading|torture|atrocity|war crime|mass grave|genocide footage)\b/i,
-  },
-  // ── Ideological imagery outside its context ──────────────────────────────────
-  {
-    id: "communist_rally",
-    titleRe: /\b(communist (rally|parade|propaganda)|may day (ussr|soviet|mao)|red square (parade|military))\b/i,
-    beatAllowRe: /\b(communis|soviet|mao|ussr|bolshevik|red army|marxist|leninist|stalinist|maoist)\b/i,
-  },
-  {
-    id: "kkk_footage",
-    titleRe: /\b(kkk|ku klux klan|klan (rally|march|burning cross))\b/i,
-    beatAllowRe: /\b(kkk|ku klux klan|klan|white supremacy|civil rights|segregation (violence|south))\b/i,
-  },
-  // ── Animated / unrelated maps (e.g. US+China map on WWII beat) ───────────────
-  {
-    id: "animated_world_map",
-    titleRe: /\b(animated (world )?map|world map (animation|showing)|map (animation|graphic) showing)\b/i,
-    beatAllowRe: /\b(map|cartograph|border(s)? (changed|shifted)|territor(y|ies)|geograph(y|ical)|atlas)\b/i,
-  },
-  {
-    id: "unrelated_country_map",
-    titleRe: /\b(world map showing (the )?(united states|usa|u\.s\.|china|india|brazil))\b/i,
-    beatAllowRe: /\b(united states|usa|america|u\.s\.|china|chinese|india|brazil|american)\b/i,
-  },
-];
 
-/**
- * Returns true when a clip's title/tags belong to a "sensitive domain"
- * (named figure, named atrocity, graphic content) that is NOT referenced
- * in the current beat text — making the clip irrelevant for this beat.
- *
- * Used as a hard block in the VisualJudge archive rule (`judgeArchiveAsset`) and a heavy penalty in
- * scoreCuratedAsset() to prevent e.g. "Hitler youth rally" appearing in
- * an Amsterdam post-war reconstruction beat.
- */
-export function isClipTitleIrrelevantToBeat(
-  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
-  beatText: string
-): boolean {
-  if (!metadataVisualBlocksEnabled()) return false;
-  const assetHay = `${(asset.title ?? "").toLowerCase()} ${(asset.tags ?? []).join(" ").toLowerCase()}`;
-  const beatLower = beatText.toLowerCase();
-  for (const rule of CLIP_TITLE_DOMAIN_RULES) {
-    if (rule.titleRe.test(assetHay) && !rule.beatAllowRe.test(beatLower)) {
-      return true;
-    }
-  }
-  return false;
-}
 
 const GEOGRAPHY_BLOCKED_TAGS = new Set([
   "hitler",
@@ -718,26 +573,6 @@ const URBAN_PLANNING_RE =
 
 const INFRASTRUCTURE_RE =
   /\b(infrastructure|infrastructuur|openbare werken|public works|transport infrastructure|wegennet|road network|rail network|spoorinfrastructuur|rail infrastructure|waterbeheer|water management)\b/i;
-
-const PROTEST_BEAT_RE =
-  /\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|civil unrest|protest march|picket(?:ing|ers?)?)\b/i;
-
-/**
- * RONDE 62: what counts as protest imagery.
- *
- * Render 532 asked this 32 times and matched nothing, while two white-lives-matter clips went
- * into a Führerbunker documentary. Their own titles were
- * "white-lives-matter-alabama-roadside-activism" and
- * "white-lives-matter-montana-activism-in-b" — and `activists?` matches "activist" and
- * "activists" but not "activism", which is the word both of them actually use. The movement
- * names and rallies were missing too.
- *
- * A genuine period demonstration still survives: PERIOD_EVIDENCE_RE is the escape hatch, and
- * archive material of a Nazi rally says "nazi", "reich", "bundesarchiv" or a 19xx year in its
- * own metadata.
- */
-const PROTEST_VISUAL_RE =
-  /\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activis(?:t|ts|m)|picket(?:ing|ers?)?|civil unrest|protest march|protest signs?|street protest|anti[- ]?war protest|rall(?:y|ies)|(?:black|white|all) lives matter|\bblm\b|antifa|placards?|counter[- ]?protest|sit[- ]?in)\b/i;
 
 /** Narration about cycling / fietsen — needs people on bikes, not generic city shots. */
 export function isCyclingBeat(beatText: string): boolean {
@@ -1183,106 +1018,6 @@ export function isGeoStatBeat(beatText: string): boolean {
   return extractGeoStatFromBeat(beatText) !== null;
 }
 
-/** Narration explicitly about protests — otherwise protest B-roll is off-topic. */
-export function isProtestBeat(beatText: string): boolean {
-  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
-  if (!cleaned) return false;
-  return PROTEST_BEAT_RE.test(cleaned);
-}
-
-export function isProtestVisualHay(hay: string): boolean {
-  return PROTEST_VISUAL_RE.test(hay.toLowerCase());
-}
-
-/**
- * RONDE 29: topics whose footage must come from the era, not from a modern street.
- *
- * `videoVisualTopic` was already a parameter here and was read by nobody — the body branched
- * purely on geo/urban beat types, which are the beat kinds a travel or city documentary
- * produces. For a WWII script every one of those checks is false, so the function returned
- * false for every beat and a modern protest clip (the `white-lives-matter` one that reached
- * the Führerbunker documentary) sailed through.
- */
-const HISTORICAL_VISUAL_TOPICS = new Set<VideoVisualTopic>(["wwii", "cold_war"]);
-
-/**
- * Escape hatch for the rule above: period material that genuinely shows a historical
- * demonstration says so in its own metadata — a year in the era, an archive name, a newsreel
- * label. Without this a Nuremberg rally described as a "demonstration", or a 1953 East Berlin
- * uprising reel, would be thrown away along with the modern street footage this rule targets.
- * Deliberately matched against the asset's own text only, never the search query.
- */
-const PERIOD_EVIDENCE_RE =
-  /\b(18\d\d|19[0-6]\d|nazi|nsdap|wehrmacht|reich|weimar|soviet|ussr|stasi|cold war|wartime|newsreel|archival|archive footage|bundesarchiv|national archives|getty archive|historical footage)\b/i;
-
-/** Reject protest/demonstration footage when the script does not mention protests. */
-export function isOffTopicProtestForBeat(
-  beatText: string,
-  hay: string,
-  videoVisualTopic: VideoVisualTopic = "general"
-): boolean {
-  if (!isProtestVisualHay(hay)) return false;
-  if (isProtestBeat(beatText)) return false;
-  // Historical topic + protest imagery + no period evidence in the asset's own text = a modern
-  // demonstration in a film about the past. Checked before the beat-type branches below, which
-  // never fire for a historical script.
-  if (HISTORICAL_VISUAL_TOPICS.has(videoVisualTopic) && !PERIOD_EVIDENCE_RE.test(hay)) return true;
-  if (extractBeatGeoPlaceTags(beatText).length > 0) return true;
-  if (isGeoStatBeat(beatText)) return true;
-  if (isCarBeat(beatText)) return true;
-  if (isGovernmentBeat(beatText)) return true;
-  if (isUrbanPlanningBeat(beatText)) return true;
-  if (isInfrastructureBeat(beatText)) return true;
-  if (isCyclingBeat(beatText)) return true;
-  if (isGeoWelcomeBeat(beatText)) return true;
-  return false;
-}
-
-export function assetIsOffTopicProtest(
-  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
-  beatText: string,
-  videoVisualTopic: VideoVisualTopic = "general"
-): boolean {
-  return isOffTopicProtestForBeat(beatText, assetHay(asset), videoVisualTopic);
-}
-
-/** Stock/archive queries when narration compares a country with a percentage stat. */
-export function buildGeoStatVisualQueries(
-  beatText: string,
-  _videoTitle?: string,
-  _sceneText?: string
-): string[] {
-  const info = extractGeoStatFromBeat(beatText);
-  if (!info) return [];
-
-  const queries: string[] = [];
-  const wantsNl = info.geoTags.some((t) => /netherlands|holland|amsterdam|dutch|nederland/.test(t));
-  const wantsUs = info.geoTags.some((t) => /america|usa|united states|american/.test(t));
-
-  if (wantsUs) {
-    queries.push(
-      "united states city aerial video",
-      "american skyline timelapse",
-      "usa downtown drone",
-      "new york city skyline video",
-      "american city street broll"
-    );
-  }
-  if (wantsNl) {
-    queries.push(
-      "netherlands city aerial video",
-      "amsterdam skyline timelapse",
-      "dutch city drone video"
-    );
-  }
-
-  for (const tag of info.geoTags.slice(0, 2)) {
-    queries.push(`${tag} city skyline video`, `${tag} aerial drone`);
-  }
-
-  return [...new Set(queries.filter((q) => q.length >= 4))].slice(0, 10);
-}
-
 export function buildGeoWelcomeVisualQueries(beatText: string): string[] {
   const geoTags = extractBeatGeoPlaceTags(beatText);
   const queries: string[] = [];
@@ -1391,21 +1126,6 @@ function geoTagHitCount(
   return hits;
 }
 
-/** Best single search anchor — scene+entity beats generic geo (e.g. hitler bunker). */
-/** Tags that should drive minimum clip acceptance for this sentence. */
-export function extractRequiredVisualTags(beatText: string): string[] {
-  const visual = extractVisualSearchTags(beatText);
-  const scene = extractSceneSearchTags(beatText);
-  const entity = extractEntitySearchTags(beatText);
-  const salient = extractSalientBeatTokens(beatText).slice(0, 5);
-  const cycling = isCyclingBeat(beatText) ? extractBeatCyclingTags(beatText) : [];
-  const cars = isCarBeat(beatText) ? extractBeatCarTags(beatText) : [];
-  const government = isGovernmentBeat(beatText) ? extractBeatGovernmentTags(beatText) : [];
-  const urbanPlanning = isUrbanPlanningBeat(beatText) ? extractBeatUrbanPlanningTags(beatText) : [];
-  const infrastructure = isInfrastructureBeat(beatText) ? extractBeatInfrastructureTags(beatText) : [];
-  return [...new Set([...scene, ...entity, ...visual.slice(0, 8), ...salient, ...cycling, ...cars, ...government, ...urbanPlanning, ...infrastructure])].slice(0, 14);
-}
-
 export function isGenericPeopleAsset(
   asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">
 ): boolean {
@@ -1500,71 +1220,6 @@ export function extractPrimaryVisualAnchor(beatText: string): string | null {
   if (salient.length >= 2) return `${salient[0]} ${salient[1]}`;
   if (salient.length === 1) return salient[0] ?? null;
   return null;
-}
-
-function spokenLabelForGeo(cleaned: string, entry: TagEntry): string {
-  if (entry.label) {
-    const m = cleaned.match(entry.pattern);
-    if (m?.[0]) return m[0].toUpperCase().slice(0, 28);
-  }
-  return (entry.searchTags[0] ?? "").toUpperCase().slice(0, 28);
-}
-
-/** On-screen place names only (years handled separately). Geo+stat beats show the percentage, not the country name. */
-export function extractVoiceLabelTerms(beatText: string): VoiceLabelTerm[] {
-  const geoStat = extractGeoStatFromBeat(beatText);
-  if (geoStat) {
-    return [
-      {
-        label: geoStat.statLabel.toUpperCase(),
-        searchTags: geoStat.geoTags,
-        matchText: geoStat.statMatchText,
-      },
-    ];
-  }
-
-  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
-  const lower = cleaned.toLowerCase();
-  const out: VoiceLabelTerm[] = [];
-  const seen = new Set<string>();
-
-  for (const entry of PLACE_ENTRIES) {
-    if (!entry.pattern.test(lower)) continue;
-    const m = cleaned.match(entry.pattern);
-    const label = spokenLabelForGeo(cleaned, entry);
-    const key = label.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      label,
-      searchTags: entry.searchTags,
-      matchText: m?.[0]?.trim() || undefined,
-    });
-  }
-
-  return out.slice(0, 2);
-}
-
-export function termStartInBeat(
-  beatText: string,
-  term: string,
-  beatStart: number,
-  beatHoldSec: number,
-  matchText?: string
-): number {
-  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, "");
-  for (const probe of [matchText, term].filter(Boolean) as string[]) {
-    const escaped = probe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = /[%]/.test(probe)
-      ? new RegExp(escaped, "i")
-      : new RegExp(`\\b${escaped}\\b`, "i");
-    const match = re.exec(cleaned);
-    if (match && match.index >= 0) {
-      const pos = match.index / Math.max(1, cleaned.length);
-      return beatStart + Math.max(0.08, pos * beatHoldSec * 0.92);
-    }
-  }
-  return beatStart + 0.12;
 }
 
 /** Infer searchable geo/subject tags from clip title when metadata tags are sparse. */

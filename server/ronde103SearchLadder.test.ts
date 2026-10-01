@@ -15,14 +15,7 @@ import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
 
-import {
-  buildBeatSearchLadder,
-  buildPrioritisedQueries,
-  emptyQueryContext,
-  formatSearchLadder,
-  provenToken,
-  type VerifiedQueryContext,
-} from "./searchQueryContract";
+import { buildBeatSearchLadder, buildPrioritisedQueries, emptyQueryContext, provenToken, type VerifiedQueryContext } from "./searchQueryContract";
 import { typedQueryLadder, typedQueryPrefix } from "./videoPipeline";
 
 /** A context whose tokens all carry the beat text as their evidence. */
@@ -142,15 +135,6 @@ describe("RONDE 103 phases 9–13 — the four rungs", () => {
       const priorities = rung.queries.map((q) => q.priority);
       expect(priorities).toEqual([...priorities].sort((a, b) => a - b));
     }
-  });
-
-  it("TEST 10 — the descent is loggable, one line per rung", () => {
-    const ladder = buildBeatSearchLadder(BERLIN);
-    const lines = formatSearchLadder(ladder);
-    expect(lines).toHaveLength(ladder.length);
-    expect(lines[0]).toContain("level 4");
-    expect(lines.at(-1)).toContain("level 2");
-    for (const line of lines) expect(line).toContain("[SearchLadder]");
   });
 });
 

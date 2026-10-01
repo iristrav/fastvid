@@ -60,13 +60,7 @@ import { describe, expect, it } from "vitest";
 import { curatedAssetContentKey } from "./curatedMediaSourcing";
 import { formatVisualFitAudit } from "./beatVisualStatus";
 import { clipContentKey } from "./videoPipeline";
-import {
-  VisualSourceLedger,
-  assertNoSelectedClipWithoutOutcome,
-  formatAssetLifecycleAudit,
-  recordAssetOutcome,
-  resolveClipOutcomeIdentity,
-} from "./visualSourceLineage";
+import { VisualSourceLedger, assertNoSelectedClipWithoutOutcome, formatAssetLifecycleAudit, recordAssetOutcome } from "./visualSourceLineage";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -243,19 +237,6 @@ describe("RONDE 167 — F3: the curated route has no path, only a key", () => {
     const before = l.allEvents().length;
     recordAssetOutcome(l, CLIP, "superseded_by_winner", "s2b3"); // no key passed
     expect(l.allEvents().length - before).toBe(1);
-  });
-
-  it("resolveClipOutcomeIdentity says HOW the clip was found", () => {
-    // "contentKey" is the diagnosis this round was missing: the path was never registered.
-    const l = curatedLedger();
-    l.setContentKeyResolver(clipContentKey);
-    expect(resolveClipOutcomeIdentity(l, CLIP).via).toBe("contentKey");
-    expect(resolveClipOutcomeIdentity(l, "/w/nothing.mp4").via).toBe("none");
-    const direct = new VisualSourceLedger({ renderId: "r167" });
-    direct.createLineage({ sceneIndex: 0, beatIndex: 0, localPath: "/w/x.mp4", provider: "loc" });
-    expect(resolveClipOutcomeIdentity(direct, "/w/x.mp4").via).toBe("path");
-    direct.linkDerivedPath("/w/x_pad.mp4", "/w/x.mp4", "PADDED");
-    expect(resolveClipOutcomeIdentity(direct, "/w/x_pad.mp4").via).toBe("path");
   });
 
   it("the render installs the resolver on its own ledger", () => {

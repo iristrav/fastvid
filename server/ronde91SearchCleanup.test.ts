@@ -218,6 +218,16 @@ describe("RONDE 91 §4 — no provider search has an alternative route", () => {
       why: "reads ONE video's length by its id; it has no search terms",
       idMarker: "videoId",
     },
+    /**
+     * Code audit — the operator's health probe checks the key by reading ONE fixed public video by
+     * its id (videos.list). It used to send its own search.list: a second YouTube search, now gone.
+     */
+    {
+      file: "videoPipeline.ts",
+      fn: "probeYouTubeCcPipeline",
+      why: "reads ONE fixed video by its id to check the key; it has no search terms",
+      idMarker: "PROBE_VIDEO_ID",
+    },
   ];
 
   it("TEST 14b — an exempt provider call really is a lookup, not a search in disguise", () => {

@@ -35,7 +35,6 @@
  * plan from being made.
  */
 import {
-  cinematicEditingEngineEnabled,
   generateEDL,
   type CinematicEditingInput,
 } from "./cinematicEditingEngine";
@@ -56,16 +55,9 @@ import {
   graphicsLifecycle,
 } from "./graphicsLifecycle";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
-import { intensityAtFrom } from "./typewriterSound";
+import { intensityAtFrom, typewriterSfxClips } from "./typewriterSound";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
-import {
-  formatCueSheet,
-  planMusicCues,
-  scoreCues,
-  type CurvePoint,
-  type MusicCatalogue,
-  type ScoredCue,
-} from "./musicDirector";
+import { planMusicCues, scoreCues, type CurvePoint, type MusicCatalogue, type ScoredCue } from "./musicDirector";
 
 /* ═══════════════════════ what a caller must supply ═══════════════════════ */
 
@@ -221,16 +213,6 @@ export type CinematicPipelineResult = {
 
 /* ═══════════════════════ the route ═══════════════════════ */
 
-/**
- * Should a video be planned by the cinematic engine?
- *
- * A single named question rather than an inline `process.env` check, so the answer is findable and
- * so the pipeline can log which route it took. The flag stays OFF by default: §2 asks for the
- * switch-over to be safe, and safe means an operator turns it on deliberately.
- */
-export function cinematicRouteEnabled(): boolean {
-  return cinematicEditingEngineEnabled();
-}
 
 /**
  * Plan a video the cinematic way.
@@ -383,15 +365,32 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
         : undefined,
   });
   /**
-   * VIDEO 619 — and then none of it is drawn: the made video carries no text. Everything the
-   * director kept stays on the timeline switched off, ready for the editor to turn on. With no text
-   * on screen there is nothing to type, so the typewriter keys are not laid either.
+   * VIDEO 619 — texts and cards stay on the timeline switched off, ready for the editor to turn on;
+   * the subtitles and the typed years/reveals are drawn.
    */
   const leftToEditor = leaveOnScreenTextToTheEditor(timeline);
   console.log(
-    `[OnScreenText] video=${params.videoId} no text in the made video — switched off for the editor: ` +
-      `captions=${leftToEditor.captions} texts=${leftToEditor.texts} graphics=${leftToEditor.graphics}`
+    `[OnScreenText] video=${params.videoId} subtitles and typed years in the made video ` +
+      `(typing=${textDirection.typewriter.length}); switched off for the editor: ` +
+      `texts=${leftToEditor.texts} graphics=${leftToEditor.graphics}`
   );
+  /**
+   * RONDE 656 — the keys are heard under text that types: the typewriter recording on the SFX track,
+   * only for a typing element that is actually drawn. A key sound under text nobody sees is noise.
+   */
+  const drawnTexts = new Set(
+    timeline.tracks.flatMap((t) =>
+      t.kind === "TEXT"
+        ? t.texts.filter((x) => !x.disabled).map((x) => x.id)
+        : t.kind === "GRAPHICS"
+          ? t.graphics.filter((x) => !x.disabled).map((x) => x.id)
+          : []
+    )
+  );
+  const sfxForTyping = timeline.tracks.find((t) => t.kind === "SFX");
+  if (sfxForTyping?.kind === "SFX") {
+    sfxForTyping.clips.push(...typewriterSfxClips(textDirection.typewriter.filter((e) => drawnTexts.has(e.id))));
+  }
 
   /**
    * RONDE 651 — no shot on screen longer than six seconds: see `limitLongShots`. Here rather than

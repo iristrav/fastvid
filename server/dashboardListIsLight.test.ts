@@ -17,12 +17,12 @@ const read = (f: string) => fs.readFileSync(path.join(ROOT, f), "utf8");
 
 describe("the list reads only what a card shows", () => {
   it("of metadata only the keys the card reads, from text or object; absent keys are dropped", () => {
-    expect([...VIDEO_LIST_METADATA_KEYS]).toEqual(["generationDurationSec", "nicheTitle", "exportBlocked"]);
+    expect([...VIDEO_LIST_METADATA_KEYS]).toEqual(["generationDurationSec", "nicheTitle"]);
     expect(slimListMetadata('{"generationDurationSec": 312, "nicheTitle": null, "exportBlocked": null}')).toEqual({
       generationDurationSec: 312,
     });
     expect(slimListMetadata({ nicheTitle: "History", pipelineReport: { huge: true } })).toEqual({ nicheTitle: "History" });
-    expect(slimListMetadata({ exportBlocked: { reason: "x" } })).toEqual({ exportBlocked: { reason: "x" } });
+    expect(slimListMetadata({ exportBlocked: { reason: "x" } })).toBeNull();
     expect(slimListMetadata(null)).toBeNull();
     expect(slimListMetadata("not json")).toBeNull();
     expect(slimListMetadata('{"generationDurationSec": null}')).toBeNull();

@@ -81,15 +81,6 @@ export function stripVisualTagsFromScript(script: string): string {
     .trim();
 }
 
-export function countNarrationChars(script: string): number {
-  return script
-    .replace(/\[visual:[^\]]*\]/gi, "")
-    .replace(/^#+\s+.+$/gm, "")
-    .replace(/[#*_`~>]/g, "")
-    .replace(/\s+/g, " ")
-    .trim().length;
-}
-
 export function countNarrationWords(script: string): number {
   const text = script
     .replace(/\[visual:[^\]]*\]/gi, "")
@@ -99,32 +90,7 @@ export function countNarrationWords(script: string): number {
   return text.split(/\s+/).filter((w) => w.length > 0).length;
 }
 
-/** Minimum acceptable voiceover duration for a script (allows ~18% under target). */
-export function expectedMinVoiceoverSec(budget: ScriptLengthBudget): number {
-  const fromTarget = budget.targetSpokenSec * 0.82;
-  const fromWords = (budget.minWords / NARRATION_WPM) * 60 * 0.85;
-  return Math.max(12, Math.min(fromTarget, fromWords));
-}
-
-export function estimateVoiceoverSecFromText(text: string): number {
-  const words = text.split(/\s+/).filter(Boolean).length;
-  return (words / NARRATION_WPM) * 60;
-}
-
 export type ScriptBudgetCheck = { ok: true } | { ok: false; words: number; message: string };
-
-/** Fail fast when LLM returned an unfinished script (too few spoken words). */
-export function checkScriptMeetsBudget(script: string, budget: ScriptLengthBudget): ScriptBudgetCheck {
-  const words = countNarrationWords(script);
-  if (words < budget.minWords) {
-    return {
-      ok: false,
-      words,
-      message: `Script incomplete: ${words} words (need ≥${budget.minWords} for ${budget.label})`,
-    };
-  }
-  return { ok: true };
-}
 
 /** Spoken narration only — one continuous read order (no duplicate hooks across scenes). */
 export function extractFullNarrationText(script: string): string {
@@ -203,30 +169,6 @@ export function parseMarkdownNarrationBlocks(script: string): MarkdownNarrationB
     }
   }
   return blocks;
-}
-
-function wordsPerSection(budget: ScriptLengthBudget, sectionIndex: number, sectionTotal: number): number {
-  const bodyWords = budget.targetWords - budget.hookWords - budget.ctaWords;
-  const base = Math.floor(bodyWords / sectionTotal);
-  const extra = bodyWords % sectionTotal;
-  return base + (sectionIndex < extra ? 1 : 0);
-}
-
-function sectionNarrativeBrief(index: number, total: number, videoLength: string): string {
-  const valueBombIndex = Math.max(1, Math.floor(total * 0.65));
-  if (index === 0) {
-    return `SETUP (Act 1): Establish the central question and stakes. Ground the viewer — make them care in the first beat. Open a mid-loop that pays off later. End with a bridge teasing what comes next.`;
-  }
-  if (index === total - 1) {
-    return `CONSEQUENCE (Act 4 — Payoff): Resolve the macro loop. Show what the revelation means in the real world today. One crisp insight the viewer remembers tomorrow — not a summary list.`;
-  }
-  if (index === 1 && total >= 3) {
-    return `COMPLICATION (Act 2A): Introduce resistance, paradox, or hidden mechanism. Things get harder — stakes rise. Close one micro-loop, open a bigger one.`;
-  }
-  if (index === valueBombIndex) {
-    return `REVELATION (Value bomb — ~60–70% mark): The strongest insight in the video. Reframe everything with a specific fact, number, or reversal. This is the retention spike — make it unforgettable.`;
-  }
-  return `ESCALATION (Act 2 — Momentum): Partial payoffs only — answer one question, immediately raise a harder one. ${videoLength === "8-10" ? "Micro-hook every 3–4 sentences." : "Pattern interrupt every 45–90 seconds (number, name, question, or contrast)."} End the section with a bridge to the next beat.`;
 }
 
 export function buildScriptWriterSystemPrompt(videoType: string): string {
@@ -308,165 +250,12 @@ LANGUAGE:
 - Write all spoken narration in English unless the user explicitly asks for another language (e.g. Dutch, German).`;
 }
 
-export function buildOutlineUserPrompt(
-  prompt: string,
-  videoType: string,
-  budget: ScriptLengthBudget
-): string {
-  return `Topic: "${prompt}"
-Video length: ${budget.label} (${budget.targetSpokenSec}s spoken narration target)
-Format: ${videoType}
-
-SCRIPT BUDGET (spoken narration only):
-- Target: ${budget.targetWords} words (${budget.minWords}–${budget.maxWords} acceptable)
-- ~${budget.targetChars} characters of narration (${budget.minChars}–${budget.maxChars})
-
-TITLE & HOOK:
-- Title: specific, curiosity-driven — the hook must deliver on it in line 1.
-- Hook (${budget.hookWords} words): two-part — (1) pattern interrupt, (2) retention bridge with stakes + macro loop opened.
-- Tease a near-term payoff within the first 60–90 seconds of the full video.
-
-NARRATIVE ARC (4-beat documentary structure):
-Map EXACTLY ${budget.sectionCount} body sections across:
-  Setup → Complication → Revelation (value bomb at ~section ${Math.max(2, Math.ceil(budget.sectionCount * 0.65))}) → Consequence
-Each section's keyPoints must include: concrete names, dates, or numbers + a bridge tease to the next section.
-Assign narrativeRole: "setup" | "complication" | "revelation" | "consequence" | "middle" (for escalation beats between acts).
-
-Respond with JSON:
-{
-  "title": "specific, compelling title that creates a curiosity gap",
-  "hook": "full opening narration (${budget.hookWords - 5}–${budget.hookWords + 8} words) — pattern interrupt + retention bridge + macro loop, pure spoken text",
-  "sections": EXACTLY ${budget.sectionCount} items, each {
-    "title": "section headline",
-    "keyPoints": ["2-4 concrete facts with names/dates/numbers", "include bridge tease to next section"],
-    "narrativeRole": "setup" | "complication" | "revelation" | "consequence" | "middle"
-  },
-  "cta": "one forward-looking sentence (${budget.ctaWords} words max) tied to the story — not generic subscribe bait"
-}`;
-}
-
-export const OUTLINE_JSON_SCHEMA = {
-  type: "json_schema" as const,
-  json_schema: {
-    name: "video_outline",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        hook: { type: "string" },
-        sections: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              title: { type: "string" },
-              keyPoints: { type: "array", items: { type: "string" } },
-              narrativeRole: { type: "string" },
-            },
-            required: ["title", "keyPoints", "narrativeRole"],
-            additionalProperties: false,
-          },
-        },
-        cta: { type: "string" },
-      },
-      required: ["title", "hook", "sections", "cta"],
-      additionalProperties: false,
-    },
-  },
-};
-
 export type ScriptOutline = {
   title: string;
   hook: string;
   sections: { title: string; keyPoints: string[]; narrativeRole?: string }[];
   cta: string;
 };
-
-export function buildSectionUserPrompt(
-  sec: { title: string; keyPoints: string[]; narrativeRole?: string },
-  sectionIndex: number,
-  sectionTotal: number,
-  prompt: string,
-  title: string,
-  budget: ScriptLengthBudget
-): string {
-  const wordTarget = wordsPerSection(budget, sectionIndex, sectionTotal);
-  const minW = Math.max(20, wordTarget - 12);
-  const maxW = wordTarget + 15;
-  const narrative = sec.narrativeRole
-    ? `Narrative role from outline: ${sec.narrativeRole}.`
-    : sectionNarrativeBrief(sectionIndex, sectionTotal, budget.videoLength);
-
-  const brandRule =
-    "Use exact real names (people, companies, places) whenever the topic includes them — never generic stock where a brand is named.";
-
-  return `Video: "${title}" (topic: ${prompt})
-Section ${sectionIndex + 1} of ${sectionTotal}: "${sec.title}"
-${narrative}
-Cover these beats: ${sec.keyPoints.join("; ")}
-
-RETENTION RULES FOR THIS SECTION:
-- Open or advance a mid-loop — the viewer must feel unfinished business.
-- Include at least one pattern interrupt: a specific number, named entity, question, or reversal.
-- Micro-hooks every 3–5 sentences ("But here's the catch…", "So why did nobody stop it?").
-- End with a bridge teasing the next section (unless this is the final body section).
-- Partial payoffs only — never resolve the macro loop until the consequence/end section.
-
-WORD COUNT (spoken narration only):
-Write EXACTLY ${minW}–${maxW} words (target ${wordTarget}). This section is part of a ${budget.targetWords}-word video — do NOT go short.
-
-Do NOT add [VISUAL: ...] tags — footage is matched automatically from your spoken words.
-${brandRule}
-Do not repeat the hook. Start in medias res for this beat.`;
-}
-
-/** Single LLM call for 1–2 min videos (faster than outline + N sections). */
-export function buildOneShotScriptUserPrompt(
-  prompt: string,
-  videoType: string,
-  budget: ScriptLengthBudget
-): string {
-  const valueBombSection = Math.max(2, Math.ceil(budget.sectionCount * 0.65));
-  const sections =
-    budget.sectionCount === 2
-      ? "## Setup\n…\n\n## Consequence\n…"
-      : budget.sectionCount <= 3
-        ? "## Setup\n…\n\n## Complication\n…\n\n## Consequence\n…"
-        : `## Setup\n…\n\n## Complication\n…\n\n(middle escalation sections)\n\n## Revelation\n(value bomb — strongest insight, ~section ${valueBombSection})\n…\n\n## Consequence\n…`;
-  const brandRule =
-    "Use exact real names (people, companies, places) from the topic — never generic stock where a brand is named.";
-
-  return `Topic: "${prompt}"
-Video length: ${budget.label} (~${budget.targetSpokenSec}s spoken VO)
-Format: ${videoType}
-
-Write the COMPLETE narration script in one pass (markdown).
-
-STRUCTURE (required headings):
-# Compelling title — curiosity gap, hook must deliver on it in line 1
-## Opening
-Two-part hook (${budget.hookWords} words): (1) pattern interrupt, (2) retention bridge with stakes + macro loop. No "welcome" or "in this video". Tease near-term payoff within 60–90s.
-${sections}
-## CALL TO ACTION
-${budget.ctaWords} words max — one forward-looking sentence tied to the story
-
-RETENTION RULES:
-- Macro loop open until Consequence section — resolve with one memorable takeaway.
-- Mid-loops per section, micro-hooks every 3–5 sentences.
-- Pattern interrupt every 45–90 seconds (number, name, question, or contrast).
-- Value bomb in Revelation section (~60–70% of script) — strongest reframing insight.
-- Every section ends with a bridge to the next.
-- Partial payoffs only in the middle — never resolve everything at once.
-
-WORD BUDGET (spoken narration only):
-${budget.minWords}–${budget.maxWords} words (target ${budget.targetWords})
-Language: English narration throughout (unless the topic prompt explicitly requests another language).
-No [VISUAL: ...] tags — the editor finds footage from narration automatically.
-${brandRule}
-
-Return ONLY the markdown script (narration + headings).`;
-}
 
 /** True if spoken narration still reflects the user's topic (guards broken length-refine). */
 export function scriptStillOnTopic(topicPrompt: string, script: string): boolean {

@@ -46,16 +46,6 @@ import { join } from "path";
 import { describe, expect, it } from "vitest";
 
 import {
-  archiveCapStats,
-  capGapFor,
-  createArchiveSourcingAudit,
-  recordBeatOutcome,
-  recordShortlistStage,
-  summarizeArchiveSourcing,
-  type ArchiveSourcingAudit,
-} from "./archiveSourcingAudit";
-
-import {
   VisualSourceLedger,
   formatAssetLifecycleAudit,
   recordAssetOutcome,
@@ -123,13 +113,6 @@ describe("RONDE 165 — the funnel's losers get the ending they actually had", (
     expect(byPath.get("bad.mp4")?.stage).toBe("REMOVED");
   });
 
-  it("the reason travels with the beat that produced it", () => {
-    const ledger = ledgerWith(["/w/a.mp4"]);
-    recordAssetOutcome(ledger, "/w/a.mp4", "not_chosen", "s2b3");
-    // [0] is the FOUND event createLineage emits; the outcome is the one filed last.
-    expect(ledger.allEvents().at(-1)?.reason).toBe("not_chosen:s2b3");
-  });
-
   it("a path the ledger has never seen is a no-op, not an invented record", () => {
     const ledger = ledgerWith(["/w/a.mp4"]);
     const before = ledger.size;
@@ -163,7 +146,7 @@ describe("RONDE 165 — wired into the routes render 554 lost assets on", () => 
     // reach markAdopted is one of the routes that used to go silent.
     const start = PIPE.indexOf("const eligibleRecord = dedup.sourcingCache.lineage.resolve(p, contentKey);");
     expect(start).toBeGreaterThan(0);
-    const block = PIPE.slice(start, PIPE.indexOf("async function tryStockSources", start));
+    const block = PIPE.slice(start, PIPE.indexOf("\nfunction slotHasNoBeatBehindIt(", start));
     expect(block.match(/recordAssetOutcome\(dedup\.sourcingCache\.lineage, p,/g)?.length).toBe(3);
     expect(block).toContain('"invalid_file"');
     expect(block).toContain('"transform_failed"');
@@ -258,91 +241,12 @@ describe("RONDE 165 — [AssetLifecycleAudit] gives the warnings a denominator",
   });
 });
 
-describe("RONDE 165 — the cap statistics a cap decision would need", () => {
-  /** A beat as buildDownloadShortlist records it, with the archive scores it kept and refused. */
-  function beat(taken: number[], cut: number[]): ArchiveSourcingAudit {
-    const audit = createArchiveSourcingAudit();
-    recordShortlistStage(audit, {
-      afterMetadata: 15,
-      afterBeatDedup: 15,
-      afterSourceCap: taken.length,
-      downloadBudget: 6,
-      cutBySourceCap: cut.length,
-      cutByBudget: 0,
-      archive: { taken, cut },
-    });
-    recordBeatOutcome(audit, {
-      candidatesFound: 26,
-      downloaded: taken.length,
-      visionJudged: taken.length,
-      visionAccepted: taken.length,
-      adopted: true,
-    });
-    return audit;
-  }
-
-  it("render 554's s2b3: the cap refused a candidate that scored the same as one it kept", () => {
-    expect(capGapFor(beat([8, 8, 8], [8, 7.5]))).toBe(0);
-  });
-
-  it("a beat the cap never bound on has no gap — absent, not zero", () => {
-    // Averaging a zero in for a beat the cap never touched would read as "the cap is costing us".
-    expect(capGapFor(beat([8, 7], []))).toBeNull();
-    expect(capGapFor(beat([], []))).toBeNull();
-  });
-
-  it("beatsWithCapBinding counts only the beats the cap actually cut on", () => {
-    const stats = archiveCapStats([beat([8, 8, 8], [8]), beat([9, 8], []), beat([7, 6, 5], [3])]);
-    expect(stats.beatsWithCapBinding).toBe(2);
-  });
-
-  it("avg, median, min and max are computed over those beats only", () => {
-    const stats = archiveCapStats([
-      beat([8, 8, 8], [8]),   // gap 0
-      beat([9, 8, 7], [5]),   // gap 2
-      beat([9, 8, 6], [2]),   // gap 4
-      beat([9, 9], []),       // no binding — must not pull the average to 0
-    ]);
-    expect(stats.beatsWithCapBinding).toBe(3);
-    expect(stats.avgCapGap).toBeCloseTo(2, 6);
-    expect(stats.medianCapGap).toBe(2);
-    expect(stats.capGapMin).toBe(0);
-    expect(stats.capGapMax).toBe(4);
-  });
-
-  it("an even number of binding beats takes the mean of the middle two", () => {
-    const stats = archiveCapStats([beat([8], [8]), beat([9], [5]), beat([9], [4]), beat([9], [3])]);
-    // gaps 0, 4, 5, 6 → median (4+5)/2
-    expect(stats.medianCapGap).toBe(4.5);
-  });
-
-  it("a render where the cap never bound reports n/a, never 0.00", () => {
-    const stats = archiveCapStats([beat([8, 7], []), beat([9], [])]);
-    expect(stats).toEqual({
-      beatsWithCapBinding: 0,
-      avgCapGap: null,
-      medianCapGap: null,
-      capGapMin: null,
-      capGapMax: null,
-    });
-    expect(summarizeArchiveSourcing([beat([8, 7], [])])).toContain("avgCapGap=n/a");
-  });
-
-  it("the render-end line carries the aggregate, so one beat is never the whole argument", () => {
-    const line = summarizeArchiveSourcing([beat([8, 8, 8], [8]), beat([9, 8, 7], [5])]);
-    expect(line).toContain("beatsWithCapBinding=2");
-    expect(line).toContain("avgCapGap=1.00");
-    expect(line).toContain("medianCapGap=1.00");
-    expect(line).toContain("capGapMin=0.00");
-    expect(line).toContain("capGapMax=2.00");
-  });
-});
-
 describe("RONDE 165 — nothing was widened on this round's evidence", () => {
 
   it("no gate was loosened to make the numbers read better", () => {
-    // The round adds accounting. Every judge that refuses a picture is untouched.
-    expect(PIPE).toContain("beatImageRelevanceGateEnabled()");
+    // The round adds accounting. Every judge that refuses a picture is untouched — and the picture
+    // judge can no longer be switched off at all (the code audit removed its switch).
+    expect(PIPE).not.toContain("beatImageRelevanceGateEnabled");
     expect(PIPE).toContain("isMostlyBlackClip(");
     expect(PIPE).toContain("evaluateClipVisionGate(");
   });

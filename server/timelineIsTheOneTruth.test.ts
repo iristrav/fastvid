@@ -27,7 +27,8 @@ describe("new renders write the timeline only", () => {
     expect(body).toContain("timelineFromEditorScenes({ videoId, scenes: editorScenes })");
     expect(body).toContain("saveVideoTimeline({");
     expect(PIPE).toContain("await persistTimelineFromManifest(`plan not stored: ${outcome.code}`);");
-    expect(PIPE).toContain('if (!cinematicPlanningEnabled()) await persistTimelineFromManifest("cinematic planning off");');
+    /** Code audit P12: planning has no switch, so "planning off" is no longer a reason. */
+    expect(PIPE).not.toContain("cinematicPlanningEnabled(");
   });
 });
 

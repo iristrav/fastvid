@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import path from "path";
 import { afterEach, describe, expect, it } from "vitest";
-import { isOffTopicProtestForBeat } from "./visualBeatTags";
+
 import {
   DEFAULT_TARGET_MOVING_SHARE,
   MIN_MIX_SAMPLE,
@@ -21,63 +21,6 @@ import {
   SILENT_GATE_MIN_ASKED,
   summarizeGateFiring,
 } from "./gateFiringStats";
-
-// RONDE 29 — the three items left open by the "bestaat, draait niet" audit:
-//
-//   1. the protest filter was wired into ONE route (the curated archive) and its
-//      videoVisualTopic parameter was read by nobody, so a historical script could never
-//      trigger it — the direct cause of a white-lives-matter clip in a Führerbunker film;
-//   2. visualMixPolicy.ts had zero callers while a duplicate, weaker mechanism (RONDE 27's flat
-//      moving-footage bonus) shipped without knowing it existed;
-//   3. nothing counted how often a gate actually SAID NO, which is the one measurement that
-//      would have caught the modern-mismatch bug (152 calls, 0 rejects, healthy logs, flag on).
-
-describe("RONDE 29a — the protest filter covers historical topics", () => {
-  const nonProtestBeat = "In the final days, Hitler retreated to the bunker beneath the Reich Chancellery.";
-  const protestHay = "white lives matter protest march demonstrators";
-
-  it("rejects modern protest footage in a WWII documentary — the case that shipped", () => {
-    // Every geo/urban branch below is false for this beat, so before RONDE 29 this returned
-    // false and the clip was adopted.
-    expect(isOffTopicProtestForBeat(nonProtestBeat, protestHay, "wwii")).toBe(true);
-  });
-
-  it("rejects it for cold war topics too", () => {
-    expect(isOffTopicProtestForBeat(nonProtestBeat, protestHay, "cold_war")).toBe(true);
-  });
-
-  it("keeps period material whose own metadata names the era", () => {
-    // A Nuremberg rally described as a demonstration, or a 1953 uprising reel, is exactly the
-    // footage a historical film wants. Rejecting it would trade one wrong clip for another.
-    expect(
-      isOffTopicProtestForBeat(nonProtestBeat, "1934 nazi party rally demonstration newsreel", "wwii")
-    ).toBe(false);
-    expect(
-      isOffTopicProtestForBeat(nonProtestBeat, "bundesarchiv demonstration berlin", "wwii")
-    ).toBe(false);
-  });
-
-  it("keeps protest footage when the narration is actually about protests", () => {
-    expect(
-      isOffTopicProtestForBeat("Crowds gathered in protest outside the Reichstag.", protestHay, "wwii")
-    ).toBe(false);
-  });
-
-  it("ignores candidates that are not protest footage at all", () => {
-    expect(isOffTopicProtestForBeat(nonProtestBeat, "aerial view of berlin ruins 1945", "wwii")).toBe(false);
-  });
-
-  it("leaves the pre-existing geo/urban behaviour exactly as it was", () => {
-    // The rule added in RONDE 29 is keyed on the historical topics only — a "general" topic
-    // still falls through to the beat-type branches, and still fires on a geo beat.
-    expect(isOffTopicProtestForBeat("Amsterdam has more bikes than people.", protestHay, "general")).toBe(true);
-    expect(isOffTopicProtestForBeat("She opened the letter slowly.", protestHay, "general")).toBe(false);
-  });
-
-  it("defaults to the general topic when no topic is passed", () => {
-    expect(isOffTopicProtestForBeat("She opened the letter slowly.", protestHay)).toBe(false);
-  });
-});
 
 describe("RONDE 29b — the moving-footage target the ranking leans on", () => {
   afterEach(() => {

@@ -28,22 +28,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-import {
-  formatAssetIdentity,
-  formatIdentityCoverage,
-  identityFromAdoption,
-  identityIsRehydratable,
-  sourcePageUrlFor,
-} from "./assetIdentity";
-import {
-  buildNarrationPersistence,
-  findVoiceoverFile,
-  formatVoicePersistFailure,
-  narrationIsRecoverable,
-  persistVoiceover,
-  readNarrationPersistence,
-  voiceoverStorageKey,
-} from "./renderPersistence";
+import { formatAssetIdentity, identityFromAdoption, identityIsRehydratable, sourcePageUrlFor } from "./assetIdentity";
+import { buildNarrationPersistence, findVoiceoverFile, formatVoicePersistFailure, persistVoiceover, voiceoverStorageKey } from "./renderPersistence";
 import {
   buildEditorScenesFromPipeline,
   manifestRehydrationSummary,
@@ -257,36 +243,6 @@ describe("TEST 3 — voice generated → uploaded → videos.voiceoverUrl", () =
     expect(voiceoverStorageKey(7)).not.toBe(voiceoverStorageKey(8));
   });
 
-  it("A FAILED UPLOAD IS NEVER DRESSED UP AS SUCCESS", async () => {
-    /**
-     * The line that matters most in this block. A render that recorded a URL it never wrote would
-     * hide the failure until months later, as a re-render that cannot find its own audio.
-     */
-    const workDir = path.join(ROOT, "w3");
-    fs.mkdirSync(workDir, { recursive: true });
-    fs.writeFileSync(path.join(workDir, "full_voiceover.mp3"), Buffer.alloc(10, 3));
-    const result = await persistVoiceover({
-      videoId: 9,
-      workDir,
-      upload: async () => {
-        throw new Error("S3 refused the connection");
-      },
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reason).toBe("upload_failed");
-    const line = formatVoicePersistFailure(9, result);
-    expect(line).toContain("VOICEOVER_PERSISTENCE_FAILED");
-    expect(line).toContain("video=9");
-    expect(line).toContain("S3 refused the connection");
-    // ...and the narration record records the absence rather than a plausible URL.
-    const narration = buildNarrationPersistence({
-      voiceoverUrl: null, durationSec: 42, provider: null, voiceId: "v1", words: [],
-    });
-    expect(narration.voiceoverUrl).toBeNull();
-    expect(narrationIsRecoverable(narration)).toBe(false);
-  });
-
   it("no file and an empty file are reported as different problems", async () => {
     const empty = path.join(ROOT, "w4");
     fs.mkdirSync(empty, { recursive: true });
@@ -310,38 +266,6 @@ describe("TEST 4 — TtsWordTiming[] persisted and loaded back identical", () =>
     { word: "1945", startSec: 0.52, endSec: 1.04 },
   ];
 
-  it("what goes in comes out, to the exact number", () => {
-    const narration = buildNarrationPersistence({
-      voiceoverUrl: "/local-storage/videos/1/voiceover.mp3",
-      durationSec: 60.25,
-      provider: null,
-      voiceId: "rachel",
-      words,
-    });
-    const stored = JSON.parse(JSON.stringify({ narration })) as unknown;
-    const read = readNarrationPersistence(stored)!;
-    expect(read.words).toEqual(words);
-    expect(read.voiceoverUrl).toBe("/local-storage/videos/1/voiceover.mp3");
-    expect(read.durationSec).toBe(60.25);
-    expect(read.voiceId).toBe("rachel");
-    expect(read.timingSource).toBe("tts_word_alignment");
-  });
-
-  it("nothing is recomputed — the timings are stored, not derived", () => {
-    // Deliberately irregular gaps that no estimator would produce. If anything re-derived them
-    // from a word count or a duration, these exact numbers could not survive.
-    const odd = [
-      { word: "a", startSec: 0, endSec: 0.03 },
-      { word: "b", startSec: 2.71, endSec: 2.9331 },
-    ];
-    const read = readNarrationPersistence({
-      narration: buildNarrationPersistence({
-        voiceoverUrl: null, durationSec: null, provider: null, voiceId: null, words: odd,
-      }),
-    })!;
-    expect(read.words[1]!.endSec).toBe(2.9331);
-  });
-
   it("an alignment that never existed is null, not an empty claim", () => {
     const narration = buildNarrationPersistence({
       voiceoverUrl: null, durationSec: null, provider: null, voiceId: null, words: [],
@@ -357,90 +281,6 @@ describe("TEST 4 — TtsWordTiming[] persisted and loaded back identical", () =>
       voiceoverUrl: "u", durationSec: 1, provider: null, voiceId: null, words: [],
     });
     expect(n.provider).toBeNull();
-  });
-});
-
-/* ═══════════════════════ TEST 5 — it all outlives the work directory ═══════════════════════ */
-
-describe("TEST 5 — workDir is deleted and the persisted data is still there", () => {
-  it("REAL I/O: rmSync removes the work dir; voiceover, manifest and timings survive", async () => {
-    /**
-     * The whole round, end to end, with the same `fs.rmSync(workDir, {recursive, force})` the
-     * pipeline runs in its `finally`.
-     */
-    const workDir = path.join(ROOT, "render_work");
-    const storeDir = path.join(ROOT, "permanent");
-    fs.mkdirSync(workDir, { recursive: true });
-    fs.mkdirSync(storeDir, { recursive: true });
-    fs.writeFileSync(path.join(workDir, "full_voiceover.mp3"), Buffer.alloc(4096, 9));
-    fs.writeFileSync(path.join(workDir, "scene_0_b0_wiki.mp4"), Buffer.alloc(128, 1));
-    fs.writeFileSync(
-      path.join(workDir, "tts_word_alignment.json"),
-      JSON.stringify({ words: [{ word: "Berlin", startSec: 0, endSec: 0.4 }], totalDurationSec: 9 })
-    );
-
-    // 1. the manifest, with identity taken from the adoption record
-    const scenes = await buildEditorScenesFromPipeline(
-      [{ index: 0, text: "narration", duration: 9 }],
-      [[path.join(workDir, "scene_0_b0_wiki.mp4")]],
-      () => "wikimedia",
-      () => ({
-        provider: "wikimedia",
-        providerAssetId: "File:Reichstag.jpg",
-        sourceUrl: "https://upload.wikimedia.org/x.jpg",
-        assetTitle: "Reichstag",
-      })
-    );
-    const manifestFile = path.join(storeDir, "manifest.json");
-    fs.writeFileSync(manifestFile, JSON.stringify(scenes));
-
-    // 2. the voiceover, through the storage boundary
-    const persisted = await persistVoiceover({
-      videoId: 1234,
-      workDir,
-      upload: async (key, filePath) => {
-        const dest = path.join(storeDir, "voiceover.mp3");
-        fs.copyFileSync(filePath, dest);
-        return { key, url: `/local-storage/${key}` };
-      },
-    });
-    expect(persisted.ok).toBe(true);
-
-    // 3. the narration record, with the timings read off the alignment file
-    const alignment = JSON.parse(
-      fs.readFileSync(path.join(workDir, "tts_word_alignment.json"), "utf8")
-    ) as { words: Array<{ word: string; startSec: number; endSec: number }>; totalDurationSec: number };
-    const metaFile = path.join(storeDir, "metadata.json");
-    fs.writeFileSync(
-      metaFile,
-      JSON.stringify({
-        manifestSchemaVersion: MANIFEST_SCHEMA_VERSION,
-        narration: buildNarrationPersistence({
-          voiceoverUrl: persisted.ok ? persisted.url : null,
-          durationSec: alignment.totalDurationSec,
-          provider: null,
-          voiceId: null,
-          words: alignment.words,
-        }),
-      })
-    );
-
-    // 4. the cleanup the pipeline really performs
-    fs.rmSync(workDir, { recursive: true, force: true });
-    expect(fs.existsSync(workDir), "the work directory should be gone").toBe(false);
-
-    // 5. everything needed to understand this render again is still on disk
-    expect(fs.existsSync(path.join(storeDir, "voiceover.mp3"))).toBe(true);
-    expect(fs.statSync(path.join(storeDir, "voiceover.mp3")).size).toBe(4096);
-
-    const survivedManifest = JSON.parse(fs.readFileSync(manifestFile, "utf8")) as EditorScene[];
-    expect(survivedManifest[0]!.clips[0]!.sourceIdentity!.providerAssetId).toBe("File:Reichstag.jpg");
-    expect(manifestRehydrationSummary(survivedManifest).rehydratable).toBe(1);
-
-    const survivedMeta = JSON.parse(fs.readFileSync(metaFile, "utf8")) as unknown;
-    const narration = readNarrationPersistence(survivedMeta)!;
-    expect(narration.words).toEqual([{ word: "Berlin", startSec: 0, endSec: 0.4 }]);
-    expect(narrationIsRecoverable(narration)).toBe(true);
   });
 });
 
@@ -474,17 +314,6 @@ describe("TEST 6 — no adoption record must never become a fake identity", () =
       sourceUrl: "https://example/x.mp4",
     })!;
     expect(identityIsRehydratable(identity)).toBe(false);
-  });
-
-  it("the coverage line counts the unrecoverable ones rather than hiding them", () => {
-    const line = formatIdentityCoverage([
-      identityFromAdoption({ provider: "pexels", providerAssetId: "1" }),
-      identityFromAdoption({ provider: "wikimedia" }),
-      null,
-    ]);
-    expect(line).toContain("clips=3");
-    expect(line).toContain("rehydratable=1");
-    expect(line).toContain("unrecoverable=2");
   });
 });
 
@@ -694,29 +523,6 @@ describe("TEST 10 — a pre-RONDE-146 manifest still loads, and says what it lac
     ]);
     expect(summary.schemaVersion).toBe(MANIFEST_SCHEMA_VERSION);
     expect(MANIFEST_SCHEMA_VERSION).toBeGreaterThan(1);
-  });
-
-  it("a metadata blob with no narration key reads as 'no stored narration'", () => {
-    expect(readNarrationPersistence(null)).toBeNull();
-    expect(readNarrationPersistence({})).toBeNull();
-    expect(readNarrationPersistence({ backgroundMusicUrl: "x" })).toBeNull();
-    expect(narrationIsRecoverable(null)).toBe(false);
-  });
-
-  it("a corrupt narration record loads with the good parts kept", () => {
-    // Real stored JSON degrades. A reader that threw would make one bad row unopenable forever.
-    const read = readNarrationPersistence({
-      narration: {
-        voiceoverUrl: "/local-storage/v.mp3",
-        words: [
-          { word: "ok", startSec: 0, endSec: 1 },
-          { word: "bad", startSec: "nope" },
-          null,
-        ],
-      },
-    })!;
-    expect(read.voiceoverUrl).toBe("/local-storage/v.mp3");
-    expect(read.words).toEqual([{ word: "ok", startSec: 0, endSec: 1 }]);
   });
 });
 

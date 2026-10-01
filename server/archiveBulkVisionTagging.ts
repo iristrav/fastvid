@@ -8,14 +8,7 @@ import {
 } from "./archiveAssetTagging";
 import { loadArchiveAssetFile } from "./archiveAssetLoad";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
-import {
-  filterMediaArchiveAssets,
-  getMediaArchiveAssetById,
-  getMediaArchiveAssets,
-  getMediaArchiveById,
-  normalizeMediaTags,
-  updateMediaArchiveAsset,
-} from "./db";
+import { getMediaArchiveAssetById, getMediaArchiveById, normalizeMediaTags, updateMediaArchiveAsset } from "./db";
 
 export type AutoTitleArchiveResult = {
   processed: number;
@@ -247,23 +240,6 @@ export async function autoTitleArchiveAssets(opts: {
   });
 
   return { processed, updated, skipped, failed, skipReasons, sampleError, sampleUpdate };
-}
-
-/** Resolve asset ids for bulk retitle (all in archive or filtered subset). */
-export async function resolveAutoTitleAssetIds(opts: {
-  archiveId: number;
-  ids?: number[];
-  search?: string;
-}): Promise<number[]> {
-  let assets = await getMediaArchiveAssets(opts.archiveId);
-  if (opts.search?.trim()) {
-    assets = filterMediaArchiveAssets(assets, { search: opts.search });
-  }
-  if (opts.ids?.length) {
-    const idSet = new Set(opts.ids);
-    assets = assets.filter((a) => idSet.has(a.id));
-  }
-  return assets.map((a) => a.id);
 }
 
 /** Run one asset through the AI pipeline and return diagnostics (admin troubleshooting). */

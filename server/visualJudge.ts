@@ -33,55 +33,9 @@ import {
 } from "./beatVisualRelevance";
 import { adoptionGuardVerdict, visionVerdictFromGate } from "./adoptionPolicy";
 import { asVideoTitleString, coercePersonName } from "./stringCoercion";
-import { metadataVisualBlocksEnabled, vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
-import {
-  assetMeetsSemanticMinimum,
-  semanticMinRelevanceScore,
-  semanticVisualMatchingEnabled,
-  type SemanticMatchResult,
-} from "./semanticVisualMatching";
-import {
-  inferBeatGeoRegion,
-  isNonDocumentaryClipPath,
-  isNonDocumentaryVisualHay,
-  resolveBeatRegionLock,
-  isOffTopicGeoUrbanVisual,
-  isWrongRegionForSegmentLock,
-  offTopicVisualAllowedForBeat,
-  type BeatGeoRegion,
-} from "./vidrushQuality";
-import {
-  assetIsOffTopicProtest,
-  assetShowsCars,
-  assetShowsCycling,
-  assetShowsGovernment,
-  assetShowsInfrastructure,
-  assetShowsUrbanPlanning,
-  beatMentionsWwiiContent,
-  effectiveArchiveAssetTags,
-  extractBeatGeoPlaceTags,
-  extractEntitySearchTags,
-  extractRequiredVisualTags,
-  extractSceneSearchTags,
-  isCarBeat,
-  isClipTitleIrrelevantToBeat,
-  isCyclingBeat,
-  isGenericPeopleAsset,
-  isGovernmentBeat,
-  isInfrastructureBeat,
-  isUrbanPlanningBeat,
-  isWrongGeoForBeat,
-  isWwiiWarArchiveAsset,
-  type VideoVisualTopic,
-} from "./visualBeatTags";
-import {
-  assetHasForeignMarkers,
-  assetHasNlMarkers,
-  assetHasUsMarkers,
-  extractTitleGeoPlaceTags,
-  geoTagsForRegion,
-  isComparisonGeoTitle,
-} from "./worldGeoSlugs";
+import { vidrushDocumentaryQualityEnabled } from "./sourcingPolicy";
+import { isNonDocumentaryClipPath, isNonDocumentaryVisualHay, resolveBeatRegionLock, isOffTopicGeoUrbanVisual, isWrongRegionForSegmentLock, offTopicVisualAllowedForBeat } from "./vidrushQuality";
+import { effectiveArchiveAssetTags } from "./visualBeatTags";
 
 export type VisualJudgeDecision = "ACCEPT" | "REJECT";
 
@@ -368,164 +322,19 @@ export function countVisualTagHits(
   return hits;
 }
 
-/** Archive clip wrong for this beat — beat-driven, all video topics. */
-function archiveAssetSubjectRefusal(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
-  beatText: string
-): string | null {
-  if (!metadataVisualBlocksEnabled()) return null;
-  if (!beatText?.trim()) return null;
-  if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatText)) return "wwii_asset_on_non_wwii_sentence";
-  if (isCuratedInterviewAsset(asset) && !/\b(interview|historicus|expert|talking head|besprek)\b/i.test(beatText.toLowerCase())) {
-    return "interview_asset_on_non_interview_sentence";
-  }
-  const beatHistorical =
-    beatMentionsWwiiContent(beatText) ||
-    /\b(18\d{2}|19\d{2}|20[01]\d|histor(y|ical)|archief|archive|war|oorlog|ancient|medieval)\b/i.test(
-      beatText.toLowerCase()
-    );
-  if (!beatHistorical && isGeographyIncompatibleArchiveAsset(asset)) return "historical_look_on_modern_sentence";
-  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
-  if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, beatText)) return "off_topic_geo_urban";
-  return null;
-}
-
+/**
+ * ONE ROUTE — the archive asset's metadata refusals, all in production. What used to follow (topic,
+ * geography, country, literal words, semantic tier, minimum score) sat behind
+ * ENABLE_METADATA_VISUAL_BLOCKS, which production never set: it never ran, and is gone. Whether the
+ * picture fits the sentence is the picture judgement at the push.
+ */
 function archiveAssetMinimumRefusal(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
-  beatText: string,
-  score: number,
-  topScore: number,
-  semantic?: SemanticMatchResult,
-  videoVisualTopic: VideoVisualTopic = "general",
-  segmentLock: BeatGeoRegion | null = null,
-  literalVisualTags: string[] = [],
-  videoTitle?: string
+  asset: Pick<MediaArchiveAsset, "tags">,
+  score: number
 ): string | null {
-  const hay = normalizeMediaTags(asset.tags ?? []).join(" ");
   const material = judgeArchiveAssetMaterial(asset);
   if (material.decision === "REJECT") return material.reason;
-  if (!metadataVisualBlocksEnabled()) return null;
-  if (segmentLock && isWrongRegionForSegmentLock(hay, segmentLock)) return "wrong_region_for_segment";
-
-  const subject = archiveAssetSubjectRefusal(asset, beatText);
-  if (subject) return subject;
-
-  const requiredGeo = resolveRequiredGeoTagsForBeat(beatText, videoTitle, segmentLock);
-  if (requiredGeo.length > 0) {
-    if (isWrongGeoForBeat(asset, requiredGeo)) return "wrong_geo_required";
-    const geoHits = countVisualTagHits(asset, requiredGeo);
-    if (geoHits === 0) return "no_required_geo_tag";
-  }
-
-  const geoTags = extractBeatGeoPlaceTags(beatText);
-  if (geoTags.length > 0) {
-    if (isWrongGeoForBeat(asset, geoTags)) return "wrong_geo_named_place";
-    const geoHits = countVisualTagHits(asset, geoTags);
-    if (geoHits === 0) return "named_place_not_shown";
-  }
-
-  if (isCyclingBeat(beatText) && !assetShowsCycling(asset)) {
-    return "sentence_subject_not_shown:cycling";
-  }
-
-  if (isCarBeat(beatText) && !assetShowsCars(asset)) {
-    return "sentence_subject_not_shown:cars";
-  }
-
-  if (isGovernmentBeat(beatText) && !assetShowsGovernment(asset)) {
-    return "sentence_subject_not_shown:government";
-  }
-
-  if (isUrbanPlanningBeat(beatText) && !assetShowsUrbanPlanning(asset, beatText)) {
-    if (!isGovernmentBeat(beatText) || !assetShowsGovernment(asset)) {
-      return "sentence_subject_not_shown:urban_planning";
-    }
-  }
-
-  if (isInfrastructureBeat(beatText) && !assetShowsInfrastructure(asset, beatText)) {
-    if (!isUrbanPlanningBeat(beatText) || !assetShowsUrbanPlanning(asset, beatText)) {
-      return "sentence_subject_not_shown:infrastructure";
-    }
-  }
-
-  if (assetIsOffTopicProtest(asset, beatText, videoVisualTopic)) {
-    return "off_topic_protest";
-  }
-
-  if (isClipTitleIrrelevantToBeat(asset, beatText)) {
-    return "title_irrelevant_to_sentence";
-  }
-
-  if (literalVisualTags.length > 0) {
-    const literalHits = countVisualTagHits(asset, literalVisualTags);
-    const semStrong =
-      semantic != null && semantic.tier <= 3 && semantic.relevanceScore >= Math.max(50, semanticMinRelevanceScore());
-    if (literalHits === 0 && !semStrong) {
-      const requiredTags = extractRequiredVisualTags(beatText);
-      const sceneTags = extractSceneSearchTags(beatText);
-      const fallbackHits = countVisualTagHits(asset, [...requiredTags, ...sceneTags, ...literalVisualTags.slice(0, 3)]);
-      if (fallbackHits === 0) return "literal_visual_not_shown";
-    }
-  }
-
-  if (semantic && semanticVisualMatchingEnabled()) {
-    if (!assetMeetsSemanticMinimum(semantic)) return "below_semantic_minimum";
-    if (semantic.tier >= 5 && semantic.matchedEntities.length === 0) return "weak_semantic_tier_no_entity";
-    return null;
-  }
-
-  const requiredTags = extractRequiredVisualTags(beatText);
-  const sceneTags = extractSceneSearchTags(beatText);
-  const entityTags = extractEntitySearchTags(beatText);
-  const visualHits = countVisualTagHits(asset, requiredTags);
-  const sceneEntityHits = countVisualTagHits(asset, [...sceneTags, ...entityTags]);
-
-  const minScore = vidrushDocumentaryQualityEnabled() ? 28 : Math.max(22, Math.round(topScore * 0.32));
-  if (score < minScore && visualHits < 2) return "weak_match_below_minimum_score";
-
-  if ((sceneTags.length > 0 || entityTags.length > 0) && sceneEntityHits === 0 && visualHits < 2) {
-    return "scene_or_entity_not_shown";
-  }
-
-  if (requiredTags.length >= 3 && visualHits === 0 && score < Math.round(topScore * 0.5)) {
-    return "required_visual_not_shown";
-  }
-
-  if (isGenericPeopleAsset(asset)) {
-    const entities = extractEntitySearchTags(beatText);
-    if (entities.length > 0 && countVisualTagHits(asset, entities) === 0) return "generic_people_without_entity";
-    if (visualHits === 0 && (entities.length > 0 || requiredTags.length >= 2)) return "generic_people_without_visual";
-  }
-
-  return null;
-}
-
-/** B&W / war-era / interview archive — wrong look for modern city/geography documentaries. */
-export function isModernUrbanArchiveAsset(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType">
-): boolean {
-  const hay = effectiveArchiveAssetTags(asset).join(" ");
-  return /\b(timelapse|time.?lapse|drone|aerial|4k|uhd|hd\b|1080p|contemporary|modern|skyline|street view|kleur|color footage|cityscape|urban scene|stadsmilieu|vandaag|today|current|recent|living city|walkable|bike lane|fietspad|tram|metro|ns trein|train station|gracht|canal tour)\b/i.test(
-    hay
-  );
-}
-
-/** B&W / war-era / interview archive — wrong look for modern city/geography documentaries. */
-export function isGeographyIncompatibleArchiveAsset(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">
-): boolean {
-  if (isWwiiWarArchiveAsset(asset)) return true;
-  if (isCuratedInterviewAsset(asset)) return true;
-  const hay = effectiveArchiveAssetTags(asset).join(" ");
-  if (/\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|picket(?:ing|ers?)?|civil unrest|protest march|street protest)\b/i.test(hay)) {
-    return true;
-  }
-  if (isOffTopicGeoUrbanVisual(hay)) return true;
-  if (isModernUrbanArchiveAsset(asset)) return false;
-  if (isCuratedHistoricalFootage(asset)) return true;
-  return /\b(zwart-wit|black.?white|b&w|monochrome|sepia|archief footage|old footage|1930|1934|1939|1945|propaganda|militair|soldaten|parade|historical archive|newsreel|zwart wit)\b/i.test(
-    hay
-  );
+  return judgeArchiveAssetScore(score).decision === "REJECT" ? "negative_match_score" : null;
 }
 
 /** Modern talking-head / historian interview clips — poor B-roll for documentaries. */
@@ -550,77 +359,12 @@ export function isCuratedHistoricalFootage(asset: Pick<MediaArchiveAsset, "title
   return false;
 }
 
-/** Required geo tags for archive acceptance — beat text, title, or sticky segment lock. */
-export function resolveRequiredGeoTagsForBeat(
-  beatText: string,
-  videoTitle?: string,
-  segmentLock?: BeatGeoRegion | null
-): string[] {
-  const beatGeo = extractBeatGeoPlaceTags(beatText);
-  if (beatGeo.length > 0) return beatGeo;
-
-  if (isComparisonGeoTitle(videoTitle)) {
-    let lock = segmentLock ?? inferBeatGeoRegion(beatText, videoTitle);
-    if (lock === "both" || lock === "neutral") {
-      if (segmentLock === "nl" || segmentLock === "us") {
-        lock = segmentLock;
-      } else {
-        const beatRegion = inferBeatGeoRegion(beatText, videoTitle);
-        lock = beatRegion === "nl" || beatRegion === "us" ? beatRegion : "nl";
-      }
-    }
-    if (lock === "nl") return geoTagsForRegion("nl", videoTitle);
-    if (lock === "us") return geoTagsForRegion("us", videoTitle);
-    return [];
-  }
-
-  const titleGeo = extractTitleGeoPlaceTags(videoTitle);
-  if (titleGeo.length > 0) return titleGeo;
-
-  const region = inferBeatGeoRegion(beatText, videoTitle);
-  if (region === "nl") return geoTagsForRegion("nl", videoTitle);
-  if (region === "us") return geoTagsForRegion("us", videoTitle);
-  return [];
-}
-
-/** Hard reject archive assets that are clearly from the wrong country for this beat. */
-function archiveAssetCountryRefusal(
-  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
-  beatText: string,
-  videoTitle?: string,
-  segmentLock?: BeatGeoRegion | null
-): string | null {
-  if (!metadataVisualBlocksEnabled()) return null;
-  const required = resolveRequiredGeoTagsForBeat(beatText, videoTitle, segmentLock);
-  if (required.length > 0) return isWrongGeoForBeat(asset, required) ? "wrong_country" : null;
-
-  const beatRegion = inferBeatGeoRegion(beatText, videoTitle);
-  if (beatRegion === "us" || beatRegion === "both") return null;
-  if (beatRegion !== "nl") return null;
-
-  const hasNl = assetHasNlMarkers(asset);
-  const hasUs = assetHasUsMarkers(asset);
-  const hasForeign = assetHasForeignMarkers(asset);
-  if ((hasUs || hasForeign) && !hasNl) return "wrong_country";
-  return null;
-}
-
 // ─── Public API: metadata ────────────────────────────────────────────────────────────────────────
 
 export type ArchiveAssetJudgeInput = {
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">;
-  /** The sentence the asset would run under. */
-  beatText: string;
-  videoTitle?: string;
   /** What the matcher measured. Read here, never produced here. */
   score: number;
-  topScore: number;
-  semantic?: SemanticMatchResult;
-  videoVisualTopic?: VideoVisualTopic;
-  segmentLock?: BeatGeoRegion | null;
-  literalVisualTags?: string[];
-  /** Also refuse an asset that is clearly from the wrong country (the archive pick asks this). */
-  checkCountry?: boolean;
 };
 
 /** An own-archive asset, judged on its tags and title before anything is prepared. */
@@ -633,46 +377,17 @@ export function judgeArchiveAssetMaterial(asset: Pick<MediaArchiveAsset, "tags">
   return isNonDocumentaryVisualHay(hay) ? reject("metadata", "non_documentary_tags") : accept("metadata");
 }
 
-export function judgeArchiveAsset(input: ArchiveAssetJudgeInput): VisualJudgeVerdict {
-  if (input.checkCountry) {
-    const country = archiveAssetCountryRefusal(input.asset, input.beatText, input.videoTitle, input.segmentLock ?? null);
-    if (country) return reject("metadata", country);
-  }
-  const refusal = archiveAssetMinimumRefusal(
-    input.asset,
-    input.beatText,
-    input.score,
-    input.topScore,
-    input.semantic,
-    input.videoVisualTopic ?? "general",
-    input.segmentLock ?? null,
-    input.literalVisualTags ?? [],
-    input.videoTitle
-  );
-  return refusal ? reject("metadata", refusal) : accept("metadata");
-}
-
 /**
- * The subject half of `judgeArchiveAsset` on its own: is this asset the wrong KIND of material for
- * this sentence (war footage, an interview, a historical look, an off-topic street)? The archive
- * ranking asks it to score a refused asset at zero instead of merely lower.
+ * RONDE 9 — a negative match score is the matcher's measured evidence of a mismatch (a sentence about
+ * cycling and an asset without one, a named place the asset is not). The matcher measures it; the
+ * refusal is this judge's, so the archive has one content owner.
  */
-export function judgeArchiveAssetSubject(
-  asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
-  beatText: string
-): VisualJudgeVerdict {
-  const refusal = archiveAssetSubjectRefusal(asset, beatText);
-  return refusal ? reject("metadata", refusal) : accept("metadata");
+export function judgeArchiveAssetScore(score: number): VisualJudgeVerdict {
+  return score < 0 ? reject("metadata", "negative_match_score") : accept("metadata");
 }
 
-/** Country check alone, for the quality report that re-reads what the render adopted. */
-export function judgeArchiveAssetCountry(
-  asset: Pick<{ title?: string | null; tags?: string[] | null }, "title" | "tags">,
-  beatText: string,
-  videoTitle?: string,
-  segmentLock?: BeatGeoRegion | null
-): VisualJudgeVerdict {
-  const refusal = archiveAssetCountryRefusal(asset, beatText, videoTitle, segmentLock ?? null);
+export function judgeArchiveAsset(input: ArchiveAssetJudgeInput): VisualJudgeVerdict {
+  const refusal = archiveAssetMinimumRefusal(input.asset, input.score);
   return refusal ? reject("metadata", refusal) : accept("metadata");
 }
 

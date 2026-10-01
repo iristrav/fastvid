@@ -68,7 +68,6 @@ export const BURNED_IN_TEXT_SOURCES: ReadonlyArray<{ engine: string; flag: strin
   { engine: "editorialGraphics", flag: "EDITORIAL_GRAPHICS_ENGINE_ENABLED", wasDefaultOn: true },
   { engine: "textOverlay", flag: "TEXT_OVERLAY", wasDefaultOn: false },
   { engine: "screenLabels", flag: "ENABLE_SCREEN_LABELS", wasDefaultOn: false },
-  { engine: "facelessSubtitles", flag: "ENABLE_FACELESS_SUBTITLES", wasDefaultOn: false },
   { engine: "extraOnScreenText", flag: "ENABLE_EXTRA_ONSCREEN_TEXT", wasDefaultOn: false },
   { engine: "motionGraphics", flag: "ENABLE_MOTION_GRAPHICS", wasDefaultOn: false },
   { engine: "editorialOverlay", flag: "EDITORIAL_OVERLAY", wasDefaultOn: false },

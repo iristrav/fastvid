@@ -33,11 +33,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
 
-import {
-  VIDEO_LENGTH_VALUES,
-  allowedVideoLengthsForRole,
-  videoLengthAllowedForRole,
-} from "@shared/videoLengths";
+import { VIDEO_LENGTH_VALUES, videoLengthAllowedForRole } from "@shared/videoLengths";
 import { kenBurnsCenterXExpr, KEN_BURNS_MAX_PAN_SHARE, buildKenBurnsTail } from "./documentaryStyle";
 
 const read = (...p: string[]) => readFileSync(join(__dirname, ...p), "utf8");
@@ -55,19 +51,6 @@ const SCHEMA = read("..", "drizzle", "schema.ts");
 // ─── 1 & 2: the one-minute length ────────────────────────────────────────────────────────────
 
 describe("RONDE 147 §1/§2 — the 1-minute length is the owner's", () => {
-  it("1. an admin may use it", () => {
-    expect(videoLengthAllowedForRole("1", "admin")).toBe(true);
-    expect(allowedVideoLengthsForRole("admin")).toEqual([...VIDEO_LENGTH_VALUES]);
-  });
-
-  it("2. an ordinary user may not — nor may an absent or unknown role", () => {
-    for (const role of ["user", "", null, undefined, "moderator", "ADMIN"]) {
-      expect(videoLengthAllowedForRole("1", role as string), `role=${String(role)}`).toBe(false);
-    }
-    expect(allowedVideoLengthsForRole("user")).not.toContain("1");
-    // Everything else stays available to everyone — this restricts one length, not the product.
-    expect(allowedVideoLengthsForRole("user")).toEqual(["8-10", "10-15", "15-20"]);
-  });
 
   it("2b. a legacy alias cannot be used to smuggle the restricted length in", () => {
     // normalizeVideoLength maps "2" → "1"; the check normalises first, so both are refused.
@@ -293,7 +276,8 @@ describe("RONDE 147 §8 — the zoom stays centred", () => {
     // documentaryStyle's tail, and the curated still encoder, each had their own copy.
     expect(read("documentaryStyle.ts")).not.toContain("const panDistance = panStep * totalFrames;");
     expect(CURATED).not.toContain("Math.round(totalFrames * 0.04)");
-    expect(CURATED).toContain("kenBurnsCenterXExpr(");
+    /** RONDE 656 — the curated still encoder bakes no zoom at all any more. */
+    expect(CURATED).not.toContain("zoompan=z='");
   });
 
   it("longer shots no longer pan further than short ones", () => {

@@ -28,16 +28,7 @@ import { memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
 import { buildVideoYoutubePool, withYoutubeOwnText, type PoolDeps, type SearchItem } from "./youtubeVideoPool";
 import { createLookaheadRegistry } from "./youtubeLookahead";
 import { poolRowsForBeat, type VideoYoutubePool } from "./youtubeVideoPool";
-import {
-  YOUTUBE_LOOKAHEAD_PARALLEL,
-  youtubeRowsWithoutNonFootage,
-  EMPTY_SCENE_RESCUE_MIN_MS,
-  extractBeatRealEntities,
-  personAsRead,
-  setRenderPeopleReadingForTests,
-  visualDeadlineForVideoMs,
-  youtubeShortAtTheDoor,
-} from "./videoPipeline";
+import { YOUTUBE_LOOKAHEAD_PARALLEL, EMPTY_SCENE_RESCUE_MIN_MS, extractBeatRealEntities, personAsRead, setRenderPeopleReadingForTests, visualDeadlineForVideoMs, youtubeShortAtTheDoor } from "./videoPipeline";
 import { judgeAcquiredFile } from "./youtubeAcquisitionValidation";
 import { limitLongShots } from "./longShotLimit";
 import { buildRenderFeatureMatrix, featureMatrixViolations, type RenderFeatureFacts } from "./renderContract";
@@ -330,17 +321,6 @@ describe("8. look ahead for every sentence; first look, then download; archive o
     } as unknown as VideoYoutubePool;
     expect(poolRowsForBeat(pool, "Elon Musk speaks at the meeting.", ["musk"], "Elon Musk").map((r) => r.item.id.videoId)).toEqual(["aaaaaaaaaaa", "bbbbbbbbbbb"]);
     expect(poolRowsForBeat(pool, "The factory floor at night.", ["factory"], "Elon Musk").map((r) => r.item.id.videoId)).toEqual(["bbbbbbbbbbb", "aaaaaaaaaaa"]);
-  });
-
-  it("whether a picture serves a sentence is asked per sentence, not once per video", async () => {
-    const row = { item: { id: { videoId: "ccccccccccc" } }, title: "a speech", desc: "", thumb: "t", rel: 1 } as never;
-    const look = async (_i: unknown, _t: string, sentences: string[]) =>
-      ({ footageType: "real_footage", servesBeats: sentences[0]?.includes("speech") ? [0] : [] });
-    const a = { beatText: "He gave a speech.", beatIndex: 0, videoTitle: "x" } as never;
-    const b = { beatText: "The rocket lifted off.", beatIndex: 1, videoTitle: "x" } as never;
-    /** Asked per sentence, and (ONE ROUTE) used to rank: both sentences keep the row. */
-    expect(await youtubeRowsWithoutNonFootage([row], a, 0, look)).toHaveLength(1);
-    expect(await youtubeRowsWithoutNonFootage([row], b, 0, look)).toHaveLength(1);
   });
 
   it("the background fetch archives its segments itself; the download does not do it again", () => {

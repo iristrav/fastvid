@@ -13,112 +13,12 @@ import path from "path";
 import { execSync } from "child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { recordSearchMisses } from "./visualSearchMemory";
 import { splitLongRanges, maxClipDurationSec, sceneSafetyMaxSec } from "./archiveVideoSplitter";
 
 const SPLITTER_SRC = fs.readFileSync(path.join(__dirname, "archiveVideoSplitter.ts"), "utf8");
 
 /* ═══════════ §9 — SearchMemory ═══════════ */
 
-describe("RONDE 100B §9 — what may be remembered as a dead end", () => {
-  let logged: string[] = [];
-
-  beforeEach(() => {
-    logged = [];
-    vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
-      logged.push(a.map(String).join(" "));
-    });
-  });
-  afterEach(() => vi.restoreAllMocks());
-
-  /** Runs recordSearchMisses and reports the counts it printed. */
-  function run(opts: {
-    searched: string[];
-    adopted?: Record<string, number>;
-    results?: Record<string, number>;
-    cancelled?: string[];
-  }) {
-    recordSearchMisses({
-      subject: "Adolf Hitler",
-      subjectType: "person",
-      searchedKeys: opts.searched,
-      adoptedByProvider: new Map(Object.entries(opts.adopted ?? {})),
-      resultsByProvider: new Map(Object.entries(opts.results ?? {})),
-      budgetCancelledProviders: new Set(opts.cancelled ?? []),
-    });
-    const line = logged.find((l) => l.includes("[SearchMemory]")) ?? "";
-    const recorded = /recorded (\d+) of (\d+) dead end/.exec(line);
-    const spared = /\[(\d+) spared/.exec(line);
-    return {
-      line,
-      misses: recorded ? Number(recorded[2]) : 0,
-      spared: spared ? Number(spared[1]) : 0,
-    };
-  }
-
-  it("TEST 1 — a provider that genuinely returned nothing may be remembered", () => {
-    const r = run({
-      searched: ["pexels|adolf hitler", "pexels|adolf hitler 1945"],
-      adopted: { pexels: 0 },
-      results: { pexels: 0 },
-    });
-    expect(r.misses).toBe(2);
-    expect(r.spared).toBe(0);
-  });
-
-  it("TEST 2 — a provider that ANSWERED is not a dead end, whatever happened next", () => {
-    /**
-     * The production case exactly: Internet Archive ran 13 searches and returned 311 candidates,
-     * then every download was cancelled by the enclosing scene budget, so it adopted nothing —
-     * and all 13 queries were written down as "this source has nothing".
-     */
-    const r = run({
-      searched: [
-        "internet_archive|adolf hitler",
-        "internet_archive|subject:\"Adolf Hitler\"",
-        "internet_archive|collection:tvnews AND Adolf Hitler",
-      ],
-      adopted: { internet_archive: 0 },
-      results: { internet_archive: 311 },
-    });
-    expect(r.misses).toBe(0);
-    expect(r.spared).toBe(3);
-    expect(r.line).toContain("spared");
-  });
-
-  it("TEST 3 — a provider FastVid cut off is not a dead end either", () => {
-    const r = run({
-      searched: ["wikimedia|adolf hitler", "wikimedia|adolf hitler berlin"],
-      adopted: { wikimedia: 0 },
-      results: { wikimedia: 0 },
-      cancelled: ["wikimedia"],
-    });
-    expect(r.misses).toBe(0);
-    expect(r.spared).toBe(2);
-  });
-
-  it("TEST 4 — a provider that adopted something is left alone, as before", () => {
-    const r = run({
-      searched: ["pexels|berlin 1945"],
-      adopted: { pexels: 2 },
-      results: { pexels: 40 },
-    });
-    expect(r.misses).toBe(0);
-    expect(r.spared).toBe(0);
-  });
-
-  it("TEST 5 — the old call shape still works: no results/cancelled data, no crash", () => {
-    // The two new fields are optional, so an older caller keeps the pre-RONDE-100B behaviour.
-    expect(() =>
-      recordSearchMisses({
-        subject: "Adolf Hitler",
-        subjectType: "person",
-        searchedKeys: ["pexels|adolf hitler"],
-        adoptedByProvider: new Map([["pexels", 0]]),
-      })
-    ).not.toThrow();
-  });
-});
 
 /* ═══════════ §13 — a small file is not a broken file ═══════════ */
 
@@ -171,9 +71,9 @@ describe("RONDE 100B §13 — the extract check asks ffprobe, not the byte count
 
   it("TEST 9 — all three call sites go through it", () => {
     const uses = SPLITTER_SRC.match(/extractedClipIsUsable\(/g) ?? [];
-    // one definition + five checks (two extract paths, the sub-extract, the re-encode path,
-    // and the analysis proxy)
-    expect(uses.length).toBeGreaterThanOrEqual(6);
+    // one definition + four checks (the extract path, the sub-extract, the re-encode path and the
+    // analysis proxy); the single-pass extractor and the interior-cut re-split were dead and are gone
+    expect(uses.length).toBeGreaterThanOrEqual(5);
   });
 });
 

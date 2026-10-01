@@ -1,21 +1,8 @@
-/**
- * Per-video audit trail — clips successfully adopted per beat (for quality report geo checks).
- */
-import * as path from "path";
-import { recordGoodClipAdoption } from "./clipGoodCache";
+
 import { adoptSourceIsPlaceholder } from "./placeholderIdentity";
-import {
-  relevanceVerdictForRenderedAsset,
-  type BeatRelevanceLedger,
-} from "./beatVisualRelevance";
+import { type BeatRelevanceLedger } from "./beatVisualRelevance";
 import type { VisualSourceLedger } from "./visualSourceLineage";
-import {
-  adoptionPolicyFor,
-  visionRequirementMet,
-  visionVerdictFromGate,
-  type AdoptCategory,
-  type AdoptionVisionVerdict,
-} from "./adoptionPolicy";
+import { type AdoptCategory, type AdoptionVisionVerdict } from "./adoptionPolicy";
 
 export type ClipAdoptEntry = {
   sceneIndex: number;
@@ -86,8 +73,6 @@ export type AdoptAuditSummary = {
   youtubeBeats: number;
   hints: string[];
 };
-
-const MAX_ENTRIES = 120;
 
 export function createClipAdoptAudit(): ClipAdoptEntry[] {
   return [];

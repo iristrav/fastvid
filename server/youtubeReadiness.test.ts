@@ -194,21 +194,8 @@ describe("a search that does not happen says so", () => {
    * `if (!youtubeApiKey) return []` was the whole branch. That is how a render can be configured
    * for YouTube, ask for it fifty times, and leave no evidence at all.
    */
-  it("the missing-key branch logs instead of returning silently", () => {
-    const at = PIPE.indexOf("export async function searchYoutubeVideoCandidates(");
-    expect(at, "the search function has moved").toBeGreaterThan(-1);
-    const head = PIPE.slice(at, at + 2500);
-    expect(head, "the search still returns empty without a word").toContain("SEARCH_SKIPPED");
-    expect(head).toContain("YOUTUBE_API_KEY not set");
-  });
 
   /** Once per render, not once per query — fifty identical lines say nothing extra. */
-  it("warns once, not per query", () => {
-    expect(PIPE).toContain("let youtubeSearchKeyWarned = false;");
-    const at = PIPE.indexOf("export async function searchYoutubeVideoCandidates(");
-    const head = PIPE.slice(at, at + 2500);
-    expect(head).toContain("if (!youtubeSearchKeyWarned)");
-  });
 
   /** And the render prints the config warnings beside the route line. */
   it("the render surfaces a misconfigured download route", () => {

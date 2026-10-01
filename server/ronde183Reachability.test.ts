@@ -76,7 +76,7 @@ const MUST_BE_REACHED: ReadonlyArray<[string, string]> = [
   ["rendererGraphicType", "a planned graphic is translated to a component name"],
   ["formatCinematicGraphics", "R178 — planned/rendered/skipped reaches the render log"],
   ["newLedger", "R180 — the render has a usage ledger to penalise against"],
-  ["searchYoutubeVideoCandidates", "R177 — the pool can ask YouTube"],
+  ["buildVideoYoutubePool", "R177 — the pool asks YouTube (code audit P2: the one YouTube search)"],
   ["downloadYouTubeCCClip", "R179 — a YouTube winner can be fetched"],
   ["planCinematicAudio", "R166 — music and ambience are planned"],
   ["classifyAttentionMoment", "R166 — attention moments are classified"],
@@ -110,10 +110,9 @@ describe("R183 — every link in the cinematic chain has a production caller", (
 const SINGLE_OWNER: readonly string[] = [
   "renderTimeline",
   "translateEdl",
-  "searchYoutubeVideoCandidates",
+  "buildVideoYoutubePool",
   "downloadYouTubeCCClip",
   "intentFrom",
-  "timelineDigest",
   "buildTransitionGraph",
   "graphicIsRenderable",
 ];
@@ -144,29 +143,18 @@ describe("R183 — §28: exactly one implementation of each", () => {
  */
 const KNOWN_UNREACHED: ReadonlyArray<[string, string]> = [
   /**
-   * RONDE 202 — the three that remain, each with WHY it is not called.
-   *
-   * "Unreached" is not one thing. `formatRoute` and `assertRenderableTimeline` have working
-   * equivalents that ARE called — `formatRenderRoute` and `validateTimeline` — so wiring them would
-   * put a second answer to one question into the log. `validateEffect` and `yExpressionFor` are
-   * superseded outright. Recording the reason is what stops a future round from "fixing" a
-   * duplicate into existence.
+   * Empty since the code audit: `replacementSideEffects`, `validateEffect`, `yExpressionFor` and
+   * `assertRenderableTimeline` were deleted rather than kept as unreached code. A function that
+   * production does not call is removed, not listed.
    */
-  ["replacementSideEffects", "smart replacement's side-effect hook — the editor route does its own"],
-  ["validateEffect", "per-effect validation; the renderer reports unsupported effects instead"],
-  ["yExpressionFor", "a caption y-position helper superseded by captionLayout's boxes"],
-  ["assertRenderableTimeline", "REDUNDANT — validateTimeline is the called equivalent"],
 ];
 
 describe("R183 — the functions that are still not called, listed rather than hidden", () => {
-  for (const [name, note] of KNOWN_UNREACHED) {
-    it(`${name} is still unreached (${note})`, () => {
+  it("the list is empty: unreached production code is deleted, not kept", () => {
+    expect(KNOWN_UNREACHED).toEqual([]);
+    for (const name of ["replacementSideEffects", "validateEffect", "yExpressionFor", "assertRenderableTimeline"]) {
       const defined = [...TEXT].some(([, src]) => new RegExp(`function ${name}\\s*[(<]`).test(src));
-      expect(defined, `${name} no longer exists — remove it from this list on purpose`).toBe(true);
-      expect(
-        callersOf(name),
-        `${name} now HAS a production caller — move it to MUST_BE_REACHED`
-      ).toEqual([]);
-    });
-  }
+      expect(defined, `${name} is back without a caller`).toBe(false);
+    }
+  });
 });

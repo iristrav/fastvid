@@ -30,7 +30,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { archiveMediaVersion, withArchiveMediaVersion } from "@shared/archiveMediaVersion";
-import { archiveMediaStreamUrl, editorArchiveMediaUrl } from "./archiveMediaStream";
+import { editorArchiveMediaUrl } from "./archiveMediaStream";
 
 const read = (rel: string) => {
   const { readFileSync } = require("fs") as typeof import("fs");
@@ -60,10 +60,6 @@ describe("THE BUG: an id-only URL cannot tell the two files apart", () => {
      */
     const idOnly = (id: number) => `/api/admin/archive/media/${id}`;
     expect(idOnly(57330)).toBe(idOnly(57330));
-  });
-
-  it("with the version token they differ", () => {
-    expect(archiveMediaStreamUrl(57330, BEFORE)).not.toBe(archiveMediaStreamUrl(57330, AFTER));
   });
 });
 
@@ -119,16 +115,9 @@ describe("withArchiveMediaVersion appends without mangling the address", () => {
 /* ═══════════════════════ both routes ═══════════════════════ */
 
 describe("both stream helpers version their URL", () => {
-  it("the admin route keeps its own prefix", () => {
-    expect(archiveMediaStreamUrl(57330, AFTER)).toMatch(/^\/api\/admin\/archive\/media\/57330\?v=/);
-  });
 
   it("the editor route keeps its own prefix", () => {
     expect(editorArchiveMediaUrl(57330, AFTER)).toMatch(/^\/api\/editor\/archive\/media\/57330\?v=/);
-  });
-
-  it("the two routes stay distinct for the same asset", () => {
-    expect(archiveMediaStreamUrl(57330, AFTER)).not.toBe(editorArchiveMediaUrl(57330, AFTER));
   });
 
   it("the id is still the only thing the SERVER reads", () => {

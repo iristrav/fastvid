@@ -137,13 +137,6 @@ function noteFailure(videoId: string): void {
   }
 }
 
-/** Test seam: a render should never inherit another test's cached page. */
-export function _resetYoutubeVideoContextCache(): void {
-  cache.clear();
-  consecutiveFailures = 0;
-  cooldownUntilMs = 0;
-}
-
 /**
  * Pulls one balanced JSON array out of a much larger document, starting at `from`.
  *
@@ -430,4 +423,12 @@ export async function fetchYoutubeVideoContext(
   } finally {
     clearTimeout(timer);
   }
+}
+
+
+/** Test seam: a render should never inherit another test's cached page. */
+export function _resetYoutubeVideoContextCache(): void {
+  cache.clear();
+  consecutiveFailures = 0;
+  cooldownUntilMs = 0;
 }

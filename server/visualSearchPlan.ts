@@ -102,11 +102,6 @@ export type VideoVisualContext = {
 const _planCache = new Map<string, VisualSearchPlan>();
 let _videoContextCache: { key: string; ctx: VideoVisualContext } | null = null;
 
-export function clearVisualSearchPlanCache(): void {
-  _planCache.clear();
-  _videoContextCache = null;
-}
-
 /** Evict only one video's entries — safe to call when that video's render finishes even
  *  though other videos may still be rendering concurrently in the same process (a blanket
  *  clearVisualSearchPlanCache() would wipe their still-in-progress cached plans too). */

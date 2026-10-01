@@ -5,7 +5,6 @@ import fs from "fs";
 import path from "path";
 import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { foldSearchText } from "./searchTextNormalize";
-import type { ClipAdoptEntry } from "./clipAdoptAudit";
 
 type GoodCacheAsset = {
   id: number;
@@ -22,8 +21,6 @@ export type GoodClipRecord = {
   adoptedAt: string;
   adoptCount: number;
 };
-
-const MAX_RECORDS = 400;
 
 function cachePath(): string {
   const dir = path.join(LOCAL_UPLOADS_DIR, "clip-good-cache");
@@ -42,36 +39,8 @@ function loadRecords(): GoodClipRecord[] {
   }
 }
 
-function saveRecords(records: GoodClipRecord[]): void {
-  fs.writeFileSync(cachePath(), JSON.stringify(records.slice(0, MAX_RECORDS), null, 0), "utf8");
-}
-
 export function clipGoodCacheEnabled(): boolean {
   return process.env.ENABLE_CLIP_GOOD_CACHE !== "false";
-}
-
-/** Persist a successfully adopted clip for future ranking boost. */
-export function recordGoodClipAdoption(entry: ClipAdoptEntry, assetId?: number): void {
-  if (!clipGoodCacheEnabled()) return;
-  const records = loadRecords();
-  const basename = entry.basename.toLowerCase();
-  const existing = records.find((r) => r.basename === basename);
-  if (existing) {
-    existing.adoptCount += 1;
-    existing.adoptedAt = new Date().toISOString();
-    if (assetId) existing.assetId = assetId;
-  } else {
-    records.unshift({
-      basename,
-      assetId,
-      source: entry.source,
-      beatText: entry.beatText.slice(0, 200),
-      segmentGeoLock: entry.segmentGeoLock,
-      adoptedAt: new Date().toISOString(),
-      adoptCount: 1,
-    });
-  }
-  saveRecords(records.slice(0, MAX_RECORDS));
 }
 
 /** Score boost 0–18 for archive assets previously adopted with good results. */
@@ -104,6 +73,3 @@ export function goodClipCacheBoost(asset: GoodCacheAsset, beatText: string): num
   return boost;
 }
 
-export function listGoodClipCache(limit = 20): GoodClipRecord[] {
-  return loadRecords().slice(0, limit);
-}

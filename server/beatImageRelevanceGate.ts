@@ -46,7 +46,6 @@ import { recordVisionAsk, type VisionCaller } from "./visionCensus";
 import { normaliseShotType } from "./shotVocabulary";
 import type { ShotType } from "./cinematicEditingEngine/types";
 import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
-import { beatImageRelevanceGateEnabled } from "./config";
 
 export type BeatImageVerdict = "fits" | "does_not_fit" | "unknown";
 
@@ -74,8 +73,6 @@ export type BeatImageVerdict = "fits" | "does_not_fit" | "unknown";
  * Written at the one site each decline is produced, so it cannot drift from the decline it names.
  */
 export type VisionDeclineCause =
-  /** The gate is switched off by configuration. A choice, not an outage. */
-  | "GATE_DISABLED"
   /** The beat has no narration, so there is no question to ask about any picture. */
   | "NO_NARRATION"
   /** The render-wide judgement ceiling was already reached when this candidate arrived. */
@@ -932,11 +929,6 @@ export async function judgeBeatImage(params: {
     return unknown(reason, false, cause);
   };
 
-  if (!beatImageRelevanceGateEnabled()) {
-    /** A switched-off editor is a fact about the render, not about this picture. See askImpossible. */
-    noteAskImpossible(state, "the beat image gate is switched off by configuration");
-    return declined("GATE_DISABLED", "gate disabled");
-  }
   /**
    * The verdict belongs to a (picture, narration) pair, not to the picture. `beatIdentity` is
    * hashed from the beat's own words, so the same clip arriving on a different beat is a cache

@@ -171,54 +171,6 @@ describe("§3 — five readers, one implementation", () => {
       "export const YOUTUBE_MIN_TURN_MS = YOUTUBE_SEARCH_TIMEOUT_MS + YOUTUBE_MIN_DOWNLOAD_WINDOW_MS;"
     );
   });
-
-  it("and the reserve still leaves the cascade exactly what it had", async () => {
-    await withSceneFetchTimeout(
-      async () => {
-        const forOthers = remainingNonYoutubeScopeMs();
-        expect(Math.abs(forOthers - R597_STOCK_WALL_MS)).toBeLessThanOrEqual(50);
-      },
-      R597_STOCK_WALL_MS + YOUTUBE_TURN_WINDOW_MS,
-      "widened wall"
-    );
-  });
-});
-
-/* ═══════════ §4 — a source that is not asked says so ═══════════ */
-
-describe("§4 — no silent starvation in tryStockSources", () => {
-  const body = (() => {
-    const at = PIPELINE.indexOf("async function tryStockSources(");
-    return PIPELINE.slice(at, PIPELINE.indexOf("\n/** Guaranteed-unique stock for one beat", at));
-  })();
-
-  it("THE DEFECT: three refusals used to end the loop without a word", () => {
-    expect(body, "a bare continue on a blocked query").not.toContain("if (isBlockedStockQuery(query)) continue;");
-    expect(body, "a bare continue on a spent category").not.toContain(
-      "if (categoryAtLimit(dedup, category)) continue;"
-    );
-  });
-
-  it("each names itself, the query and the scope of the limit", () => {
-    expect(body).toContain("[SourceSkipped]");
-    expect(body).toContain('declineSource("BLOCKED_QUERY", query)');
-    /** VIDEO 623 — the Musk-only refusal is gone with the rest of that subject's code. */
-    expect(body).not.toContain("MUSK_CATEGORY_NOT_APPROVED");
-    expect(body).toContain('declineSource(\n        "CATEGORY_AT_LIMIT"');
-    expect(body, "a render-wide cap must say that it is render-wide").toContain("scope=render");
-  });
-
-  it("the gate is still there; its quotas were one subject's and are gone", () => {
-    /**
-     * VIDEO 623 — `STOCK_CATEGORY_LIMITS` held quotas for gigafactory, solar, rocket, tesla,
-     * factory, robot and space: the ladder's own comment called its vocabulary Musk/Tesla/SpaceX.
-     * The gate stays, and refuses what is refused for its form (`blocked_model`); nothing else
-     * has a quota.
-     */
-    expect(PIPELINE).not.toContain("const STOCK_CATEGORY_LIMITS");
-    expect(PIPELINE).toContain("function categoryAtLimit(");
-    expect(PIPELINE).toContain("return categoryIsBlockedContent(category) ? 0 : Number.POSITIVE_INFINITY;");
-  });
 });
 
 /* ═══════════ §5 — the three walls belong together ═══════════ */

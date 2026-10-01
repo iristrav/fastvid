@@ -5,12 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
 import { chunkShareOfVisualTimeMs, visualDeadlineForVideoMs, PICTURE_SEC_PER_VIDEO_SEC } from "./videoPipeline";
-import {
-  __resetOverlayVerdictCacheForTest,
-  archiveClipTextVerdict,
-  cachedClipBakedEditTextVerdict,
-  overlayChecksSpent,
-} from "./archiveClipFilter";
+import { __resetOverlayVerdictCacheForTest, archiveClipTextVerdict, cachedClipBakedEditTextVerdict } from "./archiveClipFilter";
 
 const read = (f: string) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
 
@@ -69,13 +64,6 @@ describe("Video 621 — the archive's text check is never skipped for a render's
     } finally {
       fs.unlinkSync(tmp);
     }
-  });
-
-  it("the archive's check does not count against the render's budget", async () => {
-    const before = overlayChecksSpent();
-    await archiveClipTextVerdict("/nowhere.bin", "application/octet-stream", "k1");
-    await archiveClipTextVerdict("/nowhere.bin", "application/octet-stream", "k2");
-    expect(overlayChecksSpent()).toBe(before);
   });
 
   it("ingestion and the shot sweep use the archive's own check", () => {

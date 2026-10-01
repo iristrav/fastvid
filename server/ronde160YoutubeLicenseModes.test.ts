@@ -24,8 +24,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  youtubeLicenseMetadata,
   youtubeLicenseParam,
+  youtubePoolRowLicense,
   type YoutubeLicenseMode,
 } from "./videoPipeline";
 import { envFlagIsOn } from "./sourcingPolicy";
@@ -66,46 +66,22 @@ describe("FASE 4 — three licence modes, each asking YouTube a different questi
 
 /* ═══════════════════════ licence as metadata, never as permission ═══════════════════════ */
 
-describe("FASE 4 — a clip records the licence it was retrieved under, and claims nothing more", () => {
-  it("always records WHICH mode found the clip", () => {
-    for (const mode of MODES) {
-      expect(youtubeLicenseMetadata(mode).retrievedUnder, mode).toBe(mode);
-    }
+describe("FASE 4 — a pool clip records YouTube's own licence, and claims nothing more", () => {
+  it("records what videos.list reported for the video", () => {
+    expect(youtubePoolRowLicense({ license: "creativeCommon" })).toEqual({ retrievedUnder: "video_pool", reported: "creativeCommon" });
+    expect(youtubePoolRowLicense({ license: "youtube" })).toEqual({ retrievedUnder: "video_pool", reported: "youtube" });
   });
 
-  it("records the provider's licence for the two modes that are assertions", () => {
-    expect(youtubeLicenseMetadata("creative_common").reported).toBe("creativeCommon");
-    expect(youtubeLicenseMetadata("youtube").reported).toBe("youtube");
+  /** The pool searches without a licence filter: no report is no claim, never the search mode. */
+  it("claims NO licence when YouTube reported none", () => {
+    expect(youtubePoolRowLicense({}).reported).toBeUndefined();
+    expect(youtubePoolRowLicense({ license: "  " }).reported).toBeUndefined();
   });
 
-  /**
-   * The honesty rule. The unfiltered pass filters nothing, so it proves nothing about the licence
-   * of what it returns. Attaching one would be inventing a fact about somebody else's video.
-   */
-  it("claims NO licence for a clip the unfiltered mode found", () => {
-    const meta = youtubeLicenseMetadata("any");
-    expect(meta.reported).toBeUndefined();
-    expect(meta.retrievedUnder).toBe("any");
-  });
-
-  /** The two halves cannot drift: the recorded licence is the parameter that was sent. */
-  it("the recorded licence and the sent parameter are the same decision", () => {
-    for (const mode of MODES) {
-      expect(youtubeLicenseMetadata(mode).reported ?? null, mode).toBe(youtubeLicenseParam(mode));
-    }
-  });
-
-  /**
-   * `licenseAllowed` (this pipeline's verdict) and `license.reported` (the provider's assertion)
-   * are different facts. Only one of them survives a policy change, and recording only the verdict
-   * is how a finished video ends up unable to say what it was made of.
-   */
   it("is metadata, not permission — it carries no allow/deny at all", () => {
-    for (const mode of MODES) {
-      const meta = youtubeLicenseMetadata(mode) as Record<string, unknown>;
-      expect(Object.keys(meta).sort()).not.toContain("licenseAllowed");
-      expect(Object.keys(meta).sort()).not.toContain("allowed");
-    }
+    const meta = youtubePoolRowLicense({ license: "creativeCommon" }) as Record<string, unknown>;
+    expect(Object.keys(meta)).not.toContain("licenseAllowed");
+    expect(Object.keys(meta)).not.toContain("allowed");
   });
 });
 

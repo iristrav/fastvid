@@ -57,31 +57,17 @@ describe("§14 — every render says which route it takes", () => {
   });
 
   /** RONDE 661 — with no render path there is no route: the line says so, and why. */
-  it("names no route when the engine is off, and the flag that is missing", () => {
-    setFlag("CINEMATIC_EDITING_ENGINE", undefined);
-    setFlag("CINEMATIC_RENDER_PATH", undefined);
-    const line = formatProductionRoute(42);
-    expect(line).toContain("[ProductionRoute] video=42");
-    expect(line).toContain("route=none");
-    expect(line, "the line says none but not why").toContain("CINEMATIC_EDITING_ENGINE is not enabled");
-    expect(line).toContain("the render will be refused");
-    expect(line).not.toContain("legacy_compose");
-  });
-
-  it("still names no route when only planning is on, naming the OTHER flag", () => {
-    setFlag("CINEMATIC_EDITING_ENGINE", "true");
-    setFlag("CINEMATIC_RENDER_PATH", undefined);
-    const line = formatProductionRoute(42);
-    expect(line).toContain("route=none");
-    expect(line).toContain("CINEMATIC_RENDER_PATH is not enabled");
-  });
-
-  it("names the cinematic route when both switches are on", () => {
-    setFlag("CINEMATIC_EDITING_ENGINE", "true");
-    setFlag("CINEMATIC_RENDER_PATH", "true");
-    const line = formatProductionRoute(42);
-    expect(line).toContain("route=cinematic_timeline");
-    expect(line, "a route that ran needs no excuse").not.toContain("reason=");
+  it("names the one route, whatever the old switches say — they no longer exist", () => {
+    /** Code audit P12: CINEMATIC_EDITING_ENGINE / CINEMATIC_RENDER_PATH were removed. */
+    for (const v of [undefined, "false", "true"]) {
+      setFlag("CINEMATIC_EDITING_ENGINE", v);
+      setFlag("CINEMATIC_RENDER_PATH", v);
+      const line = formatProductionRoute(42);
+      expect(line).toContain("[ProductionRoute] video=42");
+      expect(line).toContain("route=cinematic_timeline");
+      expect(line).not.toContain("route=none");
+      expect(line).not.toContain("legacy_compose");
+    }
   });
 
 
@@ -129,14 +115,12 @@ describe("§14 — every render says which route it takes", () => {
   });
 
   /** And it has to actually be called, unconditionally, or it is another channel carrying nothing. */
-  it("the pipeline emits it outside the cinematic branch", () => {
+  it("the pipeline emits it in the render body, and there is no cinematic branch to hide it in", () => {
     const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     const at = src.indexOf("formatProductionRoute");
     expect(at, "nothing in the pipeline emits the route line").toBeGreaterThan(-1);
     const inner = src.indexOf("async function _runVideoPipelineInner(");
-    const planningBranch = src.indexOf("if (cinematicPlanningEnabled())");
-    expect(at, "the route line is inside the cinematic branch — silent exactly when it is needed")
-      .toBeLessThan(planningBranch);
+    expect(src).not.toContain("cinematicPlanningEnabled(");
     expect(at, "the route line is not in the render body").toBeGreaterThan(inner);
   });
 });

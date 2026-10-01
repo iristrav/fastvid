@@ -80,13 +80,6 @@ export type StockClipPreRankScore = {
   definiteFail: boolean;
 };
 
-/** Index raw stock download if missing (enables in-clip offset + pre-rank). */
-export async function ensureStockClipIndexed(key: string, localVideoPath: string): Promise<boolean> {
-  if (!stockClipEmbeddingEnabled() || !fs.existsSync(localVideoPath)) return false;
-  if (loadStoredStockFrameEmbeddings(key).length > 0) return true;
-  return indexStockClipEmbedding(key, localVideoPath);
-}
-
 /** Non-blocking background index (hot path uses hash offset until cache warm). */
 export function scheduleStockClipEmbeddingByKey(key: string, localVideoPath: string): void {
   if (!stockClipEmbeddingEnabled()) return;

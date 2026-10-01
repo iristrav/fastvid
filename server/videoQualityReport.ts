@@ -17,8 +17,6 @@ import type { RejectionRegistry, RejectionEntry } from "./rejectionRegistry";
 import { summarizeRejections } from "./rejectionRegistry";
 import type { ClipAdoptEntry, AdoptAuditSummary } from "./clipAdoptAudit";
 import { summarizeAdoptAudit } from "./clipAdoptAudit";
-import { judgeArchiveAssetCountry, resolveRequiredGeoTagsForBeat } from "./visualJudge";
-import type { BeatGeoRegion } from "./vidrushQuality";
 import type { VoiceVisualMatchSummary } from "./voiceVisualMatch";
 import { buildVoiceVisualMatchSummary } from "./voiceVisualMatch";
 import { UNVERIFIED_PROVIDER as UNVERIFIED_SOURCE } from "./visualSourceLineage";
@@ -735,36 +733,11 @@ export function buildVideoQualityReport(
   }
 
   const criticalGeoViolations: VideoQualityReport["criticalGeoViolations"] = [];
-  const skipPostHocGeo =
-    archiveOnly &&
-    (visualTopic === "wwii" || visualTopic === "cold_war" || visualTopic === "general");
-  for (const adopt of opts?.adoptAudit ?? []) {
-    if (skipPostHocGeo && (adopt.source === "archive" || adopt.source === "archive_fetch")) {
-      continue;
-    }
-    if (adopt.source !== "archive" && adopt.source !== "archive_fetch") continue;
-    const assetLike = {
-      title: adopt.assetTitle ?? adopt.basename.replace(/_/g, " "),
-      tags: [] as string[],
-    };
-    if (judgeArchiveAssetCountry(assetLike, adopt.beatText, videoTitle, adopt.segmentGeoLock as BeatGeoRegion | null).decision === "REJECT") {
-      const required = resolveRequiredGeoTagsForBeat(
-        adopt.beatText,
-        videoTitle,
-        adopt.segmentGeoLock as BeatGeoRegion | null
-      );
-      criticalGeoViolations.push({
-        basename: adopt.basename,
-        beatText: adopt.beatText.slice(0, 120),
-        assetTitle: adopt.assetTitle,
-        reason:
-          required.some((t) => /singapore|berlin|netherlands|holland|dutch/.test(t))
-            ? "wrong region for title/beat"
-            : "wrong region for beat",
-      });
-    }
-  }
-
+  /**
+   * ONE ROUTE — the post-hoc country re-check asked a VisualJudge rule that only ran under
+   * ENABLE_METADATA_VISUAL_BLOCKS, which production never set; it is gone. The list stays for
+   * reports stored before this round.
+   */
   if (criticalGeoViolations.length > 0) {
     warnings.push(`${criticalGeoViolations.length} kritieke geo-fout(en).`);
   }

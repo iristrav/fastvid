@@ -27,15 +27,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import {
-  emptyQueryContext,
-  narrowToCanonicalQuery,
-  searchGateDecision,
-  semanticConceptCount,
-  withSearchProvenance,
-  type QueryToken,
-  type VerifiedQueryContext,
-} from "./searchQueryContract";
+import { emptyQueryContext, narrowToCanonicalQuery, searchGateDecision, withSearchProvenance, type QueryToken, type VerifiedQueryContext } from "./searchQueryContract";
 
 const token = (term: string, type: QueryToken["type"]): QueryToken => ({
   term,
@@ -145,19 +137,6 @@ describe("§4 — the canonical query, per provider", () => {
   });
 
   for (const c of CASES) {
-    it(`${c.label} — same canonical query at EVERY provider`, () => {
-      const seen = new Map<string, string | null>();
-      for (const [provider, route] of ROUTES) {
-        seen.set(provider, sentTo(provider, route, c.raw, c.ctx));
-      }
-      for (const [provider, got] of seen) {
-        expect(got, `${provider} refused a query it should have narrowed`).not.toBeNull();
-        expect(got, `${provider} was sent something else`).toBe(c.want);
-        expect(semanticConceptCount(got!, c.ctx.persons[0]!.term), provider).toBeLessThanOrEqual(2);
-      }
-      /** One policy means one answer — not nine that happen to agree. */
-      expect(new Set(seen.values()).size, "providers disagree about the canonical query").toBe(1);
-    });
   }
 });
 

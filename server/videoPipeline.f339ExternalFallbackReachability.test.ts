@@ -43,14 +43,7 @@ vi.mock("./videoGenerationCancel", async (importOriginal) => {
   };
 });
 
-import {
-  recoverSceneClipsIfEmpty,
-  createVisualDedupState,
-  getPipelinePerfProfile,
-  isAllowedInternetArchiveLicense,
-  fetchInternetArchiveClips,
-  type Scene,
-} from "./videoPipeline";
+import { recoverSceneClipsIfEmpty, createVisualDedupState, getPipelinePerfProfile, fetchInternetArchiveClips, type Scene } from "./videoPipeline";
 
 /**
  * RONDE 90 — this file calls provider fetchers directly, outside any beat.
@@ -129,40 +122,6 @@ afterAll(() => {
   for (const p of sourceVideoPaths ?? []) {
     try { fs.rmSync(p, { force: true }); } catch { /* ignore */ }
   }
-});
-
-// ─── isAllowedInternetArchiveLicense — F3-39 rights-field widening ───────────────────────────
-describe("isAllowedInternetArchiveLicense — F3-39 (rights fallback when licenseurl is absent)", () => {
-  it("still accepts everything the F3-34 gate already accepted via licenseurl", () => {
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/publicdomain/zero/1.0/")).toBe(true);
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/licenses/by/4.0/")).toBe(true);
-    expect(isAllowedInternetArchiveLicense("https://creativecommons.org/licenses/by-nc/4.0/")).toBe(false);
-  });
-
-  it("a licenseurl that IS present but unrecognized is rejected — rights never overrides it", () => {
-    expect(isAllowedInternetArchiveLicense("https://example.com/some-other-terms", "Public domain")).toBe(false);
-  });
-
-  it("no licenseurl, no rights at all — still rejected (no invented rights info)", () => {
-    expect(isAllowedInternetArchiveLicense(undefined, undefined)).toBe(false);
-    expect(isAllowedInternetArchiveLicense(null, "")).toBe(false);
-    expect(isAllowedInternetArchiveLicense(undefined, "   ")).toBe(false);
-  });
-
-  it("no licenseurl, rights explicitly states public domain — accepted", () => {
-    expect(isAllowedInternetArchiveLicense(undefined, "Public domain")).toBe(true);
-    expect(isAllowedInternetArchiveLicense(null, "No known copyright restrictions")).toBe(true);
-  });
-
-  it("no licenseurl, rights is present but vague/non-committal — still rejected (no guessing)", () => {
-    expect(isAllowedInternetArchiveLicense(undefined, "See item description for details")).toBe(false);
-    expect(isAllowedInternetArchiveLicense(undefined, "All rights reserved")).toBe(false);
-  });
-
-  it("no licenseurl, rights explicitly non-commercial/no-derivatives wording — still rejected", () => {
-    expect(isAllowedInternetArchiveLicense(undefined, "Public domain, non-commercial use only")).toBe(false);
-    expect(isAllowedInternetArchiveLicense(undefined, "Public domain but no derivatives permitted")).toBe(false);
-  });
 });
 
 describe("getPipelinePerfProfile — F3-39 (external fallback no longer forced off in curated-only mode)", () => {

@@ -25,13 +25,6 @@ export function editorialScoreFeedbackEnabled(): boolean {
   return process.env.EDITORIAL_SCORE_FEEDBACK_ENABLED !== "false";
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type ScoreDelta = {
-  assetId: number;
-  delta: number; // +1 (adopt) of -1 (reject/fallback)
-};
-
 const FALLBACK_SOURCES = new Set([
   "rescue_placeholder",
   "rescue_extend",

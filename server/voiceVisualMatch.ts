@@ -24,30 +24,6 @@ export type VoiceVisualMatchSummary = {
   warnings: string[];
 };
 
-/**
- * RONDE 64: which rescue routes actually mean the montage settled for less.
- *
- * Render 532 reported "21 beat(s) via rescue-tier (degraded CLIP match of placeholder)", which
- * reads like 21 broken beats and is not what happened. `source.startsWith("rescue_")` counts
- * every rescue route alike, and most of them are not degradations at all: rescue_archive,
- * rescue_wikimedia, rescue_similar and rescue_stock are real footage of the right subject that
- * happened to be found on the second pass. For an archive documentary that IS the normal route,
- * so the number could never be zero — which also left `ok` permanently false and the warning
- * permanently on, saying nothing.
- *
- * These four are the ones that mean something is missing from the montage.
- */
-const DEGRADED_RESCUE_SOURCES = new Set([
-  "rescue_placeholder", // no footage at all
-  "rescue_extend",      // the previous clip held longer because there was no new one
-  "rescue_graphic",     // a motion graphic standing in for footage
-  "rescue_ai",          // generated, not real footage
-]);
-
-export function isDegradedRescueSource(source: string): boolean {
-  return DEGRADED_RESCUE_SOURCES.has(source);
-}
-
 export function isGuaranteedPipelineClip(filePath: string): boolean {
   return /guaranteed|_slot\d+_guaranteed/i.test(path.basename(filePath));
 }

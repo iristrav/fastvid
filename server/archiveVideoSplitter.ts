@@ -10,11 +10,7 @@ import * as path from "path";
 import { ffmpegThreadFlag } from "./sourcingPolicy";
 import { ffmpegSemaphore } from "./_core/semaphore";
 
-import {
-  ARCHIVE_MAX_UPLOAD_BYTES,
-  ARCHIVE_MAX_VIDEO_DURATION_SEC,
-  ARCHIVE_MIN_SAVED_CLIP_SEC,
-} from "@shared/const";
+import { ARCHIVE_MAX_UPLOAD_BYTES, ARCHIVE_MIN_SAVED_CLIP_SEC } from "@shared/const";
 
 const execPromise = promisify(execCb);
 
@@ -99,7 +95,6 @@ const INTERNAL_RESCAN_MAX_RANGES = 300;
 // Run 2 passes before splitLongRanges to catch missed interior cuts, plus 1 after to check
 // interval-split clips. Setting to 0 disables; increase if CPU budget allows.
 const INTERNAL_RESCAN_PASSES = 2;
-const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
 const DEFAULT_SCENE_THRESHOLD = 0.3; // 30% pixel change = real editorial cut
 const DEFAULT_SCDET_THRESHOLD = 5.0; // scdet 0–100 scale; 5 catches real cuts, ignores flicker
 /**
@@ -130,7 +125,6 @@ const DEFAULT_MAX_CLIP_DURATION_SEC = 6;
 const DEFAULT_SCENE_SAFETY_MAX_SEC = 90;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.12; // merge near-duplicate detections
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
-const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
 const DEFAULT_MAX_UPLOAD_MB = ARCHIVE_MAX_UPLOAD_BYTES / (1024 * 1024);
 
 export function ffmpegBin(): string {
@@ -139,12 +133,6 @@ export function ffmpegBin(): string {
 
 function ffprobeBin(): string {
   return process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
-}
-
-function isH264Codec(codec: string | null): boolean {
-  if (!codec) return false;
-  const c = codec.toLowerCase();
-  return c === "h264" || c === "avc1" || c.includes("avc");
 }
 
 /** Downscale + limit fps for shot detect on long/high-fps sources (60fps × 30min is too heavy). */
@@ -319,18 +307,6 @@ export function splitBudgetMs(): number {
   return DEFAULT_SPLIT_BUDGET_MS;
 }
 
-export function maxArchiveVideoDurationSec(): number {
-  const raw = process.env.ARCHIVE_MAX_VIDEO_DURATION_SEC?.trim();
-  if (raw) {
-    // RONDE 30: same defect as maxArchiveClips above — the ceiling stayed at 7200 (2 hours)
-    // after DEFAULT_MAX_SOURCE_SEC was raised, so the shipped default was larger than anything
-    // the env var could set and a configured value above 2 hours was silently ignored.
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 60 && n <= DEFAULT_MAX_SOURCE_SEC) return n;
-  }
-  return DEFAULT_MAX_SOURCE_SEC;
-}
-
 export function maxArchiveUploadBytes(): number {
   const raw = process.env.ARCHIVE_MAX_UPLOAD_MB?.trim();
   if (raw) {
@@ -367,69 +343,6 @@ export async function probeVideoDurationSec(filePath: string): Promise<number> {
   }
 }
 
-/**
- * Find the last timestamp at which actual decodable video frames exist.
- * Returns `declaredDur` when the file appears complete; returns a smaller value
- * when the video data is truncated (container declares more than it contains).
- *
- * Method: binary search with ffprobe frame decode checks. Each probe attempt decodes
- * one frame at the given position; no frames → no data at that position.
- * Typically completes in 5–15 probes (~10–30s total for a large truncated file).
- */
-async function probeActualVideoDuration(filePath: string, declaredDur: number): Promise<number> {
-  const hasFrameAt = async (posSec: number): Promise<boolean> => {
-    try {
-      const ffprobe = ffprobeBin();
-      /**
-       * RONDE 100B — the same bad command as the readability check, and very likely the reason
-       * this function was abandoned.
-       *
-       * `-ss` and `-frames:v 1` are ffmpeg options; ffprobe rejects them outright, so every probe
-       * threw, the catch below returned false, and the binary search concluded that a perfectly
-       * complete file had no data anywhere. The note at the call site records the symptom —
-       * "ffprobe timed out at 90% of duration and the binary search converged to ~10s, falsely
-       * truncating all processing to a tiny window" — and blames sparse keyframes. It was this.
-       *
-       * The function is currently unreferenced; the command is corrected so it is not a trap for
-       * whoever revives it, not because anything calls it today.
-       */
-      const { stdout } = await ffmpegSemaphore.run(() => execPromise(
-        `${ffprobe} -v error -read_intervals ${posSec.toFixed(2)}%+#1 ` +
-          `-select_streams v:0 -show_frames -show_entries frame=pts_time -of json "${filePath}"`,
-        { timeout: 12_000 }
-      ));
-      const data = JSON.parse(String(stdout)) as { frames?: unknown[] };
-      return (data.frames?.length ?? 0) > 0;
-    } catch {
-      return false;
-    }
-  };
-
-  // Quick check: does data exist at 90% of the declared duration?
-  const checkPoint = declaredDur * 0.9;
-  if (await hasFrameAt(checkPoint)) {
-    return declaredDur; // File looks complete — trust the container duration.
-  }
-
-  // Data is missing near the end. Binary-search for the actual endpoint.
-  let lo = 0;
-  let hi = checkPoint;
-  let iterations = 0;
-  while (hi - lo > 5 && iterations < 10) {
-    const mid = (lo + hi) / 2;
-    if (await hasFrameAt(mid)) {
-      lo = mid;
-    } else {
-      hi = mid;
-    }
-    iterations++;
-  }
-
-  // lo is the last confirmed good position. Add a small buffer and round down.
-  const actualEnd = Math.max(0, lo + 5);
-  return Math.min(actualEnd, declaredDur);
-}
-
 export async function assertFfmpegAvailable(): Promise<void> {
   try {
     await exec(`${ffmpegBin()} -version`, { timeout: 8_000, maxBuffer: 256 * 1024 });
@@ -437,40 +350,6 @@ export async function assertFfmpegAvailable(): Promise<void> {
     throw new ArchiveSplitError(
       "FFmpeg is not available on the server — automatic splitting cannot run. Check the deploy includes ffmpeg (nixpacks ffmpeg)."
     );
-  }
-}
-
-/** Normalize cut times from a trimmed ffmpeg window (may be 0-based or absolute). */
-export function normalizeWindowCutTimes(
-  times: number[],
-  windowStart: number,
-  windowEnd: number
-): number[] {
-  const windowDur = windowEnd - windowStart;
-  const relative = times.length > 0 && times.every((t) => t <= windowDur + 0.5);
-  return mergeNearbyCuts(
-    times
-      .map((t) => (relative ? t + windowStart : t))
-      .filter((t) => t > windowStart + MIN_SCENE_SEC && t < windowEnd - MIN_SCENE_SEC),
-    cutMergeGapSec()
-  );
-}
-
-/** I-frame timestamps often align with hard cuts in edited/archive footage. */
-export async function detectKeyframeCutTimes(inputPath: string, totalDur: number): Promise<number[]> {
-  try {
-    const { stdout } = await exec(
-      `${ffprobeBin()} -v error -skip_frame nokey -show_frames -show_entries frame=best_effort_timestamp_time -of csv=p=0 "${inputPath}"`,
-      { maxBuffer: 32 * 1024 * 1024, timeout: 120_000 }
-    );
-    const times = String(stdout)
-      .split(/\r?\n/)
-      .map((s) => parseFloat(s.trim()))
-      .filter((t) => !isNaN(t) && t > MIN_SCENE_SEC && t < totalDur - MIN_SCENE_SEC);
-    return mergeNearbyCuts(times, cutMergeGapSec());
-  } catch (err) {
-    console.warn("[ArchiveSplit] keyframe detect failed:", (err as Error).message?.slice(0, 120));
-    return [];
   }
 }
 
@@ -1050,122 +929,6 @@ export async function extractVideoSegment(
   throw new Error(lastErr);
 }
 
-async function splitSegmentBufferAtInteriorCuts(
-  seg: VideoClipSegment,
-  workDir: string,
-  label: string,
-  depth: number,
-  deadlineMs: number,
-  shouldContinue?: () => boolean
-): Promise<VideoClipSegment[]> {
-  if (depth >= SINGLE_SCENE_VALIDATE_MAX_DEPTH || Date.now() >= deadlineMs) return [seg];
-  if (shouldContinue && !shouldContinue()) return [seg];
-  if (seg.durationSec < MIN_SCENE_SEC * 2) return [seg];
-
-  const clipPath = path.join(workDir, `${label}_scene_check.mp4`);
-  fs.writeFileSync(clipPath, seg.buffer);
-  const interior = await detectInteriorCutTimesInFile(clipPath, seg.durationSec);
-
-  if (interior.length === 0) {
-    try {
-      fs.unlinkSync(clipPath);
-    } catch {
-      /* ignore */
-    }
-    return [seg];
-  }
-
-  const subRanges = buildClipRanges(interior, seg.durationSec, maxArchiveClips(), cutMergeGapSec());
-  if (subRanges.length <= 1) {
-    try {
-      fs.unlinkSync(clipPath);
-    } catch {
-      /* ignore */
-    }
-    return [seg];
-  }
-
-  console.log(
-    `[ArchiveSplit] clip ${formatTimecode(seg.startSec)}–${formatTimecode(seg.endSec)} still has ` +
-      `${interior.length} interior cut(s) → splitting into ${subRanges.length} scene(s)`
-  );
-
-  const refined: VideoClipSegment[] = [];
-  for (let i = 0; i < subRanges.length; i++) {
-    if (Date.now() >= deadlineMs || (shouldContinue && !shouldContinue())) break;
-    const { start, end } = subRanges[i];
-    const outPath = path.join(workDir, `${label}_part_${i}.mp4`);
-    try {
-      await extractVideoSegment(clipPath, outPath, start, end);
-    } catch (err) {
-      console.warn(`[ArchiveSplit] single-scene sub-extract failed:`, (err as Error).message?.slice(0, 80));
-      continue;
-    }
-    if (!fs.existsSync(outPath)) continue;
-    const buf = fs.readFileSync(outPath);
-    // RONDE 100B: ffprobe decides, not the byte count — see extractedClipIsUsable.
-    if (!(await extractedClipIsUsable(outPath, buf.length, end - start))) continue;
-    const subSeg: VideoClipSegment = {
-      buffer: buf,
-      startSec: seg.startSec + start,
-      endSec: seg.startSec + end,
-      durationSec: end - start,
-      index: seg.index,
-    };
-    const nested = await splitSegmentBufferAtInteriorCuts(
-      subSeg,
-      workDir,
-      `${label}_p${i}`,
-      depth + 1,
-      deadlineMs,
-      shouldContinue
-    );
-    refined.push(...nested);
-    if (refined.length >= maxArchiveClips()) break;
-  }
-
-  try {
-    fs.unlinkSync(clipPath);
-  } catch {
-    /* ignore */
-  }
-
-  return refined.length > 0 ? refined : [seg];
-}
-
-/** Re-split any extracted clip that still contains multiple shots. */
-async function enforceSingleSceneClipSegments(
-  segments: VideoClipSegment[],
-  workDir: string,
-  deadlineMs: number,
-  shouldContinue?: () => boolean
-): Promise<VideoClipSegment[]> {
-  const out: VideoClipSegment[] = [];
-  for (let i = 0; i < segments.length; i++) {
-    if (Date.now() >= deadlineMs || (shouldContinue && !shouldContinue())) {
-      out.push(...segments.slice(i));
-      break;
-    }
-    const parts = await splitSegmentBufferAtInteriorCuts(
-      segments[i],
-      workDir,
-      `seg${String(i).padStart(3, "0")}`,
-      0,
-      deadlineMs,
-      shouldContinue
-    );
-    out.push(...parts);
-    if (out.length >= maxArchiveClips()) {
-      console.warn(`[ArchiveSplit] single-scene cap ${maxArchiveClips()} reached — remaining clips skipped`);
-      break;
-    }
-  }
-  return out
-    .sort((a, b) => a.startSec - b.startSec)
-    .slice(0, maxArchiveClips())
-    .map((seg, index) => ({ ...seg, index }));
-}
-
 /** Low-res analysis proxy when codecs/containers confuse shot detectors (not a full re-encode). */
 async function normalizeSourceForAnalysis(
   inputPath: string,
@@ -1243,159 +1006,6 @@ function formatTimecode(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-/**
- * Extract all clips in a SINGLE ffmpeg pass using the segment muxer.
- *
- * Why: individual `-ss seek` calls require ffmpeg to decode from the nearest keyframe.
- * With sparse keyframes (e.g. every 5 minutes) this means decoding minutes of video per
- * clip and hitting the per-clip timeout. One linear pass avoids all seeking entirely.
- */
-async function extractAllClipsSinglePass(
-  inputPath: string,
-  clipDir: string,
-  ranges: Array<{ start: number; end: number }>,
-  skipRangeSubjectFilter: boolean,
-  onProgress: ((p: ArchiveSplitProgress) => void) | undefined,
-  onSegment: ArchiveSplitOptions["onSegment"],
-  shouldContinue: (() => boolean) | undefined
-): Promise<{ segments: VideoClipSegment[]; successCount: number; failedCount: number }> {
-  if (ranges.length === 0) return { segments: [], successCount: 0, failedCount: 0 };
-
-  // Build sorted unique cut points from ALL range boundaries so gaps are preserved.
-  const cutSet = new Set<number>();
-  for (const r of ranges) {
-    cutSet.add(r.start);
-    cutSet.add(r.end);
-  }
-  const sortedCuts = Array.from(cutSet).sort((a, b) => a - b);
-
-  // Start reading from first range start, stop at last range end.
-  const passStart = sortedCuts[0];
-  const passEnd = sortedCuts[sortedCuts.length - 1];
-  const passDuration = passEnd - passStart;
-
-  // segment_times must be relative to the output start (passStart), because -reset_timestamps 1
-  // resets output PTS to 0. Internal cuts = absolute_time - passStart.
-  const segmentTimes = sortedCuts
-    .slice(1, -1)
-    .map((t) => (t - passStart).toFixed(3))
-    .join(",");
-
-  // Match output file index → desired range. Output file i covers sortedCuts[i]–sortedCuts[i+1].
-  const segmentCount = sortedCuts.length - 1;
-  type SegmentSlot = { rangeIndex: number; start: number; end: number } | null;
-  const slotMap: SegmentSlot[] = Array.from({ length: segmentCount }, (_, si) => {
-    const segStart = sortedCuts[si];
-    const segEnd = sortedCuts[si + 1];
-    const ri = ranges.findIndex(
-      (r) => Math.abs(r.start - segStart) < 0.05 && Math.abs(r.end - segEnd) < 0.05
-    );
-    return ri >= 0 ? { rangeIndex: ri, start: segStart, end: segEnd } : null;
-  });
-
-  const outputPattern = path.join(clipDir, "singlepass_%04d.mp4");
-
-  // Timeout: 5× real-time + 60s base. Under server load ultrafast encode can run at ~1.5–2× real-time,
-  // so 1× was not enough. Cap at 2 hours for very long sources.
-  const timeoutMs = Math.round(Math.max(300_000, passDuration * 5000 + 60_000));
-
-  // Use slow-seek (-ss AFTER -i) so ffmpeg decodes linearly — no keyframe hunting.
-  const ssArgs = passStart > 0.5 ? `-ss ${passStart.toFixed(3)}` : "";
-  const cmd = [
-    `${ffmpegBin()} -y -i "${inputPath}"`,
-    ssArgs,
-    `-t ${passDuration.toFixed(3)}`,
-    `-c:v libx264 -preset ultrafast -crf 23 -an -pix_fmt yuv420p`,
-    // -threads 2 (not ffmpegThreadFlag()) — deliberately more conservative than the general
-    // cap for this multi-output segment muxer, which can produce many parallel writers.
-    `-movflags +faststart -avoid_negative_ts make_zero -reset_timestamps 1 -threads 2`,
-    `-f segment`,
-    segmentTimes ? `-segment_times "${segmentTimes}"` : "",
-    `-segment_start_number 0`,
-    `"${outputPattern}"`,
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  console.log(
-    `[ArchiveSplit] single-pass: ${ranges.length} clips, span=${passDuration.toFixed(1)}s, ` +
-      `segments=${segmentCount}, timeout=${(timeoutMs / 1000).toFixed(0)}s`
-  );
-
-  try {
-    await exec(cmd, { maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs });
-  } catch (err) {
-    const stderr = (err as { stderr?: string }).stderr ?? "";
-    console.warn(
-      `[ArchiveSplit] single-pass ffmpeg finished with error (partial output may exist): ` +
-        `${(err as Error).message?.slice(0, 120)} | stderr_tail=${stderr.slice(-300).replace(/\n/g, " ").trim()}`
-    );
-  }
-
-  // Collect output files, match to ranges, call onSegment in order.
-  const segments: VideoClipSegment[] = [];
-  let successCount = 0;
-  let failedCount = 0;
-
-  for (let si = 0; si < segmentCount; si++) {
-    if (shouldContinue && !shouldContinue()) break;
-
-    const slot = slotMap[si];
-    const filePath = path.join(clipDir, `singlepass_${String(si).padStart(4, "0")}.mp4`);
-
-    if (!fs.existsSync(filePath)) {
-      if (slot) failedCount++;
-      continue;
-    }
-    const fileSize = fs.statSync(filePath).size;
-
-    if (!slot) {
-      // Gap segment (not a desired range) — delete it.
-      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
-      continue;
-    }
-
-    // RONDE 100B: ask ffprobe, not the byte count — see extractedClipIsUsable.
-    if (!(await extractedClipIsUsable(filePath, fileSize, slot.end - slot.start))) {
-      if (si < 5 || si % 50 === 0) {
-        console.warn(
-          `[ArchiveSplit] single-pass clip ${si} (${formatTimecode(slot.start)}–${formatTimecode(slot.end)}) unusable (${fileSize}B)`
-        );
-      }
-      failedCount++;
-      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
-      continue;
-    }
-
-    const meta: Omit<VideoClipSegment, "buffer" | "localPath"> = {
-      startSec: slot.start,
-      endSec: slot.end,
-      durationSec: slot.end - slot.start,
-      index: slot.rangeIndex,
-      timeFallback: skipRangeSubjectFilter || undefined,
-    };
-
-    onProgress?.({
-      stage: "split_extract",
-      message: `Saving clip ${successCount + 1}/${ranges.length}: ${formatTimecode(slot.start)}–${formatTimecode(slot.end)}`,
-      percent: 52 + Math.round(((successCount + 1) / ranges.length) * 33),
-      clipIndex: successCount + 1,
-      clipTotal: ranges.length,
-    });
-
-    if (onSegment) {
-      try { await onSegment(filePath, meta); }
-      finally { try { fs.unlinkSync(filePath); } catch { /* ignore */ } }
-      segments.push({ buffer: Buffer.alloc(0), ...meta });
-    } else {
-      segments.push({ buffer: Buffer.alloc(0), localPath: filePath, ...meta });
-    }
-    successCount++;
-  }
-
-  return { segments, successCount, failedCount };
 }
 
 /** VIDEO 619 — the longest clip the archive keeps: one scene, at most this many seconds. */

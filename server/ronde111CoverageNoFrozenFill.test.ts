@@ -152,11 +152,15 @@ describe("RONDE 111 — a photo keeps moving all the way to its last frame", () 
     expect(progress(0)).toBeCloseTo(0, 10);
   });
 
-  it("stills are never rendered without motion in the first place", () => {
-    // Both the styled path and its fallback go through a zoompan.
-    expect(DOCSTYLE).toContain("export function buildSimpleKenBurnsVF(");
-    expect(DOCSTYLE).toContain("export function buildKenBurnsTail(");
-    expect(PIPELINE).toContain("buildSimpleKenBurnsVF(duration, personPortrait)");
+  it("a still moves once: the encoder holds it, the timeline camera moves it", () => {
+    // The styled path and its fallback both hold the frame — no baked Ken Burns under the camera.
+    expect(DOCSTYLE).toContain("export function buildSimpleStillVF(");
+    expect(DOCSTYLE).toContain("export function buildStillHoldTail(");
+    expect(PIPELINE).toContain("buildSimpleStillVF(duration, personPortrait)");
+    expect(PIPELINE).not.toContain("buildSimpleKenBurnsVF");
+    // The one motion: edlToTimeline gives every still a camera move when the plan has none.
+    const EDL = fs.readFileSync(path.join(__dirname, "edlToTimeline.ts"), "utf8");
+    expect(EDL).toContain("const stillMove = isStill && !cameraMoves(plannedCamera)");
   });
 });
 

@@ -306,7 +306,11 @@ describe("no code names a refusal the ingestion cannot make", () => {
      * The pipeline's fire-and-forget sites have nothing to do with a reason, and handing them one
      * would invite a decision in a place that must not make decisions.
      */
-    expect(INGESTION).toContain("): Promise<IngestResult | null> {");
-    expect(INGESTION).toContain("if (outcome.status !== \"ingested\") return null;");
+    /**
+     * Code audit: the null-returning wrapper had no production caller and is gone; the one entry
+     * point is the one that carries its reason, and no fire-and-forget caller remains.
+     */
+    expect(INGESTION).not.toContain("export async function ingestExternalClipToArchive(");
+    expect(INGESTION).toContain("export async function ingestExternalClipToArchiveWithReason(");
   });
 });

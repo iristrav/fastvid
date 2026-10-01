@@ -23,17 +23,7 @@ import {
   duckingParams,
   type MixInput,
 } from "./timelineFilters";
-import {
-  AMBIENT_TO_CATEGORY,
-  ProceduralMusicSource,
-  SFX_TO_CATEGORY,
-  formatMusicChoice,
-  resolveAmbient,
-  resolveCatalogSound,
-  resolveSfx,
-  type SfxRole,
-  type AmbientRole,
-} from "./audioAssetSource";
+import { formatMusicChoice, resolveCatalogSound, type SfxRole, type AmbientRole } from "./audioAssetSource";
 import { resolveFFmpegBin } from "./ffmpegBinary";
 
 const execFileAsync = promisify(execFile);
@@ -200,114 +190,6 @@ describe("RONDE 154 — volume automation ramps, it never steps", () => {
   it("delaySec is ADDED to the clip's start, not a replacement", () => {
     const graph = buildAudioGraph([input({ startSec: 2, delaySec: 0.5 })])!;
     expect(graph.filter).toContain("adelay=2500|2500");
-  });
-});
-
-/* ═══════════════════════ §16/§17 — where sound comes from ═══════════════════════ */
-
-describe("RONDE 154 §17 — SFX and ambient resolve to REAL catalog assets", () => {
-  it("a role with a recording gets a real freesound identity", () => {
-    const found = resolveSfx("impact");
-    expect(found.ok).toBe(true);
-    if (!found.ok) return;
-    expect(found.identity.provider).toBe("freesound");
-    // A real numeric Freesound id, not a made-up filename.
-    expect(found.identity.providerAssetId).toMatch(/^\d+$/);
-    expect(found.identity.sourcePageUrl).toContain("freesound.org");
-  });
-
-  /** §17: "Geen fake filenames." A role with no recording says so. */
-  it("a role with NO recording reports asset_unavailable, never a fake id", () => {
-    for (const role of ["whoosh", "riser", "explosion"] as SfxRole[]) {
-      const found = resolveSfx(role);
-      expect(found.ok, role).toBe(false);
-      if (found.ok) continue;
-      expect(found.reason, role).toContain("asset_unavailable");
-      expect(found.reason, role).toContain(role);
-    }
-  });
-
-  it("ambient roles resolve the same way", () => {
-    const city = resolveAmbient("city");
-    expect(city.ok).toBe(true);
-    const battlefield = resolveAmbient("battlefield");
-    expect(battlefield.ok).toBe(false);
-    if (!battlefield.ok) expect(battlefield.reason).toContain("asset_unavailable");
-  });
-
-  /** §32: the same timeline must mix the same way every render. */
-  it("variant selection is by index, never random", () => {
-    expect(resolveSfx("crowd", 0)).toEqual(resolveSfx("crowd", 0));
-    expect(resolveSfx("crowd", 3)).toEqual(resolveSfx("crowd", 3));
-  });
-
-  it("an out-of-range variant index wraps rather than failing", () => {
-    const found = resolveSfx("crowd", 999);
-    expect(found.ok).toBe(true);
-  });
-
-  it("every mapped role points at a category the catalog really has", () => {
-    for (const [role, category] of Object.entries(SFX_TO_CATEGORY)) {
-      if (!category) continue;
-      expect(resolveCatalogSound(category).ok, `${role} → ${category}`).toBe(true);
-    }
-    for (const [role, category] of Object.entries(AMBIENT_TO_CATEGORY)) {
-      if (!category) continue;
-      expect(resolveCatalogSound(category).ok, `${role} → ${category}`).toBe(true);
-    }
-  });
-
-  it("every role in the vocabulary has an entry — none is silently absent", () => {
-    const sfxRoles: SfxRole[] = [
-      "whoosh", "impact", "hit", "riser", "click", "camera", "shutter",
-      "foley", "crowd", "explosion", "ambience",
-    ];
-    for (const r of sfxRoles) expect(r in SFX_TO_CATEGORY, r).toBe(true);
-    const ambientRoles: AmbientRole[] = [
-      "room", "city", "street", "nature", "wind", "rain", "crowd",
-      "battlefield", "archive", "office",
-    ];
-    for (const r of ambientRoles) expect(r in AMBIENT_TO_CATEGORY, r).toBe(true);
-  });
-});
-
-describe("RONDE 154 §16 — music is an interface, because there is no library", () => {
-  const source = new ProceduralMusicSource();
-
-  it("answers every request, and says the mood was not honoured", () => {
-    const found = source.resolve({ mood: "tense", energy: "high", durationSec: 60 });
-    expect(found.ok).toBe(true);
-    if (!found.ok) return;
-    expect(found.label).toContain("not honoured");
-    expect(found.label).toContain("tense");
-  });
-
-  /**
-   * `procedural` must never be mistaken for a provider. A rehydrator that recognised the name
-   * would go looking for a file that was never downloaded.
-   */
-  it("marks generated audio as procedural, not as a provider", () => {
-    const found = source.resolve({ mood: "calm", energy: "low", durationSec: 30 });
-    if (!found.ok) return;
-    expect(found.identity.provider).toBe("procedural");
-    expect(found.identity.mediaUrl).toBeUndefined();
-  });
-
-  it("the log line says whether the mood was actually honoured", () => {
-    const request = { mood: "epic" as const, energy: "high" as const, durationSec: 30 };
-    const line = formatMusicChoice(source, request, source.resolve(request));
-    expect(line).toContain("moodHonoured=false");
-    expect(line).toContain("mood=epic");
-  });
-
-  it("reports asset_unavailable when a source has nothing", () => {
-    const empty = {
-      id: "empty_library",
-      supports: () => false,
-      resolve: () => ({ ok: false as const, reason: "the library has no tense track" }),
-    };
-    const request = { mood: "tense" as const, energy: "low" as const, durationSec: 10 };
-    expect(formatMusicChoice(empty, request, empty.resolve())).toContain("asset_unavailable");
   });
 });
 

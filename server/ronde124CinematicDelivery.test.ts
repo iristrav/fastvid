@@ -32,7 +32,6 @@ import { describe, expect, it } from "vitest";
 import { formatProductionRoute } from "./cinematicProduction";
 import { envFlagIsOn } from "./envFlag";
 import { ROUTE_FLAGS } from "./productionPreflight";
-import { cinematicRenderPathEnabled } from "./config";
 
 const SERVER = __dirname;
 const read = (f: string) => fs.readFileSync(path.join(SERVER, f), "utf8");
@@ -52,32 +51,6 @@ function withFlag<T>(value: string | undefined, fn: () => T): T {
 /* ═══════════════ 7. CINEMATIC_RENDER_PATH decides the route, once ═══════════════ */
 
 describe("§14.7 — the render-path flag is read the same way everywhere", () => {
-  it("the operator's TRUE means what the operator meant", () => {
-    /** The exact shapes a Railway variable arrives in when somebody types it by hand. */
-    for (const value of ["true", "TRUE", "True", " true ", "\ttrue\n"]) {
-      expect(withFlag(value, cinematicRenderPathEnabled), JSON.stringify(value)).toBe(true);
-    }
-  });
-
-  it("and NOTHING was loosened — it is still opt-in and still off by default", () => {
-    for (const value of [undefined, "", "false", "FALSE", "0", "no", "yes", "1", "on"]) {
-      expect(withFlag(value, cinematicRenderPathEnabled), String(value)).toBe(false);
-    }
-  });
-
-  it("the pipeline and the preflight now give the same answer for every value", () => {
-    /**
-     * THE DEFECT, as an equality. The preflight's whole job is to tell an operator what this
-     * deployment will do, and it was the one place allowed to answer differently from the code.
-     */
-    expect(ROUTE_FLAGS).toContain("CINEMATIC_RENDER_PATH");
-    for (const value of [undefined, "", "true", "TRUE", " true ", "false", "FALSE", "1", "no"]) {
-      expect(
-        withFlag(value, cinematicRenderPathEnabled),
-        `pipeline and preflight disagree for ${JSON.stringify(value)}`
-      ).toBe(withFlag(value, () => envFlagIsOn("CINEMATIC_RENDER_PATH")));
-    }
-  });
 
   it("no flag on the delivery route is read with a bare comparison any more", () => {
     /**
@@ -112,13 +85,15 @@ describe("§14.7 — the render-path flag is read the same way everywhere", () =
     expect(src).toContain("loosening a gate");
   });
 
-  it("the route line reads the real predicate, so it cannot claim a state the pipeline ignores", () => {
+  it("the route line names the one route — there is no switch it could claim a state for", () => {
+    /** Code audit P12: CINEMATIC_RENDER_PATH no longer exists, so no value of it changes the line. */
     const on = withFlag("TRUE", () => formatProductionRoute(7));
     const off = withFlag(undefined, () => formatProductionRoute(7));
-    expect(on).toContain("CINEMATIC_RENDER_PATH=on");
-    expect(off).toContain("CINEMATIC_RENDER_PATH=off");
-    expect(off).toContain("route=none");
-    expect(off).toContain("reason=");
+    for (const line of [on, off]) {
+      expect(line).toContain("route=cinematic_timeline");
+      expect(line).not.toContain("CINEMATIC_RENDER_PATH");
+      expect(line).not.toContain("route=none");
+    }
   });
 });
 
@@ -134,10 +109,9 @@ describe("§14.8 — every render that did not deliver says so, with its reason"
     expect(PIPE).toContain("there is no second render to fall back to");
   });
 
-  it("the flags being off is stated at the start of the render, not inferred later", () => {
-    expect(PIPE).toContain(
-      "The timeline is FastVid's only render path: CINEMATIC_EDITING_ENGINE and CINEMATIC_RENDER_PATH must both be on"
-    );
+  it("there are no route flags left to be off — the refusal for them is gone with them", () => {
+    expect(PIPE).not.toContain("CINEMATIC_EDITING_ENGINE and CINEMATIC_RENDER_PATH must both be on");
+    expect(PIPE).not.toMatch(/process\.env\.CINEMATIC_(EDITING_ENGINE|RENDER_PATH)\b/);
   });
 
   it("the fallback route and its marker are gone — RONDE 661 deleted it", () => {

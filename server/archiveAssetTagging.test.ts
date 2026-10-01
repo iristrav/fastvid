@@ -1,23 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  ARCHIVE_MAX_TAGS,
-  MAX_AI_TAGS_ADDED_PER_CLIP,
-  applySharedAiToClipFields,
-  flattenArchiveAiMetadata,
-  inferArchiveMediaMime,
-  mergeArchiveTags,
-  selectHighQualityArchiveTags,
-  truncateArchiveSourceNote,
-} from "./archiveAssetTagging";
+import { ARCHIVE_MAX_TAGS, MAX_AI_TAGS_ADDED_PER_CLIP, applySharedAiToClipFields, flattenArchiveAiMetadata, inferArchiveMediaMime, selectHighQualityArchiveTags, truncateArchiveSourceNote } from "./archiveAssetTagging";
 
 describe("archiveAssetTagging", () => {
-  it("mergeArchiveTags combines user and AI tags without duplicates", () => {
-    const merged = mergeArchiveTags(["titanic", "dek"], ["Titanic", "passagiers", "1912"]);
-    expect(merged).toContain("titanic");
-    expect(merged).toContain("passagiers");
-    expect(merged).toContain("1912");
-    expect(merged.filter((t) => t === "titanic")).toHaveLength(1);
-  });
 
   it("selectHighQualityArchiveTags returns at most 4 specific tags", () => {
     const tags = selectHighQualityArchiveTags({
@@ -123,21 +107,6 @@ describe("archiveAssetTagging", () => {
     expect(fields.tags).toHaveLength(MAX_AI_TAGS_ADDED_PER_CLIP);
     expect(fields.tags).not.toContain("old1");
     expect(fields.tags[0]).toBe("amsterdam canal bikes");
-  });
-
-  it("never truncates merged tags — losing a tag is worse than keeping extras", () => {
-    const many = Array.from({ length: 20 }, (_, i) => `tag${i}`);
-    const merged = mergeArchiveTags([], many);
-    expect(merged.length).toBe(20);
-  });
-
-  it("keeps user tags first and never drops them behind AI tags", () => {
-    const userTags = ["winston churchill", "d-day landing"];
-    const aiTags = ["world war 2", "normandy beach"];
-    const merged = mergeArchiveTags(userTags, aiTags);
-    expect(merged).toContain("winston churchill");
-    expect(merged).toContain("d-day landing");
-    expect(merged.indexOf("winston churchill")).toBeLessThan(merged.indexOf("world war 2"));
   });
 
   it("inferArchiveMediaMime falls back to extension when type is empty", () => {

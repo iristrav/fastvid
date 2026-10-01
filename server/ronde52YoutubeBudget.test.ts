@@ -108,37 +108,6 @@ describe("RONDE 52 #1 — an abort names the signal that actually fired", () => 
 });
 
 describe("RONDE 52 #2 — a call sizes itself against the budget containing it", () => {
-  it("outside any scope, the preferred timeout is used unchanged", async () => {
-    const { scopedTimeoutMs, remainingScopeMs } = await import("./videoPipeline");
-    expect(remainingScopeMs()).toBe(Number.POSITIVE_INFINITY);
-    expect(scopedTimeoutMs(20_000)).toBe(20_000);
-    expect(scopedTimeoutMs(180_000)).toBe(180_000);
-  });
-
-  it("inside a tight scope, a generous preference is clamped to what is left", async () => {
-    const { withSceneFetchTimeout, scopedTimeoutMs, remainingScopeMs } = await import(
-      "./videoPipeline"
-    );
-    await withSceneFetchTimeout(
-      async () => {
-        const remaining = remainingScopeMs();
-        expect(remaining).toBeLessThanOrEqual(5_000);
-        expect(remaining).toBeGreaterThan(0);
-        // The render-530 numbers: a 180s download inside a scope with seconds left.
-        expect(scopedTimeoutMs(180_000, 5_000)).toBeLessThan(180_000);
-        // It never returns something unusably small — and the floor deliberately wins even when
-        // the scope has less left than that, so a call is never handed a millisecond budget.
-        // (Asserting <= remaining here would be wrong AND flaky: `remaining` decays between the
-        // two calls, and the floor is allowed to exceed it by design.)
-        expect(scopedTimeoutMs(180_000, 5_000)).toBeGreaterThanOrEqual(5_000);
-        // With a floor small enough not to bind, the scope's remaining time is the real cap.
-        expect(scopedTimeoutMs(180_000, 1)).toBeLessThanOrEqual(remainingScopeMs());
-        return null;
-      },
-      5_000,
-      "test scope"
-    );
-  }, 20_000);
 
   it("a nested scope can never advertise more time than its parent", async () => {
     const { withSceneFetchTimeout, remainingScopeMs } = await import("./videoPipeline");
@@ -167,7 +136,6 @@ describe("RONDE 52 — the wiring is where it needs to be", () => {
     const path = await import("path");
     return readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
   };
-
 
   it("the YouTube search catch reaches the breaker, and exempts scope aborts", async () => {
     const s = await src();

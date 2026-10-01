@@ -21,7 +21,7 @@ import {
   getVideoQueuePosition,
   updateVideoStatus,
 } from "../db";
-import { activeJobsCount, decrementActiveJobs, incrementActiveJobs } from "./activeJobsCounter";
+import { decrementActiveJobs, incrementActiveJobs } from "./activeJobsCounter";
 
 const QUEUE_NAME = "video-generation";
 

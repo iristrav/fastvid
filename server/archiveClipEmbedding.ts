@@ -5,18 +5,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { LOCAL_UPLOADS_DIR } from "./storageLocal";
-import {
-  clipEmbeddingIndexEnabled,
-  indexVideoFrameEmbeddings,
-  meanEmbedding,
-  embedTextQuery,
-  scoreEmbeddingSimilarity,
-  clipSimToScore,
-  minLocalClipSimilarity,
-  resolveBeatVisionQueryEmbedding,
-  beatVisionContextFromProfile,
-  type BeatVisionQueryContext,
-} from "./localClipVision";
+import { clipEmbeddingIndexEnabled, indexVideoFrameEmbeddings, meanEmbedding, scoreEmbeddingSimilarity, clipSimToScore, minLocalClipSimilarity, resolveBeatVisionQueryEmbedding, beatVisionContextFromProfile, type BeatVisionQueryContext } from "./localClipVision";
 import type { BeatSemanticProfile } from "./semanticVisualMatching";
 import {
   cachedClipEmbedding,
@@ -157,10 +146,6 @@ export async function indexArchiveClipEmbedding(
       /* ignore */
     }
   }
-}
-
-export async function createClipTextEmbedding(query: string): Promise<number[] | null> {
-  return embedTextQuery(query);
 }
 
 export type ClipPreRankScore = {

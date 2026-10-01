@@ -111,13 +111,6 @@ export function frameDifferenceParser(): { push: (line: string) => void; samples
   };
 }
 
-/** Pure: a whole stderr at once (tests, small files). */
-export function parseFrameDifferences(stderr: string): SceneSample[] {
-  const p = frameDifferenceParser();
-  for (const line of stderr.split("\n")) p.push(line);
-  return p.samples;
-}
-
 /** Pure: transitions as cut points, merged with the hard cuts, ascending and de-duplicated. */
 export function cutsWithTransitions(hardCuts: readonly number[], windows: readonly TransitionWindow[]): number[] {
   const all = [...hardCuts, ...windows.flatMap((w) => [w.start, w.end])]

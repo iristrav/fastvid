@@ -6,14 +6,7 @@ import {
   claimYoutubeSearch,
   memoryYoutubeSearchBudgetStore,
 } from "./youtubeSearchBudget";
-import {
-  analyzeVideo,
-  applyArchivalRule,
-  planGapQuery,
-  planVideoQuery,
-  refuseQuery,
-  type GateVerdict,
-} from "./youtubeVideoSearchPlanner";
+import { analyzeVideo, planGapQuery, planVideoQuery, refuseQuery, type GateVerdict } from "./youtubeVideoSearchPlanner";
 import { buildVideoYoutubePool, poolRowsForBeat, search2Reasons, type PoolDeps, type SearchItem, type Triage } from "./youtubeVideoPool";
 
 /**
@@ -79,13 +72,6 @@ describe("the planner asks for the whole video, not one scene", () => {
     expect(top).toContain("Tesla");
     expect(top).toContain("Elon Musk");
     expect(a.recurring.find((r) => r.term === "NYSE")!.scenes).toBe(1);
-  });
-
-  it("'archival' only on a historical subject", () => {
-    expect(applyArchivalRule("AI cancer detection archival footage", false)).toBe("AI cancer detection footage");
-    expect(applyArchivalRule("Berlin Wall 1989 archival footage", true)).toBe("Berlin Wall 1989 archival footage");
-    const a = analyzeVideo(tesla);
-    expect(refuseQuery("Tesla factory archival footage", { analysis: a, gate: allow })).toContain("'archival' on a modern subject");
   });
 
   it("refuses a query built on one scene, and one without the main subject", () => {
@@ -257,6 +243,20 @@ describe("one search fills the pool; a second only for a real gap; never a third
     expect(pool.searches).toBe(0);
   });
 
+  it("each row carries the licence YouTube reported for that video, and no licence when none was reported", async () => {
+    const d = deps({
+      details: async (ids) =>
+        new Map(ids.map((id, i) => [id, { durationSec: 300, embeddable: true, live: false, ...(i % 2 === 0 ? { license: "creativeCommon" } : {}) }])),
+    });
+    const pool = await buildVideoYoutubePool(d, input);
+    const rows = poolRowsForBeat(pool, tesla.sceneTexts[0]!.split(". ")[0]! + ".", []);
+    expect(rows.some((r) => r.license === "creativeCommon")).toBe(true);
+    expect(rows.some((r) => r.license === undefined)).toBe(true);
+    for (const c of pool.candidates.filter((c) => c.usable)) {
+      expect(rows.find((r) => r.item.id.videoId === c.videoId)?.license).toBe(c.license);
+    }
+  });
+
   it("a misread person lock ('Hitler Took', video 608) does not empty the pool", async () => {
     const d = deps({ usable: () => [0, 1, 2] });
     const pool = await buildVideoYoutubePool(d, input);
@@ -285,29 +285,15 @@ describe("the wiring: inside a render only the pool searches", () => {
   const PROD = fs.readFileSync(path.join(__dirname, "youtubeVideoPoolProduction.ts"), "utf8");
   const PREFETCH = fs.readFileSync(path.join(__dirname, "youtubePrefetch.ts"), "utf8");
 
-  it("every other search inside a render is refused before it reaches Google", async () => {
-    const { runWithActiveVideoId } = await import("./videoGenerationCancel");
-    const { searchYoutubeVideoCandidates } = await import("./videoPipeline");
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const prev = process.env.YOUTUBE_API_KEY;
-    process.env.YOUTUBE_API_KEY = "test-key-not-used";
-    try {
-      const rows = await runWithActiveVideoId(4242, () => searchYoutubeVideoCandidates("Tesla factory", 0, "any", [], 1, "", 50));
-      expect(rows).toEqual([]);
-      expect(fetchSpy).not.toHaveBeenCalled();
-    } finally {
-      process.env.YOUTUBE_API_KEY = prev;
-      fetchSpy.mockRestore();
-    }
-  }, 120_000);
-
   it("the pool starts after the scenes exist, the fetcher reads it, and it ends with the render", () => {
     const at = PIPE.indexOf("RONDE 658 — ONE YOUTUBE POOL FOR THE WHOLE VIDEO");
     expect(at).toBeGreaterThan(PIPE.indexOf("Stage 1 (parse)"));
     expect(PIPE.slice(at, at + 1600)).toContain("registerVideoYoutubePool(");
-    expect(PIPE).toContain("const items = poolMode ? await rowsFromPool() : await searchYoutubeVideoCandidates(");
-    expect(PIPE).toContain("if (poolMode && queryIndex > 0) break;");
-    expect(PIPE).toContain("if (poolMode && passIndex > 0) break;");
+    /** Code audit P2: rows come only from the pool, one pass, one query. */
+    expect(PIPE).toContain("const items = poolRows;");
+    expect(PIPE).toContain("for (const query of uniqueQueries.slice(0, 1)) {");
+    expect(PIPE).toContain("for (const pass of licensePasses.slice(0, 1)) {");
+    expect(PIPE).not.toContain("searchYoutubeVideoCandidates(");
     expect(PIPE).toContain("releaseVideoYoutubePool(videoId);");
     expect(PIPE).toContain("[YouTubeSearchOutcome] video=");
   });

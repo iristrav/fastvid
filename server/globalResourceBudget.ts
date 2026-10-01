@@ -70,11 +70,6 @@ export function withGlobalMediaFetch<T>(fn: () => Promise<T>): Promise<T> {
   return mediaFetchLimit(fn);
 }
 
-/** Runs a whole render inside a global render slot, waiting when the process is already full. */
-export function withRenderSlot<T>(fn: () => Promise<T>): Promise<T> {
-  return renderSlots(fn);
-}
-
 /** Live counters, for the tests and for the budget line logged at render start. */
 export function globalBudgetSnapshot(): {
   maxConcurrentRenders: number;
