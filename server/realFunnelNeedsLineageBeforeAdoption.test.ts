@@ -130,20 +130,20 @@ describe("the five cases, on every REAL_FUNNEL route", () => {
  */
 describe("a fallback never becomes a verified visual", () => {
   it.each(["subject_fallback", "rescue_wikimedia", "rescue_archive", "rescue_similar", "ai"])(
-    "%s may adopt without an approval and still not count as verified",
+    "%s needs an approval to adopt and still does not count as verified",
     (route) => {
       const policy = adoptionPolicyFor(route);
       expect(policy.countsAsVerifiedVisual, "this is the line that must not move").toBe(false);
-      expect(policy.visionRequirement).not.toBe("approved");
       /**
-       * RONDE 199 — "without an approval" still means UNCLEAR, and no longer means unseen.
-       *
-       * The claim this test defends is unchanged: a fallback may put a picture on screen without
-       * the editor saying yes, and may never count as a verified visual for it. What no longer
-       * qualifies is a picture nobody looked at — see `visionRequirement`.
+       * OCTOBER 2026 — the owner's rule after renders 616/625/626: "selected → reviewed → approved
+       * → adopted", and "judge unavailable → no adoption". A fallback's photograph no longer enters
+       * on an UNCLEAR; it needs the same YES as any other picture. What this test defends is
+       * unchanged: an adopted fallback still never counts as a verified own visual.
        */
-      expect(guard(route, false, "UNCLEAR").allowed).toBe(true);
+      expect(policy.visionRequirement).toBe("approved");
+      expect(guard(route, false, "UNCLEAR").allowed).toBe(false);
       expect(guard(route, false, "NOT_ASKED").allowed).toBe(false);
+      expect(guard(route, false, "APPROVED").allowed).toBe(true);
     }
   );
 

@@ -1,3 +1,4 @@
+import { resolveSoundEffect } from "../audioAssetSource";
 import { describe, expect, it } from "vitest";
 import { planSoundEffects } from "./soundPlanner";
 import type { PacingProfile } from "./types";
@@ -35,9 +36,26 @@ function pacing(tone: PacingProfile["tone"]): PacingProfile {
 }
 
 describe("Sound Effects Planner (Phase 4)", () => {
-  it("plans a whoosh when the beat opens on a fast transition", () => {
+  /**
+   * The catalogue has no whoosh recording (`SOUND_EFFECT_TO_CATEGORY.whoosh = null`), so the
+   * planner does not ask for one: the render would only drop it as SFX_NOT_AVAILABLE.
+   */
+  it("plans no whoosh on a fast transition while FastVid has no whoosh recording", () => {
     const sounds = planSoundEffects(makeIntent(), pacing("neutral"), 0, 4, "whip");
-    expect(sounds.some((s) => s.soundType === "whoosh")).toBe(true);
+    expect(sounds.some((s) => s.soundType === "whoosh")).toBe(false);
+  });
+
+  it("plans only sounds the catalogue can deliver — impact, typing, page turn, camera and ambience stay", () => {
+    const sounds = planSoundEffects(
+      makeIntent({ spokenText: "Photographers took a photo of the collision while rain fell; he typed a message and turned the page." }),
+      pacing("dramatic"),
+      0,
+      4,
+      "whip"
+    );
+    const types = sounds.map((s) => s.soundType);
+    expect(types).toEqual(expect.arrayContaining(["camera_click", "impact", "rain", "typing", "page_turn"]));
+    for (const t of types) expect(resolveSoundEffect(t).ok, t).toBe(true);
   });
 
   it("does not plan a whoosh for a plain cut", () => {
@@ -62,22 +80,11 @@ describe("Sound Effects Planner (Phase 4)", () => {
     expect(rain!.fadeInSec).toBeGreaterThan(0.3);
   });
 
-  it("plans a heartbeat only under dramatic pacing with a tension signal", () => {
-    const dramatic = planSoundEffects(
-      makeIntent({ spokenText: "The tension in the room was unbearable." }),
-      pacing("dramatic"),
-      0,
-      4
-    );
-    expect(dramatic.some((s) => s.soundType === "heartbeat")).toBe(true);
-
-    const neutral = planSoundEffects(
-      makeIntent({ spokenText: "The tension in the room was unbearable." }),
-      pacing("neutral"),
-      0,
-      4
-    );
-    expect(neutral.some((s) => s.soundType === "heartbeat")).toBe(false);
+  it("plans no heartbeat while FastVid has no heartbeat recording, dramatic or not", () => {
+    for (const tone of ["dramatic", "neutral"] as const) {
+      const sounds = planSoundEffects(makeIntent({ spokenText: "The tension in the room was unbearable." }), pacing(tone), 0, 4);
+      expect(sounds.some((s) => s.soundType === "heartbeat")).toBe(false);
+    }
   });
 
   it("returns an empty array for a beat with no sound-worthy signal", () => {

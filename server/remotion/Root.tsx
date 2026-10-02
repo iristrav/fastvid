@@ -15,6 +15,10 @@
 import React from "react";
 import { Composition } from "remotion";
 import { GraphicsOverlay, type GraphicsOverlayProps } from "./GraphicsOverlay";
+import { loadBundledFonts } from "./fonts";
+
+/** OCTOBER 2026 — the bundled faces, loaded before any frame is taken (see fonts.ts). */
+loadBundledFonts();
 
 const EMPTY: GraphicsOverlayProps = {
   fps: 30,

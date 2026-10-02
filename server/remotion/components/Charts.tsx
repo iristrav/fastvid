@@ -31,6 +31,7 @@ import { useCurrentFrame } from "remotion";
 import { easeOut } from "./animation";
 import {
   SHAPE_PATHS,
+  readDecimals,
   readNumber,
   readRingPercent,
   readRoute,
@@ -38,7 +39,8 @@ import {
   readText,
 } from "../../graphicsVocabulary";
 
-const CHART_FONT = "DejaVu Sans, Liberation Sans, sans-serif";
+/** OCTOBER 2026 — Inter is bundled (remotion/fonts.ts); the system faces stay behind it. */
+const CHART_FONT = "Inter, DejaVu Sans, Liberation Sans, sans-serif";
 const ACCENT = "#ffd54a";
 const INK = "#ffffff";
 const MUTED = "rgba(255,255,255,0.55)";
@@ -79,6 +81,38 @@ function growth(frame: number, durationInFrames: number): number {
 const W = 900;
 const H = 520;
 
+/**
+ * OCTOBER 2026 — "nice" tick values for an axis: 3–6 round steps (1, 2, 2.5 or 5 × 10ⁿ) covering
+ * [min, max]. A chart's axis is how a viewer reads the size of a change; 0, 2.5, 5, 7.5 reads,
+ * 0, 2.37, 4.74 does not.
+ */
+export function niceTicks(min: number, max: number, target = 4): number[] {
+  if (!(max > min)) return [min];
+  const raw = (max - min) / target;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => (max - min) / s <= target + 1) ?? 10 * mag;
+  const start = Math.floor(min / step) * step;
+  const ticks: number[] = [];
+  for (let v = start; v <= max + step * 1e-9; v += step) ticks.push(Number(v.toFixed(10)));
+  if (ticks[ticks.length - 1]! < max) ticks.push(Number((ticks[ticks.length - 1]! + step).toFixed(10)));
+  return ticks;
+}
+
+/** A value as the chart prints it: the payload's decimals, thousands separators, its unit. */
+export function formatValue(v: number, decimals: number, prefix = "", suffix = ""): string {
+  const n = v.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  return `${prefix}${n}${suffix}`;
+}
+
+const chartUnits = (data: Record<string, unknown>) => ({
+  prefix: readText(data, "prefix") ?? "",
+  suffix: (() => {
+    const s = readText(data, "suffix", "unit");
+    if (!s) return "";
+    return s === "%" ? "%" : ` ${s}`;
+  })(),
+});
+
 export const BarChart: React.FC<{
   data: Record<string, unknown>;
   durationInFrames: number;
@@ -89,34 +123,55 @@ export const BarChart: React.FC<{
   if (series.length === 0) return null;
 
   const t = growth(frame, durationInFrames);
-  /** Scaled to the largest value, so a chart of small numbers still fills the frame. */
-  const max = Math.max(...series.map((d) => Math.abs(d.value)), 1);
   const title = readText(data, "title", "label");
+  const { prefix, suffix } = chartUnits(data);
+  const decimals = Math.max(...series.map((d) => readDecimals(data, d.value)));
+  /** OCTOBER 2026 — an axis with round steps; the bars are scaled to its top, not to the largest bar. */
+  const ticks = niceTicks(0, Math.max(...series.map((d) => Math.abs(d.value)), 1e-6));
+  const max = ticks[ticks.length - 1]!;
   const pad = 70;
+  const top = title ? 84 : pad;
   const plotW = W - pad * 2;
-  const plotH = H - pad * 2;
+  const plotH = H - pad - top;
   const slot = (horizontal ? plotH : plotW) / series.length;
   const thickness = slot * 0.6;
 
   return (
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ overflow: "visible" }}>
+      <rect width={W} height={H} fill="rgba(9,14,22,0.72)" rx={10} />
       {title && (
-        <text x={pad} y={38} fill={INK} fontFamily={CHART_FONT} fontSize={30} fontWeight={800}>
+        <text x={pad} y={50} fill={INK} fontFamily={CHART_FONT} fontSize={30} fontWeight={800}>
           {title}
         </text>
       )}
+      {/* The value axis: faint gridlines at round values, each labelled. */}
+      {!horizontal &&
+        ticks.map((v) => {
+          const y = H - pad - (v / max) * plotH;
+          return (
+            <g key={`t${v}`}>
+              <line x1={pad} x2={W - pad} y1={y} y2={y} stroke="rgba(255,255,255,0.12)" strokeWidth={1} />
+              <text x={pad - 10} y={y + 7} fill={MUTED} fontFamily={CHART_FONT} fontSize={18} textAnchor="end">
+                {formatValue(v, decimals, prefix, suffix.trim() === "%" ? "%" : "")}
+              </text>
+            </g>
+          );
+        })}
       {/* The baseline. A chart without one leaves the eye nothing to measure against. */}
       <line
         x1={pad}
-        y1={horizontal ? pad : H - pad}
+        y1={horizontal ? top : H - pad}
         x2={horizontal ? pad : W - pad}
         y2={H - pad}
         stroke={MUTED}
         strokeWidth={2}
       />
       {series.map((d, i) => {
-        const extent = (Math.abs(d.value) / max) * (horizontal ? plotW : plotH) * t;
-        const offset = pad + slot * i + (slot - thickness) / 2;
+        /** OCTOBER 2026 — bars grow one after another, a little apart, each over the same time. */
+        const stagger = series.length > 1 ? (i / (series.length - 1)) * 0.25 : 0;
+        const ti = easeOut(Math.max(0, Math.min(1, (t - stagger) / 0.75)));
+        const extent = (Math.abs(d.value) / max) * (horizontal ? plotW : plotH) * ti;
+        const offset = (horizontal ? top : pad) + slot * i + (slot - thickness) / 2;
         return (
           <g key={`${d.label}-${i}`}>
             <rect
@@ -137,8 +192,8 @@ export const BarChart: React.FC<{
             >
               {d.label}
             </text>
-            {/* The value appears only once the bar has finished growing to it. */}
-            {t > 0.98 && (
+            {/* OCTOBER 2026 — the value counts with its bar and rests on its top. */}
+            {ti > 0.05 && (
               <text
                 x={horizontal ? pad + extent + 12 : offset + thickness / 2}
                 y={horizontal ? offset + thickness / 2 + 8 : H - pad - extent - 12}
@@ -147,8 +202,9 @@ export const BarChart: React.FC<{
                 fontSize={24}
                 fontWeight={800}
                 textAnchor={horizontal ? "start" : "middle"}
+                style={{ fontVariantNumeric: "tabular-nums" }}
               >
-                {d.value.toLocaleString("en-US")}
+                {formatValue(d.value * ti, decimals, prefix, suffix)}
               </text>
             )}
           </g>
@@ -167,18 +223,30 @@ export const LineChart: React.FC<{
   if (series.length < 2) return null;
 
   const t = growth(frame, durationInFrames);
-  const pad = 70;
+  /**
+   * OCTOBER 2026 — a chart a viewer can read: its title, a value axis with round steps, the label
+   * of every point under it, the value of every point once the line reaches it, and a head that
+   * carries the current value while the line is drawn.
+   */
+  const title = readText(data, "title", "label");
+  const { prefix, suffix } = chartUnits(data);
+  const decimals = Math.max(...series.map((d) => readDecimals(data, d.value)));
+  const pad = 80;
+  const top = title ? 96 : 60;
   const plotW = W - pad * 2;
-  const plotH = H - pad * 2;
-  const max = Math.max(...series.map((d) => d.value));
-  const min = Math.min(...series.map((d) => d.value), 0);
+  const plotH = H - 70 - top;
+  const ticks = niceTicks(Math.min(...series.map((d) => d.value), 0), Math.max(...series.map((d) => d.value)));
+  const min = ticks[0]!;
+  const max = ticks[ticks.length - 1]!;
   const span = Math.max(1e-6, max - min);
+  const yOf = (v: number) => H - 70 - ((v - min) / span) * plotH;
 
   const points = series.map((d, i) => ({
     x: pad + (plotW * i) / (series.length - 1),
-    y: H - pad - ((d.value - min) / span) * plotH,
+    y: yOf(d.value),
   }));
   const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(" ");
+  const area = `${path} L${points[points.length - 1]!.x.toFixed(2)},${yOf(min).toFixed(2)} L${points[0]!.x.toFixed(2)},${yOf(min).toFixed(2)} Z`;
 
   /**
    * The line DRAWS itself with a dash offset rather than by slicing the path.
@@ -191,10 +259,48 @@ export const LineChart: React.FC<{
     const q = points[i - 1]!;
     return sum + Math.hypot(p.x - q.x, p.y - q.y);
   }, 0);
+  /** Where the head of the line is now, and the value it stands on — interpolated along the segment. */
+  const along = t * (points.length - 1);
+  const seg = Math.min(points.length - 2, Math.floor(along));
+  const f = along - seg;
+  const head = {
+    x: points[seg]!.x + (points[seg + 1]!.x - points[seg]!.x) * f,
+    y: points[seg]!.y + (points[seg + 1]!.y - points[seg]!.y) * f,
+    v: series[seg]!.value + (series[seg + 1]!.value - series[seg]!.value) * f,
+  };
 
   return (
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
-      <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke={MUTED} strokeWidth={2} />
+      <defs>
+        <clipPath id="line-reveal">
+          <rect x={0} y={0} width={head.x} height={H} />
+        </clipPath>
+        <linearGradient id="line-area" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={ACCENT} stopOpacity={0.35} />
+          <stop offset="100%" stopColor={ACCENT} stopOpacity={0} />
+        </linearGradient>
+      </defs>
+      <rect width={W} height={H} fill="rgba(9,14,22,0.72)" rx={10} />
+      {title && (
+        <text x={pad - 20} y={56} fill={INK} fontFamily={CHART_FONT} fontSize={30} fontWeight={800}>
+          {title}
+        </text>
+      )}
+      {ticks.map((v) => (
+        <g key={`t${v}`}>
+          <line x1={pad} x2={W - pad} y1={yOf(v)} y2={yOf(v)} stroke="rgba(255,255,255,0.12)" strokeWidth={1} />
+          <text x={pad - 10} y={yOf(v) + 6} fill={MUTED} fontFamily={CHART_FONT} fontSize={17} textAnchor="end">
+            {formatValue(v, decimals, prefix, suffix.trim() === "%" ? "%" : "")}
+          </text>
+        </g>
+      ))}
+      <line x1={pad} y1={yOf(min)} x2={W - pad} y2={yOf(min)} stroke={MUTED} strokeWidth={2} />
+      {series.map((d, i) => (
+        <text key={`x${i}`} x={points[i]!.x} y={H - 40} fill={MUTED} fontFamily={CHART_FONT} fontSize={18} textAnchor="middle">
+          {d.label}
+        </text>
+      ))}
+      <path d={area} fill="url(#line-area)" clipPath="url(#line-reveal)" />
       <path
         d={path}
         fill="none"
@@ -205,17 +311,38 @@ export const LineChart: React.FC<{
         strokeDasharray={length}
         strokeDashoffset={length * (1 - t)}
       />
-      {points.map((p, i) => (
-        <circle
-          key={i}
-          cx={p.x}
-          cy={p.y}
-          r={5}
-          fill={ACCENT}
-          // A point appears when the line reaches it, not before.
-          opacity={t >= (i / (points.length - 1)) * 0.98 ? 1 : 0}
-        />
-      ))}
+      {points.map((p, i) => {
+        // A point and its value appear when the line reaches it, not before.
+        const reached = t >= (i / (points.length - 1)) * 0.98;
+        return (
+          <g key={i} opacity={reached ? 1 : 0}>
+            <circle cx={p.x} cy={p.y} r={5} fill={ACCENT} />
+            {(i === points.length - 1 || series.length <= 6) && (
+              <text x={p.x} y={p.y - 14} fill={INK} fontFamily={CHART_FONT} fontSize={20} fontWeight={700} textAnchor="middle">
+                {formatValue(series[i]!.value, decimals, prefix, suffix)}
+              </text>
+            )}
+          </g>
+        );
+      })}
+      {t < 0.995 && (
+        <g>
+          <circle cx={head.x} cy={head.y} r={9} fill={ACCENT} stroke="rgba(0,0,0,0.5)" strokeWidth={2} />
+          {/* Near the right edge the running value sits to the left of the head, so it is never cut off. */}
+          <text
+            x={head.x > W - 220 ? head.x - 14 : head.x + 14}
+            y={head.y - 14}
+            textAnchor={head.x > W - 220 ? "end" : "start"}
+            fill={ACCENT}
+            fontFamily={CHART_FONT}
+            fontSize={24}
+            fontWeight={800}
+            style={{ fontVariantNumeric: "tabular-nums" }}
+          >
+            {formatValue(head.v, decimals, prefix, suffix)}
+          </text>
+        </g>
+      )}
     </svg>
   );
 };

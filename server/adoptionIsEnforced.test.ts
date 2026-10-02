@@ -265,8 +265,12 @@ describe("an unreachable picture editor suspends one requirement and excuses not
     const guardAt = PIPE.indexOf("async function visualJudgeRefusesPush(");
     const guard = PIPE.slice(guardAt, PIPE.indexOf("\n}", guardAt));
     expect(guard).toContain("const visionAvailable =");
-    expect(guard).toContain("!visionPipelineIsUnavailable()");
-    expect(guard).toContain("!dedup.beatImageGate?.askImpossible");
+    /**
+     * OCTOBER 2026 (render 625) — both outages are still READ, but only to say why a picture is
+     * refused. Neither may suspend the requirement any more: `visionAvailable` is `!nothingToJudge`.
+     */
+    expect(guard).toContain("const visionAvailable = !nothingToJudge;");
+    expect(guard).toContain("visionPipelineIsUnavailable() || dedup.beatImageGate?.askImpossible");
     expect(guard).toContain("isEligible(clipPath, contentKey)");
     /** Eligibility is computed from the ledger alone — availability may not reach it. */
     const eligibleAt = guard.indexOf("const eligible =");

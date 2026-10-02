@@ -236,6 +236,39 @@ function graphicBoxSize(
   return measureText(label?.trim() || graphicType, style, frame);
 }
 
+/** A word as the comparison reads it: lower case, letters and digits only ("$3.5," → "35"). */
+const wordKey = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+/** The least time a graphic stays on screen once it has moved to its word. */
+export const MIN_GRAPHIC_ON_WORD_SEC = 1.5;
+
+/**
+ * OCTOBER 2026 — WHEN A GRAPHIC APPEARS: ON THE WORD IT IS ABOUT.
+ *
+ * The planner places every graphic at its sentence's first second, so a counter for "3.5 billion"
+ * at the end of a sentence was on screen long before the number was said. The planner now names
+ * the word (`anchorWord`: the figure, the year, the place, the name) and this moves the start to
+ * the moment the voice says it, from the measured word timing the captions already carry.
+ *
+ * Only ever later, never earlier than planned, and only inside the graphic's own window; the end
+ * stays where it was, and at least `MIN_GRAPHIC_ON_WORD_SEC` remains. No word, no timing, no match:
+ * the planned start, exactly as before.
+ */
+export function graphicStartOnWord(
+  startSec: number,
+  endSec: number,
+  anchorWord: unknown,
+  words: ReadonlyArray<{ word: string; startSec: number; endSec: number }>
+): number {
+  if (typeof anchorWord !== "string" || !words.length) return startSec;
+  const key = wordKey(anchorWord);
+  if (!key) return startSec;
+  const latest = endSec - MIN_GRAPHIC_ON_WORD_SEC;
+  if (latest <= startSec) return startSec;
+  const hit = words.find((w) => w.startSec >= startSec - 0.05 && w.startSec <= latest && wordKey(w.word).startsWith(key));
+  return hit ? Math.max(startSec, hit.startSec) : startSec;
+}
+
 /**
  * Build the graphics props for one timeline.
  *
@@ -396,6 +429,13 @@ export function timelineToRemotionProps(params: {
     };
   };
 
+  /** The measured word timing — see `words` below; read here too so a graphic can start on its word. */
+  const measuredWords: RemotionWordTiming[] =
+    params.words ??
+    captionTrack(timeline)
+      .filter((c) => !c.disabled)
+      .flatMap((c) => c.words ?? []);
+
   return {
     fps,
     width: timeline.format.widthPx,
@@ -426,13 +466,15 @@ export function timelineToRemotionProps(params: {
          * produced before this round.
          */
         const move = graphicMoves.get(g.id);
+        /** OCTOBER 2026 — on the word it is about, when the planner named one and the voice said it. */
+        const start = graphicStartOnWord(g.start, g.end, g.data?.anchorWord, measuredWords);
         return {
           id: g.id,
           graphicType: g.graphicType,
           data: g.data ?? {},
           label: g.label ?? null,
-          fromFrame: toFrames(g.start, fps),
-          durationInFrames: Math.max(1, toFrames(Math.max(0, g.end - g.start), fps)),
+          fromFrame: toFrames(start, fps),
+          durationInFrames: Math.max(1, toFrames(Math.max(0, g.end - start), fps)),
           style: g.style ?? null,
           /** The renderer's existing default when a planner expressed no preference. Named, not silent. */
           animation: g.animation ?? "fade_rise",
@@ -459,9 +501,7 @@ export function timelineToRemotionProps(params: {
      * "de timeline is de single source of truth" has to mean for a feature that needs measurements.
      * An explicit `params.words` still wins, so the planning path is unchanged.
      */
-    words: params.words ?? captionTrack(timeline)
-      .filter((c) => !c.disabled)
-      .flatMap((c) => c.words ?? []),
+    words: measuredWords,
     unresolvedCollisions,
     meta: {
       videoId: timeline.videoId,

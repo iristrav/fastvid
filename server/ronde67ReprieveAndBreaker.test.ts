@@ -68,7 +68,8 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
   it("the queue it appends to is a copy it owns", () => {
     const src = PIPELINE();
     // Pushing onto tasteResult.rankedPaths would mutate a caller's array.
-    expect(src).toContain("const finalPaths = [...tasteResult.rankedPaths];");
+    // OCTOBER 2026 — the copy is now taken of the footage-share order, itself a new array.
+    expect(src).toContain("const finalPaths = [...lessFilled.paths];");
   });
 
   it("for...of really does visit an item appended during iteration", () => {

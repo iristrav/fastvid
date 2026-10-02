@@ -9,8 +9,9 @@ import {
 } from "../shared/videoLengths";
 
 describe("videoLengths", () => {
-  it("allows only 1, 8-10, 10-15, 15-20", () => {
-    expect(VIDEO_LENGTH_VALUES).toEqual(["1", "8-10", "10-15", "15-20"]);
+  it("allows 1, 3, 5, 8-10, 10-15, 15-20, 30 and 60 minutes — one pipeline, budgets scale", () => {
+    expect(VIDEO_LENGTH_VALUES).toEqual(["1", "3", "5", "8-10", "10-15", "15-20", "30", "60"]);
+    expect(videoLengthSchema.safeParse("30").success).toBe(true);
     expect(videoLengthSchema.safeParse("8-10").success).toBe(true);
     expect(videoLengthSchema.safeParse("5-8").success).toBe(false);
   });

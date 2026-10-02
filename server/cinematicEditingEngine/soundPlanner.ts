@@ -12,6 +12,7 @@
  *  the Phase 4 spec's naming, one-to-one with that existing cue at the renderer boundary.
  */
 import type { PacingProfile, SoundEffectType, SoundInstruction } from "./types";
+import { soundEffectIsDeliverable } from "../audioAssetSource";
 import type { VisualIntent } from "../visualMatchingV2/types";
 
 type SoundRule = {
@@ -130,5 +131,10 @@ export function planSoundEffects(
     }
   }
 
-  return out;
+  /**
+   * Only what FastVid can actually play. A whoosh, heartbeat, notification, UI click or cash
+   * register has no recording in the catalogue (see `SOUND_EFFECT_TO_CATEGORY`), and the planner
+   * must not put a cue on the timeline that the render will drop as SFX_NOT_AVAILABLE.
+   */
+  return out.filter((c) => soundEffectIsDeliverable(c.soundType));
 }

@@ -1,7 +1,11 @@
 import { z } from "zod";
 
 /** Allowed video length values for new generations. */
-export const VIDEO_LENGTH_VALUES = ["1", "8-10", "10-15", "15-20"] as const;
+/**
+ * One pipeline for every length: only budgets, counts, timeouts and search depth scale with it
+ * (`targetVideoDurationMinutes` is what they scale by).
+ */
+export const VIDEO_LENGTH_VALUES = ["1", "3", "5", "8-10", "10-15", "15-20", "30", "60"] as const;
 export type VideoLength = (typeof VIDEO_LENGTH_VALUES)[number];
 
 export const videoLengthSchema = z.enum(VIDEO_LENGTH_VALUES);
@@ -12,9 +16,13 @@ export const VIDEO_LENGTH_OPTIONS: ReadonlyArray<{
   desc: string;
 }> = [
   { label: "1 min", value: "1", desc: "Quick test" },
+  { label: "3 min", value: "3", desc: "Short explainer" },
+  { label: "5 min", value: "5", desc: "Compact documentary" },
   { label: "8–10 min", value: "8-10", desc: "Standard documentary" },
   { label: "10–15 min", value: "10-15", desc: "Deep-dive" },
   { label: "15–20 min", value: "15-20", desc: "Extended narrative" },
+  { label: "30 min", value: "30", desc: "Long-form documentary" },
+  { label: "60 min", value: "60", desc: "Feature-length" },
 ];
 
 /** Map legacy stored values to current pipeline buckets. */
@@ -80,6 +88,14 @@ export function targetVideoDurationMinutes(raw: string | null | undefined): numb
   switch (normalizeVideoLength(raw)) {
     case "1":
       return 1;
+    case "3":
+      return 3;
+    case "5":
+      return 5;
+    case "30":
+      return 30;
+    case "60":
+      return 60;
     case "8-10":
       return 10;
     case "10-15":
@@ -101,6 +117,10 @@ export function generationBudgetMinutes(
 
 const DISPLAY_LABELS: Record<string, string> = {
   "1": "1 min",
+  "3": "3 min",
+  "5": "5 min",
+  "30": "30 min",
+  "60": "60 min",
   "8-10": "8–10 min",
   "10-15": "10–15 min",
   "15-20": "15–20 min",

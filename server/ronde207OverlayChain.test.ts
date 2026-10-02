@@ -51,6 +51,8 @@ describe("R207 — every motion-graphic type the planner can emit is accounted f
        * `graphicIsRenderable` finds them directly in RENDERABLE_GRAPHICS.
        */
       "lower_third", "date_card", "location_card", "quote",
+      /** OCTOBER 2026 — the narration's own values over time, spelled with the renderer's name. */
+      "line_chart",
     ]);
   });
 

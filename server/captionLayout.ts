@@ -169,6 +169,48 @@ export function maxCharsPerLine(style: TextStyle, frame: Frame): number {
   return fits;
 }
 
+/**
+ * OCTOBER 2026 — THE LINES A CAPTION IS DRAWN IN, decided here and not by the browser.
+ *
+ * The browser wrapped a caption inside a box `maxWidth` wide, and a block that wraps is as wide as
+ * that maximum, not as its longest line: two short lines sat in a plate stretched across 84% of the
+ * frame. The drawing now asks this function for the lines (word indices per line), draws each one
+ * unwrapped, and the plate is exactly as wide as the longest line plus its padding.
+ *
+ * Same line COUNT as `lineCountFor` — the greedy wrap at the same character budget — so the box the
+ * layout engine measured has the same number of lines as the one on screen; the words are then
+ * spread evenly over those lines (no lone last word), which never makes a line longer than greedy.
+ */
+export function wrapWordsBalanced(words: readonly string[], maxChars: number): number[][] {
+  const n = words.length;
+  if (n === 0) return [];
+  const greedy = (limit: number): number[][] => {
+    const lines: number[][] = [[]];
+    let used = 0;
+    words.forEach((w, i) => {
+      const add = used === 0 ? w.length : w.length + 1;
+      if (used + add > limit && used > 0) {
+        lines.push([i]);
+        used = w.length;
+      } else {
+        lines[lines.length - 1]!.push(i);
+        used += add;
+      }
+    });
+    return lines;
+  };
+  if (maxChars <= 0) return [words.map((_, i) => i)];
+  const target = greedy(maxChars);
+  if (target.length <= 1) return target;
+  const total = words.reduce((s, w) => s + w.length, 0) + n - 1;
+  const longestWord = Math.max(...words.map((w) => w.length));
+  for (let limit = Math.max(longestWord, Math.ceil(total / target.length)); limit < maxChars; limit++) {
+    const tried = greedy(limit);
+    if (tried.length <= target.length) return tried;
+  }
+  return target;
+}
+
 /** The box this text occupies, before any collision is considered. */
 export function measureText(text: string, style: TextStyle, frame: Frame): { width: number; height: number } {
   const lines = Math.max(1, lineCountFor(text, style, frame));

@@ -30,6 +30,8 @@
 import * as fs from "fs";
 import * as path from "path";
 
+import { chooseMoments } from "./youtubeMoments";
+
 /** Seconds taken from each YouTube video: enough for several shots, small enough to arrive quickly. */
 export const STOCK_SECTION_SEC = 40;
 /** At most this many videos are stocked for one film. */
@@ -166,23 +168,39 @@ export async function takeStockShot(
   maxWaitMs: number,
   refused: (shot: StockShot) => boolean = () => false
 ): Promise<StockTake> {
+  const took = await takeStockShots(filmId, videoId, maxWaitMs, refused, 1);
+  return took.shots.length ? { shot: took.shots[0]! } : { shot: null, reason: took.reason! };
+}
+
+export type StockTakeMany =
+  | { shots: StockShot[]; reason?: undefined }
+  | { shots: []; reason: "not_stocked" | "still_downloading" | "download_failed" | "all_refused" };
+
+/**
+ * OCTOBER 2026 — up to `max` shots of this video for one beat, so the picture editor chooses the
+ * moment instead of whichever shot happened to be handed out least (see `youtubeMoments.ts`).
+ */
+export async function takeStockShots(
+  filmId: number,
+  videoId: string,
+  maxWaitMs: number,
+  refused: (shot: StockShot) => boolean = () => false,
+  max = 1
+): Promise<StockTakeMany> {
   const entry = stocks.get(filmId)?.get(videoId);
-  if (!entry) return { shot: null, reason: "not_stocked" };
+  if (!entry) return { shots: [], reason: "not_stocked" };
   if (entry.status === "pending" && maxWaitMs > 0) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([entry.done, new Promise<void>((r) => (timer = setTimeout(r, maxWaitMs)))]);
     if (timer) clearTimeout(timer);
   }
-  if (entry.status === "pending") return { shot: null, reason: "still_downloading" };
-  if (entry.status === "failed") return { shot: null, reason: "download_failed" };
-  let best: StockShot | null = null;
-  for (const s of entry.shots) {
-    if (refused(s)) continue;
-    if (!best || s.handedOut < best.handedOut) best = s;
-  }
-  if (!best) return { shot: null, reason: "all_refused" };
-  best.handedOut++;
-  return { shot: best };
+  if (entry.status === "pending") return { shots: [], reason: "still_downloading" };
+  if (entry.status === "failed") return { shots: [], reason: "download_failed" };
+  const open = entry.shots.filter((s) => !refused(s));
+  if (!open.length) return { shots: [], reason: "all_refused" };
+  const picks = chooseMoments(open, max);
+  for (const s of picks) s.handedOut++;
+  return { shots: picks };
 }
 
 /** What the film's stock came to, for the render's summary. */

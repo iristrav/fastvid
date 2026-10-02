@@ -110,7 +110,12 @@ export type TransitionKind =
   | "crossfade"
   | "dissolve"
   | "dip_to_black"
-  | "dip_to_white";
+  | "dip_to_white"
+  /** The editor's motion transitions — each a real xfade mode (`XFADE_TRANSITIONS`). */
+  | "slide_left"
+  | "slide_right"
+  | "zoom"
+  | "blur";
 
 /* ═══════════════════════ RONDE 148 §8 — transforms, camera, effects ═══════════════════════ */
 
@@ -275,6 +280,11 @@ export type TimelineVideoClip = {
   camera?: ClipCamera;
   /** RONDE 148 — fit, crop, scale, position, opacity. Absent means contain-and-pad, as before. */
   transform?: ClipTransform;
+  /**
+   * Playback speed of a video clip (0.25–4; absent = 1). The slot on the timeline stays the slot:
+   * at 2× the clip shows twice as much source in the same seconds. Ignored for stills.
+   */
+  speed?: number;
   /** RONDE 148 — what the effectsPlanner asked for. Executed where possible, reported otherwise. */
   effects?: ClipEffect[];
   /**
@@ -452,7 +462,7 @@ export type TimelineCaption = {
   words?: Array<{ word: string; startSec: number; endSec: number }>;
   editedByUser?: boolean;
   disabled?: boolean;
-  /** VIDEO 619 — why it is off when the pipeline switched it off (see `leaveOnScreenTextToTheEditor`). */
+  /** Why it is off when the pipeline switched it off (the on-screen text director's reason). */
   disabledReason?: string;
 };
 

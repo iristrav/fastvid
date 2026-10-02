@@ -24,17 +24,75 @@ const COMPARISON_SPLIT_RE = /\s+(?:vs\.?|versus|compared to)\s+/i;
 const CHART_SIGNALS = ["growth", "increase", "decline", "decrease", "trend", "sales", "revenue", "market share", "rate rose", "rate fell"];
 const ARROW_SIGNALS = ["points to", "shows", "reveals", "indicates", "highlights", "demonstrates"];
 
-function parseNumericStat(text: string): { value: number; suffix: string } | null {
-  const match = text.match(/([\d.,]+)\s*(%|k|K|M|B|million|billion|thousand)?/);
+/**
+ * OCTOBER 2026 — the number as the script wrote it: its value, its decimals ("3.5" keeps one), a
+ * currency sign in front, its unit behind, and the token itself — the word the graphic waits for.
+ */
+export function parseNumericStat(
+  text: string
+): { value: number; suffix: string; prefix: string; decimals: number; token: string } | null {
+  const match = text.match(/([$€£])?\s?(\d[\d,]*(?:\.\d+)?)\s*(%|k|K|M|B|bn|million|billion|thousand|trillion)?/);
   if (!match) return null;
-  const value = parseFloat(match[1]!.replace(/,/g, ""));
+  const digits = match[2]!.replace(/,/g, "");
+  const value = parseFloat(digits);
   if (Number.isNaN(value)) return null;
-  return { value, suffix: match[2] ?? "" };
+  const dot = digits.indexOf(".");
+  return {
+    value,
+    suffix: match[3] ?? "",
+    prefix: match[1] ?? "",
+    decimals: dot < 0 ? 0 : Math.min(3, digits.length - dot - 1),
+    token: match[2]!,
+  };
 }
 
-function findWorldLocation(text: string): (typeof WORLD_LOCATIONS)[number] | null {
+const UNIT_WORD = "(million|billion|thousand|trillion|bn|%)?";
+const NUMBER = "([$€£])?(\\d[\\d,]*(?:\\.\\d+)?)";
+const YEAR = "((?:1[5-9]|20)\\d{2})";
+
+/**
+ * OCTOBER 2026 — a series the narration itself states: two or more years, each with a number, in
+ * the same unit ("from 3 million in 2007 to 8 billion in 2023" is two units and is not a series;
+ * "1.2 billion in 2015, 2.4 billion in 2019 and 3.1 billion in 2023" is). Only the script's own
+ * numbers; nothing is interpolated, estimated or filled in. Fewer than two points, no chart.
+ */
+export function yearSeriesFromText(
+  text: string
+): { series: Array<{ label: string; value: number }>; unit: string; prefix: string; decimals: number; firstToken: string } | null {
+  const pairs: Array<{ year: string; value: number; unit: string; prefix: string; decimals: number; token: string; at: number }> = [];
+  const push = (year: string, prefix: string | undefined, digits: string, unit: string | undefined, at: number) => {
+    const clean = digits.replace(/,/g, "");
+    const value = parseFloat(clean);
+    if (!Number.isFinite(value) || /^(1[5-9]|20)\d{2}$/.test(clean)) return;
+    const dot = clean.indexOf(".");
+    pairs.push({ year, value, unit: (unit ?? "").toLowerCase(), prefix: prefix ?? "", decimals: dot < 0 ? 0 : clean.length - dot - 1, token: digits, at });
+  };
+  const numberThenYear = new RegExp(`${NUMBER}\\s*${UNIT_WORD}[^.;\\d]{0,30}?\\b(?:in|by)\\s+${YEAR}`, "gi");
+  for (const m of text.matchAll(numberThenYear)) push(m[4]!, m[1], m[2]!, m[3], m.index ?? 0);
+  const yearThenNumber = new RegExp(`\\b(?:in|by)\\s+${YEAR},?\\s+(?:[a-z]+\\s+){0,5}?${NUMBER}\\s*${UNIT_WORD}`, "gi");
+  for (const m of text.matchAll(yearThenNumber)) push(m[1]!, m[2], m[3]!, m[4], m.index ?? 0);
+  const byYear = new Map<string, (typeof pairs)[number]>();
+  for (const p of pairs.sort((a, b) => a.at - b.at)) if (!byYear.has(p.year)) byYear.set(p.year, p);
+  const points = [...byYear.values()].sort((a, b) => Number(a.year) - Number(b.year));
+  if (points.length < 2) return null;
+  const unit = points[0]!.unit;
+  if (points.some((p) => p.unit !== unit)) return null;
+  return {
+    series: points.map((p) => ({ label: p.year, value: p.value })),
+    unit,
+    prefix: points[0]!.prefix,
+    decimals: Math.min(3, Math.max(...points.map((p) => p.decimals))),
+    firstToken: [...byYear.values()][0]!.token,
+  };
+}
+
+function findWorldLocation(text: string): { loc: (typeof WORLD_LOCATIONS)[number]; keyword: string } | null {
   const lower = text.toLowerCase();
-  return WORLD_LOCATIONS.find((loc) => loc.keywords.some((kw) => lower.includes(kw))) ?? null;
+  for (const loc of WORLD_LOCATIONS) {
+    const keyword = loc.keywords.find((kw) => lower.includes(kw));
+    if (keyword) return { loc, keyword };
+  }
+  return null;
 }
 
 function graphic(
@@ -64,7 +122,7 @@ export function planMotionGraphics(
         out.push(
           graphic(
             "progress_bar",
-            { toValue: Math.min(100, parsed.value), suffix: "%", label: scene.statCallout },
+            { toValue: Math.min(100, parsed.value), suffix: "%", label: scene.statCallout, anchorWord: parsed.token },
             beatVoiceStartSec,
             dur,
             `Scene's stat callout ("${scene.statCallout}") is a percentage — shown as a filling progress bar.`
@@ -74,7 +132,16 @@ export function planMotionGraphics(
         out.push(
           graphic(
             "statistic_counter",
-            { fromValue: 0, toValue: parsed.value, suffix: parsed.suffix, label: scene.statCallout },
+            {
+              fromValue: 0,
+              toValue: parsed.value,
+              suffix: parsed.suffix,
+              label: scene.statCallout,
+              /** OCTOBER 2026 — "$3.5 billion" counts to $3.5 billion, on the word that says it. */
+              ...(parsed.prefix ? { prefix: parsed.prefix } : {}),
+              decimals: parsed.decimals,
+              anchorWord: parsed.token,
+            },
             beatVoiceStartSec,
             dur,
             `Scene's stat callout ("${scene.statCallout}") is a number — animated as a counting-up statistic.`
@@ -84,15 +151,26 @@ export function planMotionGraphics(
     }
   }
 
-  const location = findWorldLocation([intent.visualLocation, intent.spokenText].join(" "));
-  if (location) {
+  const found = findWorldLocation([intent.visualLocation, intent.spokenText].join(" "));
+  const location = found?.loc ?? null;
+  if (found && location) {
     out.push(
       graphic(
         "map",
-        { locationName: location.name, normX: location.normX, normY: location.normY },
+        {
+          locationName: location.name,
+          normX: location.normX,
+          normY: location.normY,
+          /** OCTOBER 2026 — the real place: drawn on the real map, its country highlighted, the camera moving in. */
+          lon: location.lon,
+          lat: location.lat,
+          iso3: location.iso3,
+          anchorWord: found.keyword.split(/\s+/)[0],
+        },
         beatVoiceStartSec,
-        dur,
-        `Beat references a recognized location ("${location.name}") — shown as a pulsing marker on a world map.`
+        /** The camera needs time to travel and the place to be read: a little longer than a card. */
+        Math.max(3, Math.min(beatVoiceDurationSec, 4.5)),
+        `Beat references a recognized location ("${location.name}") — shown on the world map, the camera moving in to it.`
       )
     );
   }
@@ -126,8 +204,31 @@ export function planMotionGraphics(
     }
   }
 
+  /**
+   * OCTOBER 2026 — a chart only when the narration states the numbers. The years and values are
+   * the script's own; the chart draws them on a real axis (`line_chart`, the renderer's own name).
+   */
+  const series = yearSeriesFromText(intent.spokenText);
   const chartSignal = CHART_SIGNALS.find((s) => intent.spokenText.toLowerCase().includes(s));
-  if (chartSignal) {
+  if (series) {
+    const unit = series.unit === "%" ? "%" : series.unit;
+    out.push(
+      graphic(
+        "line_chart",
+        {
+          title: intent.visualSubject?.trim() || chartSignal || "",
+          series: series.series,
+          ...(unit ? { suffix: unit } : {}),
+          ...(series.prefix ? { prefix: series.prefix } : {}),
+          decimals: series.decimals,
+          anchorWord: series.firstToken,
+        },
+        beatVoiceStartSec,
+        Math.max(3.5, Math.min(beatVoiceDurationSec, 6)),
+        `Narration states ${series.series.length} values over time (${series.series.map((p) => p.label).join(", ")}) — drawn as a line chart.`
+      )
+    );
+  } else if (chartSignal) {
     out.push(
       graphic(
         "chart",
@@ -193,7 +294,12 @@ export function planMotionGraphics(
     out.push(
       graphic(
         "lower_third",
-        { name: person, label: person, ...(brandOrCompany ? { subtitle: brandOrCompany } : {}) },
+        {
+          name: person,
+          label: person,
+          ...(brandOrCompany ? { subtitle: brandOrCompany } : {}),
+          anchorWord: person.split(/\s+/)[0],
+        },
         beatVoiceStartSec,
         /** Long enough to read a name and a role without outstaying the sentence. */
         Math.max(2.5, Math.min(beatVoiceDurationSec, 4)),
@@ -215,7 +321,7 @@ export function planMotionGraphics(
     out.push(
       graphic(
         "date_card",
-        { text: spokenYear[0] },
+        { text: spokenYear[0], anchorWord: spokenYear[0] },
         beatVoiceStartSec,
         Math.max(2, Math.min(beatVoiceDurationSec, 3)),
         `Beat states a year ("${spokenYear[0]}") with no dated event to place on a timeline — shown as a date card.`
@@ -235,7 +341,7 @@ export function planMotionGraphics(
     out.push(
       graphic(
         "location_card",
-        { locationName: namedPlace, label: namedPlace },
+        { locationName: namedPlace, label: namedPlace, anchorWord: namedPlace.split(/[\s,]+/)[0] },
         beatVoiceStartSec,
         Math.max(2, Math.min(beatVoiceDurationSec, 3)),
         `Beat names a place ("${namedPlace}") that is not on the world-map list — shown as a location card.`

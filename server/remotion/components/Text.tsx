@@ -30,7 +30,7 @@ import {
   type CaptionWord,
 } from "./animation";
 import { typedCount, typedLength } from "./typewriter";
-import { anchorGeometry } from "../../captionLayout";
+import { anchorGeometry, maxCharsPerLine, wrapWordsBalanced } from "../../captionLayout";
 
 export type TextStyleLike = {
   fontFamily?: string;
@@ -59,7 +59,8 @@ export type WordTiming = CaptionWord;
 /** Where the layout engine decided this element goes, in pixels. */
 export type ResolvedLayout = { x: number; y: number; width: number; height: number };
 
-const DEFAULT_FONT = "DejaVu Sans, Liberation Sans, sans-serif";
+/** OCTOBER 2026 — Inter is bundled (remotion/fonts.ts); DejaVu stays behind it, the face `measureText` assumes. */
+const DEFAULT_FONT = "Inter, DejaVu Sans, Liberation Sans, sans-serif";
 const DEFAULT_HIGHLIGHT = "#ffd54a";
 
 /**
@@ -87,13 +88,13 @@ export function positionStyle(
     return {
       justifyContent: "flex-start",
       alignItems: "center",
-      paddingTop: frame.heightPx * anchor.topPct,
+      paddingTop: Math.round(frame.heightPx * anchor.topPct),
     };
   }
   return {
     justifyContent: "flex-end",
     alignItems: anchor.leftPct != null ? "flex-start" : "center",
-    paddingBottom: frame.heightPx * (anchor.bottomPct ?? 0),
+    paddingBottom: Math.round(frame.heightPx * (anchor.bottomPct ?? 0)),
     ...(anchor.leftPct != null
       ? {
           paddingLeft: frame.widthPx * anchor.leftPct,
@@ -101,6 +102,26 @@ export function positionStyle(
         }
       : {}),
   };
+}
+
+/**
+ * OCTOBER 2026 — the plate's colour WITH the style's opacity.
+ *
+ * `DEFAULT_CAPTION_STYLE` says `backgroundColor: "black", backgroundOpacity: 0.45`, and the colour
+ * used to win outright: every default caption sat on a solid black slab. A named or hex colour now
+ * takes the opacity; a colour that already carries its own alpha (`rgba(…)`, `hsla(…)`) is kept.
+ */
+export function plateColour(colour: string | undefined, opacity: number): string {
+  const a = Math.max(0, Math.min(1, opacity)).toFixed(3);
+  const c = (colour ?? "black").trim().toLowerCase();
+  const named: Record<string, [number, number, number]> = { black: [0, 0, 0], white: [255, 255, 255] };
+  if (named[c]) return `rgba(${named[c]!.join(",")},${a})`;
+  const hex = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/);
+  if (hex) {
+    const h = hex[1]!.length === 3 ? [...hex[1]!].map((x) => x + x).join("") : hex[1]!;
+    return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${a})`;
+  }
+  return colour!;
 }
 
 /**
@@ -112,7 +133,7 @@ export function positionStyle(
  * is a soft drop shadow — without it, white text on bright archival footage is unreadable, which is
  * the same reason the ASS route gives an un-boxed style an outline.
  */
-function boxStyle(style: TextStyleLike): React.CSSProperties {
+function boxStyle(style: TextStyleLike, inLayoutBox = false): React.CSSProperties {
   const outlineWidth = style.outlineWidthPx ?? 0;
   const outlineColour = style.outlineColor ?? "rgba(0,0,0,0.9)";
   const outline =
@@ -132,17 +153,28 @@ function boxStyle(style: TextStyleLike): React.CSSProperties {
     fontFamily: style.fontFamily ?? DEFAULT_FONT,
     fontWeight: style.fontWeight ?? 700,
     fontStyle: style.italic ? "italic" : "normal",
-    lineHeight: style.lineHeight ?? 1.25,
+    /** OCTOBER 2026 — whole pixels, so a translucent plate has crisp edges wherever it sits. */
+    lineHeight: `${Math.round(style.fontSizePx * (style.lineHeight ?? 1.25))}px`,
     letterSpacing: style.letterSpacingEm != null ? `${style.letterSpacingEm}em` : undefined,
     textAlign: style.align ?? "center",
-    maxWidth: `${(style.maxWidthPct ?? 0.84) * 100}%`,
-    padding: style.backgroundOpacity > 0 ? "0.35em 0.6em" : 0,
+    /**
+     * OCTOBER 2026 — THE ROOT OF THE CAPTION-BOX BUG. A caption the layout engine moved is drawn
+     * inside the box it measured for it, and the 84% limit was applied again INSIDE that box: the
+     * plate came out 16% narrower than its own text and the words ran past its edges. The lines are
+     * already fixed by the frame's character budget, so inside a measured box there is no second limit.
+     */
+    maxWidth: inLayoutBox ? "none" : `${(style.maxWidthPct ?? 0.84) * 100}%`,
+    /**
+     * OCTOBER 2026 — the plate is as wide as its longest line: the lines are fixed by
+     * `wrapWordsBalanced` and drawn unwrapped, so this block shrinks to them instead of stretching
+     * to `maxWidth`. The padding is the one `measureText` assumes (0.35em / 0.6em).
+     */
+    width: "fit-content",
+    boxSizing: "border-box",
+    padding: style.backgroundOpacity > 0 ? `${Math.round(style.fontSizePx * 0.35)}px ${Math.round(style.fontSizePx * 0.6)}px` : 0,
     borderRadius: 6,
     backgroundColor:
-      style.backgroundOpacity > 0
-        ? style.backgroundColor ??
-          `rgba(0,0,0,${Math.max(0, Math.min(1, style.backgroundOpacity)).toFixed(3)})`
-        : "transparent",
+      style.backgroundOpacity > 0 ? plateColour(style.backgroundColor, style.backgroundOpacity) : "transparent",
     textShadow: [outline, shadow].filter(Boolean).join(", ") || undefined,
   };
 }
@@ -153,22 +185,47 @@ function boxStyle(style: TextStyleLike): React.CSSProperties {
  * A highlight is a COLOUR change and never a size change: growing the active word reflows the line
  * on every syllable, and the whole caption jitters.
  */
+/**
+ * OCTOBER 2026 — tokens drawn on the lines `wrapWordsBalanced` fixed, each line unwrapped, words
+ * separated by a real space. (Every word used to carry a right margin — the last one too — so the
+ * plate always ran 0.28em past the text on the right and the line sat off-centre in it.)
+ */
+const Lines: React.FC<{
+  lines: number[][];
+  render: (index: number) => React.ReactNode;
+}> = ({ lines, render }) => (
+  <>
+    {lines.map((line, l) => (
+      <div key={l} style={{ whiteSpace: "nowrap" }}>
+        {line.map((i, k) => (
+          <React.Fragment key={i}>
+            {k > 0 ? " " : null}
+            {render(i)}
+          </React.Fragment>
+        ))}
+      </div>
+    ))}
+  </>
+);
+
 const Words: React.FC<{
   words: CaptionWord[];
+  lines: number[][];
   absoluteSec: number;
   style: TextStyleLike;
   mode: string;
   emphasisIndices: readonly number[];
   /** 0..1 — how much of the chunk a progressive animation has revealed. */
   reveal: number;
-}> = ({ words, absoluteSec, style, mode, emphasisIndices, reveal }) => {
+}> = ({ words, lines, absoluteSec, style, mode, emphasisIndices, reveal }) => {
   const highlights = mode === "karaoke" || mode === "highlight_word";
   const visibleCount = Math.ceil(words.length * reveal);
 
   return (
-    <>
-      {words.map((w, i) => {
-        if (reveal < 1 && i >= visibleCount) return null;
+    <Lines
+      lines={lines}
+      render={(i) => {
+        const w = words[i]!;
         const spoken = absoluteSec >= w.startSec && absoluteSec < w.endSec;
         const emphasised = emphasisIndices.includes(i);
         const colour = emphasised
@@ -178,48 +235,61 @@ const Words: React.FC<{
             : style.color;
         return (
           <span
-            key={`${w.word}-${i}`}
             style={{
               color: colour,
-              marginRight: "0.28em",
               /** Emphasis is weight, not size — same anti-jitter rule as the highlight. */
               fontWeight: emphasised ? 900 : undefined,
+              /** A word not yet revealed keeps its place, so the plate does not grow while it reveals. */
+              visibility: reveal < 1 && i >= visibleCount ? "hidden" : undefined,
             }}
           >
             {w.word}
           </span>
         );
-      })}
-    </>
+      }}
+    />
   );
 };
 
-/** Plain text, revealed progressively when the animation asks for it. */
-const PlainText: React.FC<{ text: string; animation: string; reveal: number }> = ({
-  text,
+/** Plain text, on its fixed lines, revealed progressively when the animation asks for it. */
+const PlainText: React.FC<{ tokens: string[]; lines: number[][]; animation: string; reveal: number }> = ({
+  tokens,
+  lines,
   animation,
   reveal,
 }) => {
-  if (reveal >= 1) return <>{text}</>;
-  if (animation === "character_reveal" || animation === "type_on") {
-    return <>{text.slice(0, Math.ceil(text.length * reveal))}</>;
+  /** Characters before each token, so a character-wise reveal runs across the lines in reading order. */
+  const before: number[] = [];
+  let total = 0;
+  for (const t of tokens) {
+    before.push(total);
+    total += [...t].length + 1;
   }
-  /** RONDE 656 — the untyped rest is laid out but invisible, so the line does not grow as it types. */
-  if (animation === "typewriter") {
-    const chars = [...text];
-    const shown = Math.round(chars.length * reveal);
-    return (
-      <>
-        {chars.slice(0, shown).join("")}
-        <span style={{ visibility: "hidden" }}>{chars.slice(shown).join("")}</span>
-      </>
-    );
-  }
-  if (animation === "word_reveal") {
-    const words = text.split(/\s+/);
-    return <>{words.slice(0, Math.ceil(words.length * reveal)).join(" ")}</>;
-  }
-  return <>{text}</>;
+  const byChar = animation === "character_reveal" || animation === "type_on" || animation === "typewriter";
+  const shownChars = animation === "typewriter" ? Math.round(total * reveal) : Math.ceil(total * reveal);
+  const shownWords = Math.ceil(tokens.length * reveal);
+  return (
+    <Lines
+      lines={lines}
+      render={(i) => {
+        const t = tokens[i]!;
+        if (reveal >= 1) return t;
+        if (byChar) {
+          /** RONDE 656 — the untyped rest is laid out but invisible, so the line does not grow as it types. */
+          const chars = [...t];
+          const shown = Math.max(0, Math.min(chars.length, shownChars - before[i]!));
+          return (
+            <>
+              {chars.slice(0, shown).join("")}
+              <span style={{ visibility: "hidden" }}>{chars.slice(shown).join("")}</span>
+            </>
+          );
+        }
+        if (animation === "word_reveal") return <span style={{ visibility: i < shownWords ? undefined : "hidden" }}>{t}</span>;
+        return t;
+      }}
+    />
+  );
 };
 
 export const TextElement: React.FC<{
@@ -307,10 +377,15 @@ const TextBody: React.FC<
   /** Where we are in the VIDEO, so a word's own start/end compares directly. */
   const absoluteSec = (chunkFromFrame + frame) / fps;
 
+  /** OCTOBER 2026 — the lines, fixed by the same character budget the layout engine measured with. */
+  const maxChars = maxCharsPerLine(style as never, { widthPx: compositionWidth, heightPx: compositionHeight });
+  const tokens = chunkWords.length > 0 ? chunkWords.map((w) => w.word) : text.trim().split(/\s+/).filter(Boolean);
+  const lines = wrapWordsBalanced(tokens, maxChars);
+
   const inner = (
     <div
       style={{
-        ...boxStyle(style),
+        ...boxStyle(style, Boolean(layout)),
         opacity: state.opacity,
         transform:
           `translate(${state.translateX}px, ${state.translateY}px) scale(${state.scale})`,
@@ -324,6 +399,7 @@ const TextBody: React.FC<
       {chunkWords.length > 0 ? (
         <Words
           words={chunkWords}
+          lines={lines}
           absoluteSec={absoluteSec}
           style={style}
           mode={mode ?? "sentence"}
@@ -331,7 +407,7 @@ const TextBody: React.FC<
           reveal={reveal}
         />
       ) : (
-        <PlainText text={text} animation={animation} reveal={reveal} />
+        <PlainText tokens={tokens} lines={lines} animation={animation} reveal={reveal} />
       )}
     </div>
   );
@@ -348,9 +424,10 @@ const TextBody: React.FC<
         <div
           style={{
             position: "absolute",
-            left: layout.x,
-            top: layout.y,
-            width: layout.width,
+            /** OCTOBER 2026 — whole pixels: a translucent plate at a fractional position loses an edge row. */
+            left: Math.round(layout.x),
+            top: Math.round(layout.y),
+            width: Math.round(layout.width),
             display: "flex",
             justifyContent: style.align === "left" ? "flex-start" : "center",
           }}

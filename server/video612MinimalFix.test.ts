@@ -827,7 +827,9 @@ describe("L. an approval that rests on a guess about who is on screen is refused
   it("the refusal is applied to fresh and to stored verdicts alike", () => {
     const GATE = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
     expect(GATE).toContain("storedRaw ? refuseGuessedIdentity(storedRaw, beatText, params.anchors?.subject) : null");
-    expect(GATE).toContain("const judgement = refuseGuessedIdentity(judgementAsGiven, beatText, params.anchors?.subject);");
+    // OCTOBER 2026: the subject-and-situation rule runs first; the identity refusal still sees every fresh verdict.
+    expect(GATE).toContain("const judgementAfterSituation = situationRule(judgementAsGiven, parsed);");
+    expect(GATE).toContain("const judgement = refuseGuessedIdentity(judgementAfterSituation, beatText, params.anchors?.subject);");
   });
 });
 

@@ -39,6 +39,9 @@ import {
   listActiveRenderJobsForVideo,
   listRenderJobsForVideo,
   saveVideoTimeline,
+  recordTimelineSnapshot,
+  listTimelineSnapshots,
+  getTimelineSnapshot,
 } from "./db";
 import { requireVideoAccess } from "./videoAccess";
 import { timelineFromEditorScenes, timelineRecoverySummary } from "./timelineFromManifest";
@@ -61,7 +64,7 @@ import {
   validateTimeline,
   type TimelineIssue,
 } from "./timelineValidator";
-import { TIMELINE_SCHEMA_VERSION, type ProjectTimeline } from "./projectTimeline";
+import { TIMELINE_SCHEMA_VERSION, captionTrack, videoTrack, type ProjectTimeline } from "./projectTimeline";
 import {
   formatCandidateSearch,
   rankReplacementCandidates,
@@ -270,6 +273,8 @@ export const timelineRouter = router({
         videoId: z.number().int().positive(),
         timeline: timelinePayload,
         expectedTimelineVersion: z.number().int().min(0),
+        /** What made this save, for the version history ("autosave", "AI: …"). */
+        label: z.string().max(120).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -337,6 +342,13 @@ export const timelineRouter = router({
         `[Timeline] video=${input.videoId} saved version ${storedVersion} → ${next.timelineVersion} ` +
           `by user=${ctx.user.id} issues=${validation.issues.length}`
       );
+      await recordTimelineSnapshot({
+        videoId: input.videoId,
+        timelineVersion: next.timelineVersion,
+        timeline: next.timeline,
+        label: input.label?.trim() || "save",
+        userId: ctx.user.id,
+      });
       return {
         ok: true as const,
         timelineVersion: next.timelineVersion,
@@ -528,27 +540,8 @@ export const timelineRouter = router({
         );
       }
 
-      const { getAllMediaArchives, listMediaArchiveAssetsPaginated } = await import("./db");
       const { editorArchiveMediaUrl } = await import("./archiveMediaStream");
-
-      /**
-       * Every archive this deployment has, not one chosen here.
-       *
-       * Which archive a replacement should come from is an editorial question, and the person
-       * choosing is better placed to answer it than a heuristic — so the pool is everything and
-       * the ranking sorts it.
-       */
-      const archives = await getAllMediaArchives();
-      const slugById = new Map<number, string>(archives.map((a) => [a.id, a.slug ?? "archive"]));
-      const pool: Awaited<ReturnType<typeof listMediaArchiveAssetsPaginated>>["items"] = [];
-      for (const archive of archives) {
-        const page = await listMediaArchiveAssetsPaginated(archive.id, {
-          limit: CANDIDATE_POOL_PER_ARCHIVE,
-          offset: 0,
-          ...(input.search?.trim() ? { search: input.search.trim() } : {}),
-        });
-        pool.push(...page.items);
-      }
+      const { pool, slugById } = await archiveCandidatePool(input.search);
 
       const ranked = rankReplacementCandidates(
         pool,
@@ -674,36 +667,278 @@ export const timelineRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       requireVideoAccess(await getVideoById(input.videoId), ctx);
-      const { getMediaArchiveAssetById, getMediaArchiveById } = await import("./db");
-      const asset = await getMediaArchiveAssetById(input.archiveAssetId);
-      if (!asset) {
-        throw editorError("ASSET_NOT_REHYDRATABLE", "that archive asset does not exist", "NOT_FOUND");
-      }
-      const archive = await getMediaArchiveById(asset.archiveId);
-      const { editorArchiveMediaUrl } = await import("./archiveMediaStream");
-
-      const loaded = await loadTimeline(input.videoId);
-      const replaced = replaceTimelineClipSource({
-        timeline: loaded.timeline,
+      return replaceClipWithArchiveAsset({
+        videoId: input.videoId,
         clipId: input.clipId,
-        source: {
-          provider: archive?.slug?.trim() || "archive",
-          archiveAssetId: asset.id,
-          canonicalUrl: editorArchiveMediaUrl(asset.id, { storageUrl: asset.storageUrl }),
-          title: asset.title ?? undefined,
-        },
+        archiveAssetId: input.archiveAssetId,
+        expectedVersion: input.expectedTimelineVersion,
+        userId: ctx.user.id,
       });
-      if (!replaced.ok) throw editorError("TIMELINE_INVALID", replaced.reason, "NOT_FOUND");
+    }),
+
+  /** The kept versions of this video's timeline, newest first. */
+  versions: protectedProcedure
+    .input(z.object({ videoId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+      return { versions: await listTimelineSnapshots(input.videoId) };
+    }),
+
+  /**
+   * Go back to a kept version. Saved as a NEW version (the old content under a new number), so
+   * the version check still means what it says and the restore itself can be undone.
+   */
+  restoreVersion: protectedProcedure
+    .input(
+      z.object({
+        videoId: z.number().int().positive(),
+        snapshotId: z.number().int().positive(),
+        expectedTimelineVersion: z.number().int().min(0),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+      const snapshot = await getTimelineSnapshot(input.videoId, input.snapshotId);
+      if (!snapshot) throw editorError("TIMELINE_INVALID", "that version is not kept for this video", "NOT_FOUND");
+      const parsed = parseStoredTimeline(snapshot.timeline);
+      if (!parsed || !storedTimelineIsReadable(parsed)) {
+        throw editorError("TIMELINE_INVALID", "that version cannot be opened by this version of FastVid", "CONFLICT");
+      }
+      const stored = await getStoredTimeline(input.videoId);
       return persistEdited({
         videoId: input.videoId,
         expectedVersion: input.expectedTimelineVersion,
-        storedVersion: loaded.timelineVersion,
-        timeline: replaced.timeline,
+        storedVersion: stored?.timelineVersion ?? 0,
+        timeline: parsed,
         userId: ctx.user.id,
-        what: `clip ${input.clipId} → archive asset ${asset.id}`,
+        what: `restore v${snapshot.timelineVersion}`,
+      });
+    }),
+
+  /**
+   * Replace a shot automatically: the same archive candidates the Replace panel ranks, each asked
+   * the Visual Judge against the narration under the slot, and the first that fits takes the slot.
+   * The rest of the video is untouched; the slot keeps its place and length.
+   */
+  autoReplaceClip: protectedProcedure
+    .input(
+      z.object({
+        videoId: z.number().int().positive(),
+        clipId: z.string().min(1).max(200),
+        expectedTimelineVersion: z.number().int().min(0),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const video = await getVideoById(input.videoId);
+      requireVideoAccess(video, ctx);
+      const loaded = await loadTimeline(input.videoId);
+      const context = replacementContextFor(loaded.timeline, input.clipId);
+      if (!context) throw editorError("TIMELINE_INVALID", `no video clip with id ${input.clipId}`, "NOT_FOUND");
+      const clip = videoTrack(loaded.timeline).find((c) => c.id === input.clipId)!;
+      const { pool, slugById } = await archiveCandidatePool();
+      const { editorArchiveMediaUrl } = await import("./archiveMediaStream");
+      const ranked = rankReplacementCandidates(
+        pool,
+        context,
+        (asset) => ({
+          previewUrl: editorArchiveMediaUrl(asset.id, { storageUrl: asset.storageUrl }),
+          thumbnailUrl: editorArchiveMediaUrl(asset.id, { storageUrl: asset.storageUrl }),
+          provider: slugById.get(asset.archiveId) ?? "archive",
+        }),
+        AUTO_REPLACE_LOOKS
+      );
+      const beatText = narrationUnder(loaded.timeline, input.clipId);
+      const chosen = await firstCandidateTheJudgeAccepts({
+        candidates: ranked.candidates.map((c) => c.archiveAssetId),
+        pool,
+        beatText,
+        videoTitle: video?.title ?? undefined,
+        sceneIndex: clip.sceneIndex ?? 0,
+        beatIndex: clip.beatIndex ?? 0,
+      });
+      console.log(
+        `[AutoReplace] video=${input.videoId} clip=${input.clipId} looked=${chosen.looked} ` +
+          `chosen=${chosen.assetId ?? "none"} (${chosen.why})`
+      );
+      if (chosen.assetId == null) {
+        throw editorError("ASSET_NOT_REHYDRATABLE", `no archive shot fits this slot — ${chosen.why}`, "NOT_FOUND");
+      }
+      const result = await replaceClipWithArchiveAsset({
+        videoId: input.videoId,
+        clipId: input.clipId,
+        archiveAssetId: chosen.assetId,
+        expectedVersion: input.expectedTimelineVersion,
+        userId: ctx.user.id,
+        what: `auto-replace ${input.clipId} → archive asset ${chosen.assetId}`,
+      });
+      return { ...result, archiveAssetId: chosen.assetId, verdict: chosen.why };
+    }),
+
+  /**
+   * An instruction in words ("make the intro faster", "subtitles smaller") turned into editor
+   * operations. Nothing is saved or rendered here: the editor applies the operations to its draft
+   * through the same edits a person's clicks use, so the change is undoable and autosaved.
+   */
+  aiEdit: protectedProcedure
+    .input(
+      z.object({
+        videoId: z.number().int().positive(),
+        instruction: z.string().min(2).max(500),
+        timeline: timelinePayload,
+        selectedId: z.string().max(200).optional(),
+        playheadSec: z.number().min(0).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+      const { planEditorOps } = await import("./editorAssistant");
+      return planEditorOps({
+        instruction: input.instruction,
+        timeline: input.timeline as unknown as ProjectTimeline,
+        selectedId: input.selectedId,
+        playheadSec: input.playheadSec,
       });
     }),
 });
+
+/** How many archive candidates an automatic replacement shows the Visual Judge, at most. */
+const AUTO_REPLACE_LOOKS = 6;
+
+/**
+ * Ask the Visual Judge about each candidate in ranked order; the first that FITS wins. When no
+ * look was possible for any (no vision provider), the best-ranked candidate the judge did not
+ * refuse is used, and the reason says so.
+ */
+export async function firstCandidateTheJudgeAccepts(params: {
+  candidates: number[];
+  pool: Array<{ id: number; storageUrl: string | null; storageKey: string | null; mimeType: string | null; mediaType: string }>;
+  beatText: string;
+  videoTitle?: string;
+  sceneIndex: number;
+  beatIndex: number;
+}): Promise<{ assetId: number | null; looked: number; why: string }> {
+  if (params.candidates.length === 0) return { assetId: null, looked: 0, why: "no archive candidate passes the technical filter" };
+  const fs = await import("fs");
+  const os = await import("os");
+  const path = await import("path");
+  const { loadArchiveAssetFile } = await import("./archiveAssetLoad");
+  const { judgePicture } = await import("./visualJudge");
+  const { createBeatImageGateState } = await import("./beatImageRelevanceGate");
+  const { createBeatRelevanceLedger } = await import("./beatVisualRelevance");
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-autoreplace-"));
+  const state = createBeatImageGateState();
+  const ledger = createBeatRelevanceLedger();
+  let fallback: number | null = null;
+  let looked = 0;
+  try {
+    for (const id of params.candidates) {
+      const asset = params.pool.find((a) => a.id === id);
+      if (!asset) continue;
+      const loaded = await loadArchiveAssetFile(asset as Parameters<typeof loadArchiveAssetFile>[0]);
+      if (!loaded.ok) continue;
+      try {
+        looked++;
+        const { decision, verdict } = await judgePicture({
+          clipPath: loaded.result.localPath,
+          contentKey: `curated:asset:${id}`,
+          ctx: {
+            sceneIndex: params.sceneIndex,
+            beatIndex: params.beatIndex,
+            beatText: params.beatText,
+            videoTitle: params.videoTitle,
+          },
+          workDir,
+          state,
+          ledger,
+          route: "editor_auto_replace",
+          finalSay: true,
+        });
+        if (verdict.decision === "ACCEPT" && decision.verdict === "fits") {
+          return { assetId: id, looked, why: `the Visual Judge says it fits: ${decision.reason || "fits"}` };
+        }
+        if (verdict.decision === "ACCEPT" && fallback == null) fallback = id;
+      } finally {
+        loaded.result.cleanup?.();
+      }
+    }
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+  if (fallback != null) return { assetId: fallback, looked, why: "no definite fit; best-ranked shot the judge did not refuse" };
+  return { assetId: null, looked, why: "the Visual Judge refused every candidate" };
+}
+
+/**
+ * The archive pool a replacement is chosen from: every archive's assets, narrowed by `search` when
+ * given. The ranking (`rankReplacementCandidates`) decides the order; this only gathers.
+ */
+async function archiveCandidatePool(search?: string) {
+  const { getAllMediaArchives, listMediaArchiveAssetsPaginated } = await import("./db");
+  const archives = await getAllMediaArchives();
+  const slugById = new Map<number, string>(archives.map((a) => [a.id, a.slug ?? "archive"]));
+  const pool: Awaited<ReturnType<typeof listMediaArchiveAssetsPaginated>>["items"] = [];
+  for (const archive of archives) {
+    const page = await listMediaArchiveAssetsPaginated(archive.id, {
+      limit: CANDIDATE_POOL_PER_ARCHIVE,
+      offset: 0,
+      ...(search?.trim() ? { search: search.trim() } : {}),
+    });
+    pool.push(...page.items);
+  }
+  return { pool, slugById };
+}
+
+/** Put an archive asset in a clip's slot and save it — the one replace route, manual or automatic. */
+async function replaceClipWithArchiveAsset(params: {
+  videoId: number;
+  clipId: string;
+  archiveAssetId: number;
+  expectedVersion: number;
+  userId: number;
+  what?: string;
+}) {
+  const { getMediaArchiveAssetById, getMediaArchiveById } = await import("./db");
+  const asset = await getMediaArchiveAssetById(params.archiveAssetId);
+  if (!asset) {
+    throw editorError("ASSET_NOT_REHYDRATABLE", "that archive asset does not exist", "NOT_FOUND");
+  }
+  const archive = await getMediaArchiveById(asset.archiveId);
+  const { editorArchiveMediaUrl } = await import("./archiveMediaStream");
+  const loaded = await loadTimeline(params.videoId);
+  const replaced = replaceTimelineClipSource({
+    timeline: loaded.timeline,
+    clipId: params.clipId,
+    source: {
+      provider: archive?.slug?.trim() || "archive",
+      archiveAssetId: asset.id,
+      canonicalUrl: editorArchiveMediaUrl(asset.id, { storageUrl: asset.storageUrl }),
+      title: asset.title ?? undefined,
+    },
+  });
+  if (!replaced.ok) throw editorError("TIMELINE_INVALID", replaced.reason, "NOT_FOUND");
+  return persistEdited({
+    videoId: params.videoId,
+    expectedVersion: params.expectedVersion,
+    storedVersion: loaded.timelineVersion,
+    timeline: replaced.timeline,
+    userId: params.userId,
+    what: params.what ?? `clip ${params.clipId} → archive asset ${asset.id}`,
+  });
+}
+
+/**
+ * The line of narration a clip runs under: every caption that overlaps it, shown or not. This is
+ * the sentence the Visual Judge asks a replacement to fit.
+ */
+function narrationUnder(timeline: ProjectTimeline, clipId: string): string {
+  const clip = videoTrack(timeline).find((c) => c.id === clipId);
+  if (!clip) return "";
+  return captionTrack(timeline)
+    .filter((c) => c.start < clip.timelineEnd && clip.timelineStart < c.end)
+    .map((c) => c.text)
+    .join(" ")
+    .trim();
+}
 
 /**
  * Validate, version-check and store — shared by the two targeted edits above.
@@ -754,6 +989,13 @@ async function persistEdited(params: {
     `[Timeline] video=${params.videoId} ${params.what} → version ${next.timelineVersion} ` +
       `by user=${params.userId}`
   );
+  await recordTimelineSnapshot({
+    videoId: params.videoId,
+    timelineVersion: next.timelineVersion,
+    timeline: next.timeline,
+    label: params.what,
+    userId: params.userId,
+  });
   return {
     ok: true as const,
     timelineVersion: next.timelineVersion,

@@ -486,6 +486,17 @@ export function unsupportedEffects(effects: readonly ClipEffect[] | undefined): 
  * always produced. That equality is asserted by a test, because it is what keeps the golden
  * render bit-for-bit identical.
  */
+/** MIN/MAX playback speed a clip may carry. */
+export const MIN_CLIP_SPEED = 0.25;
+export const MAX_CLIP_SPEED = 4;
+
+/** The speed the renderer plays a clip at: 1 for stills, for an absent value, or anything near 1. */
+export function clipPlaybackSpeed(clip: Pick<TimelineVideoClip, "kind" | "speed">): number {
+  if (clip.kind !== "video" || clip.speed == null || !Number.isFinite(clip.speed)) return 1;
+  const s = Math.max(MIN_CLIP_SPEED, Math.min(MAX_CLIP_SPEED, clip.speed));
+  return Math.abs(s - 1) < 0.001 ? 1 : s;
+}
+
 export function buildVideoFilter(
   clip: TimelineVideoClip,
   fmt: TimelineFormat,
@@ -500,6 +511,10 @@ export function buildVideoFilter(
 ): string {
   const t = clip.transform;
   const parts: string[] = [];
+
+  /** Speed first: every later filter (camera, effects) works on the frames as they will be seen. */
+  const speed = clipPlaybackSpeed(clip);
+  if (speed !== 1) parts.push(`setpts=(PTS-STARTPTS)/${speed.toFixed(4)}`);
 
   if (t?.fit === "crop" && t.crop) parts.push(cropChain(fmt, t.crop));
   else if (t?.fit === "cover") parts.push(coverChain(fmt, { x: t.positionX, y: t.positionY }));

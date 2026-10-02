@@ -48,6 +48,12 @@ export function easeOut(t: number): number {
   return 1 - Math.pow(1 - c, 3);
 }
 
+/** Ease-in-out cubic: a camera or a counter that starts and settles gently. */
+export function easeInOut(t: number): number {
+  const c = Math.max(0, Math.min(1, t));
+  return c < 0.5 ? 4 * c * c * c : 1 - Math.pow(-2 * c + 2, 3) / 2;
+}
+
 /**
  * A spring-ish overshoot for `pop` and `bounce`, computed in closed form.
  *

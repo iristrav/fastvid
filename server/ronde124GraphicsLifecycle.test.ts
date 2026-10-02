@@ -127,6 +127,8 @@ describe("A — every graphic type the planner can emit has an explicit renderer
       "progress_bar", "statistic_counter", "map", "timeline", "chart", "comparison",
       "animated_icon", "highlight_box", "arrow", "lower_third", "date_card",
       "location_card", "quote",
+      /** OCTOBER 2026 — the narration's own values over time, spelled with the renderer's name. */
+      "line_chart",
     ]);
   });
 

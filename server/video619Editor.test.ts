@@ -29,7 +29,7 @@ import {
 import { emptyTimeline, type ProjectTimeline, type TimelineVideoClip } from "./projectTimeline";
 import { NON_BLOCKING_ISSUES, validateTimeline } from "./timelineValidator";
 import { archiveAssetAsShot, ADDED_STILL_SHOT_SEC, ADDED_VIDEO_SHOT_SEC } from "./editorArchiveShot";
-import { LEFT_TO_EDITOR, leaveOnScreenTextToTheEditor } from "./onScreenTextDirector";
+const LEFT_TO_EDITOR = "left_to_editor";
 import { exampleAudioLoads, makeVoiceExample, resolvableExampleUrl } from "./voiceExamples";
 
 const shot = (id: string, start: number, end: number, extra: Partial<TimelineVideoClip> = {}): TimelineVideoClip => ({
@@ -205,37 +205,11 @@ describe("Video 619 — an archive asset as a hand-added shot", () => {
   });
 });
 
-describe("Video 619 — the made video carries subtitles and no other text", () => {
-  it("every other text and graphic is switched off, kept, and marked as left to the editor; captions and typed years stay on", () => {
-    const t = emptyTimeline(1);
-    const style = { fontSizePx: 40, color: "white", backgroundOpacity: 0, position: "bottom" } as const;
-    for (const track of t.tracks) {
-      if (track.kind === "CAPTIONS") track.captions.push({ id: "c", text: "hi", start: 0, end: 1, style });
-      if (track.kind === "TEXT") {
-        track.texts.push({ id: "t", text: "1945", start: 0, end: 1, style, animation: "typewriter" });
-        track.texts.push({ id: "n", text: "Churchill", start: 2, end: 3, style, animation: "fade" });
-      }
-      if (track.kind === "GRAPHICS") {
-        track.graphics.push({ id: "g", graphicType: "location", data: {}, start: 0, end: 1, label: "Berlin" });
-        track.graphics.push({ id: "d", graphicType: "date_card", data: { typewriter: true }, start: 4, end: 5, label: "1939" });
-      }
-    }
-    expect(leaveOnScreenTextToTheEditor(t)).toEqual({ texts: 1, graphics: 1 });
-    const on = new Set(["c", "t", "d"]);
-    for (const track of t.tracks) {
-      const els: Array<{ id: string; disabled?: boolean; disabledReason?: string }> =
-        track.kind === "TEXT" ? track.texts : track.kind === "GRAPHICS" ? track.graphics : track.kind === "CAPTIONS" ? track.captions : [];
-      for (const el of els) {
-        if (on.has(el.id)) expect(el.disabled ?? false).toBe(false);
-        else expect(el).toMatchObject({ disabled: true, disabledReason: LEFT_TO_EDITOR });
-      }
-    }
-  });
-
-  it("the pipeline applies it after the text director, and lays typewriter keys only under drawn text", () => {
+describe("the made video carries the text the director keeps", () => {
+  it("no step switches every text off for the editor any more; the director decides, the typing sound follows what is drawn", () => {
     const pipe = fs.readFileSync(path.join(__dirname, "cinematicPipeline.ts"), "utf8");
-    expect(pipe.indexOf("leaveOnScreenTextToTheEditor(timeline)")).toBeGreaterThan(pipe.indexOf("directOnScreenText(timeline"));
-    expect(pipe.indexOf("typewriterSfxClips(")).toBeGreaterThan(pipe.indexOf("leaveOnScreenTextToTheEditor(timeline)"));
+    expect(pipe).not.toContain("leaveOnScreenTextToTheEditor");
+    expect(pipe.indexOf("typewriterSfxClips(")).toBeGreaterThan(pipe.indexOf("directOnScreenText(timeline"));
     expect(pipe).toContain("typewriterSfxClips(textDirection.typewriter.filter((e) => drawnTexts.has(e.id)))");
   });
 

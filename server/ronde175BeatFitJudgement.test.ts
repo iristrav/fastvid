@@ -127,7 +127,7 @@ describe("RONDE 175 §3 — the judge is told what it is checking against", () =
     expect(narrationAt).toBeLessThan(prompt.indexOf("...formatAnchors(anchors),"));
   });
 
-  it("WHY it matters: the tie-break lets doubt through", () => {
+  it("OCTOBER 2026 — the tie-break no longer lets doubt through", () => {
     /**
      * The prompt ends "when you genuinely cannot tell, say it belongs". A vague question therefore
      * does not merely produce a vague answer — it produces an ALLOW. That is the wrong direction to
@@ -136,7 +136,13 @@ describe("RONDE 175 §3 — the judge is told what it is checking against", () =
      * The tie-break itself is deliberately NOT changed: reversing it would turn every uncertainty
      * into a refusal, and more empty beats is not better pictures.
      */
-    expect(gate()).toContain("When you genuinely cannot tell, say it belongs.");
+    /**
+     * OCTOBER 2026 — reversed, on the owner's rule after render 626 ("een persoon alleen is
+     * onvoldoende"; "judge unavailable → no adoption"): doubt is no longer an approval. An empty
+     * beat is searched again or fails the film honestly; a wrong picture shipped silently.
+     */
+    expect(gate()).not.toContain("When you genuinely cannot tell, say it belongs.");
+    expect(gate()).toContain("When you cannot tell whether it shows what the line");
   });
 
   it("the period is labelled as the FILM's, never as this shot's", () => {

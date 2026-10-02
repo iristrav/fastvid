@@ -74,7 +74,8 @@ describe("the judge is asked about one line of narration", () => {
   it("pins the decision to that line", () => {
     const p = prompt();
     expect(p).toContain("Then decide, about that ONE line of narration.");
-    expect(p).toContain("It BELONGS when a viewer would accept it under THAT LINE");
+    /** OCTOBER 2026 — the verdict has two named halves now; both must hold. */
+    expect(p).toContain("It BELONGS only when BOTH are true.");
   });
 
   /**
@@ -122,12 +123,20 @@ describe("the judge is asked about one line of narration", () => {
     expect(
       p,
       "without this, footage of the right person filmed at another moment reads as a mismatch"
-    ).toContain("even when it was filmed at");
+    ).toContain("filmed at a different moment");
+    /** OCTOBER 2026 (render 626) — and the named subject alone is no longer the whole answer. */
+    expect(p).toContain("NOT enough on their own: the frame must also show what the line says about them.");
   });
 
-  /** The three grounds are offered as alternatives, not as a set of requirements. */
-  it("states the grounds as alternatives", () => {
-    expect(prompt()).toContain("Any one of these is enough:");
+  /**
+   * OCTOBER 2026 — the grounds are still alternatives for HOW both halves can be true, but no
+   * single ground is "enough" on its own any more: render 626 approved a person in a car that way.
+   */
+  it("states the grounds as ways both halves hold, not as a single sufficient one", () => {
+    expect(prompt()).toContain("These are the ways both can be true:");
+    expect(prompt()).not.toContain("Any one of these is enough:");
+    expect(prompt()).toContain("subject_matches");
+    expect(prompt()).toContain("situation_matches");
   });
 
   /**
@@ -167,11 +176,14 @@ describe("nothing was made stricter", () => {
   });
 
   /** The fail-open rule. A judge that guesses "no" when unsure is a judge that empties beats. */
-  it("still fails open when the model cannot tell", () => {
-    expect(
-      prompt(),
-      "the gate no longer fails open — an unsure model now refuses pictures"
-    ).toContain("When you genuinely cannot tell, say it belongs.");
+  /**
+   * OCTOBER 2026 — the owner's decision this file used to guard against making by accident, now
+   * made on purpose: doubt is not a yes. A beat whose picture the editor cannot place looks for
+   * another candidate instead.
+   */
+  it("no longer fails open: when the model cannot tell, it does not belong", () => {
+    expect(prompt()).not.toContain("When you genuinely cannot tell, say it belongs.");
+    expect(prompt()).toContain("it does NOT belong.");
   });
 
   /** Every refusal clause, unchanged — this change adds one, it removes none. */

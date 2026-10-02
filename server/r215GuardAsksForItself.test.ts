@@ -144,10 +144,10 @@ describe("R215 §2 — 'nobody tried' and 'nothing to try against' are not the s
     expect(guard).toContain("const nothingToJudge = beatIndex == null ||");
   });
 
-  it("the suspension reaches the verdict through visionAvailable, beside the other two latches", () => {
-    expect(guard).toContain("!visionPipelineIsUnavailable()");
-    expect(guard).toContain("!dedup.beatImageGate?.askImpossible");
-    expect(guard).toContain("!nothingToJudge");
+  it("the suspension reaches the verdict through visionAvailable — and nothing to judge is its only cause", () => {
+    /** OCTOBER 2026 (render 625): an unreachable editor no longer suspends; see adoptionPolicy.ts. */
+    expect(guard).toContain("const visionAvailable = !nothingToJudge;");
+    expect(guard).not.toContain("!visionPipelineIsUnavailable() && !dedup.beatImageGate?.askImpossible");
   });
 
   it("IT IS NEVER SILENT — a suspended requirement is printed with its reason", () => {

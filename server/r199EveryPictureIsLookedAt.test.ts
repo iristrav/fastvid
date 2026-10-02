@@ -88,10 +88,16 @@ describe("R199 §1 — silence is not an answer", () => {
 /* ═══════════ 2. and the answer that emptied render 569 still passes ═══════════ */
 
 describe("R199 §2 — 'could not tell' is not 'never looked'", () => {
+  /**
+   * OCTOBER 2026 — the owner's chain is selected → reviewed → APPROVED → adopted for every
+   * photograph. Render 569's answer (adopt on UNCLEAR) was the right call for a rule that let
+   * silence in; render 626 showed what it costs. These routes now need the same yes as the funnel.
+   */
   it.each(["rescue_wikimedia", "subject_fallback", "archive_similar", "ai"])(
-    "%s still adopts on UNCLEAR, which is render 569's whole finding",
+    "%s no longer adopts on UNCLEAR — a photograph needs an approval",
     (source) => {
-      expect(guard(source, "UNCLEAR").allowed).toBe(true);
+      expect(guard(source, "UNCLEAR").allowed).toBe(false);
+      expect(guard(source, "APPROVED").allowed).toBe(true);
     }
   );
 
@@ -174,7 +180,9 @@ describe("R199 §4 — the refusal and the evidence line cannot disagree", () =>
     const cases: Array<[string, AdoptionVisionVerdict, boolean]> = [
       ["archive", "APPROVED", true],
       ["archive", "UNCLEAR", false],
-      ["rescue_wikimedia", "UNCLEAR", true],
+      /** OCTOBER 2026 — a rescue photograph enters on a yes only. */
+      ["rescue_wikimedia", "UNCLEAR", false],
+      ["rescue_wikimedia", "APPROVED", true],
       ["rescue_wikimedia", "REJECTED", false],
       ["rescue_wikimedia", "NOT_ASKED", false],
       ["fallback", "REJECTED", true],
@@ -231,9 +239,10 @@ describe("R199 §5 — tightening the rule without starving the render", () => {
     expect(RELEVANCE).toContain('return { outcome: "budget_spent" }');
   });
 
-  it("a render with no picture editor at all is still excused as a whole", () => {
-    // The one suspension that survives: `visionAvailable: false` is a fact about the environment,
-    // never about a clip, and RONDE 89's export gate still refuses the film such a render makes.
+  it("the pure rule still honours a suspension — which production now passes only for a slot with no sentence", () => {
+    // OCTOBER 2026 (render 625): `visionAvailable: false` is no longer passed for an unreachable
+    // editor (see visualJudgeRefusesPush: `const visionAvailable = !nothingToJudge`). The pure
+    // function keeps the parameter for that one case, so its semantics are unchanged here.
     expect(
       adoptionGuardVerdict({
         source: "rescue_wikimedia",
@@ -287,11 +296,13 @@ describe("R199b — 'never looked' stopped arriving dressed as 'could not tell'"
     expect(visionVerdictFromGate("unknown", true)).toBe("UNCLEAR");
   });
 
-  it("a model that WAS asked and failed is still an answer about the picture", () => {
+  it("a model that WAS asked and failed is still an answer about the picture — but not a yes", () => {
     // A timeout or an unparseable reply returns evaluated:true by design — the picture was seen
-    // and settled nothing. Reading that as "nobody looked" would empty montages on every outage.
+    // and settled nothing. It stays UNCLEAR (not NOT_ASKED), and since October 2026 an UNCLEAR
+    // photograph is not adopted; only the last-rung card still takes it.
     expect(visionVerdictFromGate("unknown", true)).toBe("UNCLEAR");
-    expect(guard("rescue_wikimedia", visionVerdictFromGate("unknown", true)).allowed).toBe(true);
+    expect(guard("rescue_wikimedia", visionVerdictFromGate("unknown", true)).allowed).toBe(false);
+    expect(guard("fallback", visionVerdictFromGate("unknown", true)).allowed).toBe(true);
   });
 
   it("a verdict with no evaluated flag behaves exactly as before", () => {
@@ -342,8 +353,12 @@ describe("R199b — an outage must never be able to empty a film", () => {
     const at = PIPE.indexOf("const visionAvailable =");
     expect(at).toBeGreaterThan(0);
     const block = PIPE.slice(at, at + 200);
-    expect(block).toContain("!visionPipelineIsUnavailable()");
-    expect(block).toContain("!dedup.beatImageGate?.askImpossible");
+    /**
+     * OCTOBER 2026 (render 625) — the outages no longer join into a suspension. An unreachable
+     * editor leaves NOT_ASKED, and NOT_ASKED adopts no photograph.
+     */
+    expect(block).toContain("const visionAvailable = !nothingToJudge;");
+    expect(block).not.toContain("askImpossible && !nothingToJudge");
   });
 
   it("and a suspended requirement still cannot make a picture count as verified", () => {

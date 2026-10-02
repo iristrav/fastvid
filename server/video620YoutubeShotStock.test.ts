@@ -181,10 +181,12 @@ describe("Video 620 — the render uses the stock", () => {
     expect(stockAt).toBeGreaterThan(0);
     expect(stockAt).toBeLessThan(claimAt);
     const block = src.slice(stockAt, src.indexOf("let clipStart =", stockAt));
-    expect(block).toContain('if (took.reason !== "download_failed")');
-    expect(block).toContain("youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, shotDur(s)))");
-    expect(block).toContain("recordProviderDownloadOutcome(sourcingCache, stockPath, ok");
-    expect(block).toContain("results.push(stockPath)");
+    expect(block).toContain('if (took.reason && took.reason !== "download_failed")');
+    expect(block).toContain("youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, momentDur(s)))");
+    // OCTOBER 2026 — several shots per beat, each filed and offered by `offerMoments` (youtubeMomentsAreJudged.test.ts).
+    expect(block).toContain("await offerMoments(videoId, title, row, took.shots,");
+    expect(src).toContain("recordProviderDownloadOutcome(sourcingCache, momentPath, ok");
+    expect(src).toContain("results.push(momentPath)");
   });
 
   it("the stock is let go with the render", () => {
@@ -242,7 +244,7 @@ describe("Video 620 — another shot of the same YouTube video may join the film
     expect(src).toContain("const used = assetUsedInVideo(dedup, identity);");
     const registry = read("server/visualDedupRegistry.ts");
     expect(registry).toContain('if (key && youtubeFragmentSecondsUsed(sets.usedContentKeys, key)) return "segment_overlap";');
-    expect(src).toContain("youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, shotDur(s))");
+    expect(src).toContain("youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, momentDur(s))");
     expect(src).toContain("if (youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, clipStart, clipDur)) {");
     const claim = src.indexOf("if (youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, clipStart, clipDur)) {");
     expect(claim).toBeLessThan(src.indexOf("if (!claimDownloadSlot()) {"));

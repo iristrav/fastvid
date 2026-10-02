@@ -126,6 +126,81 @@ export function recentUsageCounts(
   return counts;
 }
 
+/* ═══════════════════ OCTOBER 2026 — one footage must not fill the film ═══════════════════ */
+
+/**
+ * Renders 612 and 616 were refused at the very end — `ONE_FOOTAGE_FILLS_FILM` — because nothing
+ * earlier preferred anything else. Dedup forbids the same SECONDS twice; it says nothing against
+ * the same YouTube video coming back under every sentence in different seconds, and the moments a
+ * beat now gets from one video (`youtubeMoments.ts`) make that easier, not harder.
+ *
+ * So the film's own screen time is counted per footage as clips are pushed, and every beat's
+ * ranked list puts the candidates of a footage that already fills much of the film behind the
+ * others. A soft order, not a cap: nothing is refused, the picture editor still sees such a
+ * candidate when nothing else fits, and the delivery gate's 50% stays the last check.
+ */
+
+/** The footage a clip comes from: a YouTube video for any of its fragments; otherwise the clip itself. */
+export function footageKeyOf(contentKey: string | null | undefined): string | null {
+  const key = contentKey?.trim();
+  if (!key) return null;
+  const at = key.indexOf("@t");
+  return key.startsWith("youtube_cc:") && at > 0 ? key.slice(0, at) : key;
+}
+
+type FilmFootage = { byFootage: Map<string, number>; totalSec: number };
+/** Keyed by the render's dedup state, so it lives and dies with the render — no second registry. */
+const filmFootage = new WeakMap<object, FilmFootage>();
+
+/** A clip went on screen for `seconds`. Called at the one push point. */
+export function noteFootageOnScreen(film: object, contentKey: string | null | undefined, seconds: number): void {
+  const key = footageKeyOf(contentKey);
+  if (!key || !(seconds > 0)) return;
+  const f = filmFootage.get(film) ?? { byFootage: new Map<string, number>(), totalSec: 0 };
+  f.byFootage.set(key, (f.byFootage.get(key) ?? 0) + seconds);
+  f.totalSec += seconds;
+  filmFootage.set(film, f);
+}
+
+/**
+ * The share of the film's pictured seconds this footage already holds. Measured against at least
+ * `FILM_SHARE_FLOOR_SEC`, so the film's first clip does not read as "100% of the film".
+ */
+export const FILM_SHARE_FLOOR_SEC = 20;
+export function footageShareSoFar(film: object, contentKey: string | null | undefined): number {
+  const key = footageKeyOf(contentKey);
+  const f = filmFootage.get(film);
+  if (!key || !f) return 0;
+  return (f.byFootage.get(key) ?? 0) / Math.max(f.totalSec, FILM_SHARE_FLOOR_SEC);
+}
+
+/** Below this share a footage is not held back at all; from the second one it goes behind everything fresher. */
+export const FOOTAGE_SHARE_TIERS = [0.15, 0.3] as const;
+
+/**
+ * The beat's ranked candidates, with those whose footage already fills much of the film moved
+ * behind the rest. Stable: inside each tier the ranking is exactly what it was. `moved` names the
+ * candidates that lost places, for the log.
+ */
+export function preferLessFilledFootage(
+  ranked: readonly string[],
+  contentKeyOf: (path: string) => string | null | undefined,
+  film: object
+): { paths: string[]; moved: Array<{ path: string; share: number }> } {
+  if (ranked.length <= 1 || !filmFootage.get(film)) return { paths: [...ranked], moved: [] };
+  const tierOf = (share: number) => FOOTAGE_SHARE_TIERS.filter((t) => share >= t).length;
+  const rows = ranked.map((p, i) => {
+    const share = footageShareSoFar(film, contentKeyOf(p));
+    return { p, i, share, tier: tierOf(share) };
+  });
+  const sorted = [...rows].sort((a, b) => a.tier - b.tier || a.i - b.i);
+  const moved = sorted
+    .map((r, at) => ({ r, at }))
+    .filter(({ r, at }) => at > r.i)
+    .map(({ r }) => ({ path: r.p, share: r.share }));
+  return { paths: sorted.map((r) => r.p), moved };
+}
+
 /**
  * Prefer the less-used among candidates that already match: within each band of near-tied scores
  * (top of the band minus `bandWidth`), fewer recent same-subject uses first, then fewer uses of the

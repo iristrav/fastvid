@@ -53,7 +53,8 @@ describe("A — the judge may show the world an unfilmable line is about", () =>
     const REL = readFileSync(join(__dirname, "beatVisualRelevance.ts"), "utf8");
     const body = REL.slice(REL.indexOf("export function beatIdentityKey("));
     expect(body.slice(0, body.indexOf("\n}\n"))).toContain("parts.push(BEAT_JUDGE_RULES);");
-    expect(BEAT_JUDGE_RULES).toMatch(/^r650/);
+    // OCTOBER 2026 — bumped again when a person on screen stopped being a whole answer (render 626).
+    expect(BEAT_JUDGE_RULES).toMatch(/^r2610/);
     // Still one key per narration, and still empty when there is no narration to judge against.
     const ctx = { sceneIndex: 0, beatIndex: 0, beatText: "A line.", sceneText: "A scene.", videoTitle: "T" };
     expect(beatIdentityKey(ctx)).toBe(beatIdentityKey({ ...ctx, sceneIndex: 4 }));

@@ -42,7 +42,7 @@ import type { EDL, EditDecision } from "./cinematicEditingEngine/types";
 import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput } from "./aiDirector";
 import type { DirectorOutput } from "./aiDirector/types";
 import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
-import { directOnScreenText, leaveOnScreenTextToTheEditor, type TextDirection } from "./onScreenTextDirector";
+import { directOnScreenText, type TextDirection } from "./onScreenTextDirector";
 import { limitLongShots } from "./longShotLimit";
 import type { YoutubeSourceFacts } from "./youtubeShotLimit";
 import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
@@ -365,14 +365,13 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
         : undefined,
   });
   /**
-   * VIDEO 619 — texts and cards stay on the timeline switched off, ready for the editor to turn on;
-   * the subtitles and the typed years/reveals are drawn.
+   * The director above is the editor of on-screen text: names, places, years, cards and maps it
+   * keeps are in the made video, everything it switched off stays on the timeline (with its reason)
+   * for the person to switch on. The subtitles are drawn.
    */
-  const leftToEditor = leaveOnScreenTextToTheEditor(timeline);
   console.log(
-    `[OnScreenText] video=${params.videoId} subtitles and typed years in the made video ` +
-      `(typing=${textDirection.typewriter.length}); switched off for the editor: ` +
-      `texts=${leftToEditor.texts} graphics=${leftToEditor.graphics}`
+    `[OnScreenText] video=${params.videoId} in the made video: subtitles, ${textDirection.kept} text/graphic(s) ` +
+      `(typing=${textDirection.typewriter.length}); switched off by the director: ${textDirection.disabled.length}`
   );
   /**
    * RONDE 656 — the keys are heard under text that types: the typewriter recording on the SFX track,

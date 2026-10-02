@@ -709,9 +709,11 @@ const handleGetStarted = () => {
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {[
               { label: "1 min", value: "1", icon: "🧪", title: "Quick test", useCases: ["Pipeline check", "Topic test", "Visual QA"] },
+              { label: "3–5 min", value: "5", icon: "⚡", title: "Short doc", useCases: ["Explainer", "Single event", "Profile"] },
               { label: "8–10 min", value: "8-10", icon: "🎬", title: "Standard doc", useCases: ["Biography", "Company story", "Science explainer"] },
               { label: "10–15 min", value: "10-15", icon: "📈", title: "Deep-dive", useCases: ["True crime", "Geopolitics", "Tech analysis"] },
               { label: "15–20 min", value: "15-20", icon: "🔍", title: "Extended", useCases: ["Investigations", "Historical arcs", "Multi-act story"] },
+              { label: "30–60 min", value: "30", icon: "🎞️", title: "Long-form", useCases: ["Full history", "Series episode", "Deep investigation"] },
             ].map((opt) => (
               <div
                 key={opt.value}

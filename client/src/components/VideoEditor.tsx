@@ -43,18 +43,38 @@ import {
   removeTextElement,
   removeVideoClip,
   setAllCaptionsShown,
+  setAllCaptionsStyle,
+  setAudioClip,
+  setAudioClipTiming,
   setTextElementShown,
+  setTextElementTiming,
   setVideoClipLength,
   setVideoClipSourceIn,
+  setVideoClipSpeed,
+  duplicateVideoClip,
   splitVideoClip,
+  type AudioPatch,
   type EditableTimeline,
   type EditableVideoClip,
 } from "@shared/timelineEdits";
+import {
+  EDITOR_EFFECTS,
+  EDITOR_TRANSITIONS,
+  applyEditorOps,
+  cameraPreset,
+  withEffect,
+} from "@shared/editorCommands";
 import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
   Captions,
+  Copy,
+  History as HistoryIcon,
+  Sparkles,
+  Wand2,
+  ZoomIn,
+  ZoomOut,
   Eye,
   EyeOff,
   Film,
@@ -115,6 +135,8 @@ type VideoClip = {
   sourceKind?: "archive" | "ai_generated" | "stock" | "unknown";
   effects?: Array<{ effectType: string; intensity: number; reason?: string }>;
   transitionInSec?: number;
+  /** Playback speed of a video shot; absent = 1×. */
+  speed?: number;
 };
 
 /** RONDE 148 §12 — a graphic carries a payload, so it is no longer a text element. */
@@ -144,6 +166,8 @@ type TextElement = {
   start: number;
   end: number;
   style?: TextStyle;
+  /** How it comes on screen: fade, rise, typewriter… — drawn by the renderer's text layer. */
+  animation?: string;
   disabled?: boolean;
   /** VIDEO 619 — why the pipeline left it off; "left_to_editor" means: yours to switch on. */
   disabledReason?: string;
@@ -158,7 +182,17 @@ const NEW_TEXT_STYLE = {
   position: "lower_third",
 };
 
-type AudioClip = { id: string; source: AssetSourceIdentity; start: number; end: number; gain: number };
+type AudioClip = {
+  id: string;
+  source: AssetSourceIdentity;
+  start: number;
+  end: number;
+  gain: number;
+  fadeInSec?: number;
+  fadeOutSec?: number;
+  /** Muted: left out of the mix, kept on the timeline. */
+  disabled?: boolean;
+};
 
 /**
  * One member per kind, rather than `{ kind: "TEXT" | "GRAPHICS"; texts: ... }`.
@@ -247,8 +281,8 @@ function laneItems(timeline: Timeline, kind: TrackKind): LaneItem[] {
     return readGraphics(track).map((g) => ({
       id: g.id, start: g.start, end: g.end,
       label: g.label || g.graphicType,
-      /** A graphic with no words cannot be drawn by this renderer — marked, never hidden. */
-      warn: !g.label?.trim(),
+      /** A graphic with neither words nor a map/route/chart payload cannot be drawn — marked, never hidden. */
+      warn: !graphicIsDrawable(g),
       off: g.disabled,
     }));
   }
@@ -273,6 +307,20 @@ function readGraphics(track: { graphics?: GraphicElement[]; texts?: TextElement[
     id: t.id, graphicType: "text", data: {}, start: t.start, end: t.end,
     label: t.text, disabled: t.disabled,
   }));
+}
+
+/**
+ * Whether the render can draw a graphic: words (any renderer), or a map point, route or chart
+ * payload (the Remotion graphics layer of the normal render). Mirrors `chartPayloadIsRenderable`.
+ */
+function graphicIsDrawable(g: GraphicElement): boolean {
+  if (g.label?.trim()) return true;
+  const d = g.data ?? {};
+  if (typeof d.normX === "number" && typeof d.normY === "number") return true;
+  const points = d.points ?? d.route;
+  if (Array.isArray(points) && points.length > 0) return true;
+  const series = d.series ?? d.values ?? d.data;
+  return Array.isArray(series) && series.length > 0;
 }
 
 function findSelection(timeline: Timeline, kind: TrackKind, id: string): Selection {
@@ -329,16 +377,9 @@ function withEditedClip(timeline: Timeline, id: string, patch: Partial<VideoClip
   };
 }
 
-/** Gain on one audio clip. The only audio value the editor lets a person change. */
-function withEditedAudio(timeline: Timeline, id: string, gain: number): Timeline {
-  return {
-    ...timeline,
-    tracks: timeline.tracks.map((t) =>
-      t.kind === "VOICE" || t.kind === "MUSIC" || t.kind === "SFX" || t.kind === "AMBIENT"
-        ? { ...t, clips: t.clips.map((c) => (c.id === id ? { ...c, gain } : c)) }
-        : t
-    ),
-  };
+/** A timeline without the fields that change on every save without changing the picture. */
+function contentOf({ version: _v, createdAt: _c, ...rest }: Timeline) {
+  return rest;
 }
 
 function fmt(sec: number): string {
@@ -402,7 +443,7 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
    * claims changes that no longer exist and the close warning cries wolf.
    */
   const dirty = useMemo(
-    () => Boolean(draft && serverTimeline && JSON.stringify(draft) !== JSON.stringify(serverTimeline)),
+    () => Boolean(draft && serverTimeline && JSON.stringify(contentOf(draft)) !== JSON.stringify(contentOf(serverTimeline))),
     [draft, serverTimeline]
   );
 
@@ -420,10 +461,7 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
    */
   const historyPolicy = useMemo<HistoryPolicy<Timeline>>(
     () => ({
-      sameContent: (a, b) => {
-        const content = ({ version: _v, createdAt: _c, ...rest }: Timeline) => rest;
-        return JSON.stringify(content(a)) === JSON.stringify(content(b));
-      },
+      sameContent: (a, b) => JSON.stringify(contentOf(a)) === JSON.stringify(contentOf(b)),
       restore: (previous, current) => ({
         ...previous,
         version: current.version + 1,
@@ -517,34 +555,67 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
 
   const saveMutation = trpc.timeline.save.useMutation();
   const renderMutation = trpc.timeline.render.useMutation();
+  const restoreMutation = trpc.timeline.restoreVersion.useMutation();
+  const autoReplaceMutation = trpc.timeline.autoReplaceClip.useMutation();
+  const aiEditMutation = trpc.timeline.aiEdit.useMutation();
 
-  const save = async (): Promise<number | null> => {
+  /**
+   * Save the draft. Used by the Save button, by Render, and by autosave a moment after every edit.
+   *
+   * The undo stack is KEPT across a save: with autosave a person never chooses a moment to save,
+   * so a save cannot be the end of what they can undo. The server ignores the draft's own version
+   * field and compares `expectedTimelineVersion`, so undoing past a save and saving again is an
+   * ordinary new version — and every version is kept in the history to restore.
+   */
+  const savingRef = useRef<Promise<number | null> | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const save = async (label?: string, quiet = false): Promise<number | null> => {
+    if (savingRef.current) return savingRef.current;
     if (!draft) return null;
-    try {
-      const result = await saveMutation.mutateAsync({
-        videoId,
-        timeline: draft as never,
-        expectedTimelineVersion: version,
-      });
-      setServerTimeline(result.timeline as Timeline);
-      /**
-       * A save is a new baseline, not an edit. Keeping the stack across it would let a person undo
-       * to a document the server no longer has, then save it back over their own saved work.
-       */
-      setHistory(newHistory(result.timeline as Timeline));
-      setVersion(result.timelineVersion);
-      toast.success(`Saved — version ${result.timelineVersion}`);
-      return result.timelineVersion;
-    } catch (err) {
-      // §18 — the server's own sentence, which names the conflict or lists the faults.
-      toast.error((err as Error).message);
-      return null;
-    }
+    const sent = draft;
+    const run = (async () => {
+      try {
+        const result = await saveMutation.mutateAsync({
+          videoId,
+          timeline: sent as never,
+          expectedTimelineVersion: version,
+          ...(label ? { label } : {}),
+        });
+        setServerTimeline(result.timeline as Timeline);
+        /** The saved document carries the server's version; the draft follows it if nothing changed meanwhile. */
+        setHistory((h) => (h && h.present === sent ? { ...h, present: result.timeline as Timeline } : h));
+        setVersion(result.timelineVersion);
+        setLastSavedAt(new Date());
+        if (!quiet) toast.success(`Saved — version ${result.timelineVersion}`);
+        void utils.timeline.versions.invalidate({ videoId });
+        return result.timelineVersion;
+      } catch (err) {
+        // §18 — the server's own sentence, which names the conflict or lists the faults.
+        toast.error((err as Error).message);
+        return null;
+      } finally {
+        savingRef.current = null;
+      }
+    })();
+    savingRef.current = run;
+    return run;
   };
+
+  /** Autosave: two seconds after the last change, unless a save or render is already under way. */
+  const [autosaveFailed, setAutosaveFailed] = useState(false);
+  useEffect(() => {
+    if (!dirty || autosaveFailed) return;
+    const timer = setTimeout(() => {
+      void save("autosave", true).then((v) => {
+        if (v == null) setAutosaveFailed(true);
+      });
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [draft, dirty, autosaveFailed]);
 
   const saveAndRender = async () => {
     // §19 — never render before the timeline it renders is safely stored.
-    const saved = dirty ? await save() : version;
+    const saved = dirty ? await save("save before render", true) : version;
     if (saved == null) return;
     try {
       const result = await renderMutation.mutateAsync({ videoId, timelineVersion: saved });
@@ -554,6 +625,63 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
       toast.error((err as Error).message);
     }
   };
+
+  /**
+   * Replace shots through the archive + Visual Judge route. The replacement is saved on the server
+   * against the saved version, so the draft is saved first and reloaded after.
+   */
+  const autoReplace = async (clipIds: string[]) => {
+    let at = dirty ? await save("save before replace", true) : version;
+    if (at == null) return;
+    let replaced = 0;
+    for (const clipId of clipIds) {
+      try {
+        const r = await autoReplaceMutation.mutateAsync({ videoId, clipId, expectedTimelineVersion: at });
+        at = r.timelineVersion;
+        replaced++;
+        toast.success(`Shot replaced — ${r.verdict}`);
+      } catch (err) {
+        toast.error((err as Error).message);
+      }
+    }
+    if (replaced > 0) {
+      void utils.timeline.get.invalidate({ videoId });
+      void utils.timeline.versions.invalidate({ videoId });
+    }
+  };
+
+  /** An instruction in words → editor operations → the same undoable edits a click makes. */
+  const runAiCommand = async (instruction: string): Promise<boolean> => {
+    if (!draft) return false;
+    try {
+      const plan = await aiEditMutation.mutateAsync({
+        videoId,
+        instruction,
+        timeline: draft as never,
+        ...(selectedId ? { selectedId: selectedId.id } : {}),
+        playheadSec,
+      });
+      if (plan.ops.length === 0) {
+        toast.message(plan.summary || "Nothing to change");
+        return false;
+      }
+      const applied = applyEditorOps(draft as unknown as EditableTimeline, plan.ops);
+      applyEdit(() => applied.timeline as unknown as Timeline);
+      toast.success(plan.summary);
+      if (applied.replaceClipIds.length > 0) {
+        /** After the edit has rendered, so the replace saves the draft that includes it. */
+        setTimeout(() => void latest.current.autoReplace(applied.replaceClipIds), 100);
+      }
+      return true;
+    } catch (err) {
+      toast.error((err as Error).message);
+      return false;
+    }
+  };
+
+  /** The newest closures, for work scheduled from an older render (see `runAiCommand`). */
+  const latest = useRef({ autoReplace });
+  latest.current = { autoReplace };
 
   const requestClose = () => {
     if (dirty && !window.confirm("You have unsaved changes. Close the editor and lose them?")) return;
@@ -589,8 +717,12 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
               Timeline v{version}
               {data?.timelineSource === "manifest" && " · rebuilt from the original render"}
               {" · "}
-              <span className={dirty ? "text-amber-300" : "text-emerald-400"}>
-                {dirty ? "Unsaved changes" : "Saved"}
+              <span className={saveMutation.isPending ? "text-sky-300" : dirty ? "text-amber-300" : "text-emerald-400"}>
+                {saveMutation.isPending
+                  ? "Saving…"
+                  : dirty
+                    ? autosaveFailed ? "Not saved — press Save" : "Unsaved changes"
+                    : lastSavedAt ? `All changes saved · ${lastSavedAt.toLocaleTimeString()}` : "Saved"}
               </span>
             </p>
           </div>
@@ -640,8 +772,23 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
             >
               <Redo2 className="w-3.5 h-3.5" />
             </button>
+            <VersionHistory
+              videoId={videoId}
+              currentVersion={version}
+              onRestore={async (snapshotId) => {
+                if (dirty && (await save("save before restore", true)) == null) return;
+                try {
+                  await restoreMutation.mutateAsync({ videoId, snapshotId, expectedTimelineVersion: version });
+                  void utils.timeline.get.invalidate({ videoId });
+                  void utils.timeline.versions.invalidate({ videoId });
+                  toast.success("Earlier version restored");
+                } catch (err) {
+                  toast.error((err as Error).message);
+                }
+              }}
+            />
             <button
-              onClick={() => void save()}
+              onClick={() => { setAutosaveFailed(false); void save(); }}
               disabled={!dirty || saveMutation.isPending}
               className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/15 text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
@@ -794,68 +941,39 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                   />
                 )}
 
+                {/* ── AI editing: words in, ordinary undoable edits out ── */}
+                <AiCommandBar busy={aiEditMutation.isPending || autoReplaceMutation.isPending} onRun={runAiCommand} />
+
                 {/* ── §14: one lane per track, items sized by their real duration ── */}
-                <div className="rounded-xl border border-white/8 bg-black/30 p-3 space-y-1.5 overflow-x-auto">
-                  {TRACK_ORDER.map((kind) => {
-                    const items = laneItems(draft, kind);
-                    return (
-                      <div key={kind} className="flex items-center gap-2">
-                        <span className="w-16 shrink-0 text-[10px] font-semibold tracking-wide text-slate-500">
-                          {kind}
-                        </span>
-                        <div
-                          className="relative flex-1 h-8 rounded bg-white/[0.03] min-w-[420px]"
-                          /**
-                           * RONDE 158 — click anywhere on a lane to move the playhead there.
-                           *
-                           * On the STRIP, not on the clip buttons, so clicking a clip still selects
-                           * it. The two gestures are different intentions and must not collide.
-                           */
-                          onClick={(e) => {
-                            if (e.target !== e.currentTarget || duration <= 0) return;
-                            const box = e.currentTarget.getBoundingClientRect();
-                            const at = ((e.clientX - box.left) / box.width) * duration;
-                            const clamped = Math.max(0, Math.min(duration, at));
-                            setPlayheadSec(clamped);
-                            if (videoRef.current) videoRef.current.currentTime = clamped;
-                          }}
-                        >
-                          {/* The playhead, drawn on every lane so one glance lines them all up. */}
-                          {duration > 0 && (
-                            <div
-                              className="absolute top-0 bottom-0 w-px bg-cyan-300/80 pointer-events-none z-20"
-                              style={{ left: `${Math.min(100, (playheadSec / duration) * 100)}%` }}
-                            />
-                          )}
-                          {items.length === 0 && (
-                            <span className="absolute inset-0 flex items-center pl-2 text-[10px] text-slate-600">
-                              empty
-                            </span>
-                          )}
-                          {items.map((item) => {
-                            const left = duration > 0 ? (item.start / duration) * 100 : 0;
-                            const width = duration > 0 ? ((item.end - item.start) / duration) * 100 : 0;
-                            const active = selectedId?.id === item.id;
-                            return (
-                              <button
-                                key={item.id}
-                                onClick={() => selectItem(kind, item.id, item.start)}
-                                title={`${item.label} — ${fmt(item.start)} → ${fmt(item.end)}`}
-                                style={{ left: `${left}%`, width: `${Math.max(width, 1.2)}%` }}
-                                className={`absolute top-0 h-8 rounded border px-1.5 text-[10px] text-white/90 truncate text-left transition-colors ${TRACK_COLOR[kind]} ${
-                                  active ? "ring-2 ring-white/70 z-10" : ""
-                                } ${item.off ? "opacity-35 border-dashed" : ""}`}
-                              >
-                                {item.warn ? "⚠ " : ""}
-                                {item.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <TimelineLanes
+                  timeline={draft}
+                  duration={duration}
+                  playheadSec={playheadSec}
+                  selectedId={selectedId?.id ?? null}
+                  onSeek={(at) => {
+                    setPlayheadSec(at);
+                    if (videoRef.current) videoRef.current.currentTime = at;
+                  }}
+                  onSelect={selectItem}
+                  onDragEnd={(kind, id, mode, deltaSec) => {
+                    const item = laneItems(draft, kind).find((x) => x.id === id);
+                    if (!item || Math.abs(deltaSec) < 0.05) return;
+                    if (kind === "VIDEO") {
+                      if (mode === "end") edit((t) => setVideoClipLength(t, id, item.end - item.start + deltaSec));
+                      else if (mode === "move") edit((t) => moveVideoClipTo(t, id, item.start + deltaSec));
+                      return;
+                    }
+                    if (kind === "CAPTIONS" || kind === "TEXT" || kind === "GRAPHICS") {
+                      const start = mode === "end" ? item.start : item.start + deltaSec;
+                      const end = mode === "start" ? item.end : item.end + deltaSec;
+                      edit((t) => setTextElementTiming(t, kind, id, start, end));
+                      return;
+                    }
+                    if ((kind === "MUSIC" || kind === "SFX" || kind === "AMBIENT") && mode === "move") {
+                      edit((t) => setAudioClipTiming(t, kind, id, item.start + deltaSec));
+                    }
+                  }}
+                />
 
                 {data && data.recovery.previewOnly > 0 && (
                   <div className="flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
@@ -900,15 +1018,17 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                       edit((t) => removeVideoClip(t, selection.clip.id));
                       setSelectedId(null);
                     }}
+                    onDuplicate={() => edit((t) => duplicateVideoClip(t, selection.clip.id))}
+                    onSpeed={(speed) => edit((t) => setVideoClipSpeed(t, selection.clip.id, speed))}
+                    onAutoReplace={() => void autoReplace([selection.clip.id])}
+                    autoReplacing={autoReplaceMutation.isPending}
                   />
                 ) : selection.kind === "VOICE" || selection.kind === "MUSIC" ||
                   selection.kind === "SFX" || selection.kind === "AMBIENT" ? (
                   <AudioInspector
                     kind={selection.kind}
                     clip={selection.clip}
-                    onChange={(gain) =>
-                      applyEdit((t) => withEditedAudio(t, selection.clip.id, gain))
-                    }
+                    onChange={(patch) => edit((t) => setAudioClip(t, selection.kind as "VOICE", selection.clip.id, patch))}
                     onRemove={
                       selection.kind === "VOICE"
                         ? undefined
@@ -923,6 +1043,7 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                   <GraphicInspector
                     graphic={selection.graphic}
                     onShown={(shown) => edit((t) => setTextElementShown(t, "GRAPHICS", selection.graphic.id, shown))}
+                    onTiming={(start, end) => edit((t) => setTextElementTiming(t, "GRAPHICS", selection.graphic.id, start, end))}
                     onRemove={() => {
                       edit((t) => removeTextElement(t, "GRAPHICS", selection.graphic.id));
                       setSelectedId(null);
@@ -933,6 +1054,12 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                     kind={selection.kind}
                     element={selection.element}
                     onChange={(patch) => applyEdit((t) => withEditedText(t, selection.element.id, patch))}
+                    onTiming={(start, end) => edit((t) => setTextElementTiming(t, selection.kind, selection.element.id, start, end))}
+                    onStyleAllCaptions={
+                      selection.kind === "CAPTIONS"
+                        ? (style) => edit((t) => setAllCaptionsStyle(t, style as Record<string, unknown>))
+                        : undefined
+                    }
                     onShown={(shown) => edit((t) => setTextElementShown(t, selection.kind, selection.element.id, shown))}
                     onRemove={() => {
                       edit((t) => removeTextElement(t, selection.kind, selection.element.id));
@@ -944,6 +1071,175 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
             </div>
           </div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════ the timeline lanes ═══════════════════════ */
+
+type DragMode = "move" | "start" | "end";
+
+/**
+ * Move a shot so it starts at (or just after) a moment on the timeline, by swapping it with its
+ * neighbours — the picture stays one unbroken line, so a drag reorders rather than leaving a gap.
+ */
+function moveVideoClipTo<T extends EditableTimeline>(t: T, id: string, atSec: number): T {
+  let out = t;
+  for (let guard = 0; guard < 500; guard++) {
+    const clips = (out.tracks.find((x) => x.kind === "VIDEO") as { clips?: EditableVideoClip[] } | undefined)?.clips ?? [];
+    const sorted = [...clips].sort((a, b) => a.timelineStart - b.timelineStart);
+    const i = sorted.findIndex((c) => c.id === id);
+    if (i < 0) return out;
+    const prev = sorted[i - 1];
+    const next = sorted[i + 1];
+    /** Where the dragged shot's middle now is, against its neighbours' middles. */
+    const centre = atSec + (sorted[i]!.timelineEnd - sorted[i]!.timelineStart) / 2;
+    if (prev && centre < (prev.timelineStart + prev.timelineEnd) / 2) out = moveVideoClip(out, id, -1);
+    else if (next && centre > (next.timelineStart + next.timelineEnd) / 2) out = moveVideoClip(out, id, 1);
+    else return out;
+  }
+  return out;
+}
+
+/**
+ * One lane per track, zoomable and scrollable. Drag an item to move it, drag its right edge to
+ * make it longer or shorter (a text's left edge too). The drag is applied once, when the mouse is
+ * released, through the same shared edits the inspector uses — one undo step per drag.
+ */
+function TimelineLanes({
+  timeline,
+  duration,
+  playheadSec,
+  selectedId,
+  onSeek,
+  onSelect,
+  onDragEnd,
+}: {
+  timeline: Timeline;
+  duration: number;
+  playheadSec: number;
+  selectedId: string | null;
+  onSeek: (sec: number) => void;
+  onSelect: (kind: TrackKind, id: string, start: number) => void;
+  onDragEnd: (kind: TrackKind, id: string, mode: DragMode, deltaSec: number) => void;
+}) {
+  const [pxPerSec, setPxPerSec] = useState(0);
+  const [drag, setDrag] = useState<{ kind: TrackKind; id: string; mode: DragMode; x0: number; dx: number } | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  /** Fit the whole film into the visible width until the person zooms. */
+  const fitPx = useMemo(() => {
+    const w = boxRef.current?.clientWidth ?? 720;
+    return duration > 0 ? Math.max(4, (w - 80) / duration) : 20;
+  }, [duration, boxRef.current?.clientWidth]);
+  const scale = pxPerSec > 0 ? pxPerSec : fitPx;
+  const laneWidth = Math.max(420, duration * scale);
+
+  /** The latest drag and callback, read once on mouse-up — never inside a state updater. */
+  const dragRef = useRef(drag);
+  dragRef.current = drag;
+  const onDragEndRef = useRef(onDragEnd);
+  onDragEndRef.current = onDragEnd;
+  useEffect(() => {
+    if (!drag) return;
+    const moveHandler = (e: MouseEvent) => setDrag((d) => (d ? { ...d, dx: e.clientX - d.x0 } : d));
+    const upHandler = () => {
+      const d = dragRef.current;
+      setDrag(null);
+      if (d && Math.abs(d.dx) > 3) onDragEndRef.current(d.kind, d.id, d.mode, d.dx / scale);
+    };
+    window.addEventListener("mousemove", moveHandler);
+    window.addEventListener("mouseup", upHandler);
+    return () => {
+      window.removeEventListener("mousemove", moveHandler);
+      window.removeEventListener("mouseup", upHandler);
+    };
+  }, [drag?.id, drag?.mode, scale]);
+
+  return (
+    <div className="rounded-xl border border-white/8 bg-black/30 p-3 space-y-2" ref={boxRef}>
+      <div className="flex items-center gap-2 text-[10px] text-slate-500">
+        <button type="button" aria-label="Zoom out" className="p-1 rounded hover:bg-white/10" onClick={() => setPxPerSec(Math.max(2, scale / 1.5))}>
+          <ZoomOut className="w-3.5 h-3.5" />
+        </button>
+        <button type="button" aria-label="Zoom in" className="p-1 rounded hover:bg-white/10" onClick={() => setPxPerSec(Math.min(400, scale * 1.5))}>
+          <ZoomIn className="w-3.5 h-3.5" />
+        </button>
+        <button type="button" className="px-1.5 py-0.5 rounded hover:bg-white/10" onClick={() => setPxPerSec(0)}>Fit</button>
+        <span>Drag to move · drag an edge to trim</span>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="space-y-1.5" style={{ width: laneWidth + 72 }}>
+          {TRACK_ORDER.map((kind) => {
+            const items = laneItems(timeline, kind);
+            return (
+              <div key={kind} className="flex items-center gap-2">
+                <span className="w-16 shrink-0 text-[10px] font-semibold tracking-wide text-slate-500">{kind}</span>
+                <div
+                  className="relative h-8 rounded bg-white/[0.03]"
+                  style={{ width: laneWidth }}
+                  onClick={(e) => {
+                    if (e.target !== e.currentTarget || duration <= 0) return;
+                    const box = e.currentTarget.getBoundingClientRect();
+                    onSeek(Math.max(0, Math.min(duration, (e.clientX - box.left) / scale)));
+                  }}
+                >
+                  {duration > 0 && (
+                    <div
+                      className="absolute top-0 bottom-0 w-px bg-cyan-300/80 pointer-events-none z-20"
+                      style={{ left: Math.min(laneWidth, playheadSec * scale) }}
+                    />
+                  )}
+                  {items.length === 0 && (
+                    <span className="absolute inset-0 flex items-center pl-2 text-[10px] text-slate-600">empty</span>
+                  )}
+                  {items.map((item) => {
+                    const dragging = drag && drag.id === item.id ? drag : null;
+                    let left = item.start * scale;
+                    let width = Math.max(6, (item.end - item.start) * scale);
+                    if (dragging?.mode === "move") left += dragging.dx;
+                    if (dragging?.mode === "end") width = Math.max(6, width + dragging.dx);
+                    if (dragging?.mode === "start") { left += dragging.dx; width = Math.max(6, width - dragging.dx); }
+                    const movable = kind !== "VOICE";
+                    const edges = kind === "VIDEO" ? ["end"] : kind === "CAPTIONS" || kind === "TEXT" || kind === "GRAPHICS" ? ["start", "end"] : [];
+                    return (
+                      <div
+                        key={item.id}
+                        role="button"
+                        tabIndex={0}
+                        title={`${item.label} — ${fmt(item.start)} → ${fmt(item.end)}`}
+                        style={{ left, width }}
+                        onMouseDown={(e) => {
+                          if (e.button !== 0) return;
+                          onSelect(kind, item.id, item.start);
+                          if (movable) setDrag({ kind, id: item.id, mode: "move", x0: e.clientX, dx: 0 });
+                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") onSelect(kind, item.id, item.start); }}
+                        className={`absolute top-0 h-8 rounded border px-1.5 text-[10px] leading-8 text-white/90 truncate select-none ${movable ? "cursor-grab" : "cursor-pointer"} ${TRACK_COLOR[kind]} ${
+                          selectedId === item.id ? "ring-2 ring-white/70 z-10" : ""
+                        } ${item.off ? "opacity-35 border-dashed" : ""}`}
+                      >
+                        {item.warn ? "⚠ " : ""}
+                        {item.label}
+                        {edges.map((edge) => (
+                          <span
+                            key={edge}
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              onSelect(kind, item.id, item.start);
+                              setDrag({ kind, id: item.id, mode: edge as DragMode, x0: e.clientX, dx: 0 });
+                            }}
+                            className={`absolute top-0 bottom-0 w-1.5 cursor-ew-resize hover:bg-white/40 ${edge === "start" ? "left-0" : "right-0"}`}
+                          />
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -1223,6 +1519,10 @@ function ClipInspector({
   onMove,
   onSplit,
   onRemove,
+  onDuplicate,
+  onSpeed,
+  onAutoReplace,
+  autoReplacing,
 }: {
   clip: VideoClip;
   onChange: (patch: Partial<VideoClip>) => void;
@@ -1237,6 +1537,11 @@ function ClipInspector({
   onMove: (direction: -1 | 1) => void;
   onSplit: () => void;
   onRemove: () => void;
+  onDuplicate: () => void;
+  onSpeed: (speed: number) => void;
+  /** Let FastVid find a better archive shot for this slot, checked by the Visual Judge. */
+  onAutoReplace: () => void;
+  autoReplacing: boolean;
 }) {
   const recoverable =
     Boolean(clip.source.canonicalUrl || clip.source.mediaUrl) || clip.source.archiveAssetId != null;
@@ -1292,11 +1597,34 @@ function ClipInspector({
           >
             <Scissors className="w-3.5 h-3.5" /> Cut at playhead
           </ToolButton>
+          <ToolButton onClick={onDuplicate} title="Put a copy of this shot right after it">
+            <Copy className="w-3.5 h-3.5" /> Duplicate
+          </ToolButton>
           <ToolButton onClick={onRemove} title="Remove this shot" danger>
             <Trash2 className="w-3.5 h-3.5" /> Remove
           </ToolButton>
         </div>
+        {clip.kind === "video" && (
+          <Select
+            label="Speed"
+            value={String(clip.speed ?? 1)}
+            options={[
+              ["0.5", "0.5× — slow motion"],
+              ["0.75", "0.75×"],
+              ["1", "1× — normal"],
+              ["1.25", "1.25×"],
+              ["1.5", "1.5×"],
+              ["2", "2× — fast"],
+            ]}
+            onChange={(v) => onSpeed(Number(v))}
+          />
+        )}
       </Group>
+
+      <ToolButton onClick={onAutoReplace} disabled={autoReplacing} title="FastVid searches the archive and lets the Visual Judge pick a shot that fits this sentence">
+        {autoReplacing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+        {autoReplacing ? "Finding a better shot…" : "Find a better shot automatically"}
+      </ToolButton>
 
       {/* ── RONDE 156 — find a different shot for this slot ── */}
       <ReplacePanel
@@ -1335,6 +1663,26 @@ function ClipInspector({
           value={clip.transform?.positionY ?? 0.5}
           onChange={(v) => onChange({ transform: { ...clip.transform, positionY: v } })}
         />
+        <Slider
+          label="Opacity" min={0} max={1} step={0.05}
+          value={clip.transform?.opacity ?? 1}
+          onChange={(v) => onChange({ transform: { ...clip.transform, opacity: v } })}
+        />
+        {clip.transform?.fit === "crop" && (
+          <>
+            {(["x", "y", "width", "height"] as const).map((k) => {
+              const crop = clip.transform?.crop ?? { x: 0, y: 0, width: 1, height: 1 };
+              return (
+                <Slider
+                  key={k}
+                  label={`Crop ${k}`} min={k === "width" || k === "height" ? 0.1 : 0} max={1} step={0.05}
+                  value={crop[k]}
+                  onChange={(v) => onChange({ transform: { ...clip.transform, crop: { ...crop, [k]: v } } })}
+                />
+              );
+            })}
+          </>
+        )}
       </Group>
 
       {/* ── §32 — camera ── */}
@@ -1366,13 +1714,7 @@ function ClipInspector({
         <Select
           label="Type"
           value={clip.transitionIn}
-          options={[
-            ["hard_cut", "Hard cut"],
-            ["crossfade", "Crossfade"],
-            ["dissolve", "Dissolve"],
-            ["dip_to_black", "Dip to black"],
-            ["dip_to_white", "Dip to white"],
-          ]}
+          options={EDITOR_TRANSITIONS.map((t) => [t, TRANSITION_LABEL[t]] as [string, string])}
           onChange={(v) => onChange({ transitionIn: v })}
         />
         {clip.transitionIn !== "hard_cut" && (
@@ -1384,46 +1726,57 @@ function ClipInspector({
         )}
       </Group>
 
-      {/*
-        §15 — effects are SHOWN, including the ones this renderer cannot execute.
-        They stay on the clip either way; hiding them would make the plan invisible.
-      */}
-      {clip.effects && clip.effects.length > 0 && (
-        <Group title="Effects">
-          {clip.effects.map((e) => (
-            <div key={e.effectType} className="flex items-baseline justify-between gap-2">
-              <span className="text-xs text-slate-200">{e.effectType.replace(/_/g, " ")}</span>
-              <span className="text-[10px] text-slate-500">
-                {RENDERED_EFFECTS.has(e.effectType) ? `${Math.round(e.intensity * 100)}%` : "not rendered"}
-              </span>
-            </div>
-          ))}
-        </Group>
-      )}
+      {/* The look of this shot — a small set, every one executed by the renderer. */}
+      <Group title="Effects">
+        {EDITOR_EFFECTS.map((effect) => {
+          const current = clip.effects?.find((e) => e.effectType === effect)?.intensity ?? 0;
+          return (
+            <Slider
+              key={effect}
+              label={EFFECT_LABEL[effect]} min={0} max={1} step={0.05}
+              value={current}
+              onChange={(v) => onChange({ effects: (withEffect(clip as unknown as EditableVideoClip, effect, v).effects as VideoClip["effects"]) ?? [] })}
+            />
+          );
+        })}
+        {clip.effects?.filter((e) => !(EDITOR_EFFECTS as readonly string[]).includes(e.effectType)).map((e) => (
+          <div key={e.effectType} className="flex items-baseline justify-between gap-2">
+            <span className="text-xs text-slate-200">{e.effectType.replace(/_/g, " ")}</span>
+            <span className="text-[10px] text-slate-500">
+              {RENDERED_EFFECTS.has(e.effectType) ? `${Math.round(e.intensity * 100)}%` : "not rendered"}
+            </span>
+          </div>
+        ))}
+      </Group>
     </div>
   );
 }
 
-/** The three effects the renderer executes. Everything else is shown as planned-but-not-rendered. */
+const TRANSITION_LABEL: Record<(typeof EDITOR_TRANSITIONS)[number], string> = {
+  hard_cut: "Cut",
+  crossfade: "Fade",
+  dissolve: "Dissolve",
+  dip_to_black: "Dip to black",
+  slide_left: "Slide left",
+  slide_right: "Slide right",
+  zoom: "Zoom",
+  blur: "Blur",
+};
+
+const EFFECT_LABEL: Record<(typeof EDITOR_EFFECTS)[number], string> = {
+  vignette: "Vignette",
+  blur: "Blur",
+  exposure: "Brightness",
+  contrast: "Contrast",
+  film_grain: "Film grain",
+  letterbox: "Cinematic bars",
+};
+
+/** The effects the renderer executes. Anything else on a clip is shown as planned-but-not-rendered. */
 const RENDERED_EFFECTS = new Set([
   "film_grain", "noise", "vignette", "letterbox", "glow", "bloom", "chromatic_aberration",
+  "blur", "exposure", "contrast", "saturation", "sharpen", "monochrome", "sepia",
 ]);
-
-/**
- * A camera preset, matching the server's own translation of the planner's vocabulary.
- *
- * The numbers are the same ones `edlToTimeline.cameraFor` produces at full intensity, so a move a
- * person picks here looks like a move the planner would have picked — one vocabulary, not two.
- */
-function cameraPreset(type: string): VideoClip["camera"] {
-  const zoom = 1.12;
-  switch (type) {
-    case "camera_hold": return { type, startScale: 1, endScale: 1, intensity: 0 };
-    case "slow_push": return { type, startScale: 1, endScale: zoom, intensity: 1 };
-    case "slow_pull": return { type, startScale: zoom, endScale: 1, intensity: 1 };
-    default: return { type, startScale: zoom, endScale: zoom, intensity: 1 };
-  }
-}
 
 function AudioInspector({
   kind,
@@ -1433,10 +1786,11 @@ function AudioInspector({
 }: {
   kind: "VOICE" | "MUSIC" | "SFX" | "AMBIENT";
   clip: AudioClip;
-  onChange: (gain: number) => void;
+  onChange: (patch: AudioPatch) => void;
   /** VIDEO 619 — music, effects and ambience can be taken out; the narration cannot. */
   onRemove?: () => void;
 }) {
+  const len = Math.max(0.1, clip.end - clip.start);
   return (
     <div className="space-y-3">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -1446,7 +1800,15 @@ function AudioInspector({
         <Field label="Source" value={clip.source.title || clip.source.provider} />
         <Field label="Timeline" value={`${fmt(clip.start)} → ${fmt(clip.end)}`} />
       </div>
-      <Slider label="Gain" min={0} max={2} step={0.05} value={clip.gain} onChange={onChange} />
+      <ShowHide
+        shown={!clip.disabled}
+        suggestion={false}
+        labels={{ on: "Audible in the video", off: "Muted", hide: "Mute", show: "Unmute" }}
+        onShown={(shown) => onChange({ muted: !shown })}
+      />
+      <Slider label="Volume" min={0} max={2} step={0.05} value={clip.gain} onChange={(gain) => onChange({ gain })} />
+      <Slider label="Fade in (s)" min={0} max={Math.min(5, len / 2)} step={0.1} value={clip.fadeInSec ?? 0} onChange={(fadeInSec) => onChange({ fadeInSec })} />
+      <Slider label="Fade out (s)" min={0} max={Math.min(5, len / 2)} step={0.1} value={clip.fadeOutSec ?? 0} onChange={(fadeOutSec) => onChange({ fadeOutSec })} />
       {onRemove && (
         <ToolButton onClick={onRemove} title="Take this sound out" danger>
           <Trash2 className="w-3.5 h-3.5" /> Remove sound
@@ -1472,13 +1834,15 @@ function AudioInspector({
 function GraphicInspector({
   graphic,
   onShown,
+  onTiming,
   onRemove,
 }: {
   graphic: GraphicElement;
   onShown: (shown: boolean) => void;
+  onTiming: (start: number, end: number) => void;
   onRemove: () => void;
 }) {
-  const drawn = Boolean(graphic.label?.trim());
+  const drawn = graphicIsDrawable(graphic);
   return (
     <div className="space-y-3">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -1488,8 +1852,8 @@ function GraphicInspector({
         <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5">
           <AlertCircle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
           <p className="text-[11px] text-amber-200/90">
-            This renderer draws graphics that are words on screen. This one is not, so it is kept on
-            the timeline and left out of the render.
+            This graphic has no words and no map, route or chart data to draw, so it is kept on the
+            timeline and left out of the render.
           </p>
         </div>
       )}
@@ -1502,6 +1866,10 @@ function GraphicInspector({
         ))}
       </div>
       <ShowHide shown={!graphic.disabled} suggestion={graphic.disabledReason === "left_to_editor"} onShown={onShown} />
+      <div className="grid grid-cols-2 gap-2">
+        <NumberField label="Start (s)" value={graphic.start} min={0} step={0.1} onCommit={(v) => onTiming(v, v + (graphic.end - graphic.start))} />
+        <NumberField label="End (s)" value={graphic.end} min={0} step={0.1} onCommit={(v) => onTiming(graphic.start, v)} />
+      </div>
       <ToolButton onClick={onRemove} title="Remove this graphic" danger>
         <Trash2 className="w-3.5 h-3.5" /> Remove
       </ToolButton>
@@ -1514,14 +1882,19 @@ function TextInspector({
   kind,
   element,
   onChange,
+  onTiming,
   onShown,
   onRemove,
+  onStyleAllCaptions,
 }: {
   kind: "CAPTIONS" | "TEXT";
   element: TextElement;
   onChange: (patch: Partial<TextElement>) => void;
+  onTiming: (start: number, end: number) => void;
   onShown: (shown: boolean) => void;
   onRemove: () => void;
+  /** Captions only: give every subtitle this caption's look. */
+  onStyleAllCaptions?: (style: TextStyle) => void;
 }) {
   const style = element.style ?? {};
   const setStyle = (patch: Partial<TextStyle>) => onChange({ style: { ...style, ...patch } });
@@ -1540,28 +1913,8 @@ function TextInspector({
         />
       </label>
       <div className="grid grid-cols-2 gap-2">
-        <label className="block">
-          <span className="text-[10px] uppercase tracking-wide text-slate-500">Start (s)</span>
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            value={element.start}
-            onChange={(e) => onChange({ start: Number(e.target.value) })}
-            className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-2.5 py-1.5 text-xs text-white focus:border-fuchsia-400/50 focus:outline-none"
-          />
-        </label>
-        <label className="block">
-          <span className="text-[10px] uppercase tracking-wide text-slate-500">End (s)</span>
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            value={element.end}
-            onChange={(e) => onChange({ end: Number(e.target.value) })}
-            className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-2.5 py-1.5 text-xs text-white focus:border-fuchsia-400/50 focus:outline-none"
-          />
-        </label>
+        <NumberField label="Start (s)" value={element.start} min={0} step={0.1} onCommit={(v) => onTiming(v, v + (element.end - element.start))} />
+        <NumberField label="End (s)" value={element.end} min={0} step={0.1} onCommit={(v) => onTiming(element.start, v)} />
       </div>
       <ShowHide shown={!element.disabled} suggestion={element.disabledReason === "left_to_editor"} onShown={onShown} />
       <Group title="Look">
@@ -1596,6 +1949,25 @@ function TextInspector({
           value={style.backgroundOpacity ?? 0}
           onChange={(v) => setStyle({ backgroundOpacity: v, backgroundColor: style.backgroundColor ?? "black" })}
         />
+        <Select
+          label="Animation"
+          value={element.animation ?? (kind === "CAPTIONS" ? "fade" : "fade")}
+          options={[
+            ["none", "None — just appears"],
+            ["fade", "Fade"],
+            ["fade_rise", "Fade and rise"],
+            ["slide_up", "Slide up"],
+            ["pop", "Pop"],
+            ["word_reveal", "Word by word"],
+            ["typewriter", "Typewriter"],
+          ]}
+          onChange={(v) => onChange({ animation: v })}
+        />
+        {onStyleAllCaptions && (
+          <ToolButton onClick={() => onStyleAllCaptions(style)} title="Give every subtitle this look">
+            <Captions className="w-3.5 h-3.5" /> Use this look for all subtitles
+          </ToolButton>
+        )}
       </Group>
       <ToolButton onClick={onRemove} title="Remove this text" danger>
         <Trash2 className="w-3.5 h-3.5" /> Remove
@@ -1677,19 +2049,20 @@ function NumberField({
 
 /** On screen or not. A suggestion the pipeline left off says so, so it reads as an offer. */
 function ShowHide({
-  shown, suggestion, onShown,
+  shown, suggestion, onShown, labels,
 }: {
   shown: boolean;
   suggestion: boolean;
   onShown: (shown: boolean) => void;
+  labels?: { on: string; off: string; hide: string; show: string };
 }) {
   return (
     <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
       <p className="text-[11px] text-slate-300">
-        {shown ? "Shown in the video" : suggestion ? "Suggested — not in the video yet" : "Hidden"}
+        {shown ? labels?.on ?? "Shown in the video" : suggestion ? "Suggested — not in the video yet" : labels?.off ?? "Hidden"}
       </p>
       <ToolButton onClick={() => onShown(!shown)} title={shown ? "Hide it" : "Show it in the video"}>
-        {shown ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
+        {shown ? <><EyeOff className="w-3.5 h-3.5" /> {labels?.hide ?? "Hide"}</> : <><Eye className="w-3.5 h-3.5" /> {labels?.show ?? "Show"}</>}
       </ToolButton>
     </div>
   );
@@ -1721,7 +2094,7 @@ function EditToolbar({
         {subtitlesOn ? "Hide subtitles" : `Show subtitles${captions.total ? ` (${captions.total})` : ""}`}
       </ToolButton>
       <span className="text-[10px] text-slate-500">
-        The video is made without text — show the suggested texts or add your own. Save &amp; Render to see changes.
+        Changes save automatically. Render to see them in the video.
       </span>
     </div>
   );
@@ -1838,5 +2211,96 @@ function ArchiveBrowser({
         </div>
       )}
     </div>
+  );
+}
+
+/** The kept versions of this timeline, newest first, each restorable. */
+function VersionHistory({
+  videoId,
+  currentVersion,
+  onRestore,
+}: {
+  videoId: number;
+  currentVersion: number;
+  onRestore: (snapshotId: number) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const versions = trpc.timeline.versions.useQuery({ videoId }, { enabled: open });
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Earlier versions"
+        aria-label="Version history"
+        className="flex items-center gap-1.5 text-xs px-2.5 py-2 rounded-lg bg-white/5 border border-white/15 text-white hover:bg-white/10 transition-colors"
+      >
+        <HistoryIcon className="w-3.5 h-3.5" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-10 z-30 w-72 max-h-80 overflow-y-auto rounded-xl border border-white/15 bg-slate-950/95 p-2 shadow-xl">
+          <p className="px-1.5 pb-1.5 text-[10px] uppercase tracking-wide text-slate-500">Versions</p>
+          {versions.isLoading && <p className="px-1.5 text-[11px] text-slate-400">Loading…</p>}
+          {versions.data?.versions.length === 0 && (
+            <p className="px-1.5 text-[11px] text-slate-400">No saved versions yet — they appear as you edit.</p>
+          )}
+          {versions.data?.versions.map((v) => (
+            <div key={v.id} className="flex items-center justify-between gap-2 rounded-lg px-1.5 py-1 hover:bg-white/5">
+              <div className="min-w-0">
+                <p className="text-[11px] text-white">
+                  v{v.timelineVersion}
+                  {v.timelineVersion === currentVersion && <span className="text-emerald-400"> · current</span>}
+                </p>
+                <p className="text-[10px] text-slate-500 truncate">
+                  {v.label ?? "save"} · {new Date(v.createdAt).toLocaleString()}
+                </p>
+              </div>
+              {v.timelineVersion !== currentVersion && (
+                <button
+                  type="button"
+                  onClick={() => { setOpen(false); void onRestore(v.id); }}
+                  className="shrink-0 text-[11px] text-cyan-300 hover:text-cyan-200"
+                >
+                  Restore
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Tell the editor what to change, in words. The answer is applied as ordinary, undoable edits. */
+function AiCommandBar({ busy, onRun }: { busy: boolean; onRun: (instruction: string) => Promise<boolean> }) {
+  const [text, setText] = useState("");
+  return (
+    <form
+      className="flex items-center gap-2 rounded-xl border border-purple-400/25 bg-purple-500/5 px-2.5 py-2"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        const instruction = text.trim();
+        if (instruction.length < 2 || busy) return;
+        if (await onRun(instruction)) setText("");
+      }}
+    >
+      <Sparkles className="w-4 h-4 text-purple-300 shrink-0" />
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder='Tell the editor what to change — "make the intro faster", "replace this shot", "smaller subtitles"'
+        className="flex-1 bg-transparent text-xs text-white placeholder:text-white/35 focus:outline-none"
+        disabled={busy}
+      />
+      <button
+        type="submit"
+        disabled={busy || text.trim().length < 2}
+        className="flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg bg-purple-600/80 border border-purple-400/40 text-white hover:bg-purple-600 disabled:opacity-40 transition-colors"
+      >
+        {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+        Apply
+      </button>
+    </form>
   );
 }

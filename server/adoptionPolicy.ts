@@ -181,8 +181,15 @@ const RESCUE_REAL = (reason: string): AdoptionPolicy => ({
   category: "RESCUE_REAL",
   requiresEligibility: false,
   requiresVision: true,
-  /** Real footage off the funnel. The editor's veto binds; its silence does not refuse it. */
-  visionRequirement: "not_rejected",
+  /**
+   * OCTOBER 2026 — real footage enters on a YES, whatever door it comes through.
+   *
+   * This was `not_rejected`: the editor's veto bound, and an UNCLEAR (asked, no usable answer)
+   * went in. The owner's rule is now one chain for every photograph: selected → reviewed →
+   * APPROVED → adopted. A rescue clip makes no weaker claim on screen than a funnel clip — the
+   * viewer sees a picture under a sentence either way — so it needs the same yes.
+   */
+  visionRequirement: "approved",
   countsAsRealFootage: true,
   countsAsVerifiedVisual: false,
   exceptionReason: reason,
@@ -333,8 +340,12 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
      * describes, and it already declares `countsAsVerifiedVisual: false`. There is nothing for
      * an approval to back. Demanding one refused 48 adoptions in render 569 and left all
      * fourteen beats on colour cards. The editor's veto still binds; its silence does not.
+     *
+     * OCTOBER 2026 — superseded. Render 626 shows what "not rejected" bought: pictures of the
+     * right person under sentences they do not illustrate. A photograph enters on a yes; a beat
+     * with no approved picture is a gap the render reports, not a fallback it hides.
      */
-    visionRequirement: "not_rejected",
+    visionRequirement: "approved",
     countsAsRealFootage: true,
     countsAsVerifiedVisual: false,
     exceptionReason:
@@ -384,8 +395,8 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "GENERATED",
     requiresEligibility: false,
     requiresVision: true,
-    /** Generated pixels claim nothing real, but a picture the editor refused still stays out. */
-    visionRequirement: "not_rejected",
+    /** OCTOBER 2026 — a generated picture also enters on a yes only. */
+    visionRequirement: "approved",
     countsAsRealFootage: false,
     countsAsVerifiedVisual: false,
     exceptionReason: "generated from the beat's own words; has no provider to be eligible at",
@@ -394,8 +405,8 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "GENERATED",
     requiresEligibility: false,
     requiresVision: true,
-    /** Generated pixels claim nothing real, but a picture the editor refused still stays out. */
-    visionRequirement: "not_rejected",
+    /** OCTOBER 2026 — a generated picture also enters on a yes only. */
+    visionRequirement: "approved",
     countsAsRealFootage: false,
     countsAsVerifiedVisual: false,
     exceptionReason: "generated after every real-media route failed",
@@ -404,8 +415,8 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "GENERATED",
     requiresEligibility: false,
     requiresVision: true,
-    /** Generated pixels claim nothing real, but a picture the editor refused still stays out. */
-    visionRequirement: "not_rejected",
+    /** OCTOBER 2026 — a generated picture also enters on a yes only. */
+    visionRequirement: "approved",
     countsAsRealFootage: false,
     countsAsVerifiedVisual: false,
     exceptionReason: "generated video; has no provider to be eligible at",
@@ -750,6 +761,16 @@ export function adoptionGuardVerdict(input: {
    *
    * The flag is a fact about the environment, never about a clip. A single unjudged picture in a
    * render where the editor answered other questions is REFUSED, and there is a test for it.
+   *
+   * ── OCTOBER 2026 — AN UNREACHABLE EDITOR NO LONGER SUSPENDS ANYTHING ─────────────────────────
+   *
+   * Render 625: "gate could not ask: LLM API key is not configured, or OpenAI is cooled down",
+   * `never_asked=37`, and nineteen clips went into the film with nobody having looked. The owner's
+   * rule is the opposite: judge unreachable → no adoption. The production caller therefore passes
+   * `false` here ONLY when the slot has no sentence to judge against (`nothingToJudge`) — never for
+   * a missing key, a cooled-down provider or a CLIP model that will not load. Those leave the
+   * verdict at NOT_ASKED, NOT_ASKED fails every photographic requirement, and the beat looks for
+   * another candidate or ends empty; the export gate then fails the film with the reason.
    */
   visionAvailable?: boolean;
 }): AdoptionGuardVerdict {

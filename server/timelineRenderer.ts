@@ -68,6 +68,7 @@ import {
   transitionUnsupportedReason,
   transitionIsRenderable,
   unsupportedEffects,
+  clipPlaybackSpeed,
   type MixInput,
 } from "./timelineFilters";
 
@@ -797,10 +798,13 @@ async function renderSegment(
      * whether there was enough material to do it; when there was not, the length is still correct
      * and the caller reports the difference.
      */
-    const startAt = Math.max(0, inPoint - Math.max(0, handleSec));
-    handleFromSource = handleSec <= 0 || inPoint >= handleSec;
+    /** A sped-up clip reads `speed` seconds of source per second of slot (see `clipPlaybackSpeed`). */
+    const speed = clipPlaybackSpeed(clip);
+    const sourceHandle = Math.max(0, handleSec) * speed;
+    const startAt = Math.max(0, inPoint - sourceHandle);
+    handleFromSource = handleSec <= 0 || inPoint >= sourceHandle;
     args.push("-stream_loop", "-1", "-ss", startAt.toFixed(3),
-      "-t", dur.toFixed(3), "-i", localMedia);
+      "-t", (dur * speed).toFixed(3), "-i", localMedia);
   }
   args.push(
     "-an",
@@ -1390,15 +1394,23 @@ export async function renderTimeline(params: {
     })),
     ...captions.map((c) => ({ text: c.text, start: c.start, end: c.end, style: c.style })),
   ];
-  for (const g of graphicsTrack(timeline)) {
-    if (!g.disabled && !g.label?.trim()) {
-      skipped.push(
-        `unsupported_graphic ${g.graphicType} (${g.id})` +
-          (g.reason ? ` — ${g.reason}` : "") +
-          " — kept on the GRAPHICS track, not drawn"
-      );
+  /**
+   * Graphics that are not words (a map, a route, a chart) are drawn by the Remotion overlay only.
+   * They are reported as not drawn when — and only when — that overlay did not run: the overlay
+   * names its own refusals in `overlay.skipped`, and saying "not drawn" for a map it drew would be
+   * a false line in the render log.
+   */
+  const reportWordlessGraphics = (): void => {
+    for (const g of graphicsTrack(timeline)) {
+      if (!g.disabled && !g.label?.trim()) {
+        skipped.push(
+          `unsupported_graphic ${g.graphicType} (${g.id})` +
+            (g.reason ? ` — ${g.reason}` : "") +
+            " — kept on the GRAPHICS track, not drawn"
+        );
+      }
     }
-  }
+  };
 
   /**
    * ── 3a. RONDE 150 §5/§6 — composite the Remotion overlay, when there is one ─────────────────
@@ -1483,7 +1495,10 @@ export async function renderTimeline(params: {
     );
     commands++;
     graphicsRenderer = "remotion";
-  } else if (elements.length > 0) {
+  } else {
+    reportWordlessGraphics();
+  }
+  if (graphicsRenderer !== "remotion" && elements.length > 0) {
     if (overlay) {
       skipped.push(
         `graphics overlay ${overlay.overlayPath} was not written, fell back to the libass route`

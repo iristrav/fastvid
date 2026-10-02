@@ -462,15 +462,31 @@ describeRender("GRAPHICS §17 — the fixture is visible in the delivered MP4, a
      * The few tenths of a percent allowed are antialiasing: the same glyphs land on a different
      * pixel grid after a move.
      */
+    /**
+     * OCTOBER 2026 — measured PIXEL BY PIXEL as well as by area.
+     *
+     * The area rule above assumes a caption covers the same number of pixels wherever it is moved.
+     * That held for the old solid-black plate. The plate is now translucent (the style's 45%), and
+     * a translucent plate's anti-aliased edge rows fall either side of the "is this still film"
+     * line depending on where they land — a moved caption measured ~1.8% fewer pixels with nothing
+     * overlapping at all. So the overlap is now read directly: every pixel where the graphic stands
+     * in the graphics-only frame, and whether the delivered frame changed it. A caption drawn over
+     * the graphic changes those pixels; a caption anywhere else does not.
+     */
     const overlaps: string[] = [];
     for (const slot of GRAPHIC_SLOTS) {
-      const alone = graphicMask[slot.index]!.count + captionMask[slot.index]!.count;
-      const together = combinedMask[slot.index]!.count;
-      const shared = alone - together;
+      const g = fs.readFileSync(path.join(workDir, `g${slot.index}.raw`));
+      const b = fs.readFileSync(path.join(workDir, `b${slot.index}.raw`));
+      let shared = 0;
+      for (let i = 0; i < g.length; i += 3) {
+        if (isRed(g[i]!, g[i + 1]!, g[i + 2]!)) continue;
+        const delta = Math.abs(g[i]! - b[i]!) + Math.abs(g[i + 1]! - b[i + 1]!) + Math.abs(g[i + 2]! - b[i + 2]!);
+        if (delta > 60) shared++;
+      }
       if (shared > STRAY_PIXELS) {
         overlaps.push(
-          `${slot.label}: ${shared}px struck through (graphic ${graphicMask[slot.index]!.count}` +
-            ` + caption ${captionMask[slot.index]!.count} drew only ${together})`
+          `${slot.label}: ${shared}px of the graphic changed once the caption was added` +
+            ` (graphic ${graphicMask[slot.index]!.count}, caption ${captionMask[slot.index]!.count}, together ${combinedMask[slot.index]!.count})`
         );
       }
     }
@@ -490,7 +506,12 @@ describeRender("GRAPHICS §17 — the fixture is visible in the delivered MP4, a
       expect(
         together / Math.max(1, alone),
         `${slot.label}: ${alone}px drawn separately, only ${together}px together`
-      ).toBeGreaterThan(0.99);
+        /**
+         * OCTOBER 2026 — 0.97: a translucent plate's edge rows count as film or not depending on
+         * where they land (see above); a caption clipped by the frame or by another box loses far
+         * more than 3%, and the edge checks below still catch a clip at the frame's border.
+         */
+      ).toBeGreaterThan(0.97);
       const m = combinedMask[slot.index]!;
       expect(m.minY, `${slot.label}: something is clipped by the top edge`).toBeGreaterThan(0);
       expect(m.maxY, `${slot.label}: something is clipped by the bottom edge`).toBeLessThan(

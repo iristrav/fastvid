@@ -109,7 +109,7 @@ import {
 import { createPipelineProfiler } from "./pipelineProfiler";
 import { resetOverlayBudget } from "./archiveClipFilter";
 import { externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, maxBeatCapForVisualCadence, visualStageWallClockMin, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, type YoutubeLicenseMode, downloadStallTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeBeatBudgetMs, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_FALLBACK_MIN_MS, YOUTUBE_FIRST_PARALLEL_BEATS, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
-import { recentUsageCounts, recordArchiveVideoUsage } from "./usageDiversity";
+import { noteFootageOnScreen, preferLessFilledFootage, recentUsageCounts, recordArchiveVideoUsage } from "./usageDiversity";
 import { fetchCuratedArchiveBeatClip, isCuratedPreparedStillClip, curatedClipPathAssetId, curatedAssetContentKey, buildGeoStockSearchQueries, type CuratedCandidatePick, type ArchiveAssetRow, setCuratedClipPreparedHook, setCuratedAssetRefusedHook } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
 import { queryIntentHints, type BeatVisualIntent, createBeatVisualIntentState, ensureBeatVisualIntent, formatIntentSummary, formatVisualIntent, intentMatchScore, type BeatVisualIntentState } from "./beatVisualIntent";
@@ -215,7 +215,15 @@ import { awaitVideoYoutubePool, buildVideoYoutubePool, emptyVideoYoutubePool, ha
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 import { videoMainSubject } from "./mainSubject";
 import { readPeopleInNarration } from "./personNames";
-import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShot, type StockShot } from "./youtubeShotStock";
+import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots, type StockShot } from "./youtubeShotStock";
+import {
+  chooseMoments,
+  sectionMoments,
+  youtubeMomentSpanSec,
+  youtubeMomentSpanStartSec,
+  youtubeMomentsPerVideo,
+  type MomentShot,
+} from "./youtubeMoments";
 import { cutLocalVideoIntoShots, productionLocalShotCutter } from "./archiveShotPieces";
 
 export { getRenderTopic, getSearchProvenance, withRenderTopic, withSearchProvenance } from "./searchQueryContract";
@@ -295,7 +303,6 @@ import { ARTICLE_FILE_MARKER, ARTICLE_SCREENSHOTS_PER_VIDEO, chooseArticle, news
 import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
 import { isNameParticleToken } from "./searchQueryContract";
 import { knownYoutubeVideoDurationSec, rememberYoutubeVideoDurationSec } from "./youtubeVideoDuration";
-import { LEFT_TO_EDITOR } from "./onScreenTextDirector";
 import { sceneSearchBudgetMs } from "./sceneSearchBudget";
 import {
   formatYoutubeLicenseLine,
@@ -4200,7 +4207,7 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
       // of silently burning the majority of the render's time budget.
       sceneVisualTimeoutMs: IS_RAILWAY ? 3 * 60_000 : 3 * 60_000,
     }, videoLength);
-  } else if (videoLength === "10-15" || videoLength === "15-20") {
+  } else if (videoLength === "10-15" || videoLength === "15-20" || videoLength === "30" || videoLength === "60") {
     profile = applyMinimizeStockProfile({
       ...LENGTH_INDEPENDENT_CAPABILITIES,
       targetWallClockMin: 90,
@@ -4298,9 +4305,13 @@ export function getScenesForLength(videoLengthRaw: string): number {
   const videoLength = normalizeVideoLength(videoLengthRaw);
   switch (videoLength) {
     case "1":     return 3;
+    case "3":     return 6;
+    case "5":     return 10;
     case "8-10":  return 18;
     case "10-15": return 25;
     case "15-20": return 35;
+    case "30":    return 52;
+    case "60":    return 100;
     default:      return 18;
   }
 }
@@ -10954,6 +10965,70 @@ export async function fetchYouTubeCCClips(
 
           try {
             const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
+            const momentDur = (s: { sourceStartSec: number; sourceEndSec: number }) =>
+              Math.min(clipDur, Number((s.sourceEndSec - s.sourceStartSec).toFixed(2)));
+            /**
+             * OCTOBER 2026 — EVERY MOMENT IS ITS OWN CANDIDATE (see `youtubeMoments.ts`).
+             *
+             * Each shot becomes a file of the beat's length with its own lineage record and its own
+             * seconds, exactly as one stock shot did before; the beat's picture editor looks at them
+             * against the sentence and adopts only the one it approves. Returns how many arrived.
+             */
+            const offerMoments = async (
+              ytId: string,
+              ytTitle: string,
+              ytRow: typeof row,
+              shots: readonly MomentShot[],
+              from: string
+            ): Promise<number> => {
+              putCachedProviderAsset(sourcingCache, "youtube_cc", ytId, {
+                providerText: { title: ytTitle, description: ytRow.desc },
+                license: youtubePoolRowLicense(ytRow),
+              });
+              let offered = 0;
+              for (let m = 0; m < shots.length; m++) {
+                const shot = shots[m]!;
+                const momentStart = shot.sourceStartSec;
+                const dur = momentDur(shot);
+                const momentPath = tagPathWithProviderAsset(
+                  path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}m${m}_${youtubeFragmentFileTag(momentStart, dur)}.mp4`),
+                  "youtube_cc",
+                  ytId,
+                  sourcingCache,
+                  {
+                    sceneIndex,
+                    ...(scriptGuided?.beatIndex != null ? { beatIndex: scriptGuided.beatIndex } : {}),
+                    ...(scriptGuided?.beatText ? { beatText: scriptGuided.beatText } : {}),
+                    title: ytTitle,
+                    mediaType: "video",
+                    searchRoute: "fetchYouTubeCCClips",
+                  }
+                );
+                const ok = await stockShotToBeatFile(
+                  { videoId: ytId, title: ytTitle, path: shot.path, sourceStartSec: shot.sourceStartSec, sourceEndSec: shot.sourceEndSec, handedOut: 0 },
+                  dur,
+                  momentPath
+                );
+                if (ok) {
+                  try {
+                    sourcingCache?.lineage.recordSourceTrim(momentPath, { inSec: momentStart, outSec: momentStart + dur });
+                  } catch {
+                    /* a clip that arrived correctly is never lost to its own bookkeeping */
+                  }
+                }
+                recordProviderDownloadOutcome(sourcingCache, momentPath, ok, ok ? undefined : "youtube_moment_cut_failed");
+                if (ok) {
+                  results.push(momentPath);
+                  offered++;
+                }
+              }
+              console.log(
+                `[YouTubeMoments] Scene ${sceneIndex}${scriptGuided?.beatIndex != null ? ` beat ${scriptGuided.beatIndex}` : ""}: ` +
+                  `${ytId} — ${offered} moment(s) for the picture editor ` +
+                  `[${shots.map((s) => `@${s.sourceStartSec}s`).join(", ")}] from ${from}: "${ytTitle.slice(0, 60)}"`
+              );
+              return offered;
+            };
             /**
              * VIDEO 620 — THE FILM'S STOCK FIRST.
              *
@@ -10968,58 +11043,26 @@ export async function fetchYouTubeCCClips(
                 0,
                 Math.min(ytDeadline - Date.now(), remainingScopeMs() - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS)
               );
-              const shotDur = (s: StockShot) => Math.min(clipDur, Number((s.sourceEndSec - s.sourceStartSec).toFixed(2)));
-              const took = await takeStockShot(
+              const took = await takeStockShots(
                 poolVideoId!,
                 videoId,
                 stockWaitMs,
                 (s) =>
-                  youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, shotDur(s))) != null ||
+                  youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, momentDur(s))) != null ||
                   /** VIDEO 620 — another shot of this video may join the film; these seconds may not again. */
-                  youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, shotDur(s))
+                  youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, momentDur(s)),
+                youtubeMomentsPerVideo()
               );
-              if (took.shot) {
-                const stockStart = took.shot.sourceStartSec;
-                const stockDur = shotDur(took.shot);
-                const stockPath = tagPathWithProviderAsset(
-                  path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}_${youtubeFragmentFileTag(stockStart, stockDur)}.mp4`),
-                  "youtube_cc",
-                  videoId,
-                  sourcingCache,
-                  {
-                    sceneIndex,
-                    ...(scriptGuided?.beatIndex != null ? { beatIndex: scriptGuided.beatIndex } : {}),
-                    ...(scriptGuided?.beatText ? { beatText: scriptGuided.beatText } : {}),
-                    title,
-                    mediaType: "video",
-                    searchRoute: "fetchYouTubeCCClips",
-                  }
-                );
-                putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, {
-                  providerText: { title, description: row.desc },
-                  license: youtubePoolRowLicense(row),
-                });
-                const ok = await stockShotToBeatFile(took.shot, stockDur, stockPath);
-                if (ok) {
-                  try {
-                    sourcingCache?.lineage.recordSourceTrim(stockPath, { inSec: stockStart, outSec: stockStart + stockDur });
-                  } catch {
-                    /* a clip that arrived correctly is never lost to its own bookkeeping */
-                  }
-                }
-                recordProviderDownloadOutcome(sourcingCache, stockPath, ok, ok ? undefined : "youtube_stock_cut_failed");
-                if (ok) {
-                  results.push(stockPath);
+              if (took.shots.length) {
+                /** OCTOBER 2026 — several moments of the video; the beat's picture editor picks the one that fits. */
+                const offered = await offerMoments(videoId, title, row, took.shots, "the film's stock — no download");
+                if (offered > 0) {
                   downloadedIds.add(videoId);
                   fetched++;
-                  console.log(
-                    `[YouTubeStock] Scene ${sceneIndex}: ${videoId} @${stockStart}s (${stockDur}s) from the film's stock — ` +
-                      `no download: "${title.slice(0, 60)}"`
-                  );
                 }
                 continue;
               }
-              if (took.reason !== "download_failed") {
+              if (took.reason && took.reason !== "download_failed") {
                 console.log(
                   `[YouTubeStock] Scene ${sceneIndex}: ${videoId} not taken from stock (${took.reason}` +
                     `${took.reason === "still_downloading" ? ` after ${Math.round(stockWaitMs / 1000)}s` : ""}) — ` +
@@ -11138,8 +11181,28 @@ export async function fetchYouTubeCCClips(
                 continue;
               }
             }
-            const outPath = tagPathWithProviderAsset(
-              path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}_${youtubeFragmentFileTag(clipStart, clipDur)}.mp4`),
+            /**
+             * OCTOBER 2026 — A GUESSED START FETCHES A SECTION, NOT ONE WINDOW.
+             *
+             * Only a transcript hit located its second; every other start (the metadata plan, the
+             * thumbnail, the hash fallback) is a guess. For a guess one section around it is fetched —
+             * the same single download slot — cut where the picture changes, and its shots go to the
+             * beat's picture editor as separate moments (`offerMoments`). The section's own file is
+             * never a candidate, so it opens no lineage record of its own; a failed section files its
+             * failure on the record the single window would have had.
+             */
+            const momentsMode =
+              !startIsExact && youtubeMomentsPerVideo() > 1 && sourceDurationSec >= clipDur * 2;
+            const fetchSec = momentsMode ? youtubeMomentSpanSec(clipDur, sourceDurationSec) : clipDur;
+            const fetchStart = momentsMode
+              ? youtubeMomentSpanStartSec(clipStart, clipDur, fetchSec, sourceDurationSec)
+              : clipStart;
+            const windowPath = path.join(
+              workDir,
+              `scene_${sceneIndex}_${pass.fileTag}_${fetched}_${youtubeFragmentFileTag(fetchStart, fetchSec)}.mp4`
+            );
+            const tagWindow = () => tagPathWithProviderAsset(
+              windowPath,
               "youtube_cc",
               videoId,
               sourcingCache,
@@ -11180,6 +11243,7 @@ export async function fetchYouTubeCCClips(
                 searchRoute: "fetchYouTubeCCClips",
               }
             );
+            const outPath = momentsMode ? windowPath : tagWindow();
             // Fase 4: real YouTube-authored title/description, independent of our search query —
             // adoptClip's generic providerText lookup (see above) picks this up for both
             // AssetDirector ranking and the entity gate.
@@ -11248,8 +11312,8 @@ export async function fetchYouTubeCCClips(
             } = {};
             const ok = await downloadYouTubeCCClip(
               videoId,
-              clipDur,
-              clipStart,
+              fetchSec,
+              fetchStart,
               outPath,
               sceneIndex,
               item.snippet?.title,
@@ -11296,7 +11360,8 @@ export async function fetchYouTubeCCClips(
              */
             recordProviderDownloadOutcome(
               sourcingCache,
-              outPath,
+              /** A section that arrived is no candidate itself; one that failed files on the window's record. */
+              momentsMode ? (ok ? outPath : tagWindow()) : outPath,
               ok,
               /**
                * RONDE 115 — the specific status when the fetcher reported one, and the generic
@@ -11398,7 +11463,35 @@ export async function fetchYouTubeCCClips(
              * every other source. It is not judged here against one beat's text and deleted for
              * the whole scene.
              */
-            if (ok) {
+            if (ok && momentsMode) {
+              const shots = await sectionMoments(
+                outPath,
+                fetchStart,
+                clipStart,
+                clipDur,
+                path.join(workDir, `${path.basename(outPath, ".mp4")}_shots`),
+                await productionLocalShotCutter()
+              ).catch((err) => {
+                console.warn(`[YouTubeMoments] Scene ${sceneIndex}: ${videoId} section could not be cut:`, (err as Error)?.message?.slice(0, 120));
+                return [] as MomentShot[];
+              });
+              const open = shots.filter(
+                (s) =>
+                  !youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, momentDur(s))) &&
+                  !youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, momentDur(s))
+              );
+              const offered = await offerMoments(
+                videoId,
+                title,
+                row,
+                chooseMoments(open, youtubeMomentsPerVideo(), clipStart),
+                `a ${fetchSec}s section @${fetchStart}s (${shots.length} shot(s) in it)`
+              );
+              if (offered > 0) {
+                downloadedIds.add(videoId);
+                fetched++;
+              }
+            } else if (ok) {
               results.push(outPath);
               downloadedIds.add(videoId);
               fetched++;
@@ -11588,7 +11681,11 @@ const TITLE_NON_NAME_WORDS = new Set([
  */
 function cleanPersonNameCandidate(candidate: string): string[] {
   const tokens = candidate.trim().split(/\s+/).filter(Boolean);
-  while (tokens.length && TITLE_NON_NAME_WORDS.has(tokens[0].toLowerCase())) tokens.shift();
+  /**
+   * OCTOBER 2026 (renders 613, 616) — "Opening Kim Kardashian", "Unveil Kris Jenner": in a title or
+   * prompt, a leading opener or teaser verb is never the name's first word.
+   */
+  while (tokens.length && (TITLE_NON_NAME_WORDS.has(tokens[0].toLowerCase()) || isSentenceOpener(tokens[0]))) tokens.shift();
   while (tokens.length && TITLE_NON_NAME_WORDS.has(tokens[tokens.length - 1].toLowerCase())) tokens.pop();
   if (tokens.some((t) => TITLE_NON_NAME_WORDS.has(t.toLowerCase()))) return [];
   return tokens;
@@ -13684,6 +13781,29 @@ export function buildVerifiedQueryContextForBeat(
  */
 
 /** Capitalized names from narration — any person, read by the same rules. */
+/**
+ * OCTOBER 2026 (renders 613, 616) — "Opening Kim Kardashian", "Unveil Kris Jenner".
+ *
+ * A capitalised word in front of a name — a heading, a teaser verb, a title fragment — reads as
+ * the name's first token. The script itself says otherwise when it also names the person WITHOUT
+ * that word: a run of three or more words whose last two (or more) also stand on their own
+ * elsewhere in the same text is that shorter name. No word list: the text is the evidence.
+ */
+export function withoutStrayLeadingWord(run: string, text: string): string {
+  const words = run.trim().split(/\s+/);
+  for (let drop = 1; words.length - drop >= 2; drop++) {
+    const rest = words.slice(drop).join(" ");
+    /** A name starts with a capital; "bin Salman" is a particle, not a shorter name. */
+    if (!/^\p{Lu}/u.test(rest)) continue;
+    const escaped = rest.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const lead = words.slice(0, drop).join(" ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    /** The shorter name, NOT preceded by the dropped word(s) — somewhere else in the text. */
+    const alone = new RegExp(`(?<!${lead}\\s)\\b${escaped}\\b`, "u");
+    if (alone.test(text)) return rest;
+  }
+  return run.trim();
+}
+
 export function extractPersonNamesFromText(text: string): string[] {
   if (!text?.trim()) return [];
   const found = new Set<string>();
@@ -13691,7 +13811,7 @@ export function extractPersonNamesFromText(text: string): string[] {
   // were matched as separate names — see personNameChars.ts for the measurement.
   for (const m of text.matchAll(nameRunRegex(1))) {
     /** VIDEO 623 — "Let Musk explain", "Now Musk says": the opener is not part of the name. */
-    const n = withoutSentenceOpener(m[0], text, m.index ?? 0);
+    const n = withoutStrayLeadingWord(withoutSentenceOpener(m[0], text, m.index ?? 0), text);
     if (n.length < 5 || PERSON_NAME_SKIP_PHRASES.has(n.toLowerCase())) continue;
     // P1-A2 (render 518): a capitalized title fragment inside the script ("His Wife", "Why
     // Hitler Killed Himself") must never be treated as a person — every consumer of this list
@@ -18255,8 +18375,20 @@ async function adoptClip(
     dedup.clipAnnotationMeta,
     adScores
   );
+  /**
+   * OCTOBER 2026 — a footage that already fills much of the film goes behind fresher candidates,
+   * so the editor looks at an alternative first (usageDiversity.preferLessFilledFootage). Nothing
+   * is refused here; the delivery gate stays the last check.
+   */
+  const lessFilled = preferLessFilledFootage(tasteResult.rankedPaths, (p) => clipContentKey(p), dedup);
+  if (lessFilled.moved.length) {
+    console.log(
+      `[FootageShare] s${sceneIndex}b${beatIndex}: ${lessFilled.moved.length} candidate(s) moved back — their footage ` +
+        `already fills ${lessFilled.moved.map((m) => `${Math.round(m.share * 100)}%`).join(", ")} of the film so far`
+    );
+  }
   // RONDE 67: a working copy, because the loop below appends to it — see the reprieve.
-  const finalPaths = [...tasteResult.rankedPaths];
+  const finalPaths = [...lessFilled.paths];
   /**
    * RONDE 119 — THE COUNTER THAT SAID ZERO BECAUSE NOBODY CALLED IT.
    *
@@ -20061,8 +20193,19 @@ export async function visualJudgeRefusesPush(
    * RONDE 94/199b: "could anything be judged at all" — the CLIP latch, the beat judge's own
    * reachability, and (RONDE 215) whether there was a sentence to judge against.
    */
-  const visionAvailable =
-    !visionPipelineIsUnavailable() && !dedup.beatImageGate?.askImpossible && !nothingToJudge;
+  /**
+   * OCTOBER 2026 (renders 616, 625) — "nobody could look" is no longer a reason to let a picture
+   * in. Only a slot with no sentence behind it suspends the vision requirement; an unreachable
+   * judge (no key, cooldown, no capacity) or a CLIP model that will not load leaves the verdict
+   * at NOT_ASKED, which refuses every photograph. See `adoptionGuardVerdict`'s `visionAvailable`.
+   */
+  const visionAvailable = !nothingToJudge;
+  if (beatIndex != null && !nothingToJudge && (visionPipelineIsUnavailable() || dedup.beatImageGate?.askImpossible) && vision !== "APPROVED") {
+    console.warn(
+      `[AdoptionGuard] s${sceneIndex}b${beatIndex}: the picture editor is unreachable in this render ` +
+        `and ${path.basename(clipPath)} has no approval — not adopted (judge unavailable → no adoption)`
+    );
+  }
   const route = source ? { source, eligible, vision, visionAvailable } : null;
 
   const verdict = judgeAtPush({
@@ -21028,6 +21171,8 @@ async function fetchSceneVisualsInner(
       }
     }
     markAssetUsedInVideo(dedup, identity);
+    /** OCTOBER 2026 — the film's screen time per footage, read by every later beat's ranking. */
+    noteFootageOnScreen(dedup, key, actualHold);
     dedup.visualDedupStats.uniqueAssets++;
     clips.push(clipPath);
     beatDurations.push(actualHold);
@@ -24191,7 +24336,6 @@ async function _runVideoPipelineInner(
       captionsOnTimeline: 0,
       graphicsOnTimeline: 0,
       graphicsPlanned: 0,
-      textLeftToEditor: 0,
       ambientClipsOnTimeline: 0,
       sfxClipsOnTimeline: 0,
       musicClipsOnTimeline: 0,
@@ -24292,8 +24436,7 @@ async function _runVideoPipelineInner(
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
           /**
-           * VIDEO 619 — subtitles are always PLANNED, and like every other text they arrive switched
-           * off (`leaveOnScreenTextToTheEditor`): the editor turns them on in one click.
+           * Subtitles are always planned and drawn in the made video; the editor can switch them off.
            */
           includeSubtitles: true,
           /** The render's own id, so an adapter refusal names the run that produced it. */
@@ -24638,9 +24781,6 @@ async function _runVideoPipelineInner(
             cinematicProgress.captionsOnTimeline = captionTrack(t).filter((c) => !c.disabled).length;
             cinematicProgress.graphicsOnTimeline = graphicsTrack(t).filter((g) => !g.disabled).length;
             cinematicProgress.graphicsPlanned = graphicsTrack(t).length;
-            cinematicProgress.textLeftToEditor = [...captionTrack(t), ...graphicsTrack(t)].filter(
-              (x) => x.disabled && x.disabledReason === LEFT_TO_EDITOR
-            ).length;
             cinematicProgress.ambientClipsOnTimeline = audioTrackOf(t, "AMBIENT").length;
             cinematicProgress.sfxClipsOnTimeline = audioTrackOf(t, "SFX").length;
             cinematicProgress.musicClipsOnTimeline = audioTrackOf(t, "MUSIC").length;
@@ -25333,7 +25473,6 @@ async function _runVideoPipelineInner(
           assetsInFinalVideo,
           captionsOnTimeline: cinematicProgress.captionsOnTimeline,
           graphicsOnTimeline: cinematicProgress.graphicsOnTimeline,
-          textLeftToEditor: cinematicProgress.textLeftToEditor,
           ambientClipsOnTimeline: cinematicProgress.ambientClipsOnTimeline,
           sfxClipsOnTimeline: cinematicProgress.sfxClipsOnTimeline,
           musicClipsOnTimeline: cinematicProgress.musicClipsOnTimeline,

@@ -658,6 +658,14 @@ export function absoluteMinDurationSec(videoLength?: string | null): number {
   switch (normalizeVideoLength(videoLength)) {
     case "1":
       return 28;
+    case "3":
+      return 90;
+    case "5":
+      return 150;
+    case "30":
+      return 900;
+    case "60":
+      return 1800;
     case "8-10":
       return 240;
     case "10-15":

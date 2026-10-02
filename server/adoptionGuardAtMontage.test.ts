@@ -216,16 +216,16 @@ describe("the montage guard refuses only what it can justify refusing", () => {
     ).toBe(false);
   });
 
-  it("a rescue is NOT refused a picture the editor could not read", () => {
+  /**
+   * OCTOBER 2026 — reversed on the owner's rule (renders 616/625/626): a picture the editor could
+   * not read is not a picture the editor approved. A rescue or fallback now needs the same YES.
+   */
+  it("a rescue IS refused a picture the editor could not read, and adopted on an approval", () => {
     delete process.env[ENV];
-    expect(
-      verdict({ source: "rescue_wikimedia", eligible: false, vision: "UNCLEAR" }).allowed,
-      "a rescue was refused for UNCLEAR, which is render 569's failure"
-    ).toBe(true);
-    expect(
-      verdict({ source: "subject_fallback", eligible: false, vision: "UNCLEAR" }).allowed,
-      "a subject fallback was refused for UNCLEAR, which is render 569's failure"
-    ).toBe(true);
+    for (const source of ["rescue_wikimedia", "subject_fallback"]) {
+      expect(verdict({ source, eligible: false, vision: "UNCLEAR" }).allowed, `${source} on UNCLEAR`).toBe(false);
+      expect(verdict({ source, eligible: false, vision: "APPROVED" }).allowed, `${source} on APPROVED`).toBe(true);
+    }
   });
 
   /**

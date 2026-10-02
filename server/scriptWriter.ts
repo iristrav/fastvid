@@ -25,6 +25,10 @@ export const NARRATION_WPM = 145;
 
 const SPOKEN_SECONDS: Record<VideoLength, number> = {
   "1": 58,
+  "3": 175,
+  "5": 290,
+  "30": 1740,
+  "60": 3480,
   "8-10": 540,
   "10-15": 750,
   "15-20": 1050,
@@ -32,6 +36,10 @@ const SPOKEN_SECONDS: Record<VideoLength, number> = {
 
 const LENGTH_LABELS: Record<VideoLength, string> = {
   "1": "1 minute",
+  "3": "3 minutes",
+  "5": "5 minutes",
+  "30": "30 minutes",
+  "60": "60 minutes",
   "8-10": "8–10 minutes",
   "10-15": "10–15 minutes",
   "15-20": "15–20 minutes",
@@ -47,11 +55,16 @@ export function getScriptLengthBudget(videoLengthRaw: string): ScriptLengthBudge
   const minChars = Math.round(targetChars * 0.9);
   const maxChars = Math.round(targetChars * 1.1);
 
+  /** One section per ~1.5–4 minutes of narration, by the length's target minutes. */
+  const minutes = targetSpokenSec / 60;
   const sectionCount =
-    videoLength === "1" ? 2
-      : videoLength === "8-10" ? 6
-        : videoLength === "10-15" ? 7
-          : 8;
+    minutes <= 1 ? 2
+      : minutes <= 5 ? 4
+        : minutes <= 10 ? 6
+          : minutes <= 15 ? 7
+            : minutes <= 20 ? 8
+              : minutes <= 30 ? 10
+                : 14;
 
   const hookWords = videoLength === "1" ? 28 : 70;
   const ctaWords = videoLength === "1" ? 18 : 28;

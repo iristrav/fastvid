@@ -121,6 +121,46 @@ export function readRoute(data: Record<string, unknown>): Array<{ x: number; y: 
   return out;
 }
 
+/**
+ * OCTOBER 2026 — a real place: longitude and latitude in degrees, read from `lon`/`lat` (or
+ * `longitude`/`latitude`). Null unless both are finite and inside the globe. A map with this draws
+ * the real coastline (Natural Earth, bundled); a map with only normX/normY stays abstract.
+ */
+export function readGeoPoint(data: Record<string, unknown>): { lon: number; lat: number } | null {
+  const lon = readNumber(data, "lon", "longitude");
+  const lat = readNumber(data, "lat", "latitude");
+  if (lon == null || lat == null) return null;
+  if (lon < -180 || lon > 180 || lat < -90 || lat > 90) return null;
+  return { lon, lat };
+}
+
+/** The real places of a route or a multi-point map, in order; entries without both degrees are dropped. */
+export function readGeoPoints(data: Record<string, unknown>): Array<{ lon: number; lat: number; label: string }> {
+  const raw = data.points ?? data.route;
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ lon: number; lat: number; label: string }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const p = readGeoPoint(row);
+    if (p) out.push({ ...p, label: typeof row.label === "string" ? row.label : "" });
+  }
+  return out;
+}
+
+/**
+ * How many decimals a number is shown with: the payload's `decimals` when it gives one (0–3),
+ * otherwise as many as the value itself was written with — "3.5 billion" counts to 3.5, never to 4.
+ */
+export function readDecimals(data: Record<string, unknown>, value: number | null): number {
+  const given = readNumber(data, "decimals");
+  if (given != null && given >= 0 && given <= 3) return Math.round(given);
+  if (value == null || Number.isInteger(value)) return 0;
+  const text = String(value);
+  const dot = text.indexOf(".");
+  return dot < 0 ? 0 : Math.min(3, text.length - dot - 1);
+}
+
 /* ═══════════════════════ the shapes this build can draw ═══════════════════════ */
 
 /** SVG path data, in a -50..50 box. Pure data — the component that strokes it lives in Charts.tsx. */
@@ -330,12 +370,13 @@ export function chartPayloadIsRenderable(graphicType: string, data: Record<strin
     case "percentage_ring":
     case "progress":
       return readRingPercent(data) != null;
+    /** OCTOBER 2026 — a real place (lon/lat) is drawn on the real map; normX/normY on the abstract one. */
     case "map_point":
-      return readNumber(data, "normX") != null && readNumber(data, "normY") != null;
+      return readGeoPoint(data) != null || (readNumber(data, "normX") != null && readNumber(data, "normY") != null);
     case "route":
-      return readRoute(data).length >= 2;
+      return readGeoPoints(data).length >= 2 || readRoute(data).length >= 2;
     case "multi_point":
-      return readRoute(data).length >= 1;
+      return readGeoPoints(data).length >= 1 || readRoute(data).length >= 1;
     default:
       return false;
   }

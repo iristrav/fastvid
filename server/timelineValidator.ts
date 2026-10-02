@@ -53,7 +53,7 @@ import { identityHasRehydrationRoute } from "./assetRehydrator";
  * cannot finish. `timelineFilters` holds the filter strings, so it is the only honest authority on
  * what is renderable.
  */
-import { effectChain, transitionIsRenderable } from "./timelineFilters";
+import { effectChain, transitionIsRenderable, MIN_CLIP_SPEED, MAX_CLIP_SPEED } from "./timelineFilters";
 
 export type TimelineIssueCode =
   | "negative_duration"
@@ -65,6 +65,7 @@ export type TimelineIssueCode =
   | "invalid_source_range"
   | "source_out_before_in"
   | "negative_source_in"
+  | "invalid_speed"
   | "video_overlap"
   | "video_gap"
   /**
@@ -300,6 +301,13 @@ function checkVideoClip(clip: TimelineVideoClip, issues: TimelineIssue[]): void 
       reason: `sourceOut (${clip.sourceOut!.toFixed(3)}s) is not after sourceIn (${clip.sourceIn!.toFixed(3)}s)`,
     });
   }
+  if (clip.speed != null && (!Number.isFinite(clip.speed) || clip.speed < MIN_CLIP_SPEED || clip.speed > MAX_CLIP_SPEED)) {
+    issues.push({
+      code: "invalid_speed", track: "VIDEO", elementId: clip.id,
+      start: clip.timelineStart, end: clip.timelineEnd,
+      reason: `speed ${String(clip.speed)} is outside ${MIN_CLIP_SPEED}–${MAX_CLIP_SPEED}`,
+    });
+  }
   /**
    * §15 — an asset that cannot be recovered is named, with its provider and id.
    *
@@ -370,16 +378,13 @@ function checkVideoClip(clip: TimelineVideoClip, issues: TimelineIssue[]): void 
   }
 }
 
-const VALID_TRANSITIONS = new Set([
-  "hard_cut", "crossfade", "dissolve", "dip_to_black", "dip_to_white",
-]);
-
 function checkTransitions(clip: TimelineVideoClip, issues: TimelineIssue[]): void {
   for (const [field, value] of [
     ["transitionIn", clip.transitionIn],
     ["transitionOut", clip.transitionOut],
   ] as const) {
-    if (!VALID_TRANSITIONS.has(value)) {
+    /** Every transition the renderer executes (a hard cut, or a real xfade mode) is valid. */
+    if (!transitionIsRenderable(value)) {
       issues.push({
         code: "invalid_transition", track: "VIDEO", elementId: clip.id,
         start: clip.timelineStart, end: clip.timelineEnd,

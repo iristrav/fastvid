@@ -1111,3 +1111,26 @@ export const youtubeUnusableVideos = mysqlTable("youtube_unusable_videos", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
+
+/**
+ * EDITOR — a saved version of a video's timeline, so an earlier edit can be restored.
+ * Written by every save; only the newest versions per video are kept.
+ */
+export const timelineSnapshots = mysqlTable(
+  "timeline_snapshots",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    videoId: int("videoId").notNull(),
+    timelineVersion: int("timelineVersion").notNull(),
+    timeline: json("timeline").notNull(),
+    /** What made this version: "save", "autosave", "AI: …", "replace shot …", "restore v3". */
+    label: varchar("label", { length: 128 }),
+    createdByUserId: int("createdByUserId"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    videoVersionIdx: index("timeline_snapshots_video_version_idx").on(t.videoId, t.timelineVersion),
+  })
+);
+
+export type TimelineSnapshot = typeof timelineSnapshots.$inferSelect;

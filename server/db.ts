@@ -14,7 +14,7 @@ import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineComposeGraceMs } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
-import { InsertInviteCode, InsertUser, InsertVideo, inviteCodes, users, videos, llmSpendByUser, renderJobs, renderLocks, youtubeVideoSearches, type RenderJob } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, inviteCodes, users, videos, llmSpendByUser, renderJobs, renderLocks, youtubeVideoSearches, timelineSnapshots, type RenderJob } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import type { AssetSourceIdentity } from "./projectTimeline";
 
@@ -779,7 +779,7 @@ export function pipelineStallThresholdMs(
   let wallMs: number;
   if (isShortVideoLength(length)) {
     wallMs = visualSearch ? visualCap : totalCap;
-  } else if (length === "8-10") {
+  } else if (length === "3" || length === "5" || length === "8-10") {
     wallMs = visualSearch ? visualCap : 35 * 60 * 1000;
   } else {
     wallMs = visualSearch ? Math.min(visualCap, totalCap - 5 * 60 * 1000) : 45 * 60 * 1000;
@@ -1351,6 +1351,77 @@ export async function saveVideoTimeline(params: {
   // A driver that does not report a row count must not be read as "it worked" — re-read instead.
   const after = await getStoredTimeline(params.id);
   return { saved: after?.timelineVersion === params.nextVersion };
+}
+
+/** How many saved versions of one video's timeline are kept for "restore". */
+export const TIMELINE_SNAPSHOTS_KEPT = 30;
+
+/**
+ * Keep a saved version of a timeline, then trim the video's history to the newest
+ * `TIMELINE_SNAPSHOTS_KEPT`. Best-effort: a failed snapshot never fails the save it records.
+ */
+export async function recordTimelineSnapshot(params: {
+  videoId: number;
+  timelineVersion: number;
+  timeline: unknown;
+  label: string;
+  userId?: number | null;
+}): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db.insert(timelineSnapshots).values({
+      videoId: params.videoId,
+      timelineVersion: params.timelineVersion,
+      timeline: params.timeline,
+      label: params.label.slice(0, 128),
+      createdByUserId: params.userId ?? null,
+    });
+    const keep = await db
+      .select({ id: timelineSnapshots.id })
+      .from(timelineSnapshots)
+      .where(eq(timelineSnapshots.videoId, params.videoId))
+      .orderBy(desc(timelineSnapshots.timelineVersion), desc(timelineSnapshots.id))
+      .limit(TIMELINE_SNAPSHOTS_KEPT);
+    if (keep.length >= TIMELINE_SNAPSHOTS_KEPT) {
+      await db
+        .delete(timelineSnapshots)
+        .where(and(eq(timelineSnapshots.videoId, params.videoId), notInArray(timelineSnapshots.id, keep.map((k) => k.id))));
+    }
+  } catch (err) {
+    console.warn(`[Timeline] video=${params.videoId} snapshot v${params.timelineVersion} not kept: ${(err as Error).message}`);
+  }
+}
+
+/** The kept versions of a video's timeline, newest first — without the documents themselves. */
+export async function listTimelineSnapshots(videoId: number): Promise<
+  Array<{ id: number; timelineVersion: number; label: string | null; createdAt: Date }>
+> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: timelineSnapshots.id,
+      timelineVersion: timelineSnapshots.timelineVersion,
+      label: timelineSnapshots.label,
+      createdAt: timelineSnapshots.createdAt,
+    })
+    .from(timelineSnapshots)
+    .where(eq(timelineSnapshots.videoId, videoId))
+    .orderBy(desc(timelineSnapshots.timelineVersion), desc(timelineSnapshots.id))
+    .limit(TIMELINE_SNAPSHOTS_KEPT);
+}
+
+/** One kept version, with its document. Null when it is not this video's. */
+export async function getTimelineSnapshot(videoId: number, snapshotId: number): Promise<{ timelineVersion: number; timeline: unknown } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select({ timelineVersion: timelineSnapshots.timelineVersion, timeline: timelineSnapshots.timeline })
+    .from(timelineSnapshots)
+    .where(and(eq(timelineSnapshots.id, snapshotId), eq(timelineSnapshots.videoId, videoId)))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /**

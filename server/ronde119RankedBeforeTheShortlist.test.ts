@@ -40,7 +40,8 @@ const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
 describe("the ranked counter has a caller", () => {
   it("is called where the ranked list is built, with that list's length", () => {
-    const at = PIPE.indexOf("const finalPaths = [...tasteResult.rankedPaths];");
+    /** OCTOBER 2026 — the copy is now taken of the footage-share order (usageDiversity.preferLessFilledFootage). */
+    const at = PIPE.indexOf("const finalPaths = [...lessFilled.paths];");
     expect(at).toBeGreaterThan(-1);
     /**
      * RONDE 227 widened this window from 1800 to 3000 and dropped the closing paren from the

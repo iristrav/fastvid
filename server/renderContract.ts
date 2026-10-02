@@ -195,11 +195,6 @@ export type RenderFeatureFacts = {
     /** From the DOCUMENT the cinematic render was made from — what will play, not what was asked. */
     captionsOnTimeline: number;
     graphicsOnTimeline: number;
-    /**
-     * VIDEO 624 — captions and graphics on that document switched off for the editor (the made video
-     * carries no text since video 619). Planned, deliberately not drawn; the editor switches them on.
-     */
-    textLeftToEditor?: number;
     ambientClipsOnTimeline: number;
     sfxClipsOnTimeline: number;
     musicClipsOnTimeline: number;
@@ -369,8 +364,6 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
     ),
     ...(f.captionsEnabled && f.captionsPlanned === 0
       ? { reason: "captions are on and none was planned" }
-      : f.captionsPlanned > 0 && d.captionsOnTimeline === 0 && (d.textLeftToEditor ?? 0) > 0
-        ? { reason: "the made video carries no text — the captions are left to the editor, switched off" }
       : !f.captionsEnabled
         ? { reason: "captions are switched off for this render" }
         : {}),
@@ -387,13 +380,7 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
         ? "the delivered timeline carries no graphics track"
         : "compose burned no overlay into the delivered file"
     ),
-    ...(f.graphicsPlanned > d.graphicsBurnedInByCompose + d.graphicsOnTimeline && (d.textLeftToEditor ?? 0) > 0
-      ? {
-          reason:
-            `${f.graphicsPlanned} graphics were planned; the made video carries no text — ` +
-            `they are left to the editor, switched off`,
-        }
-      : f.graphicsPlanned > d.graphicsBurnedInByCompose + d.graphicsOnTimeline
+    ...(f.graphicsPlanned > d.graphicsBurnedInByCompose + d.graphicsOnTimeline
       ? {
           reason:
             `${f.graphicsPlanned} graphics were planned and ` +

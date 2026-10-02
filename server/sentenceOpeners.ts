@@ -32,6 +32,10 @@ export const SENTENCE_OPENERS: ReadonlySet<string> = new Set(
     "moreover furthermore indeed whatever whenever wherever whoever " +
     // imperatives narration opens with
     "let lets imagine consider remember picture look listen meet enter think " +
+    // OCTOBER 2026 (renders 613, 616) — heading and teaser verbs a script or title opens with:
+    // "Opening Kim Kardashian …", "Unveil Kris Jenner: …". Never the first word of a name.
+    "opening unveil unveiling uncover uncovering discover discovering explore exploring reveal " +
+    "revealing introducing presenting welcome " +
     // Dutch — narration may be written in it (see scriptWriter's LANGUAGE rule). Not "van", "de",
     // "den", "ter", "ten" (name particles: "Van Gogh"), nor "dan" and "elke" (also first names).
     "het een deze dit dat die er hij zij ze wij jij je ik op bij met voor tijdens toen nu vandaag " +
@@ -61,8 +65,13 @@ export function isSentenceOpener(word: string): boolean {
 
 /** Does `index` in `text` sit at the start of a sentence (after any opening quote)? */
 export function atSentenceStart(text: string, index: number): boolean {
-  const before = text.slice(0, index).replace(/["“'‘(\[]+$/u, "").trimEnd();
-  return before.length === 0 || /[.!?:;]$/.test(before);
+  /**
+   * OCTOBER 2026 (render 616) — a markdown heading or list marker ("# Unveil Kris Jenner", "**Opening**")
+   * and the start of a line open a sentence too; they were read as part of the line before them.
+   */
+  const raw = text.slice(0, index);
+  const before = raw.replace(/[ \t"“'‘(\[#*>_-]+$/u, "");
+  return before.trim().length === 0 || /[.!?:;\n]$/.test(before) || /[.!?:;]$/.test(before.trimEnd());
 }
 
 /**

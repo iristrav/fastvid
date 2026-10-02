@@ -113,8 +113,9 @@ describe("the facts the corrected comment states", () => {
      * own name + 4 with no component. The union is THIRTEEN — the comment said nine, which was
      * true when the map was written and had not been for several rounds.
      */
-    const directName = ["lower_third", "date_card", "location_card", "quote", "highlight_box"];
-    expect(GRAPHIC_TYPES.length).toBe(13);
+    /** OCTOBER 2026 — `line_chart` joined the direct names: the planner draws the narration's own series. */
+    const directName = ["lower_third", "date_card", "location_card", "quote", "highlight_box", "line_chart"];
+    expect(GRAPHIC_TYPES.length).toBe(14);
     const accounted = new Set([...Object.keys(RENDERER_GRAPHIC_TYPE), ...none, ...directName]);
     expect(accounted.size).toBe(GRAPHIC_TYPES.length);
     expect([...accounted].sort()).toEqual([...GRAPHIC_TYPES].sort());

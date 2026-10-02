@@ -88,7 +88,18 @@ describe("render 569 replayed through the code as it stands", () => {
    * knowable from this log. So this file measures the rule, and only a real render measures the
    * whole change.
    */
-  it("48 of the 52 refusals no longer happen", () => {
+  /**
+   * ── OCTOBER 2026 — the measurement, under the owner's new rule ─────────────────────────────
+   *
+   * "selected → reviewed → approved → adopted" and "judge unavailable → no adoption" (renders
+   * 616, 625, 626). Every photograph now needs an APPROVAL, so every one of render 569's 52
+   * refusals happens again: 0 of them would be adopted today. Stated as a measurement, not
+   * softened: a render whose editor answers UNCLEAR for every beat ends exactly like 569 did —
+   * except that the delivery gate now refuses it honestly instead of shipping pictures nobody
+   * said yes to. Whether a real render gets enough approvals is a question only a real render
+   * answers (the judge's prompt changed with it: doubt is now a "no", not an UNCLEAR).
+   */
+  it("OCTOBER 2026 — all 52 refusals happen again; nothing is adopted without an approval", () => {
     let stillRefused = 0;
     let nowAllowed = 0;
     for (const r of RENDER_569_REFUSALS) {
@@ -96,26 +107,21 @@ describe("render 569 replayed through the code as it stands", () => {
       if (allowed) nowAllowed += r.count;
       else stillRefused += r.count;
     }
-    expect(nowAllowed).toBe(48);
-    expect(stillRefused).toBe(4);
-    expect(nowAllowed + stillRefused).toBe(TOTAL);
+    expect(nowAllowed).toBe(0);
+    expect(stillRefused).toBe(TOTAL);
   });
 
-  /** Named individually, so a regression says WHICH group came back. */
-  it("the 47 subject fallbacks are adopted", () => {
-    expect(replay(RENDER_569_REFUSALS[0]).allowed).toBe(true);
+  /** Named individually, so a change says WHICH group moved. */
+  it("the 47 subject fallbacks are refused on UNCLEAR", () => {
+    expect(replay(RENDER_569_REFUSALS[0]).allowed).toBe(false);
   });
 
-  /**
-   * RONDE 199: these two are the whole cost of the tightening, so they are asserted by name and in
-   * the direction they now go. Their verdict is NOT_ASKED — nobody had looked at either picture.
-   */
   it("the 2 Wikimedia rescues nobody looked at are refused", () => {
     expect(replay(RENDER_569_REFUSALS[1]).allowed).toBe(false);
   });
 
-  it("the 1 eligible subject fallback is adopted", () => {
-    expect(replay(RENDER_569_REFUSALS[3]).allowed).toBe(true);
+  it("the 1 eligible subject fallback is refused on UNCLEAR", () => {
+    expect(replay(RENDER_569_REFUSALS[3]).allowed).toBe(false);
   });
 
   /**
@@ -150,15 +156,14 @@ describe("the limits of this replay, pinned", () => {
    * refuse the next render. Fixing the fallbacks does not by itself fix that, and this test exists
    * so nobody reads the 50 above as a promise that it does.
    */
-  it("none of the restored adoptions counts as a verified own visual", () => {
+  it("a fallback adopted on an approval still does not count as a verified own visual", () => {
     const saved = process.env.ENFORCE_FUNNEL_ADOPTION;
     try {
       delete process.env.ENFORCE_FUNNEL_ADOPTION;
+      /** OCTOBER 2026 — a fallback is adopted only on an approval, and then still counts as unverified. */
       for (const source of ["subject_fallback", "rescue_wikimedia"]) {
-        expect(
-          adoptionGuardVerdict({ source, eligible: false, vision: "UNCLEAR" }).allowed,
-          "the adoption is restored"
-        ).toBe(true);
+        expect(adoptionGuardVerdict({ source, eligible: false, vision: "UNCLEAR" }).allowed).toBe(false);
+        expect(adoptionGuardVerdict({ source, eligible: false, vision: "APPROVED" }).allowed).toBe(true);
       }
       /** But the strict route is unchanged, and that is the one the export gate counts. */
       expect(

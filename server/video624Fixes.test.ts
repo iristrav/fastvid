@@ -243,7 +243,7 @@ describe("5. the reports say what the film did", () => {
   });
 });
 
-describe("6. text left to the editor is planned, not executed, and says so", () => {
+describe("6. the text the director keeps is in the made video, and the matrix says so", () => {
   const facts = (): RenderFeatureFacts => ({
     beatsWithIntent: 11, beatsTotal: 11, retrieved: 25, eligible: 1, shortlisted: 1,
     visionEnabled: true, visionReviewPool: 1, visionAsked: 1, visionApproved: 0,
@@ -255,23 +255,19 @@ describe("6. text left to the editor is planned, not executed, and says so", () 
     ambiencePlanned: 3, ambienceUnavailable: 0, sfxPlanned: 0, duckingApplied: true,
     delivery: {
       fileExists: true, hasVideoStream: true, hasAudioStream: true, fromCinematicRender: true,
-      assetsInFinalVideo: 6, captionsOnTimeline: 0, graphicsOnTimeline: 0, textLeftToEditor: 14,
+      assetsInFinalVideo: 6, captionsOnTimeline: 11, graphicsOnTimeline: 3,
       ambientClipsOnTimeline: 3, sfxClipsOnTimeline: 0, musicClipsOnTimeline: 0,
       graphicsBurnedInByCompose: 0, avSyncMeasured: true, spotChecked: true,
     },
   });
 
-  it("video 624's graphics and captions: planned, not drawn, left to the editor", () => {
+  it("captions and graphics on the timeline are executed and delivered", () => {
     const m = buildRenderFeatureMatrix(facts());
-    expect(m.graphics?.planned).toBe(true);
-    expect(m.graphics?.executed).toBe(false);
-    expect(m.graphics?.reason).toContain("left to the editor");
-    expect(m.captions?.executed).toBe(false);
-    expect(m.captions?.reason).toContain("left to the editor");
+    expect(m.graphics?.executed).toBe(true);
+    expect(m.captions?.executed).toBe(true);
     const v = featureMatrixViolations(m).join("\n");
-    expect(v).not.toContain("graphics EXECUTED_WITHOUT_PLAN");
-    expect(v).not.toContain("graphics UNEXPLAINED_GAP");
-    expect(v).not.toContain("captions UNEXPLAINED_GAP");
+    expect(v).not.toContain("graphics");
+    expect(v).not.toContain("captions");
   });
 
   it("the pipeline counts what will play, and the plan's own graphics", () => {

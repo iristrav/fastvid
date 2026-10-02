@@ -33,6 +33,7 @@
  * can switch it back on — the renderer and the Remotion props already skip a disabled element.
  */
 import type { ProjectTimeline, TimelineGraphic, TimelineText } from "./projectTimeline";
+import { readGeoPoint } from "./graphicsVocabulary";
 
 export const MIN_TEXT_ON_SCREEN_SEC = 2;
 export const MAX_TEXTS_AT_ONCE = 2;
@@ -162,6 +163,12 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
   for (const g of [...graphics]) {
     if (g.disabled || (g as { editedByUser?: boolean }).editedByUser) continue;
     if (g.graphicType !== "map_point") continue;
+    /**
+     * OCTOBER 2026 — a map that knows its real place (lon/lat) IS a map: the real coastline, the
+     * country highlighted, the camera moving in (GeoMap.tsx). Only the coordinate-less one is the
+     * blue grid this rule was written against.
+     */
+    if (readGeoPoint(g.data ?? {})) continue;
     const place = typeof g.data?.locationName === "string" ? g.data.locationName : g.label ?? "";
     g.disabled = true;
     g.disabledReason = "map_without_geography";
@@ -340,48 +347,6 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
     } else if (e.track === "text" && (e.kind === "date" || reveals.has(e.el.id))) {
       e.el.animation = "typewriter";
       out.typewriter.push({ id: e.el.id, start: e.el.start, text: e.label, why: reveals.has(e.el.id) ? "reveal" : "year" });
-    }
-  }
-  return out;
-}
-
-/**
- * VIDEO 619 — TEXT AND CARDS ARE THE EDITOR'S; THE SUBTITLES AND THE TYPED YEARS ARE IN THE MADE VIDEO.
- *
- * The planners still write their names, places, years and cards, and the director above still
- * chooses among them — so the editor opens with good suggestions already timed to the narration.
- * Every one of those starts switched OFF, with this reason, and the renderer (which skips a disabled
- * element) draws none of them. Switching one back on in the editor is the whole of "adding it".
- *
- * Left as planned, and so in the made video:
- *  - the subtitles (CAPTIONS track), timed on the narration's measured word timing;
- *  - RONDE 656 — the elements the director above made type in (`animation: "typewriter"` text, a
- *    date card marked `data.typewriter`): the years and reveals, with their key sound on the SFX track.
- *
- * Returns how many elements it switched off, for the render log.
- */
-export const LEFT_TO_EDITOR = "left_to_editor";
-
-export function leaveOnScreenTextToTheEditor(timeline: ProjectTimeline): {
-  texts: number;
-  graphics: number;
-} {
-  const out = { texts: 0, graphics: 0 };
-  for (const track of timeline.tracks) {
-    if (track.kind === "TEXT") {
-      for (const t of track.texts) {
-        if (t.disabled || t.animation === "typewriter") continue;
-        t.disabled = true;
-        t.disabledReason = LEFT_TO_EDITOR;
-        out.texts += 1;
-      }
-    } else if (track.kind === "GRAPHICS") {
-      for (const g of track.graphics) {
-        if (g.disabled || g.data?.typewriter === true) continue;
-        g.disabled = true;
-        g.disabledReason = LEFT_TO_EDITOR;
-        out.graphics += 1;
-      }
     }
   }
   return out;

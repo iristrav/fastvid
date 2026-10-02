@@ -22,7 +22,8 @@
  */
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
-import { animationAt } from "./animation";
+import { animationAt, easeInOut } from "./animation";
+import { GeoMap, isGeoPayload } from "./GeoMap";
 import { typedCount } from "./typewriter";
 import { positionStyle, type TextStyleLike } from "./Text";
 import {
@@ -36,7 +37,7 @@ import {
   readNumber,
   readText,
 } from "./Charts";
-import { graphicIsRenderable, readRegion } from "../../graphicsVocabulary";
+import { graphicIsRenderable, readDecimals, readRegion } from "../../graphicsVocabulary";
 
 export type GraphicSpec = {
   id: string;
@@ -97,7 +98,7 @@ function readAny(g: GraphicSpec, ...keys: string[]): string | null {
  * Noto Sans and Noto Serif are installed in the render image (Dockerfile: fonts-noto,
  * fonts-noto-core); DejaVu and Liberation stay behind them as the fallback they always were.
  */
-const CARD_FONT = "Noto Sans, DejaVu Sans, Liberation Sans, sans-serif";
+const CARD_FONT = "Inter, Noto Sans, DejaVu Sans, Liberation Sans, sans-serif";
 const SERIF_FONT = "Noto Serif, DejaVu Serif, Liberation Serif, serif";
 /** A muted archival gold — present without shouting over black-and-white footage. */
 const ACCENT = "#d9b45a";
@@ -193,18 +194,33 @@ const NumberCounter: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, prima
   const frame = useCurrentFrame();
   const from = typeof g.data.fromValue === "number" ? g.data.fromValue : null;
   const to = typeof g.data.toValue === "number" ? g.data.toValue : null;
-  const suffix = typeof g.data.suffix === "string" ? g.data.suffix : "";
+  const rawSuffix = typeof g.data.suffix === "string" ? g.data.suffix : "";
   if (from == null || to == null) {
     return <div style={{ fontFamily: CARD_FONT, fontWeight: 800, color: "white" }}>{primary}</div>;
   }
-  const value = interpolate(frame, [0, Math.max(1, g.durationInFrames - 6)], [from, to], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
+  /**
+   * OCTOBER 2026 — the count eases in and settles (it used to run at one speed and stop dead), it
+   * keeps the decimals the number was written with ("3.5 billion" never shows as 4), and a word
+   * unit is set apart from the figure ("3.5 billion", "40%", "$12").
+   */
+  const decimals = readDecimals(g.data, to);
+  const settle = Math.max(1, Math.round(g.durationInFrames * 0.7));
+  const value = from + (to - from) * easeInOut(Math.min(1, frame / settle));
+  const prefix = typeof g.data.prefix === "string" ? g.data.prefix : "";
+  const suffix = rawSuffix && /^[a-z]/i.test(rawSuffix) ? ` ${rawSuffix}` : rawSuffix;
+  const caption = readAny(g, "caption", "subtitle");
   return (
-    <div style={{ fontFamily: CARD_FONT, fontSize: "1.6em", fontWeight: 800, color: "white", fontVariantNumeric: "tabular-nums" }}>
-      {Math.round(value).toLocaleString("en-US")}
-      {suffix}
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontFamily: CARD_FONT, fontSize: "1.6em", fontWeight: 800, color: "white", fontVariantNumeric: "tabular-nums", textShadow: HALO }}>
+        {prefix}
+        {value.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
+        {suffix}
+      </div>
+      {caption && (
+        <div style={{ fontFamily: CARD_FONT, fontSize: "0.5em", color: ACCENT, letterSpacing: "0.12em", marginTop: 4, textShadow: HALO }}>
+          {caption.toUpperCase()}
+        </div>
+      )}
     </div>
   );
 };
@@ -306,14 +322,21 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
     case "progress":
       body = <PercentageRing data={g.data} durationInFrames={g.durationInFrames} />;
       break;
+    /** OCTOBER 2026 — a real place (lon/lat) on the real map with its camera; otherwise the abstract one. */
     case "map_point":
-      body = <MapPoint data={g.data} durationInFrames={g.durationInFrames} />;
+      body = isGeoPayload(g.data)
+        ? <GeoMap data={g.data} durationInFrames={g.durationInFrames} mode="point" />
+        : <MapPoint data={g.data} durationInFrames={g.durationInFrames} />;
       break;
     case "route":
-      body = <RouteMap data={g.data} durationInFrames={g.durationInFrames} />;
+      body = isGeoPayload(g.data)
+        ? <GeoMap data={g.data} durationInFrames={g.durationInFrames} mode="route" />
+        : <RouteMap data={g.data} durationInFrames={g.durationInFrames} />;
       break;
     case "multi_point":
-      body = <RouteMap data={g.data} durationInFrames={g.durationInFrames} pointsOnly />;
+      body = isGeoPayload(g.data)
+        ? <GeoMap data={g.data} durationInFrames={g.durationInFrames} mode="points" />
+        : <RouteMap data={g.data} durationInFrames={g.durationInFrames} pointsOnly />;
       break;
     case "shape":
     case "icon":

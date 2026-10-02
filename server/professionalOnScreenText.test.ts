@@ -170,7 +170,8 @@ describe("1 — wiring and design", () => {
   });
 
   it("the cards use the installed Noto faces and a date is set as a date", () => {
-    expect(GFX).toContain('const CARD_FONT = "Noto Sans, DejaVu Sans, Liberation Sans, sans-serif";');
+    /** OCTOBER 2026 — Inter is bundled with the composition (remotion/fonts.ts); Noto stays right behind it. */
+    expect(GFX).toContain('const CARD_FONT = "Inter, Noto Sans, DejaVu Sans, Liberation Sans, sans-serif";');
     expect(GFX).toContain('const SERIF_FONT = "Noto Serif, DejaVu Serif, Liberation Serif, serif";');
     /** RONDE 656 — and types itself in when the director says so. */
     expect(GFX).toContain('case "date_card":\n      body = <DateCard primary={words} typewriter={g.data?.typewriter === true} />;');

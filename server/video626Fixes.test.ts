@@ -347,8 +347,12 @@ describe("5. render 626's approvals that rested on a likeness or on the line", (
     expect(prompt).toContain("as long as you can SEE it is them");
     expect(prompt).toContain("unless the line is about a specific thing a camera could show");
     expect(prompt).toContain("then the person alone is not");
-    /** The rule that ended render 564's 91% refusals stays. */
-    expect(prompt).toContain("a shot of them belongs under a line about them");
+    /**
+     * The rule that ended render 564's 91% refusals stays — another moment of the person still
+     * belongs — but since October 2026 only when it shows the same kind of situation.
+     */
+    expect(prompt).toContain("filmed at a different moment than the one described still");
+    expect(prompt).toContain("belongs when it shows the same kind of situation");
   });
 });
 

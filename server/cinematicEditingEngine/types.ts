@@ -232,7 +232,9 @@ export type MotionGraphicType =
   | "lower_third"
   | "date_card"
   | "location_card"
-  | "quote";
+  | "quote"
+  /** OCTOBER 2026 — the narration's own values over time, on a real axis (motionGraphicsPlanner). */
+  | "line_chart";
 
 export type MotionGraphicInstruction = {
   graphicType: MotionGraphicType;

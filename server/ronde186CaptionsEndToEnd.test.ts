@@ -305,6 +305,13 @@ describe.skipIf(!canRender)("R186 — the captions are actually drawn", () => {
     const span = first.end - first.start;
     /** Skipped rather than asserted on a caption too short to hold two distinguishable moments. */
     if (span < 1.5) return;
+    /**
+     * OCTOBER 2026 — only a word-timed MODE changes the caption while it is on screen. This
+     * caption is a `sentence` (no mode), and this assertion used to pass only because the location
+     * card standing in for the map ended at 3.5 s, inside the caption's window; the map — and its
+     * stand-in — now runs 4 s so its camera can arrive. A sentence caption is meant to stand still.
+     */
+    if (!["karaoke", "highlight_word", "word_by_word", "phrase"].includes(first.mode ?? "sentence")) return;
     const a = await frameAt(first.start + 0.4);
     const b = await frameAt(first.end - 0.4);
     expect(Buffer.compare(a, b), "the caption is identical across its whole window").not.toBe(0);

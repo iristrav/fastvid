@@ -172,6 +172,12 @@ const RESPONSE_SCHEMA = {
       type: "object",
       properties: {
         depicts: { type: "string" },
+        /**
+         * OCTOBER 2026 (render 626) — the two halves of "belongs", asked separately so a person
+         * on screen cannot stand in for the whole answer. See `situationRule`.
+         */
+        subject_matches: { type: "boolean" },
+        situation_matches: { type: "boolean" },
         belongs: { type: "boolean" },
         reason: { type: "string" },
         /**
@@ -196,7 +202,7 @@ const RESPONSE_SCHEMA = {
           ],
         },
       },
-      required: ["depicts", "belongs", "reason", "framing"],
+      required: ["depicts", "subject_matches", "situation_matches", "belongs", "reason", "framing"],
       additionalProperties: false,
     },
   },
@@ -414,9 +420,9 @@ function noteAskImpossible(state: BeatImageGateState, why: string): void {
   if (state.askImpossible) return;
   state.askImpossible = true;
   console.warn(
-    `[BeatImageGate] THIS RENDER HAS NO PICTURE EDITOR — ${why}. Every picture in it is ` +
-      `unverified, the adoption guard's vision requirement is suspended render-wide, and the ` +
-      `export gate decides whether a film made this way may ship.`
+    `[BeatImageGate] THIS RENDER HAS NO PICTURE EDITOR — ${why}. No photograph is adopted ` +
+      `without an approval, so every beat it cannot judge stays empty and the export gate fails ` +
+      `the film with this reason (judge unavailable → no adoption).`
   );
 }
 
@@ -533,7 +539,11 @@ export type BeatSubjectAnchors = {
  * verdict's key (`beatIdentityKey`), so changing the rules re-asks instead of reusing old answers.
  * Change it whenever the belongs / does-not-belong wording changes.
  */
-export const BEAT_JUDGE_RULES = "r650-visual-plan-context";
+/**
+ * OCTOBER 2026 — bumped: a person alone is no longer a fit (subject AND situation), and doubt is
+ * no longer a yes. Every verdict stored under the older wording is a miss and is looked at again.
+ */
+export const BEAT_JUDGE_RULES = "r2610-subject-and-situation";
 
 function formatAnchors(anchors: BeatSubjectAnchors | undefined): string[] {
   if (!anchors) return [];
@@ -674,6 +684,37 @@ function refuseGuessedIdentity<T extends Pick<BeatImageJudgement, "verdict" | "d
   return { ...judgement, verdict: "does_not_fit", reason: `identity guessed, not seen: ${judgement.reason}`.slice(0, 160) };
 }
 
+/**
+ * OCTOBER 2026 (render 626) — A PERSON ON SCREEN IS NOT THE WHOLE ANSWER.
+ *
+ *     s1b0 fits  depicts="A man resembling Elon Musk sitting in a car."
+ *                reason="…which aligns with the narration about him, even though it doesn't directly
+ *                        depict the event described"
+ *     s2b1 fits  reason="Any shot of Musk belongs under a line about his media strategies."
+ *
+ * The judge now answers two questions besides the verdict: does the frame show WHO or WHAT the line
+ * is about (`subject_matches`), and does it show the SITUATION the line describes — the action, the
+ * context, the place or setting, the objects, what the picture means (`situation_matches`). A yes
+ * needs both. A model that does not return the two fields (an older provider ignoring the strict
+ * schema) keeps its own verdict, so a missing field never silently flips an answer.
+ */
+export function situationRule<T extends Pick<BeatImageJudgement, "verdict" | "reason">>(
+  judgement: T,
+  answer: { subject_matches?: unknown; situation_matches?: unknown }
+): T {
+  if (judgement.verdict !== "fits") return judgement;
+  const subject = answer.subject_matches;
+  const situation = answer.situation_matches;
+  if (typeof subject !== "boolean" || typeof situation !== "boolean") return judgement;
+  if (subject && situation) return judgement;
+  const missing = !subject && !situation ? "subject and situation" : !subject ? "subject" : "situation";
+  return {
+    ...judgement,
+    verdict: "does_not_fit",
+    reason: `${missing} not shown: ${judgement.reason}`.slice(0, 160),
+  };
+}
+
 export function buildBeatImagePrompt(
   beatText: string,
   frameCount: number,
@@ -743,10 +784,23 @@ export function buildBeatImagePrompt(
      * So the reasons are listed explicitly, and the first of them is the one that went missing.
      * What stays refused is the leap the original fix was for: the ERA on its own.
      */
-    "It BELONGS when a viewer would accept it under THAT LINE. Any one of these is enough:",
-    "  · someone or something the line NAMES is on screen. A documentary about a person shows",
-    "    that person: a shot of them belongs under a line about them, even when it was filmed at",
-    "    a different moment than the one being described — as long as you can SEE it is them, and",
+    /**
+     * OCTOBER 2026 (render 626) — "any one of these is enough" let a person on screen carry the
+     * whole verdict. The verdict now has two named halves, answered separately in the JSON.
+     */
+    "Answer two questions before the verdict:",
+    "  subject_matches — is WHO or WHAT the line is about actually on screen (the person, the",
+    "    object, the place, the event)? Only if you can SEE it; never because the line names it.",
+    "  situation_matches — does the picture show the SITUATION the line describes: its action,",
+    "    its context, its place or setting, its objects, what it means? A person sitting in a car",
+    "    does not show a line about their media strategy; the same person on a TV set, at a press",
+    "    event or at work in that business does.",
+    "It BELONGS only when BOTH are true. A person who is named in the line and visible on screen is",
+    "NOT enough on their own: the frame must also show what the line says about them.",
+    "These are the ways both can be true:",
+    "  · someone or something the line NAMES is on screen, doing or in the situation the line",
+    "    describes. A shot of a person filmed at a different moment than the one described still",
+    "    belongs when it shows the same kind of situation — as long as you can SEE it is them, and",
     /**
      * VIDEO 626 — the person rule stays; what it does not cover is a line about something that CAN
      * be filmed. "A tweet from Musk confirming the rumour" was approved over Musk sitting in a car,
@@ -802,7 +856,12 @@ export function buildBeatImagePrompt(
         " footage, it does not belong: the viewer would be looking at text, not at the story."
       : "",
     "",
-    "Judge the picture, not its file name. When you genuinely cannot tell, say it belongs.",
+    /**
+     * OCTOBER 2026 — the default is no longer a yes. A picture the editor cannot place under the
+     * line does not go under it; the beat looks for another candidate instead.
+     */
+    "Judge the picture, not its file name. When you cannot tell whether it shows what the line",
+    "describes, it does NOT belong.",
     "",
     /**
      * The framing question, asked of the only reader in the pipeline that can see the shot.
@@ -1039,6 +1098,8 @@ export async function judgeBeatImage(params: {
     }
     const parsed = JSON.parse(content) as {
       depicts?: string;
+      subject_matches?: boolean;
+      situation_matches?: boolean;
       belongs?: boolean;
       reason?: string;
       framing?: string;
@@ -1073,8 +1134,16 @@ export async function judgeBeatImage(params: {
       evaluated: true,
       ...(provider ? { provider } : {}),
     };
+    /** OCTOBER 2026 (render 626) — see `situationRule`: the subject alone is not a fit. */
+    const judgementAfterSituation = situationRule(judgementAsGiven, parsed);
+    if (judgementAfterSituation !== judgementAsGiven) {
+      console.log(
+        `[BeatImageGate] subject without the situation — refused: depicts="${judgementAsGiven.depicts.slice(0, 80)}" ` +
+          `subject_matches=${parsed.subject_matches} situation_matches=${parsed.situation_matches}`
+      );
+    }
     /** Video 614 — see `approvalRestsOnAGuess`. */
-    const judgement = refuseGuessedIdentity(judgementAsGiven, beatText, params.anchors?.subject);
+    const judgement = refuseGuessedIdentity(judgementAfterSituation, beatText, params.anchors?.subject);
     if (judgement !== judgementAsGiven) {
       console.log(
         `[BeatImageGate] identity guessed, not seen — refused: depicts="${judgement.depicts.slice(0, 80)}" ` +

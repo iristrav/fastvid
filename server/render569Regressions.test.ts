@@ -46,9 +46,16 @@ describe("render 569 defect 1 — an UNCLEAR verdict emptied the film", () => {
   };
 
   it.each(["subject_fallback", "rescue_wikimedia", "rescue_archive", "archive_similar"])(
-    "%s is no longer refused for an UNCLEAR verdict",
+    "OCTOBER 2026 — %s is refused again on an UNCLEAR verdict, and adopted on an approval",
     (source) => {
-      expect(guard(source, "UNCLEAR").allowed, "this is render 569's 48 refusals").toBe(true);
+      /**
+       * Reversed on the owner's rule after renders 616/625/626: "selected → reviewed → approved →
+       * adopted". Render 569's 48 UNCLEAR refusals come back as refusals; a beat without an
+       * approved picture is searched again or fails the film honestly at the delivery gate,
+       * instead of carrying a picture nobody said yes to.
+       */
+      expect(guard(source, "UNCLEAR").allowed).toBe(false);
+      expect(guard(source, "APPROVED").allowed).toBe(true);
     }
   );
 
@@ -95,11 +102,11 @@ describe("render 569 defect 1 — an UNCLEAR verdict emptied the film", () => {
   });
 
   /** The strength follows the CLAIM, and the table says so per category. */
-  it("only the category that claims verification demands an approval", () => {
+  it("OCTOBER 2026 — every photograph demands an approval; only the real funnel counts as verified", () => {
     expect(adoptionPolicyFor("archive").visionRequirement).toBe("approved");
     expect(adoptionPolicyFor("archive").countsAsVerifiedVisual).toBe(true);
     for (const source of ["subject_fallback", "rescue_wikimedia", "ai"]) {
-      expect(adoptionPolicyFor(source).visionRequirement).toBe("not_rejected");
+      expect(adoptionPolicyFor(source).visionRequirement).toBe("approved");
       expect(adoptionPolicyFor(source).countsAsVerifiedVisual).toBe(false);
     }
     /**

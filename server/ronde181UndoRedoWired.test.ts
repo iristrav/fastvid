@@ -149,9 +149,14 @@ describe("R181 — the editor uses the shared stack and has the buttons", () => 
    * A load and a save are NOT edits. Keeping the stack across a save would let a person undo to a
    * document the server no longer has, then save it back over their own saved work.
    */
-  it("a load and a save start a fresh stack rather than becoming undoable steps", () => {
-    const news = [...UI.matchAll(/setHistory\(newHistory\(/g)];
-    expect(news.length, "a load or a save no longer resets the stack").toBeGreaterThanOrEqual(2);
+  /**
+   * A load from the server starts a fresh stack. A save does NOT any more: with autosave a person
+   * never chooses when to save, so a save cannot end what they can undo. The saved document only
+   * replaces the present when nothing changed while it was saving.
+   */
+  it("a load starts a fresh stack; a save keeps it", () => {
+    expect([...UI.matchAll(/setHistory\(newHistory\(/g)].length).toBe(1);
+    expect(UI).toContain("setHistory((h) => (h && h.present === sent ? { ...h, present: result.timeline as Timeline } : h));");
   });
 
   it("has an Undo and a Redo control, disabled rather than hidden when empty", () => {

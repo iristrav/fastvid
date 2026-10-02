@@ -99,8 +99,17 @@ export function withVideoClips<T extends EditableTimeline>(t: T, ordered: Editab
 /** A clip made `len` seconds long, its source out-point moved with it when one is recorded. */
 function withLength(c: EditableVideoClip, len: number): EditableVideoClip {
   const next: EditableVideoClip = { ...c, timelineEnd: round(c.timelineStart + len) };
-  if (c.kind === "video" && c.sourceIn != null) next.sourceOut = round(c.sourceIn + len);
+  if (c.kind === "video" && c.sourceIn != null) next.sourceOut = round(c.sourceIn + len * speedOf(c));
   return next;
+}
+
+/** The slowest and fastest a shot may play; the renderer clamps to the same range. */
+export const MIN_SPEED = 0.25;
+export const MAX_SPEED = 4;
+
+function speedOf(c: EditableVideoClip): number {
+  const s = typeof c.speed === "number" && Number.isFinite(c.speed) ? c.speed : 1;
+  return Math.max(MIN_SPEED, Math.min(MAX_SPEED, s));
 }
 
 /* ═══════════════════════ shots ═══════════════════════ */
@@ -154,11 +163,62 @@ export function setVideoClipSourceIn<T extends EditableTimeline>(t: T, id: strin
     return {
       ...c,
       sourceIn,
-      sourceOut: round(sourceIn + (c.timelineEnd - c.timelineStart)),
+      sourceOut: round(sourceIn + (c.timelineEnd - c.timelineStart) * speedOf(c)),
       editedByUser: true,
     };
   });
   return withVideoClips(t, clips);
+}
+
+/** Put an identical copy of a shot right after it; everything after moves up. */
+export function duplicateVideoClip<T extends EditableTimeline>(
+  t: T,
+  id: string,
+  newId = newElementId("clip")
+): T {
+  const clips = videoClipsOf(t);
+  const i = clips.findIndex((c) => c.id === id);
+  const c = clips[i];
+  if (!c) return t;
+  clips.splice(i + 1, 0, { ...c, id: newId, transitionIn: "hard_cut", editedByUser: true });
+  return withVideoClips(t, clips);
+}
+
+/**
+ * Play a shot faster or slower. Its slot on the timeline stays the same length — the narration
+ * decides the film's length — so a faster shot shows more of its source in the same seconds.
+ */
+export function setVideoClipSpeed<T extends EditableTimeline>(t: T, id: string, speed: number): T {
+  if (!Number.isFinite(speed)) return t;
+  const clips = videoClipsOf(t).map((c) => {
+    if (c.id !== id || c.kind !== "video") return c;
+    const next: EditableVideoClip = { ...c, speed: round(Math.max(MIN_SPEED, Math.min(MAX_SPEED, speed))), editedByUser: true };
+    if (Math.abs((next.speed as number) - 1) < 0.001) delete next.speed;
+    return withLength(next, c.timelineEnd - c.timelineStart);
+  });
+  return withVideoClips(t, clips);
+}
+
+/**
+ * Faster pacing without touching the narration: every shot longer than `maxShotSec` is cut into
+ * equal parts that each show the next stretch of the same source — more cuts, same film length.
+ */
+export function tightenPacing<T extends EditableTimeline>(t: T, maxShotSec: number): T {
+  const limit = Math.max(MIN_SHOT_SEC * 2, maxShotSec);
+  let out = t;
+  for (const c of videoClipsOf(t)) {
+    const len = c.timelineEnd - c.timelineStart;
+    if (len <= limit) continue;
+    const parts = Math.ceil(len / limit);
+    let current = c.id;
+    for (let k = 1; k < parts; k++) {
+      const at = c.timelineStart + (len / parts) * k;
+      const nextId = newElementId("clip");
+      out = splitVideoClip(out, current, at, nextId);
+      current = nextId;
+    }
+  }
+  return out;
 }
 
 /**
@@ -187,12 +247,13 @@ export function splitVideoClip<T extends EditableTimeline>(
     transitionIn: "hard_cut",
     editedByUser: true,
   };
+  const sp = speedOf(c);
   if (c.kind === "video" && c.sourceIn != null) {
-    b.sourceIn = round(c.sourceIn + first);
-    b.sourceOut = round(b.sourceIn + second);
+    b.sourceIn = round(c.sourceIn + first * sp);
+    b.sourceOut = round(b.sourceIn + second * sp);
   } else if (c.kind === "video") {
-    b.sourceIn = round(first);
-    b.sourceOut = round(first + second);
+    b.sourceIn = round(first * sp);
+    b.sourceOut = round((first + second) * sp);
   }
   clips.splice(i, 1, a, b);
   return withVideoClips(t, clips);
@@ -236,6 +297,35 @@ export function addText<T extends EditableTimeline>(
     editedByUser: true,
   };
   return mapTextTrack(t, "TEXT", (els) => [...els, el].sort((a, b) => a.start - b.start));
+}
+
+/**
+ * Move or resize one text, caption or graphic in time. Kept inside the film and at least
+ * `MIN_SHOT_SEC` long; the element is marked as the person's own edit.
+ */
+export function setTextElementTiming<T extends EditableTimeline>(
+  t: T,
+  kind: TextKind,
+  id: string,
+  start: number,
+  end: number
+): T {
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return t;
+  const dur = Math.max(MIN_SHOT_SEC, t.durationSec);
+  const s0 = round(Math.max(0, Math.min(start, dur - MIN_SHOT_SEC)));
+  const e0 = round(Math.min(dur, Math.max(end, s0 + MIN_SHOT_SEC)));
+  return mapTextTrack(t, kind, (els) =>
+    els
+      .map((e) => (e.id === id ? { ...e, start: s0, end: e0, editedByUser: true } : e))
+      .sort((a, b) => a.start - b.start)
+  );
+}
+
+/** One style change applied to every caption — "smaller subtitles", "subtitles at the top". */
+export function setAllCaptionsStyle<T extends EditableTimeline>(t: T, patch: Record<string, unknown>): T {
+  return mapTextTrack(t, "CAPTIONS", (els) =>
+    els.map((e) => ({ ...e, style: { ...((e.style as Record<string, unknown>) ?? {}), ...patch }, editedByUser: true }))
+  );
 }
 
 export function removeTextElement<T extends EditableTimeline>(t: T, kind: TextKind, id: string): T {
@@ -288,5 +378,58 @@ export function removeAudioClip<T extends EditableTimeline>(
         ? { ...tr, clips: ((tr as { clips?: Array<{ id: string }> }).clips ?? []).filter((c) => c.id !== id) }
         : tr
     ),
+  };
+}
+
+export type AudioKind = "VOICE" | "MUSIC" | "SFX" | "AMBIENT";
+export type AudioPatch = { gain?: number; fadeInSec?: number; fadeOutSec?: number; muted?: boolean };
+
+/**
+ * Volume, fades and mute for one audio clip. Mute is `disabled` — the renderer leaves a disabled
+ * clip out of the mix — so a muted sound stays on the timeline and comes back with one click.
+ */
+export function setAudioClip<T extends EditableTimeline>(t: T, kind: AudioKind, id: string, patch: AudioPatch): T {
+  return {
+    ...t,
+    tracks: t.tracks.map((tr) => {
+      if (tr.kind !== kind) return tr;
+      const clips = ((tr as { clips?: Array<Record<string, unknown> & { id: string; start: number; end: number }> }).clips ?? []).map((c) => {
+        if (c.id !== id) return c;
+        const len = Math.max(0, c.end - c.start);
+        const next: Record<string, unknown> & { id: string; start: number; end: number } = { ...c };
+        if (patch.gain != null && Number.isFinite(patch.gain)) next.gain = round(Math.max(0, Math.min(2, patch.gain)));
+        if (patch.fadeInSec != null && Number.isFinite(patch.fadeInSec)) next.fadeInSec = round(Math.max(0, Math.min(len / 2, patch.fadeInSec)));
+        if (patch.fadeOutSec != null && Number.isFinite(patch.fadeOutSec)) next.fadeOutSec = round(Math.max(0, Math.min(len / 2, patch.fadeOutSec)));
+        if (patch.muted != null) {
+          if (patch.muted) next.disabled = true;
+          else delete next.disabled;
+        }
+        return next;
+      });
+      return { ...tr, clips };
+    }),
+  };
+}
+
+/** Move an effect, music or ambience clip in time, keeping its length and keeping it inside the film. */
+export function setAudioClipTiming<T extends EditableTimeline>(
+  t: T,
+  kind: "MUSIC" | "SFX" | "AMBIENT",
+  id: string,
+  start: number
+): T {
+  if (!Number.isFinite(start)) return t;
+  return {
+    ...t,
+    tracks: t.tracks.map((tr) => {
+      if (tr.kind !== kind) return tr;
+      const clips = ((tr as { clips?: Array<Record<string, unknown> & { id: string; start: number; end: number }> }).clips ?? []).map((c) => {
+        if (c.id !== id) return c;
+        const len = Math.max(0, c.end - c.start);
+        const s0 = round(Math.max(0, Math.min(start, Math.max(0, t.durationSec - len))));
+        return { ...c, start: s0, end: round(s0 + len) };
+      });
+      return { ...tr, clips };
+    }),
   };
 }

@@ -140,6 +140,11 @@ export const SOUND_EFFECT_TO_CATEGORY: Readonly<Record<SoundEffectType, SoundCat
   ui_click: null,
 };
 
+/** Whether FastVid has a real recording for this sound effect type — what the planner may ask for. */
+export function soundEffectIsDeliverable(soundType: SoundEffectType): boolean {
+  return resolveSoundEffect(soundType).ok;
+}
+
 /**
  * A planned sound effect's real recording, or the reason there is none.
  *
