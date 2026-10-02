@@ -43,7 +43,9 @@ describe("Video 622 — a sentence's share of its scene's time", () => {
 
   it("the scene's sentence loop caps each sentence at its share", () => {
     const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    expect(src).toContain("const beatWallMs = Math.min(beatVisualWallMs(dedup.perf), beatShareMs);");
+    /** OCTOBER 2026 (render 626) — the share is still the cap, now after the later sentences' reserve. */
+    expect(src).toContain("beatTurnAfterReserveMs(beatShareMs, sceneLeftMs, beats.length - bi - 1)");
+    expect(src).toContain("beatVisualWallMs(dedup.perf),");
     expect(src).toContain("beats.slice(bi).reduce((sum, b) => sum + beatSecondsOnScreen(b), 0)");
   });
 });

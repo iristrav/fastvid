@@ -15,7 +15,7 @@
  *  A beat can have zero, one, or several motion graphics — this returns an array, same
  *  convention as CaptionPlanner.
  */
-import { WORLD_LOCATIONS } from "../cinematicMotion/locationMap";
+import { WORLD_LOCATIONS, mentionsLocationKeyword } from "../cinematicMotion/locationMap";
 import type { Scene } from "../pipeline/types";
 import type { VisualIntent } from "../visualMatchingV2/types";
 import type { MotionGraphicInstruction } from "./types";
@@ -132,10 +132,53 @@ export function chartTitle(spokenText: string, subject?: string): string {
   return what || who;
 }
 
+/**
+ * OCTOBER 2026 — the two sides of "A versus B" as short labels: the last words before the
+ * connector and the first words after it, at most four each, stopping at a clause break. "In 1960
+ * West Berlin versus East Berlin, the gap grew" → "West Berlin" | "East Berlin". Too long or empty
+ * on either side: no comparison.
+ */
+export function comparisonSides(leftRaw: string, rightRaw: string): { left: string; right: string } | null {
+  const tidy = (s: string) => s.replace(/^[\s,;:—-]+|[\s,;:.!?—-]+$/g, "").trim();
+  const leftClause = tidy(leftRaw.split(/[,;:—]/).pop() ?? "");
+  const rightClause = tidy(rightRaw.split(/[,;:.!?—]/)[0] ?? "");
+  const drop = /^(in|on|at|by|the|a|an|and|but|of|from|to|\d{4})$/i;
+  const leftWords = leftClause.split(/\s+/).filter(Boolean);
+  while (leftWords.length > 4 || (leftWords.length > 1 && drop.test(leftWords[0]!))) leftWords.shift();
+  const rightWords = rightClause.split(/\s+/).filter(Boolean).slice(0, 4);
+  while (rightWords.length > 1 && drop.test(rightWords[rightWords.length - 1]!)) rightWords.pop();
+  const left = leftWords.join(" ");
+  const right = rightWords.join(" ");
+  if (!left || !right || left.length > 32 || right.length > 32) return null;
+  return { left, right };
+}
+
+/**
+ * OCTOBER 2026 — the figure a sentence states, as a counter can show it: a currency amount, a
+ * number with a scale word or a percentage, or a whole number of at least 100 that is not a year.
+ * The word after it ("people", "dollars") is its caption when it is a plain lower-case word.
+ */
+export function statFromSentence(text: string): { callout: string; caption: string } | null {
+  const re = /([$€£])?\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*(%|(?:percent|million|billion|thousand|trillion|bn)\b))?(?:\s+(dollars|euros|pounds)\b)?(?:\s+([a-z]{3,})\b)?/g;
+  for (const m of text.matchAll(re)) {
+    const digits = m[2]!.replace(/,/g, "");
+    const value = parseFloat(digits);
+    if (!Number.isFinite(value)) continue;
+    const isYear = /^(1[5-9]|20)\d{2}$/.test(m[2]!) && !m[1] && !m[3];
+    if (isYear) continue;
+    const scale = m[3] === "percent" ? "%" : m[3] ?? "";
+    if (!m[1] && !scale && value < 100) continue;
+    const currency = m[1] ?? (m[4] === "dollars" ? "$" : m[4] === "euros" ? "€" : m[4] === "pounds" ? "£" : "");
+    const noun = m[5] && !/^(and|the|for|from|with|that|than|into|over|after|before|in|of|to|by|on|at|was|were|is|are)$/.test(m[5]) ? m[5] : "";
+    return { callout: `${currency}${m[2]}${scale ? (scale === "%" ? "%" : ` ${scale}`) : ""}`, caption: noun };
+  }
+  return null;
+}
+
 function findWorldLocation(text: string): { loc: (typeof WORLD_LOCATIONS)[number]; keyword: string } | null {
   const lower = text.toLowerCase();
   for (const loc of WORLD_LOCATIONS) {
-    const keyword = loc.keywords.find((kw) => lower.includes(kw));
+    const keyword = loc.keywords.find((kw) => mentionsLocationKeyword(lower, kw));
     if (keyword) return { loc, keyword };
   }
   return null;
@@ -161,21 +204,30 @@ export function planMotionGraphics(
   const out: MotionGraphicInstruction[] = [];
   const dur = Math.max(2, Math.min(beatVoiceDurationSec, 3.5));
 
-  if (scene?.statCallout) {
-    const parsed = parseNumericStat(scene.statCallout);
+  /**
+   * OCTOBER 2026 — the script-built scenes never carry a `statCallout` (it is written as ""), so a
+   * sentence that says "Musk bought Twitter for 44 billion dollars" got no counter. When the scene
+   * has none, the sentence's own figure is used — see `statFromSentence`; never a year, never a
+   * small count, never a number the sentence does not say.
+   */
+  /** A sentence that states a series gets the chart, not a counter of its first value. */
+  const ownStat = scene?.statCallout || yearSeriesFromText(intent.spokenText) ? null : statFromSentence(intent.spokenText);
+  const statCallout = scene?.statCallout || ownStat?.callout || "";
+  if (statCallout) {
+    const parsed = parseNumericStat(statCallout);
     /**
      * OCTOBER 2026 — the scene's stat belongs under the sentence that SAYS it. The showcase render
      * counted to 140 under three sentences in a row because every beat of the scene got it.
      */
-    if (parsed && statSpokenInBeat(scene.statCallout, intent.spokenText)) {
+    if (parsed && statSpokenInBeat(statCallout, intent.spokenText)) {
       if (parsed.suffix === "%") {
         out.push(
           graphic(
             "progress_bar",
-            { toValue: Math.min(100, parsed.value), suffix: "%", label: scene.statCallout, anchorWord: parsed.token },
+            { toValue: Math.min(100, parsed.value), suffix: "%", label: statCallout, anchorWord: parsed.token },
             beatVoiceStartSec,
             dur,
-            `Scene's stat callout ("${scene.statCallout}") is a percentage — shown as a filling progress bar.`
+            `Scene's stat callout ("${statCallout}") is a percentage — shown as a filling progress bar.`
           )
         );
       } else {
@@ -186,15 +238,16 @@ export function planMotionGraphics(
               fromValue: 0,
               toValue: parsed.value,
               suffix: parsed.suffix,
-              label: scene.statCallout,
+              label: statCallout,
               /** OCTOBER 2026 — "$3.5 billion" counts to $3.5 billion, on the word that says it. */
               ...(parsed.prefix ? { prefix: parsed.prefix } : {}),
               decimals: parsed.decimals,
               anchorWord: parsed.token,
+              ...(ownStat?.caption ? { caption: ownStat.caption } : {}),
             },
             beatVoiceStartSec,
             dur,
-            `Scene's stat callout ("${scene.statCallout}") is a number — animated as a counting-up statistic.`
+            `Scene's stat callout ("${statCallout}") is a number — animated as a counting-up statistic.`
           )
         );
       }
@@ -243,14 +296,55 @@ export function planMotionGraphics(
     );
   }
 
-  const comparisonMatch = intent.spokenText.match(COMPARISON_SPLIT_RE);
-  if (comparisonMatch) {
-    const [left, right] = intent.spokenText.split(COMPARISON_SPLIT_RE);
-    if (left && right) {
+  /**
+   * OCTOBER 2026 — a sentence that names two or more years ("between 1961 and 1989") is a stretch
+   * of time: a timeline of exactly those years, nothing in between. A sentence that pairs each
+   * year with a value is a series and gets the chart below instead.
+   */
+  const yearsSaid = [...new Set([...intent.spokenText.matchAll(/\b(1[5-9]\d{2}|20\d{2})\b/g)].map((m) => m[1]!))];
+  if (yearsSaid.length >= 2 && !yearSeriesFromText(intent.spokenText) && !out.some((g) => g.graphicType === "timeline")) {
+    out.push(
+      graphic(
+        "timeline",
+        { events: yearsSaid.slice(0, 5).map((year) => ({ year, label: "" })), anchorWord: yearsSaid[0] },
+        beatVoiceStartSec,
+        Math.max(3.5, Math.min(beatVoiceDurationSec, 5)),
+        `Narration names ${yearsSaid.length} years (${yearsSaid.join(", ")}) — drawn as a timeline of exactly those years.`
+      )
+    );
+  }
+
+  /**
+   * OCTOBER 2026 — "from A to B": a change the sentence states, drawn as before → after when both
+   * sides are short phrases (not figures, not years — those are the counter's and the chart's).
+   */
+  const fromTo = intent.spokenText.match(/\bfrom\s+(?:an?\s+|the\s+)?([a-z][a-z' -]{2,40}?)\s+(?:to|into)\s+(?:an?\s+|the\s+)?([a-z][a-z' -]{2,40}?)(?=[,.;!?]|$)/i);
+  if (fromTo && !COMPARISON_SPLIT_RE.test(intent.spokenText)) {
+    const sides = comparisonSides(fromTo[1]!, fromTo[2]!);
+    if (sides && !/\d/.test(sides.left + sides.right)) {
       out.push(
         graphic(
           "comparison",
-          { leftLabel: left.trim().slice(-60), rightLabel: right.trim().slice(0, 60), connector: "VS" },
+          { leftLabel: sides.left, rightLabel: sides.right, connector: "→", label: `${sides.left} → ${sides.right}` },
+          beatVoiceStartSec,
+          Math.max(3, Math.min(beatVoiceDurationSec, 4.5)),
+          `Narration states a change ("from ${sides.left} to ${sides.right}") — drawn as before → after.`
+        )
+      );
+    }
+  }
+
+  const comparisonMatch = intent.spokenText.match(COMPARISON_SPLIT_RE);
+  if (comparisonMatch) {
+    const [leftRaw, rightRaw] = intent.spokenText.split(COMPARISON_SPLIT_RE);
+    /** OCTOBER 2026 — the two things compared, not the half-sentences around them (see `comparisonSides`). */
+    const sides = comparisonSides(leftRaw ?? "", rightRaw ?? "");
+    if (sides) {
+      const { left, right } = sides;
+      out.push(
+        graphic(
+          "comparison",
+          { leftLabel: left, rightLabel: right, connector: "VS", label: `${left} vs ${right}` },
           beatVoiceStartSec,
           dur,
           `Narration draws an explicit comparison ("${comparisonMatch[0].trim()}") — shown as a side-by-side graphic.`
@@ -392,7 +486,9 @@ export function planMotionGraphics(
    * coordinates. Guarded against the map for the same reason as the date card.
    */
   const namedPlace = intent.visualLocation?.trim();
-  if (!location && namedPlace) {
+  /** OCTOBER 2026 — "In the East, …" is a direction, not a place to put on a card. */
+  const bareDirection = /^(the\s+)?(north|south|east|west|eastern|western|northern|southern)$/i.test(namedPlace ?? "");
+  if (!location && namedPlace && !bareDirection) {
     out.push(
       graphic(
         "location_card",

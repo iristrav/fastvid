@@ -31,6 +31,16 @@
  * render fails with a message naming the env var to set rather than with a network error four
  * layers down.
  *
+ * ── OCTOBER 2026 — PNG frames, packed into the .mov without re-encoding ─────────────────────
+ *
+ * Measured on 4 cores, same composition and props: ProRes 4444 encoding was half the cost of the
+ * whole layer — 9.1 frames/s with it, 21.4 frames/s writing the browser's PNG frames — and it
+ * applied to every frame, because the captions are on screen for all of them (3600 of 3600 in the
+ * 2-minute test), so rendering only the frames that carry a graphic would save nothing. The frames
+ * are now written as PNG and stream-copied into the same .mov (codec png, rgba): lossless, alpha
+ * intact, one file at the same path for every reader (the ink probe, the composite, the tests).
+ * The section below explains the original choice; the container is unchanged, the codec is not.
+ *
  * ── Why ProRes 4444 and not WebM ─────────────────────────────────────────────────────────────
  *
  * The overlay has to carry an alpha channel or there is nothing to composite. ProRes 4444 in a
@@ -39,8 +49,12 @@
  * a layer that is mostly empty pixels; the overlay is a render intermediate that is deleted after
  * compositing, so size is the wrong thing to optimise and fidelity is the right one.
  */
+import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import { promisify } from "util";
+
+import { resolveFFmpegBin } from "./ffmpegBinary";
 
 import type { ProjectTimeline } from "./projectTimeline";
 import { captionTrack, graphicsTrack, textTrackOf } from "./projectTimeline";
@@ -232,20 +246,36 @@ export async function bundleFastVid(cacheDir?: string): Promise<string> {
 /**
  * Render the graphics layer as a transparent video.
  *
- * The four settings below are ONE decision, not four, and changing any of them alone breaks
- * compositing:
- *
- *   codec "prores" + proResProfile "4444"  the only ProRes profile with an alpha channel
- *   pixelFormat "yuva444p10le"             the `a` is the alpha; yuv444p10le silently drops it
- *   imageFormat "png"                      MEASURED: Remotion refuses the combination without it,
- *                                          because its default JPEG frames cannot carry alpha
- *                                          ("Pixel format was set to 'yuva444p10le' but the image
- *                                          format is not PNG")
- *
- * The dangerous one is `pixelFormat`. Drop its alpha and the render still succeeds, still looks
- * correct in any player that shows it on black, and composites as an opaque rectangle that hides
- * the entire film. The other three fail loudly; this one fails as a finished, wrong video.
+ * OCTOBER 2026 — the alpha now travels as the PNG frames' own RGBA channel, copied unchanged into
+ * the .mov (pix_fmt rgba). The danger the old note named is the same one: a layer without alpha
+ * still renders and composites as an opaque rectangle over the whole film. `imageFormat: "png"` is
+ * what carries it — JPEG frames have no alpha — and the render test reads the pix_fmt back.
  */
+/**
+ * OCTOBER 2026 — the frames `renderFrames` wrote (`element-000.png`, …, zero-padded to one width),
+ * stream-copied into a .mov in order: no decode, no encode, the pixels exactly as the browser drew
+ * them. Throws when ffmpeg fails or the folder holds no frames, like the encoder it replaces.
+ */
+export async function packPngFramesIntoMov(framesDir: string, fps: number, outPath: string): Promise<void> {
+  const frames = fs.readdirSync(framesDir).filter((f) => /^element-\d+\.png$/.test(f)).sort();
+  if (frames.length === 0) throw new Error(`no overlay frames were written to ${framesDir}`);
+  const digits = frames[0]!.match(/\d+/)![0].length;
+  const first = Number(frames[0]!.match(/\d+/)![0]);
+  await promisify(execFile)(
+    resolveFFmpegBin(),
+    [
+      "-y", "-hide_banner", "-loglevel", "error",
+      "-framerate", String(fps),
+      "-start_number", String(first),
+      "-i", path.join(framesDir, `element-%0${digits}d.png`),
+      "-c:v", "copy",
+      "-an",
+      outPath,
+    ],
+    { maxBuffer: 1024 * 1024 * 16 }
+  );
+}
+
 export async function renderGraphicsOverlay(
   params: RemotionOverlayParams
 ): Promise<RemotionOverlayResult> {
@@ -277,7 +307,7 @@ export async function renderGraphicsOverlay(
   console.log(formatRemotionProps(props));
 
   const serveUrl = params.serveUrl ?? (await bundleFastVid(params.cacheDir));
-  const { selectComposition, renderMedia } = await import("@remotion/renderer");
+  const { selectComposition, renderFrames } = await import("@remotion/renderer");
   const inputProps = props as unknown as Record<string, unknown>;
 
   const composition = await selectComposition({
@@ -287,18 +317,28 @@ export async function renderGraphicsOverlay(
     browserExecutable,
   });
 
-  await renderMedia({
-    composition,
-    serveUrl,
-    codec: "prores",
-    proResProfile: "4444",
-    pixelFormat: "yuva444p10le",
-    imageFormat: "png",
-    outputLocation: params.overlayPath,
-    inputProps,
-    browserExecutable,
-    onProgress: params.onProgress ? ({ progress }) => params.onProgress!(progress) : undefined,
-  });
+  /**
+   * OCTOBER 2026 — the browser's own PNG frames (alpha included), then one lossless stream copy into
+   * the .mov. See the header: ProRes encoding was half the layer's time on every frame.
+   */
+  const framesDir = `${params.overlayPath}.frames`;
+  fs.rmSync(framesDir, { recursive: true, force: true });
+  fs.mkdirSync(framesDir, { recursive: true });
+  try {
+    await renderFrames({
+      composition,
+      serveUrl,
+      imageFormat: "png",
+      outputDir: framesDir,
+      inputProps,
+      browserExecutable,
+      onStart: () => undefined,
+      onFrameUpdate: (rendered) => params.onProgress?.(rendered / Math.max(1, composition.durationInFrames)),
+    });
+    await packPngFramesIntoMov(framesDir, composition.fps, params.overlayPath);
+  } finally {
+    fs.rmSync(framesDir, { recursive: true, force: true });
+  }
 
   return {
     overlayPath: params.overlayPath,

@@ -48,3 +48,12 @@ export const WORLD_LOCATIONS: WorldLocation[] = [
   { name: "Hiroshima, Japan",   keywords: ["hiroshima", "nagasaki"],                                       normX: 0.762, normY: 0.307, lon: 132.46, lat: 34.39, iso3: "JPN" },
   { name: "Pearl Harbor",       keywords: ["pearl harbor", "hawaii"],                                      normX: 0.126, normY: 0.362, lon: -157.95, lat: 21.35, iso3: "USA" },
 ];
+
+/**
+ * OCTOBER 2026 — a keyword names a place only as a whole word. Substring matching put a map of
+ * Washington under "In Leipzig, thousands marched every Monday" ("thoUSAnds" contains "usa").
+ */
+export function mentionsLocationKeyword(text: string, keyword: string): boolean {
+  const kw = keyword.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${kw}(?:s|’s|'s)?(?![\\p{L}\\p{N}])`, "iu").test(text);
+}

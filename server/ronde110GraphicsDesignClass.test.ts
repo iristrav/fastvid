@@ -91,11 +91,15 @@ describe("the design list is the switch, written down", () => {
     const generic = [...RENDERABLE_GRAPHICS].filter((t) => !EXPLICITLY_DESIGNED_GRAPHICS.has(t));
     /** RONDE 124 added `highlight_box`: a real design, drawn before the switch. */
     /** RONDE 651 added `date_card`: a year set as a date, no longer the generic card. */
-    expect(EXPLICITLY_DESIGNED_GRAPHICS.size).toBe(23);
-    expect(generic.length).toBe(10);
+    /**
+     * OCTOBER 2026 added `comparison` and `kinetic_type` (new components) and gave `timeline_event`
+     * its own design (Editorial.tsx), so it left the generic list.
+     */
+    expect(EXPLICITLY_DESIGNED_GRAPHICS.size).toBe(26);
+    expect(generic.length).toBe(9);
     expect(generic.sort()).toEqual([
       "badge", "callout", "emphasis", "headline", "label",
-      "subtitle", "text", "timeline_event", "title", "warning",
+      "subtitle", "text", "title", "warning",
     ]);
   });
 });
@@ -161,10 +165,11 @@ describe("rendered = explicitRendered + genericRendered", () => {
   });
 
   it("an unsupported graphic is never counted as rendered", () => {
-    expect(tally(["animated_icon", "highlight_box", "arrow", "chart", "comparison"])).toEqual({
+    /** OCTOBER 2026 — `comparison` has a component now (Editorial.tsx), so it is not in this list. */
+    expect(tally(["animated_icon", "highlight_box", "arrow", "chart"])).toEqual({
       explicitRendered: 0,
       genericRendered: 0,
-      unsupported: 5,
+      unsupported: 4,
     });
   });
 });

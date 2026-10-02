@@ -2,7 +2,7 @@
  * Scene content analyzer — extracts signals from metadata without LLM calls.
  * Used by the Visual Director to understand what a scene is about.
  */
-import { WORLD_LOCATIONS } from "../cinematicMotion/locationMap";
+import { WORLD_LOCATIONS, mentionsLocationKeyword } from "../cinematicMotion/locationMap";
 
 export interface SceneSignals {
   /** Named persons detected: [{ name, title }] */
@@ -92,7 +92,7 @@ function extractStats(text: string): Array<{ raw: string; value: number; suffix:
 function extractLocations(text: string): Array<{ name: string; normX: number; normY: number }> {
   const hay = text.toLowerCase();
   return WORLD_LOCATIONS.filter(loc =>
-    loc.keywords.some(kw => hay.includes(kw.toLowerCase()))
+    loc.keywords.some(kw => mentionsLocationKeyword(hay, kw))
   ).slice(0, 2);
 }
 

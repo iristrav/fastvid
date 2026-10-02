@@ -154,7 +154,8 @@ describe("A — every graphic type the planner can emit has an explicit renderer
      * That is a fact about the vocabulary, and it must not read as a payload problem — the two
      * have completely different fixes.
      */
-    for (const type of ["chart", "comparison", "animated_icon", "arrow"]) {
+    /** OCTOBER 2026 — `comparison` has a component now (Editorial.tsx) and is translated. */
+    for (const type of ["chart", "animated_icon", "arrow"]) {
       const { lifecycle } = lifecycleFor([
         decision(`b_${type}`, [graphic(type as MotionGraphicType, { label: "a named thing" })]),
       ]);
@@ -243,25 +244,30 @@ describe("B — highlight_box, and why it cannot simply be pointed at a componen
   });
 });
 
-describe("C — dust is an EFFECT, and its rejection is terminal and counted", () => {
-  it("it is in the planner's effect vocabulary and not in the renderer's", () => {
+/**
+ * OCTOBER 2026 — `dust` is executed now (aged-film grain and flicker, `effectChain`), so the effect
+ * whose rejection this block holds to account is `lens_flare`: still planned, still no filter.
+ */
+describe("C — an unrunnable EFFECT's rejection is terminal and counted", () => {
+  it("lens_flare is in the planner's effect vocabulary and not in the renderer's; dust is in both", () => {
     const src = fs.readFileSync(path.join(SERVER, "cinematicEditingEngine", "types.ts"), "utf8");
     const at = src.indexOf("export type VisualEffectType =");
-    expect(src.slice(at, src.indexOf(";", at))).toContain('"dust"');
-    expect(RENDERABLE_EFFECTS.has("dust")).toBe(false);
+    expect(src.slice(at, src.indexOf(";", at))).toContain('"lens_flare"');
+    expect(RENDERABLE_EFFECTS.has("lens_flare")).toBe(false);
+    expect(RENDERABLE_EFFECTS.has("dust")).toBe(true);
   });
 
-  it("a planned dust effect is DROPPED_UNSUPPORTED and counted, not merely mentioned", () => {
-    const out = effectsLifecycle([{ beatId: "b0", effectType: "dust", reason: "aged-film look" }]);
+  it("a planned lens_flare effect is DROPPED_UNSUPPORTED and counted, not merely mentioned", () => {
+    const out = effectsLifecycle([{ beatId: "b0", effectType: "lens_flare", reason: "the sun breaks through" }]);
     expect(out.dropped).toBe(1);
     expect(out.carried).toBe(0);
     expect(out.lives[0]!.detail).toContain("no filter in this renderer executes");
   });
 
-  it("the three the planner can ask for and this renderer cannot run are exactly these", () => {
-    const unrunnable = ["particles", "dust", "lens_flare"];
+  it("the two the planner can ask for and this renderer cannot run are exactly these", () => {
+    const unrunnable = ["particles", "lens_flare"];
     for (const e of unrunnable) expect(RENDERABLE_EFFECTS.has(e), e).toBe(false);
-    for (const e of ["film_grain", "noise", "vignette", "letterbox", "glow", "bloom", "chromatic_aberration"]) {
+    for (const e of ["film_grain", "noise", "vignette", "letterbox", "glow", "bloom", "chromatic_aberration", "dust"]) {
       expect(RENDERABLE_EFFECTS.has(e), e).toBe(true);
     }
   });
@@ -340,7 +346,8 @@ describe("F — an unknown TYPE and a bad PAYLOAD are not the same defect", () =
 
   it("and a type with no component is never reported as a payload problem", () => {
     const { lifecycle } = lifecycleFor([
-      decision("b0", [graphic("comparison", { label: "then and now" })]),
+      /** OCTOBER 2026 — `comparison` is drawn now; `arrow` is the type with no component. */
+      decision("b0", [graphic("arrow", { label: "then and now" })]),
     ]);
     expect(lifecycle.lives[0]!.outcome).toBe("DROPPED_UNSUPPORTED");
   });
@@ -423,9 +430,10 @@ describe("I — the line says what it measured, and no more", () => {
   });
 
   it("effects are counted on the same line when the caller has them", () => {
-    const { lifecycle } = lifecycleFor([decision("b0", [], ["dust", "film_grain"])]);
+    /** OCTOBER 2026 — `lens_flare` is the unrunnable one now; dust runs. */
+    const { lifecycle } = lifecycleFor([decision("b0", [], ["lens_flare", "film_grain"])]);
     const effects = effectsLifecycle([
-      { beatId: "b0", effectType: "dust", reason: "r" },
+      { beatId: "b0", effectType: "lens_flare", reason: "r" },
       { beatId: "b0", effectType: "film_grain", reason: "r" },
     ]);
     const head = formatGraphicsLifecycle("r124", lifecycle, effects)[0]!;

@@ -99,8 +99,9 @@ describe("the facts the corrected comment states", () => {
     }
   });
 
-  it("FOUR planner types genuinely have no component, whatever their payload", () => {
-    const none = ["chart", "comparison", "animated_icon", "arrow"] as const;
+  it("THREE planner types genuinely have no component, whatever their payload", () => {
+    /** OCTOBER 2026 — `comparison` moved to the direct names: Editorial.tsx draws it. */
+    const none = ["chart", "animated_icon", "arrow"] as const;
     for (const t of none) {
       expect(RENDERER_GRAPHIC_TYPE[t], `${t} gained a translation`).toBeUndefined();
       expect(RENDERABLE_GRAPHICS.has(rendererGraphicType(t)), `${t} collides with a component`)
@@ -114,7 +115,7 @@ describe("the facts the corrected comment states", () => {
      * true when the map was written and had not been for several rounds.
      */
     /** OCTOBER 2026 — `line_chart` joined the direct names: the planner draws the narration's own series. */
-    const directName = ["lower_third", "date_card", "location_card", "quote", "highlight_box", "line_chart"];
+    const directName = ["lower_third", "date_card", "location_card", "quote", "highlight_box", "line_chart", "comparison"];
     expect(GRAPHIC_TYPES.length).toBe(14);
     const accounted = new Set([...Object.keys(RENDERER_GRAPHIC_TYPE), ...none, ...directName]);
     expect(accounted.size).toBe(GRAPHIC_TYPES.length);

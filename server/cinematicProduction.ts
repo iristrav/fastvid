@@ -60,6 +60,7 @@ import { formatYoutubeReadiness } from "./sourcingPolicy";
 import { aiDirectorEnabled } from "./aiDirector/featureFlags";
 
 import { formatTextDirection } from "./onScreenTextDirector";
+import { formatGraphicsCoverage } from "./graphicsCoverage";
 import { searchGateStrict } from "./config";
 
 /* ═══════════════════════ §19/§20 — the two switches ═══════════════════════ */
@@ -383,6 +384,7 @@ export async function planAndStoreCinematicTimeline(
 
   /** RONDE 651 — which texts the on-screen text director switched off, and why. */
   log.push(formatTextDirection(params.videoId, result.textDirection));
+  if (result.graphicsCoverage) log.push(formatGraphicsCoverage(params.videoId, result.graphicsCoverage));
 
   /**
    * The losslessness check on the REAL edit, not only in a test. A decision that failed to cross

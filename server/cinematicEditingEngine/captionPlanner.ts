@@ -22,6 +22,7 @@
  *  text instruction, or an empty array when nothing about the beat calls for on-screen text.
  */
 import { statSpokenInBeat } from "./motionGraphicsPlanner";
+import { extractContextPhrases } from "../searchQueryContract";
 import type { Scene } from "../pipeline/types";
 import type { VisualIntent } from "../visualMatchingV2/types";
 import type { CaptionInstruction, VisualContinuityState } from "./types";
@@ -136,6 +137,37 @@ export function planSubtitleChunks(
  * legitimately overlap in time as long as they don't collide in position (a future renderer's
  * concern, same as textOverlay/planner.ts's existing noOverlap handling).
  */
+/** OCTOBER 2026 — the sentence's key phrase as words, with each word's index in the sentence. */
+export function kineticWordsFromSentence(intent: Pick<VisualIntent, "spokenText" | "people" | "visualLocation" | "events">): Array<{ word: string; index: number }> {
+  const phrase = extractContextPhrases(intent.spokenText, [
+    ...(intent.people ?? []),
+    ...(intent.visualLocation ? [intent.visualLocation] : []),
+    ...(intent.events ?? []),
+  ])[0];
+  if (!phrase) return [];
+  const tokens = intent.spokenText.split(/\s+/).map((t) => t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").toLowerCase());
+  const parts = phrase.split(/\s+/);
+  for (let i = 0; i + parts.length <= tokens.length; i++) {
+    if (parts.every((p, k) => tokens[i + k] === p.toLowerCase())) {
+      return parts.map((word, k) => ({ word, index: i + k }));
+    }
+  }
+  return [];
+}
+
+/** When word `index` of the sentence is spoken: measured when the timings line up, else in proportion. */
+function spokenWordStart(
+  spokenText: string,
+  index: number,
+  beatStart: number,
+  beatDuration: number,
+  wordTimings?: readonly TtsWordTiming[]
+): number {
+  const count = spokenText.split(/\s+/).filter(Boolean).length;
+  if (wordTimings && wordTimings.length === count && wordTimings[index]) return wordTimings[index]!.startSec;
+  return beatStart + (count > 0 ? (index / count) * beatDuration : 0);
+}
+
 export function planCaptions(
   intent: VisualIntent,
   beatVoiceStartSec: number,
@@ -263,6 +295,27 @@ export function planCaptions(
     });
   }
 
+  /**
+   * OCTOBER 2026 — no scene builder fills `highlightWords` (both write `[]`), so this branch never
+   * ran and the film had no key phrase to set as kinetic type. The phrase is now read from the
+   * sentence itself — what it says about its subject ("a global media empire" → "media empire",
+   * see `extractContextPhrases`) — and each word is placed on the moment it is spoken.
+   */
+  const contextWords = scene?.highlightWords?.length ? [] : kineticWordsFromSentence(intent);
+  if (contextWords.length > 0) {
+    for (const w of contextWords) {
+      const at = spokenWordStart(intent.spokenText, w.index, beatVoiceStartSec, beatVoiceDurationSec, options.wordTimings);
+      out.push({
+        captionType: "animated_text",
+        text: w.word,
+        startSec: at,
+        endSec: at + Math.max(MIN_WORD_DISPLAY_SEC, 0.5),
+        animation: "typewriter",
+        position: "center",
+        reason: `The sentence's own key phrase ("${contextWords.map((x) => x.word).join(" ")}") — set word by word as it is spoken.`,
+      });
+    }
+  }
   if (scene?.highlightWords && scene.highlightWords.length > 0) {
     const words = scene.highlightWords;
     // Floored per Phase 9 (see MIN_WORD_DISPLAY_SEC) — a short beat with several highlight

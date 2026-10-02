@@ -210,14 +210,16 @@ import {
   snapshotLineage,
 } from "./visualLineageSnapshot";
 import { formatGlobalBudget, withGlobalMediaFetch } from "./globalResourceBudget";
-import { buildBeatSearchLadder, buildPrioritisedQueries, checkPersonName, formatSearchGateReport, type VerifiedSearchQuery, emptyQueryContext, getQueryScope, getRenderTopic, getSearchProvenance, searchGateDecision, withRenderTopic, withSearchProvenance, withQueryScope, isFunctionWord, isPronounToken, provenToken, type VerifiedQueryContext } from "./searchQueryContract";
+import { buildBeatSearchLadder, buildPrioritisedQueries, checkPersonName, extractContextPhrases, formatSearchGateReport, type VerifiedSearchQuery, emptyQueryContext, getQueryScope, getRenderTopic, getSearchProvenance, searchGateDecision, withRenderTopic, withSearchProvenance, withQueryScope, isFunctionWord, isPronounToken, provenToken, type VerifiedQueryContext } from "./searchQueryContract";
 import { awaitVideoYoutubePool, buildVideoYoutubePool, emptyVideoYoutubePool, hasVideoYoutubePool, poolGaveNoYoutube, poolRowsForBeat, registerVideoYoutubePool, releaseVideoYoutubePool, noteVideoYoutubePoolRefusal, type VideoYoutubePool } from "./youtubeVideoPool";
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 import { videoMainSubject } from "./mainSubject";
 import { readPeopleInNarration } from "./personNames";
 import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots, type StockShot } from "./youtubeShotStock";
 import {
+  chooseAmongMoments,
   chooseMoments,
+  momentVideoOf,
   sectionMoments,
   youtubeMomentSpanSec,
   youtubeMomentSpanStartSec,
@@ -288,7 +290,7 @@ import {
 } from "./renderLock";
 import { dbRenderLockStore, dbYoutubeSearchBudgetStore } from "./db";
 import { newRenderId } from "./renderCorrelation";
-import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, type BeatImageGateState } from "./beatImageRelevanceGate";
+import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, momentRank, type BeatImageGateState } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
 import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
 import {
@@ -4401,6 +4403,28 @@ export function beatShareOfSceneTimeMs(sceneLeftMs: number, beatSec: number, rem
   if (!(sceneLeftMs > 0)) return 0;
   if (!(beatSec > 0) || !(remainingSec > beatSec)) return sceneLeftMs;
   return Math.floor((sceneLeftMs * beatSec) / remainingSec);
+}
+
+/** OCTOBER 2026 — the sentences a scene's narration has: each becomes a beat with its own search. */
+export function sceneSentenceCount(text: string | undefined): number {
+  const t = (text ?? "").trim();
+  if (!t) return 0;
+  return Math.max(1, t.match(/[^.!?]+[.!?]+(?=\s|$)/g)?.length ?? 1);
+}
+
+/**
+ * OCTOBER 2026 (render 626) — the least turn every sentence still to come keeps. A sentence's own
+ * share may not eat into it, so the last sentence of a scene opens with time to look instead of
+ * SCOPE_EXPIRED. Only time is moved between sentences; no search, download or quota is added.
+ */
+export const BEAT_MIN_TURN_MS = 12_000;
+export function beatTurnAfterReserveMs(shareMs: number, sceneLeftMs: number, beatsAfter: number): number {
+  if (!Number.isFinite(sceneLeftMs)) return shareMs;
+  const reserved = Math.max(0, beatsAfter) * BEAT_MIN_TURN_MS;
+  const room = sceneLeftMs - reserved;
+  /** When the scene cannot cover every reserve, the time is split evenly among what is left. */
+  if (room < BEAT_MIN_TURN_MS) return Math.max(0, Math.min(shareMs, Math.floor(sceneLeftMs / (beatsAfter + 1))));
+  return Math.min(shareMs, room);
 }
 
 /** How long a sentence is on screen: its voice window when aligned, otherwise its hold. */
@@ -13123,6 +13147,8 @@ const PLACE_STRUCTURE_WORDS = new Set([
   "camp","fortress","citadel","barracks","headquarters","embassy","parliament","capitol",
   "university","college","school","hospital","library","theatre","theater","hotel","tunnel",
   "canal","dam","port","dock","quay","pier","observatory","lighthouse","garden","park",
+  /** OCTOBER 2026 — the 2-minute test render named "East Side Gallery" as a person. */
+  "gallery","plaza","arena","avenue","boulevard","studios",
 ]);
 
 const VEHICLE_WORDS = new Set([
@@ -13801,6 +13827,17 @@ export function buildVerifiedQueryContextForBeat(
   });
   if (typed.event) ctx.events.push(provenToken(typed.event, "event", "beat_text", text));
   if (typed.object) ctx.objects.push(provenToken(typed.object, "object", "beat_text", text));
+  /** OCTOBER 2026 — what the sentence says about its subject (see `extractContextPhrases`). */
+  for (const phrase of extractContextPhrases(text, [
+    ...ctx.persons.map((p) => p.term),
+    ...ctx.places.map((p) => p.term),
+    typed.event,
+    typed.object,
+  ].filter(Boolean))) {
+    if (!ctx.objects.some((o) => o.term.toLowerCase() === phrase.toLowerCase())) {
+      (ctx.context ??= []).push(provenToken(phrase, "object", "beat_text", text));
+    }
+  }
   if (typed.year) ctx.years.push(provenToken(typed.year, "year", "beat_text", text));
   if (typed.time && typed.time !== typed.year) ctx.time.push(provenToken(typed.time, "time", "beat_text", text));
   return ctx;
@@ -18556,6 +18593,20 @@ async function adoptClip(
    * the last resort, not the first.
    */
   const requeuedAfterRefusal = new Set<string>();
+  /**
+   * OCTOBER 2026 — THE BEST MOMENT OF A VIDEO, NOT THE FIRST (see `chooseAmongMoments`).
+   * `approvedMoments` holds each approved YouTube moment's editor score; the two sets make each
+   * deferral happen at most once per candidate, so the queue still ends.
+   */
+  const visitedCandidates = new Set<string>();
+  const approvedMoments = new Map<string, { video: string | null; score: number | undefined }>();
+  const waitedForSiblingMoments = new Set<string>();
+  const yieldedToBetterMoment = new Set<string>();
+  /** The rank the comparison uses — fit, action, context, quality (`momentRank`); undefined when nothing scored it. */
+  const fitScoreOf = (clipPath: string): number | undefined => {
+    const d = dedup.beatRelevance.byBeat.get(beatRelevanceBeatKey(sceneIndex, beatIndex, "path", clipPath))?.decision;
+    return d && d.fitScore != null ? momentRank(d) : undefined;
+  };
 
   return withVisualDedupLock(dedup, async () => {
     // F3-04: record every candidate considered for this beat (adopted or not) so a post-scene
@@ -18586,6 +18637,8 @@ async function adoptClip(
        * The bound always meant "this beat has asked enough". Asked here, before the first
        * expensive call, it means that.
        */
+      /** OCTOBER 2026 — see `chooseAmongMoments`: which candidates have come up at least once. */
+      if (p) visitedCandidates.add(p);
       if (beatShortlistExhausted(dedup.beatShortlist, sceneIndex, beatIndex)) {
         console.log(
           `[BeatShortlist] s${sceneIndex}b${beatIndex} stopped looking — shortlist spent ` +
@@ -18869,6 +18922,38 @@ async function adoptClip(
         postponedForBetterEvidence.add(p);
         finalPaths.push(p);
         continue;
+      }
+      if (beatEvidence === "FIT" && !requeuedAfterRefusal.has(p)) {
+        const video = momentVideoOf(youtubeFragmentKey(p));
+        const ownScore = fitScoreOf(p);
+        const choice = chooseAmongMoments({
+          video,
+          ownScore,
+          unlooked: finalPaths
+            .filter((q) => q && q !== p && !visitedCandidates.has(q))
+            .map((q) => ({ video: momentVideoOf(youtubeFragmentKey(q)) })),
+          approved: [...approvedMoments].filter(([q]) => q !== p).map(([, v]) => v),
+          waitedForSiblings: waitedForSiblingMoments.has(p),
+          yieldedToBetter: yieldedToBetterMoment.has(p),
+        });
+        if (video) approvedMoments.set(p, { video, score: ownScore });
+        if (choice !== "adopt") {
+          (choice === "look_at_siblings_first" ? waitedForSiblingMoments : yieldedToBetterMoment).add(p);
+          console.log(
+            `[YouTubeMoments] s${sceneIndex}b${beatIndex} ${path.basename(p)} approved (score ${ownScore ?? "?"}) — ` +
+              (choice === "look_at_siblings_first"
+                ? "looking at the video's other moments before choosing"
+                : "a higher-scored moment of the same video goes first")
+          );
+          finalPaths.push(p);
+          continue;
+        }
+        if (video && approvedMoments.size > 1) {
+          console.log(
+            `[YouTubeMoments] s${sceneIndex}b${beatIndex} chose ${path.basename(p)} (score ${ownScore ?? "?"}) ` +
+              `over ${approvedMoments.size - 1} other approved moment(s)`
+          );
+        }
       }
       pendingEvidence.delete(p);
       if (requeuedAfterRefusal.has(p)) {
@@ -21372,7 +21457,10 @@ async function fetchSceneVisualsInner(
       beatSecondsOnScreen(beat),
       beats.slice(bi).reduce((sum, b) => sum + beatSecondsOnScreen(b), 0)
     );
-    const beatWallMs = Math.min(beatVisualWallMs(dedup.perf), beatShareMs);
+    const beatWallMs = Math.min(
+      beatVisualWallMs(dedup.perf),
+      beatTurnAfterReserveMs(beatShareMs, sceneLeftMs, beats.length - bi - 1)
+    );
     /** VIDEO 626 — the turn's end, for everything this sentence does after its own search. */
     const beatDeadlineMs = Date.now() + beatWallMs;
     fillFor = { beat, clipsBefore: beatDurations.length, deadlineMs: beatDeadlineMs };
@@ -22598,6 +22686,12 @@ async function _runVideoPipelineInner(
                 sceneSearchBudgetMs({
                   flatMs: perf.sceneVisualTimeoutMs,
                   sceneDurationSec: scene.duration,
+                  /**
+                   * OCTOBER 2026 (render 626) — the beat count was never passed, so a six-sentence
+                   * scene had exactly the time of a three-sentence one (199 s each) and its last
+                   * sentence opened at 0 s: SCOPE_EXPIRED. Each sentence is its own search.
+                   */
+                  beatCount: Math.min(perf.maxBeatsPerScene, sceneSentenceCount(scene.text)),
                 }),
                 `Scene ${scene.index} visuals`
               ),

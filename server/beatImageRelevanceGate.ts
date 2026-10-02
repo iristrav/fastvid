@@ -154,7 +154,32 @@ export type BeatImageJudgement = {
    * can never record the first without being able to record the second. See `VisionDeclineCause`.
    */
   declineCause?: VisionDeclineCause;
+  /**
+   * OCTOBER 2026 — 1..10, how well this picture shows THIS line (10 = exactly what is said).
+   * Absent on a cached, declined or older answer; a comparison treats absent as unscored.
+   */
+  fitScore?: number;
+  /** OCTOBER 2026 — the ranking parts of the answer (see the schema). Absent when not given. */
+  actionMatches?: boolean;
+  contextMatches?: boolean;
+  visualQuality?: number;
 };
+
+/**
+ * OCTOBER 2026 — one number to rank approved moments of the same video by: how well it shows the
+ * line first (fit 1..10, ×10), then whether the action and the context are on screen (+5 each),
+ * then how usable the picture is (quality 1..10). Unscored parts count 0.
+ */
+export function momentRank(j: { fitScore?: number; actionMatches?: boolean; contextMatches?: boolean; visualQuality?: number }): number {
+  return (j.fitScore ?? 0) * 10 + (j.actionMatches ? 5 : 0) + (j.contextMatches ? 5 : 0) + (j.visualQuality ?? 0);
+}
+
+/** The model's 1..10 score, or undefined when it gave none worth reading. */
+export function readFitScore(raw: unknown): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+  const n = Math.round(raw);
+  return n >= 1 && n <= 10 ? n : undefined;
+}
 
 function envInt(key: string, fallback: number, min: number, max: number): number {
   const raw = process.env[key]?.trim();
@@ -179,6 +204,19 @@ const RESPONSE_SCHEMA = {
         subject_matches: { type: "boolean" },
         situation_matches: { type: "boolean" },
         belongs: { type: "boolean" },
+        /**
+         * OCTOBER 2026 — HOW WELL, not only whether. Several moments of one video can all belong;
+         * the beat takes the one the editor scores highest instead of the first one it approved.
+         */
+        fit_score: { type: "integer" },
+        /**
+         * OCTOBER 2026 — the parts of the situation, and how usable the picture is, answered so the
+         * beat can rank the moments it is offered. They rank; `subject_matches` and
+         * `situation_matches` still decide.
+         */
+        action_matches: { type: "boolean" },
+        context_matches: { type: "boolean" },
+        visual_quality: { type: "integer" },
         reason: { type: "string" },
         /**
          * HOW THIS SHOT IS FRAMED, from the frames themselves.
@@ -202,7 +240,10 @@ const RESPONSE_SCHEMA = {
           ],
         },
       },
-      required: ["depicts", "subject_matches", "situation_matches", "belongs", "reason", "framing"],
+      required: [
+        "depicts", "subject_matches", "situation_matches", "action_matches", "context_matches",
+        "belongs", "fit_score", "visual_quality", "reason", "framing",
+      ],
       additionalProperties: false,
     },
   },
@@ -864,6 +905,19 @@ export function buildBeatImagePrompt(
     "describes, it does NOT belong.",
     "",
     /**
+     * OCTOBER 2026 — the beat may hold several moments of one video. The score is what lets it take
+     * the best of them rather than the first one that passed.
+     */
+    "fit_score — 1 to 10, how well this picture shows THIS line: 10 is exactly what the line says",
+    "(the person doing the thing, in the place), 6 is the right subject in a related situation,",
+    "3 or lower is only loosely connected. Score honestly even when it does not belong.",
+    "action_matches — is the ACTION the line describes happening on screen?",
+    "context_matches — is the CONTEXT the line describes (the setting, the business, the event,",
+    "  the period) visible?",
+    "visual_quality — 1 to 10, how usable the picture is: sharp, well framed, not a title card,",
+    "  not mid-transition, nothing burned in over the subject.",
+    "",
+    /**
      * The framing question, asked of the only reader in the pipeline that can see the shot.
      *
      * Kept short and separate from the belongs/does-not-belong reasoning, so it cannot pull the
@@ -1101,6 +1155,10 @@ export async function judgeBeatImage(params: {
       subject_matches?: boolean;
       situation_matches?: boolean;
       belongs?: boolean;
+      fit_score?: number;
+      action_matches?: boolean;
+      context_matches?: boolean;
+      visual_quality?: number;
       reason?: string;
       framing?: string;
     };
@@ -1133,6 +1191,10 @@ export async function judgeBeatImage(params: {
       reason: (parsed.reason ?? "").slice(0, 160),
       evaluated: true,
       ...(provider ? { provider } : {}),
+      ...(readFitScore(parsed.fit_score) != null ? { fitScore: readFitScore(parsed.fit_score)! } : {}),
+      ...(typeof parsed.action_matches === "boolean" ? { actionMatches: parsed.action_matches } : {}),
+      ...(typeof parsed.context_matches === "boolean" ? { contextMatches: parsed.context_matches } : {}),
+      ...(readFitScore(parsed.visual_quality) != null ? { visualQuality: readFitScore(parsed.visual_quality)! } : {}),
     };
     /** OCTOBER 2026 (render 626) — see `situationRule`: the subject alone is not a fit. */
     const judgementAfterSituation = situationRule(judgementAsGiven, parsed);

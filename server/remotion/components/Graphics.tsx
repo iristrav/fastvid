@@ -24,6 +24,7 @@ import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { animationAt, easeInOut } from "./animation";
 import { GeoMap, isGeoPayload } from "./GeoMap";
+import { ComparisonGraphic, KineticType, TimelineGraphic } from "./Editorial";
 import { typedCount } from "./typewriter";
 import { positionStyle, type TextStyleLike } from "./Text";
 import {
@@ -211,7 +212,8 @@ const NumberCounter: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, prima
   const caption = readAny(g, "caption", "subtitle");
   return (
     <div style={{ textAlign: "center" }}>
-      <div style={{ fontFamily: CARD_FONT, fontSize: "1.6em", fontWeight: 800, color: "white", fontVariantNumeric: "tabular-nums", textShadow: HALO }}>
+      {/** OCTOBER 2026 — the 2-minute render broke "€2 trillion" over two lines; a figure stays on one. */}
+      <div style={{ fontFamily: CARD_FONT, fontSize: "1.6em", fontWeight: 800, color: "white", fontVariantNumeric: "tabular-nums", textShadow: HALO, whiteSpace: "nowrap" }}>
         {prefix}
         {value.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
         {suffix}
@@ -372,6 +374,16 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
       break;
     case "quote":
       body = <QuoteCard g={g} primary={words} />;
+      break;
+    /** OCTOBER 2026 — a dated event, or the film's chronology when it carries several years. */
+    case "timeline_event":
+      body = <TimelineGraphic data={g.data} primary={words} durationInFrames={g.durationInFrames} />;
+      break;
+    case "comparison":
+      body = <ComparisonGraphic data={g.data} durationInFrames={g.durationInFrames} />;
+      break;
+    case "kinetic_type":
+      body = <KineticType data={g.data} primary={readAny(g, "text") ?? words} durationInFrames={g.durationInFrames} />;
       break;
     case "chapter_card":
     case "chapter_title":

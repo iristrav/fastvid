@@ -1,3 +1,4 @@
+import crypto from "crypto";
 /**
  * MAPS, ROUTES AND CHARTS REACH THE MP4 — through the production render, not a special route.
  *
@@ -80,6 +81,8 @@ describeRender("graphics in the production render: text, map, route, chart", () 
   let out = "";
   let result: RenderedTimeline;
   const ink: number[] = [];
+  /** OCTOBER 2026 — each slot's frame, by content: see the "four slots differ" test. */
+  const frames: string[] = [];
 
   beforeAll(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "maps-charts-"));
@@ -98,6 +101,9 @@ describeRender("graphics in the production render: text, map, route, chart", () 
       graphicsOverlay: productionGraphicsOverlay({ workDir, cacheDir: path.join(dir, "bundle") }),
     });
     for (let i = 0; i <= GRAPHICS.length; i++) ink.push(await inkAt(out, mid(i), path.join(dir, `f${i}.raw`)));
+    for (let i = 0; i < GRAPHICS.length; i++) {
+      frames.push(crypto.createHash("sha1").update(fs.readFileSync(path.join(dir, `f${i}.raw`))).digest("hex"));
+    }
   }, 1_800_000);
 
   afterAll(() => {
@@ -119,6 +125,12 @@ describeRender("graphics in the production render: text, map, route, chart", () 
   });
 
   it("the four slots differ: four different pictures, not one drawn four times", () => {
-    expect(new Set(ink.slice(0, GRAPHICS.length)).size).toBe(GRAPHICS.length);
+    /**
+     * OCTOBER 2026 — compared by the pictures themselves, not by their ink counts. With the overlay
+     * lossless (PNG frames instead of ProRes), the three full panels — map, route, chart — cover
+     * exactly the same number of pixels (451 758 / 451 758 / 451 755); the counts used to differ only
+     * through compression noise. Different pictures are different frames.
+     */
+    expect(new Set(frames).size).toBe(GRAPHICS.length);
   });
 });

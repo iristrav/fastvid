@@ -93,7 +93,7 @@ describe("a person on screen is not the whole answer (render 626)", () => {
     expect(p).toContain("situation_matches");
     expect(p).toMatch(/action,\s+its context, its place or setting, its objects, what it means/);
     expect(p).toContain("It BELONGS only when BOTH are true.");
-    expect(GATE).toContain('required: ["depicts", "subject_matches", "situation_matches", "belongs", "reason", "framing"]');
+    expect(GATE).toContain('required: [\n        "depicts", "subject_matches", "situation_matches", "action_matches", "context_matches",\n        "belongs", "fit_score", "visual_quality", "reason", "framing",\n      ]');
   });
 
   it("stored verdicts from the looser rule are not reused", () => {

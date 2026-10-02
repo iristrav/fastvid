@@ -49,7 +49,7 @@ import {
   type Frame,
   type Obstacle,
 } from "./captionLayout";
-import { readText } from "./graphicsVocabulary";
+import { readingSec, readText } from "./graphicsVocabulary";
 
 /**
  * The style a graphic is measured at when it carries none of its own.
@@ -284,6 +284,33 @@ export function graphicStartOnWord(
 }
 
 /**
+ * OCTOBER 2026 — a graphic moved forward to its word kept its planned END, so it lost the seconds
+ * it moved and could be on screen for barely 1.5 s. It now keeps its planned length, extended by at
+ * most `MAX_GRAPHIC_EXTENSION_SEC`, never into the next drawn graphic and never past the film.
+ */
+export const MAX_GRAPHIC_EXTENSION_SEC = 1.5;
+
+
+export function graphicEndAfterMove(
+  g: { id: string; start: number; end: number; label?: string | null },
+  movedStart: number,
+  others: ReadonlyArray<{ id: string; start: number }>,
+  durationSec: number
+): number {
+  const shift = movedStart - g.start;
+  const next = Math.min(
+    ...others.filter((o) => o.id !== g.id && o.start > g.start + 0.01).map((o) => o.start),
+    durationSec > 0 ? durationSec : Number.POSITIVE_INFINITY
+  );
+  /** Not moved: the timeline's own end, exactly (the director already made it long enough to read). */
+  if (!(shift > 0)) return g.end;
+  const moved = g.end + Math.min(shift, MAX_GRAPHIC_EXTENSION_SEC);
+  /** Long enough to read from where it now starts — never into the next graphic or past the film. */
+  const wanted = Math.max(moved, movedStart + readingSec(g.label));
+  return Number(Math.max(g.end, Math.min(wanted, next)).toFixed(3));
+}
+
+/**
  * Build the graphics props for one timeline.
  *
  * There is no `resolveMedia` parameter and no injected downloader, because this layer needs no
@@ -452,6 +479,9 @@ export function timelineToRemotionProps(params: {
         .flatMap((c) => c.words ?? [])
     );
 
+  /** OCTOBER 2026 — where every drawn graphic starts, so a graphic moved to its word never runs into the next. */
+  const enabledGraphics = graphicsTrack(timeline).filter((g) => !g.disabled);
+  const enabledGraphicStarts = enabledGraphics.map((g) => ({ id: g.id, start: g.start }));
   return {
     fps,
     width: timeline.format.widthPx,
@@ -471,8 +501,7 @@ export function timelineToRemotionProps(params: {
     texts: textTrackOf(timeline, "TEXT")
       .filter((t) => !t.disabled)
       .map((t) => textElement(t, "text")),
-    graphics: graphicsTrack(timeline)
-      .filter((g) => !g.disabled)
+    graphics: enabledGraphics
       .map((g) => {
         /**
          * RONDE 185 — a graphic the layout moved carries its new anchor, and only then.
@@ -484,13 +513,15 @@ export function timelineToRemotionProps(params: {
         const move = graphicMoves.get(g.id);
         /** OCTOBER 2026 — on the word it is about, when the planner named one and the voice said it. */
         const start = graphicStartOnWord(g.start, g.end, g.data?.anchorWord, measuredWords);
+        /** OCTOBER 2026 — moved to its word, it keeps (most of) the time it was planned for. */
+        const end = graphicEndAfterMove(g, start, enabledGraphicStarts, timeline.durationSec);
         return {
           id: g.id,
           graphicType: g.graphicType,
           data: g.data ?? {},
           label: g.label ?? null,
           fromFrame: toFrames(start, fps),
-          durationInFrames: Math.max(1, toFrames(Math.max(0, g.end - start), fps)),
+          durationInFrames: Math.max(1, toFrames(Math.max(0, end - start), fps)),
           style: g.style ?? null,
           /** The renderer's existing default when a planner expressed no preference. Named, not silent. */
           animation: g.animation ?? "fade_rise",

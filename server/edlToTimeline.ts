@@ -188,6 +188,8 @@ export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
   "glow",
   "bloom",
   "chromatic_aberration",
+  /** OCTOBER 2026 — aged-film grain and flicker (`effectChain`). */
+  "dust",
 ]);
 
 /**
@@ -209,7 +211,9 @@ export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
  *
  *   4  translated here            progress_bar, statistic_counter, map, timeline
  *   5  already a component's name lower_third, date_card, location_card, quote, highlight_box
- *   4  no component at all        chart, comparison, animated_icon, arrow
+ *      (OCTOBER 2026: and comparison, now that Editorial.tsx draws the side-by-side; and
+ *      line_chart, which the planner fills with the narration's own series)
+ *   3  no component at all        chart, animated_icon, arrow
  *
  * A name is in this map only when a real component draws THAT PLANNER'S OWN PAYLOAD as it stands.
  * No field is renamed, added or synthesised to make an entry fit:
@@ -232,13 +236,12 @@ export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
  * the planner emit `normX/normY/normW/normH` for a highlight box gets a drawn graphic with no
  * change to this file.
  *
- * The four with no component stay untranslated and keep being reported, because translating them
+ * The three with no component stay untranslated and keep being reported, because translating them
  * would mean inventing content, which §11 forbids:
  *
  *   chart          carries a keyword, not a series — a chart component with nothing to plot
  *   arrow          could be drawn as the `arrow` shape, but the shape draws no text and the
  *                  planner's whole payload is the label of the thing being pointed at
- *   comparison     no component draws a side-by-side
  *   animated_icon  `icon` needs a name this build has a path for; a brand name is not one
  */
 export const RENDERER_GRAPHIC_TYPE: Readonly<Partial<Record<MotionGraphicType, string>>> = {

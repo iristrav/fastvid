@@ -165,7 +165,9 @@ describe("§7 — a collision moves a graphic, and never deletes one", () => {
     expect(src).toContain("graphicMoves");
     expect(src).toContain("placedGraphics.push(");
     /** The props are built from the whole track minus `disabled` — never minus "collided". */
-    expect(src).toContain("graphicsTrack(timeline)\n      .filter((g) => !g.disabled)");
+    /** OCTOBER 2026 — the same filter, named once (`enabledGraphics`) so the word-move can see every start. */
+    expect(src).toContain("const enabledGraphics = graphicsTrack(timeline).filter((g) => !g.disabled);");
+    expect(src).toContain("graphics: enabledGraphics\n      .map(");
   });
 
   it("there is no DROPPED_COLLISION outcome, because colliding never ends a graphic", () => {

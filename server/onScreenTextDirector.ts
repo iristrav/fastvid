@@ -33,7 +33,7 @@
  * can switch it back on — the renderer and the Remotion props already skip a disabled element.
  */
 import type { ProjectTimeline, TimelineGraphic, TimelineText } from "./projectTimeline";
-import { readGeoPoint } from "./graphicsVocabulary";
+import { readGeoPoint, readingSec } from "./graphicsVocabulary";
 
 export const MIN_TEXT_ON_SCREEN_SEC = 2;
 export const MAX_TEXTS_AT_ONCE = 2;
@@ -317,8 +317,10 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
   const end = timeline.durationSec > 0 ? timeline.durationSec : Number.POSITIVE_INFINITY;
   for (const e of elements) {
     if (e.el.disabled || userEdited(e)) continue;
-    if (e.el.end - e.el.start < MIN_TEXT_ON_SCREEN_SEC) {
-      e.el.end = Number(Math.min(end, e.el.start + MIN_TEXT_ON_SCREEN_SEC).toFixed(3));
+    /** OCTOBER 2026 — long enough for ITS words (`readingSec`), not a flat two seconds. */
+    const need = Math.max(MIN_TEXT_ON_SCREEN_SEC, readingSec(e.label));
+    if (e.el.end - e.el.start < need) {
+      e.el.end = Number(Math.min(end, e.el.start + need).toFixed(3));
       out.extended++;
     }
   }

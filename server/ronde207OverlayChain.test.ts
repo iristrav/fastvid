@@ -91,14 +91,15 @@ describe("R207 — every motion-graphic type the planner can emit is accounted f
    * must not happen to collide with a component the renderer has, which would quietly hand a
    * chart's payload to whatever component shares its name.
    */
-  it("the four with no component are honestly undrawable, not accidentally drawable", () => {
+  it("the three with no component are honestly undrawable, not accidentally drawable", () => {
     /**
      * RONDE 124 removed `highlight_box` from this list, by writing the component rather than by
      * relaxing the rule. It is now in `RENDERABLE_GRAPHICS` with a payload rule of its own — a
      * region, not words — and the next test holds it to the same bar as every other drawable type.
      * The remaining four still have no component and must not appear to have one.
      */
-    for (const t of ["chart", "comparison", "animated_icon", "arrow"] as const) {
+    /** OCTOBER 2026 — `comparison` left this list: Editorial.tsx draws it under its own name. */
+    for (const t of ["chart", "animated_icon", "arrow"] as const) {
       expect(RENDERER_GRAPHIC_TYPE[t], `${t} gained a translation — update this test`).toBeUndefined();
       const rendered = rendererGraphicType(t);
       expect(RENDERABLE_GRAPHICS.has(rendered), `${t} collides with a component name`).toBe(false);

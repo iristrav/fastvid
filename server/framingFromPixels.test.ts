@@ -78,8 +78,8 @@ describe("the judge is asked how the shot is framed", () => {
 
   it("the framing is required, so a model cannot quietly omit it", () => {
     const src = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
-    /** OCTOBER 2026 — the two halves of the verdict (subject, situation) are required alongside it. */
-    expect(src).toContain('required: ["depicts", "subject_matches", "situation_matches", "belongs", "reason", "framing"]');
+    /** OCTOBER 2026 — the two halves of the verdict (subject, situation) and the 1..10 fit score are required alongside it. */
+    expect(src).toContain('required: [\n        "depicts", "subject_matches", "situation_matches", "action_matches", "context_matches",\n        "belongs", "fit_score", "visual_quality", "reason", "framing",\n      ]');
   });
 });
 

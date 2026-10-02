@@ -151,6 +151,12 @@ export type VerifiedQueryContext = {
   topic?: string;
   /** The stored VisualDirector plan for this sentence (see `QueryTokenSource` "visual_plan"). */
   plan?: string;
+  /**
+   * OCTOBER 2026 — what the sentence says about its subject (`extractContextPhrases`). Read only by
+   * the query builder; deliberately not an `objects` entry, so the validator's subject rules are
+   * exactly what they were.
+   */
+  context?: QueryToken[];
 };
 
 export function emptyQueryContext(evidence = "", topic = "", plan = ""): VerifiedQueryContext {
@@ -484,6 +490,91 @@ export const ABSTRACTION_VOCABULARY: ReadonlySet<string> = new Set([
 /** A word that qualifies or interprets a subject, but cannot BE one. See the set's own note. */
 export function isAbstractionWord(token: string): boolean {
   return ABSTRACTION_VOCABULARY.has(token.trim().toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, ""));
+}
+
+/**
+ * OCTOBER 2026 — THE CONTEXT A SENTENCE GIVES ITS SUBJECT.
+ *
+ *     "Kris Jenner transformed her family into a global media empire."
+ *        before:  "Kris Jenner", "Kris Jenner transformed"
+ *        now:     "Kris Jenner media empire", "Kris Jenner", …
+ *
+ * The extractors type persons, places, years, a small event vocabulary and a small object
+ * vocabulary; everything else the sentence says about its subject was dropped, so the search asked
+ * for the person and got any footage of the person. Two deterministic readings, both of words
+ * that stand in the sentence (so every query stays provable):
+ *
+ *   · a capitalised word inside the sentence that is not part of a name or place already found —
+ *     a company, a channel, a product: "bought Twitter", "a deal with E!" → "Twitter";
+ *   · the last run of two or more lower-case content words that follows a determiner or
+ *     preposition, cut to its last two words: "into a global media empire" → "media empire",
+ *     "to launch the reality show" → "reality show".
+ *
+ * Production words, abstractions, particles and a few empty verbs never count. Nothing is returned
+ * when the sentence offers nothing — the queries are then exactly what they were.
+ */
+const CONTEXT_STOP_WORDS: ReadonlySet<string> = new Set([
+  "down", "up", "out", "off", "away", "back", "forward", "together", "apart",
+  "come", "came", "go", "went", "gone", "get", "got", "make", "made", "take", "took", "become", "became",
+  "said", "says", "told", "began", "begin", "started", "turned", "seemed", "looked", "felt",
+  "new", "old", "big", "huge", "global", "great", "small", "major", "first", "last", "next", "whole",
+  "billion", "million", "thousand", "hundred", "percent", "dollars", "years", "year", "days", "day",
+]);
+const CONTEXT_LEAD_WORDS: ReadonlySet<string> = new Set([
+  "a", "an", "the", "his", "her", "their", "its", "our", "my", "your",
+  "into", "of", "in", "on", "at", "to", "from", "for", "with", "as", "over", "behind", "inside",
+]);
+
+export function extractContextPhrases(text: string, alreadyTyped: readonly string[] = []): string[] {
+  const typed = alreadyTyped.map((t) => t.toLowerCase());
+  const isTyped = (w: string) => typed.some((t) => t.split(/\s+/).includes(w.toLowerCase()));
+  const out: string[] = [];
+  const words = (text ?? "").split(/\s+/).map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""));
+  /** A capitalised word that is not the sentence's first word, not typed, not a month or a weekday. */
+  const raw = (text ?? "").split(/\s+/);
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i]!;
+    if (!/^\p{Lu}[\p{L}\p{N}]{2,}$/u.test(w)) continue;
+    if (/[.!?]$/.test(raw[i - 1] ?? "")) continue;
+    if (/^\p{Lu}/u.test(words[i - 1] ?? "") || /^\p{Lu}/u.test(words[i + 1] ?? "")) continue;
+    if (isTyped(w) || isFunctionWord(w) || isProductionWord(w)) continue;
+    if (/^(January|February|March|April|May|June|July|August|September|October|November|December|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/.test(w)) continue;
+    out.push(w);
+    break;
+  }
+  /** The last lower-case content run behind a determiner or preposition. */
+  let best: string[] = [];
+  let run: string[] = [];
+  let ledByDeterminer = false;
+  const close = () => {
+    const kept = run.filter((w) => !CONTEXT_STOP_WORDS.has(w));
+    if (ledByDeterminer && kept.length >= 2 && kept.length === run.length) best = kept.slice(-2);
+    run = [];
+  };
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    const lower = w.toLowerCase();
+    /** A past-tense verb ("crossed", "demanded") is the sentence's action, not its context. */
+    const content =
+      /^\p{Ll}[\p{Ll}-]{2,}$/u.test(w) && !(lower.length >= 5 && lower.endsWith("ed")) &&
+      !isFunctionWord(w) && !isProductionWord(w) && !isAbstractionWord(w) && !CONTEXT_STOP_WORDS.has(lower);
+    if (content) {
+      if (run.length === 0) {
+        /** Back over qualifiers ("a global …", "his final political …") to the determiner. */
+        let k = i - 1;
+        while (k >= 0 && (CONTEXT_STOP_WORDS.has((words[k] ?? "").toLowerCase()) || isAbstractionWord(words[k] ?? ""))) k--;
+        /** Not the sentence's own opening ("The city rebuilt …" is its subject, not its context). */
+        ledByDeterminer = k > 0 && CONTEXT_LEAD_WORDS.has((words[k] ?? "").toLowerCase());
+      }
+      run.push(lower);
+      if (/[,.;:!?]$/.test(raw[i] ?? "")) close();
+    } else {
+      close();
+    }
+  }
+  close();
+  if (best.length === 2 && !best.some(isTyped)) out.push(best.join(" "));
+  return out;
 }
 
 /**
@@ -954,6 +1045,7 @@ export function buildPrioritisedQueries(
   const actions = v(ctx.actions);
   const objects = v(ctx.objects);
   const times = [...v(ctx.years), ...v(ctx.time)];
+  const contexts = v(ctx.context ?? []).slice(0, 2);
 
   const out: PrioritisedQuery[] = [];
   const seen = new Set<string>();
@@ -1021,6 +1113,12 @@ export function buildPrioritisedQueries(
   // sits at position 2 rather than being dropped.
   if (p1 && place && time) push(p1, place, time);
   if (p1 && p2 && !place) push(p1, p2);
+  /**
+   * OCTOBER 2026 — the person IN the sentence's context before the person alone: "Kris Jenner
+   * media empire" asks for the line, "Kris Jenner" for any footage of her. See
+   * `extractContextPhrases`; the bare name stays right behind it.
+   */
+  if (p1 && !place) for (const o of contexts) push(p1, o);
   if (p1 && !place && !p2) push(p1);
   if (p2 && place) push(p2, place);
   /**
@@ -1039,6 +1137,8 @@ export function buildPrioritisedQueries(
   }
   if (alt && alt !== p1 && place) push(alt, place);
   if (alt && alt !== p1 && !place) push(alt);
+  /** OCTOBER 2026 — with a place, the context follows the person+place questions. */
+  if (p1 && place) for (const o of contexts) push(p1, o);
 
   // 2. The place's own year question, before the longer person variants.
   //

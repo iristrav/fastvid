@@ -127,3 +127,46 @@ export async function sectionMoments(
   await cutter.extract(sectionPath, out, offset, offset + clipDurSec);
   return fs.existsSync(out) && fs.statSync(out).size > 0 ? [{ path: out, ...at(offset, offset + clipDurSec) }] : [];
 }
+
+/**
+ * OCTOBER 2026 — THE BEST MOMENT, NOT THE FIRST ONE THAT PASSED.
+ *
+ * The beat's queue walks its candidates in cheap-rank order and adopted the first the editor
+ * approved, so of three moments of the same video the one ranked first won whenever it passed at
+ * all. Now an approved moment first lets its unlooked siblings be looked at (once), and then lets
+ * any approved sibling the editor scored higher go before it (once). Both are the queue's existing
+ * deferral idiom — a candidate goes to the back — so the bound is the same queue, and the judge
+ * calls are the sibling moments the beat already holds, nothing more.
+ */
+export type MomentChoice = "adopt" | "look_at_siblings_first" | "better_moment_first";
+
+/** The YouTube video id inside a fragment key (`youtube_cc:<id>@t12d4`), or null for any other clip. */
+export function momentVideoOf(fragmentKey: string | null | undefined): string | null {
+  if (!fragmentKey) return null;
+  const m = /^youtube_cc:([^@]+)@/.exec(fragmentKey);
+  return m ? m[1]! : null;
+}
+
+export function chooseAmongMoments(params: {
+  /** The video this approved candidate is a moment of; null means it is not a moment and is adopted. */
+  video: string | null;
+  ownScore: number | undefined;
+  /** Candidates still waiting in the queue that the editor has not looked at yet, with their video. */
+  unlooked: ReadonlyArray<{ video: string | null }>;
+  /** Approved moments held by this beat (not this one), with their video and score. */
+  approved: ReadonlyArray<{ video: string | null; score: number | undefined }>;
+  waitedForSiblings: boolean;
+  yieldedToBetter: boolean;
+}): MomentChoice {
+  if (!params.video) return "adopt";
+  if (!params.waitedForSiblings && params.unlooked.some((c) => c.video === params.video)) {
+    return "look_at_siblings_first";
+  }
+  if (!params.yieldedToBetter) {
+    const own = params.ownScore ?? 0;
+    if (params.approved.some((c) => c.video === params.video && (c.score ?? 0) > own)) {
+      return "better_moment_first";
+    }
+  }
+  return "adopt";
+}

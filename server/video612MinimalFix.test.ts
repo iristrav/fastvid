@@ -350,7 +350,11 @@ describe("F. a sentence's YouTube query never carries a word the sentence does n
 
   it("a one-word question is only a name the sentence capitalises", () => {
     const kylie = queriesFor(SENTENCES[7]![0], "Kylie Jenner", "How the Kardashians Built an Empire");
-    expect(kylie).toEqual(["Kylie Jenner", "Kylie Jenner lip kits"]);
+    /**
+     * OCTOBER 2026 — the context the sentence gives her ("a cosmetics empire") leads, the bare name
+     * follows; both stand in the sentence. See `extractContextPhrases`.
+     */
+    expect(kylie).toEqual(["Kylie Jenner cosmetics empire", "Kylie Jenner"]);
     expect(sentenceOnlyYoutubeQueries(["Empire", "empire documentary footage"], "They built an empire.")).toEqual([]);
     expect(sentenceOnlyYoutubeQueries(["Carthage archival footage"], "Rome sealed the fate of Carthage.")).toEqual(["Carthage"]);
   });

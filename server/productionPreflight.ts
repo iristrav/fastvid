@@ -247,7 +247,8 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     id: "ambience",
-    describes: "Freesound room tone. Music has no source in this build either way",
+    /** OCTOBER 2026 — the same key also serves the CC0 music catalogue (`[MusicCatalogue]`). */
+    describes: "Freesound room tone, effects and the CC0 music catalogue",
     requires: ["FREESOUND_API_KEY"],
     fatal: false,
   },

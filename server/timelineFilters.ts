@@ -191,6 +191,18 @@ export function effectChain(effect: ClipEffect): string | null {
     case "noise":
       // noise strength is 0..100; a documentary grain lives at the very bottom of that range.
       return `noise=alls=${Math.round(4 + 16 * i)}:allf=t+u`;
+    /**
+     * OCTOBER 2026 — the planner has asked for `dust` on archive footage since the effects planner
+     * existed and nothing executed it. Aged film, from filters both builds have (checked): a
+     * temporal grain and a slight projector flicker (`eq` evaluated per frame). Specks and
+     * scratches are NOT drawn — `drawbox` evaluates its position once, so they would stand still,
+     * and `geq` per pixel is too slow for every archive shot.
+     */
+    case "dust":
+      return (
+        `noise=alls=${Math.round(6 + 14 * i)}:allf=t+u,` +
+        `eq=brightness='${(0.012 + 0.03 * i).toFixed(4)}*sin(2*PI*7.3*t)*sin(2*PI*2.1*t+1)':eval=frame`
+      );
     case "vignette":
       // The angle is the falloff: PI/5 is a heavy vignette, PI/2.6 barely visible.
       return `vignette=angle=${(Math.PI / 2.6 - (Math.PI / 2.6 - Math.PI / 5) * i).toFixed(4)}`;
@@ -366,7 +378,7 @@ function signed(effect: ClipEffect, magnitude: number): number {
  * string is ever interpolated into a filter.
  */
 export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
-  "film_grain", "noise", "vignette", "letterbox", "glow", "bloom", "chromatic_aberration",
+  "film_grain", "noise", "vignette", "letterbox", "glow", "bloom", "chromatic_aberration", "dust",
   "blur", "sharpen", "exposure", "contrast", "saturation", "temperature", "tint",
   "monochrome", "sepia", "scanlines",
 ]);

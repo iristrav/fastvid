@@ -234,6 +234,9 @@ export const RENDERABLE_GRAPHICS: ReadonlySet<string> = new Set([
    * the wrong part of the frame.
    */
   "highlight_box",
+  /** OCTOBER 2026 — Editorial.tsx: a side-by-side, and a key phrase set word by word. */
+  "comparison",
+  "kinetic_type",
 ]);
 
 /**
@@ -300,6 +303,10 @@ export const EXPLICITLY_DESIGNED_GRAPHICS: ReadonlySet<string> = new Set([
   "shape",
   "stat",
   "statistic",
+  /** OCTOBER 2026 — Editorial.tsx. */
+  "timeline_event",
+  "comparison",
+  "kinetic_type",
   /**
    * RONDE 124 — designed, and drawn BEFORE the switch rather than inside it.
    *
@@ -428,4 +435,13 @@ export function graphicIsRenderable(
     return name in SHAPE_PATHS;
   }
   return Boolean(label?.trim() || readText(data, "label", "text", "title"));
+}
+
+/**
+ * OCTOBER 2026 — how long a graphic's or a text's words need to be read: 2.5 s for a year or a
+ * name, a little more per word, at most 6 s. Not a fixed two seconds.
+ */
+export function readingSec(label: string | null | undefined): number {
+  const words = (label ?? "").trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(2.5, Math.min(6, 1.2 + 0.35 * words));
 }

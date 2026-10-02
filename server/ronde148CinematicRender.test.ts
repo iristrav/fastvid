@@ -417,7 +417,8 @@ describe("§15 — effects that run, and effects that are reported", () => {
      * them. What remains needs an overlay ASSET (a flare sprite, a dust plate) rather than a
      * filter, which is a content problem and not an engine one.
      */
-    for (const t of ["lens_flare", "particles", "dust"]) {
+    /** OCTOBER 2026 — `dust` left this list: grain plus a per-frame flicker, no asset needed. */
+    for (const t of ["lens_flare", "particles"]) {
       expect(effectChain({ effectType: t, intensity: 0.5 }), t).toBeNull();
     }
     const unsupported = unsupportedEffects([

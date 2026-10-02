@@ -8,12 +8,15 @@ import path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  chooseAmongMoments,
   chooseMoments,
+  momentVideoOf,
   sectionMoments,
   youtubeMomentSpanSec,
   youtubeMomentSpanStartSec,
   youtubeMomentsPerVideo,
 } from "./youtubeMoments";
+import { buildBeatImagePrompt, momentRank, readFitScore, situationRule } from "./beatImageRelevanceGate";
 import { releaseYoutubeShotStock, startYoutubeShotStock, takeStockShot, takeStockShots } from "./youtubeShotStock";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
@@ -152,5 +155,105 @@ describe("the pipeline offers the moments to the judge instead of adopting a has
   it("the stock and the live section both go through the same offer", () => {
     expect(PIPE).toContain("takeStockShots(");
     expect(PIPE.match(/await offerMoments\(/g)?.length).toBe(2);
+  });
+});
+
+describe("the judge compares a video's moments and the beat takes the best", () => {
+  const base = { waitedForSiblings: false, yieldedToBetter: false, approved: [], unlooked: [] };
+  it("reads the video out of a fragment key, and nothing out of anything else", () => {
+    expect(momentVideoOf("youtube_cc:abc123@t12d4")).toBe("abc123");
+    expect(momentVideoOf("curated:asset:9")).toBeNull();
+    expect(momentVideoOf(null)).toBeNull();
+  });
+  it("an approved moment waits once while the same video has moments nobody looked at", () => {
+    expect(chooseAmongMoments({ ...base, video: "v", ownScore: 6, unlooked: [{ video: "v" }] })).toBe("look_at_siblings_first");
+    expect(chooseAmongMoments({ ...base, video: "v", ownScore: 6, unlooked: [{ video: "other" }] })).toBe("adopt");
+    expect(
+      chooseAmongMoments({ ...base, video: "v", ownScore: 6, unlooked: [{ video: "v" }], waitedForSiblings: true })
+    ).toBe("adopt");
+  });
+  it("a higher-scored approved moment of the same video goes first, once", () => {
+    const approved = [{ video: "v", score: 9 }];
+    expect(chooseAmongMoments({ ...base, video: "v", ownScore: 6, approved })).toBe("better_moment_first");
+    expect(chooseAmongMoments({ ...base, video: "v", ownScore: 9, approved })).toBe("adopt");
+    expect(chooseAmongMoments({ ...base, video: "v", ownScore: 6, approved, yieldedToBetter: true })).toBe("adopt");
+    expect(chooseAmongMoments({ ...base, video: "v", ownScore: 6, approved: [{ video: "w", score: 10 }] })).toBe("adopt");
+  });
+  it("a clip that is not a YouTube moment is adopted as before", () => {
+    expect(chooseAmongMoments({ ...base, video: null, ownScore: 2, approved: [{ video: "v", score: 10 }] })).toBe("adopt");
+  });
+  it("walks a real queue: three approved moments, the 9 is adopted, not the first", () => {
+    const scores: Record<string, number> = { a: 5, b: 9, c: 7 };
+    const queue = ["a", "b", "c"];
+    const visited = new Set<string>();
+    const approved = new Map<string, { video: string; score: number }>();
+    const waited = new Set<string>();
+    const yielded = new Set<string>();
+    let adopted: string | null = null;
+    for (const p of queue) {
+      visited.add(p);
+      const choice = chooseAmongMoments({
+        video: "v",
+        ownScore: scores[p],
+        unlooked: queue.filter((q) => q !== p && !visited.has(q)).map(() => ({ video: "v" })),
+        approved: [...approved].filter(([q]) => q !== p).map(([, v]) => v),
+        waitedForSiblings: waited.has(p),
+        yieldedToBetter: yielded.has(p),
+      });
+      approved.set(p, { video: "v", score: scores[p]! });
+      if (choice === "adopt") {
+        adopted = p;
+        break;
+      }
+      (choice === "look_at_siblings_first" ? waited : yielded).add(p);
+      queue.push(p);
+    }
+    expect(adopted).toBe("b");
+  });
+  it("the judge is asked for a 1..10 score, and only a sane one is kept", () => {
+    expect(readFitScore(8)).toBe(8);
+    expect(readFitScore(7.6)).toBe(8);
+    expect(readFitScore(0)).toBeUndefined();
+    expect(readFitScore(42)).toBeUndefined();
+    expect(readFitScore("9")).toBeUndefined();
+    const gate = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
+    expect(gate).toMatch(/required: \[[^\]]*"fit_score"[^\]]*"visual_quality"/);
+    expect(PIPE).toMatch(/chooseAmongMoments\(\{/);
+  });
+});
+
+describe("the moments are ranked on what the line needs, not on who comes first", () => {
+  it("fit first, then action and context, then picture quality", () => {
+    const close = momentRank({ fitScore: 7, actionMatches: true, contextMatches: true, visualQuality: 6 });
+    const redCarpet = momentRank({ fitScore: 7, actionMatches: false, contextMatches: false, visualQuality: 9 });
+    expect(close).toBeGreaterThan(redCarpet);
+    /** A sharper picture never outranks a better fit on its own. */
+    expect(momentRank({ fitScore: 9, visualQuality: 1 })).toBeGreaterThan(momentRank({ fitScore: 8, visualQuality: 10 }));
+    expect(momentRank({})).toBe(0);
+  });
+  it("the judge is asked for all of them, about THIS line", () => {
+    const p = buildBeatImagePrompt("Kris Jenner turned her family's fame into a global media empire.", 3);
+    expect(p).toContain("action_matches");
+    expect(p).toContain("context_matches");
+    expect(p).toContain("visual_quality");
+    expect(p).toContain("THE QUESTION — narration for this shot");
+  });
+  it("Kris Jenner on a red carpet under a line about her media empire is refused: subject without the situation", () => {
+    const j = situationRule(
+      { verdict: "fits" as const, reason: "Kris Jenner is on screen" },
+      { subject_matches: true, situation_matches: false }
+    );
+    expect(j.verdict).toBe("does_not_fit");
+  });
+});
+
+describe("the 20 s section is never used whole", () => {
+  it("each moment is one shot, cut at its own start and to the sentence's length at most", () => {
+    expect(PIPE).toContain("Math.min(clipDur, Number((s.sourceEndSec - s.sourceStartSec).toFixed(2)))");
+    const cut = PIPE.slice(PIPE.indexOf("async function stockShotToBeatFile"), PIPE.indexOf("async function stockShotToBeatFile") + 600);
+    expect(cut).toContain("shot.sourceEndSec - shot.sourceStartSec > durationSec + 0.3");
+    expect(cut).toContain("extractVideoSegment(shot.path, outPath, 0, durationSec)");
+    /** The lineage records exactly the seconds used, so the timeline places exactly those. */
+    expect(PIPE).toContain("recordSourceTrim(momentPath, { inSec: momentStart, outSec: momentStart + dur })");
   });
 });

@@ -147,9 +147,14 @@ export function planCinematicAudio(params: {
        * to connect; the interface for one exists and is unimplemented.
        */
       reason:
-        "musicSourceUnavailable — this build has no music catalogue. The audio catalogue is " +
-        "Freesound field recordings (ambience and effects); the only music source is a " +
-        "synthesised bed that does not honour a requested mood, so no music is laid down.",
+        /**
+         * OCTOBER 2026 — this line said "this build has no music catalogue" in the same render log
+         * that showed `[Music] TOTAL cues=3 … catalogue=freesound-cc0` and `audioBed music=3`. The
+         * ambience planner lays no music; the score comes from the music director, which reports
+         * itself on its own `[Music]` lines.
+         */
+        "musicSourceUnavailable — the ambience planner lays down no music; the score comes from " +
+        "the music director's Freesound CC0 catalogue (see its [Music] lines).",
     },
   };
 }

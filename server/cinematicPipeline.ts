@@ -43,6 +43,7 @@ import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput }
 import type { DirectorOutput } from "./aiDirector/types";
 import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
 import { directOnScreenText, type TextDirection } from "./onScreenTextDirector";
+import { ensureGraphicsCoverage, formatGraphicsCoverage, type GraphicsCoverage } from "./graphicsCoverage";
 import { limitLongShots } from "./longShotLimit";
 import type { YoutubeSourceFacts } from "./youtubeShotLimit";
 import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
@@ -191,6 +192,8 @@ export type CinematicPipelineResult = {
   cueSheet: ScoredCue[];
   /** RONDE 651 — what the on-screen text director kept, switched off and converted. */
   textDirection: TextDirection;
+  /** OCTOBER 2026 — motion and editorial text per minute, after filling (see `graphicsCoverage`). */
+  graphicsCoverage: GraphicsCoverage;
   /**
    * RONDE 166 (§1/§2) — the ambience that was laid down, and the music verdict.
    *
@@ -365,6 +368,15 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
         : undefined,
   });
   /**
+   * OCTOBER 2026 — at least two motion graphics and two editorial texts per started minute, filled
+   * only from what the planners made for THIS script; a shortfall is reported, never invented. See
+   * `graphicsCoverage`. A year that became a chronology no longer types, so its key sound goes too.
+   */
+  const graphicsCoverage = ensureGraphicsCoverage(timeline);
+  const chronology = new Set(graphicsCoverage.added.filter((a) => a.kind === "chronology").map((a) => a.id));
+  textDirection.typewriter = textDirection.typewriter.filter((e) => !chronology.has(e.id));
+  console.log(formatGraphicsCoverage(params.videoId, graphicsCoverage));
+  /**
    * The director above is the editor of on-screen text: names, places, years, cards and maps it
    * keeps are in the made video, everything it switched off stays on the timeline (with its reason)
    * for the person to switch on. The subtitles are drawn.
@@ -507,6 +519,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     youtubeAdjustedClipIds: [...youtubeAdjustedClipIds, ...longShots.adjustedIds],
     cueSheet,
     textDirection,
+    graphicsCoverage,
     renderId,
     audio: audioPlan,
     attention,

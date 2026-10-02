@@ -125,6 +125,11 @@ export type BeatRelevanceDecision = {
    * `medium`.
    */
   framing?: ShotType;
+  /** OCTOBER 2026 — the editor's 1..10 score for this line (see `fit_score`). Absent when unscored. */
+  fitScore?: number;
+  actionMatches?: boolean;
+  contextMatches?: boolean;
+  visualQuality?: number;
   /** Which route asked — `adopt`, `funnel`, `rescue`, `compose`, … Logged, never decisive. */
   route: string;
   /**
@@ -816,6 +821,11 @@ export async function checkBeatRelevance(
     reason: judgement.reason,
     /** Carried, not re-derived — see `framing` on this type. Absent stays absent. */
     ...(judgement.framing ? { framing: judgement.framing } : {}),
+    /** OCTOBER 2026 — how well, carried so the beat can compare moments. Absent stays absent. */
+    ...(judgement.fitScore != null ? { fitScore: judgement.fitScore } : {}),
+    ...(judgement.actionMatches != null ? { actionMatches: judgement.actionMatches } : {}),
+    ...(judgement.contextMatches != null ? { contextMatches: judgement.contextMatches } : {}),
+    ...(judgement.visualQuality != null ? { visualQuality: judgement.visualQuality } : {}),
     route,
     /** The gate's own answer to "did a model look at this", carried rather than re-derived. */
     evaluated: judgement.evaluated,
@@ -831,6 +841,10 @@ export async function checkBeatRelevance(
   console.log(
     `[BeatRelevance] ${slot} ${route} ${decision.verdict}` +
       ` clip=${path.basename(clipPath)} cached=${decision.cached}` +
+      (decision.fitScore != null ? ` score=${decision.fitScore}` : "") +
+      (decision.actionMatches != null ? ` action=${decision.actionMatches}` : "") +
+      (decision.contextMatches != null ? ` context=${decision.contextMatches}` : "") +
+      (decision.visualQuality != null ? ` quality=${decision.visualQuality}` : "") +
       ` depicts="${decision.depicts}" reason="${decision.reason}"`
   );
   return record(decision);

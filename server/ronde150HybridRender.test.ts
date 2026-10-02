@@ -388,7 +388,7 @@ describeHybrid("RONDE 150 §5 — FFmpeg picture + Remotion graphics → one MP4
      * The `a` in `yuva…` is the whole point. Without it the file still plays, still looks right on
      * black, and composites as an opaque rectangle over the film.
      */
-    expect(stdout).toMatch(/pix_fmt=yuva/);
+    expect(stdout).toMatch(/pix_fmt=rgba/) /* OCTOBER 2026 — the PNG frames in the .mov carry the alpha as rgba (was yuva444p10le ProRes) */;
     expect(stdout).toContain("width=640");
     expect(stdout).toContain("height=360");
   }, 300_000);

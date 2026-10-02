@@ -62,7 +62,12 @@ describe("RONDE 88 §1-§5 — PERSON > PLACE > EVENT > ACTION > OBJECT > TIME",
 
   it("TEST 3 — \"Napoleon Bonaparte crossed the Alps\" leads with the name", () => {
     const queries = q("Napoleon Bonaparte crossed the Alps in 1800.");
-    expect(queries[0]).toBe("Napoleon Bonaparte");
+    /**
+     * OCTOBER 2026 — the name still leads every string; what the sentence says about him ("the
+     * Alps", see `extractContextPhrases`) now comes with it, and the bare name is right behind.
+     */
+    expect(queries[0]).toBe("Napoleon Bonaparte Alps");
+    expect(queries[1]).toBe("Napoleon Bonaparte");
     expect(queries.every((x) => x.startsWith("Napoleon Bonaparte"))).toBe(true);
   });
 
