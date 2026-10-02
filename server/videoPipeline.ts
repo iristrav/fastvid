@@ -11644,6 +11644,12 @@ async function transformClipForFairUse(
 // polluted every person-anchored query AND suppressed the historical-documentary handling
 // (personTopicLock disables historicalDoc at every branch that checks it). Deliberately free of
 // ambiguous real first names (Will, Mark, Grant, Art, Jack, ...) so genuine names never lose tokens.
+/** OCTOBER 2026 — words that qualify a place without being a name: "West Berlin", "East Germany". */
+const PLACE_QUALIFIER_WORDS = new Set([
+  "north", "south", "east", "west", "northern", "southern", "eastern", "western",
+  "new", "old", "upper", "lower", "central", "greater", "inner", "outer",
+]);
+
 const TITLE_NON_NAME_WORDS = new Set([
   "why", "how", "what", "when", "where", "which", "whose",
   "the", "a", "an", "this", "that", "these", "those",
@@ -11711,12 +11717,21 @@ export function extractPrimaryPersonFromText(
   }
   const nameMatches = cleaned.match(nameRunRegex(1, 2)) ?? [];
   const skip = new Set(["deep dive", "the story", "a deep", "full story", "rumors about"]);
+  /**
+   * OCTOBER 2026 — "John F. Kennedy … in West Berlin" locked the film on "West Berlin": the run
+   * pattern breaks at the initial, and nothing here asked whether a run names a place. A name
+   * with a middle initial that comes first in the text wins; a place or thing run never does.
+   */
+  const initialled = initialledPersonNames(text);
   for (const candidate of nameMatches) {
     if (skip.has(candidate.toLowerCase())) continue;
     // A full name only when ≥2 clean tokens survive — a single leftover token ("Hitler" from
     // "Why Hitler Lost") is a surname anchor, not a name; see extractPersonSurnameAnchor.
     const tokens = cleanPersonNameCandidate(candidate);
+    const earlier = initialled.find((n) => n.index <= text.indexOf(candidate.split(/\s+/)[0]!));
+    if (earlier) return earlier.name;
     if (tokens.length < 2) continue;
+    if (namesPlaceOrThing(tokens)) continue;
     /**
      * RONDE 88 (§8/§11) — the same structural check the script scan uses.
      *
@@ -11731,7 +11746,32 @@ export function extractPrimaryPersonFromText(
     if (!checkPersonName(name, text, corroboration, { isKnownVerb: isKnownPersonActionVerb }).ok) continue;
     return name;
   }
-  return "";
+  return initialled[0]?.name ?? "";
+}
+
+/** OCTOBER 2026 — a run that names a place ("West Berlin", "New York") or a thing is not a person. */
+function namesPlaceOrThing(tokens: readonly string[]): boolean {
+  const significant = tokens.filter((t) => !isNameParticleToken(t));
+  if (significant.some(isThingToken)) return true;
+  if (significant.length > 0 && significant.every(isPlaceToken)) return true;
+  return (
+    significant.length > 1 &&
+    significant.some(isPlaceToken) &&
+    significant.every((t) => isPlaceToken(t) || PLACE_QUALIFIER_WORDS.has(t.toLowerCase()))
+  );
+}
+
+/** OCTOBER 2026 — "John F. Kennedy", "George W. Bush": names with a middle initial, in text order. */
+function initialledPersonNames(text: string): Array<{ name: string; index: number }> {
+  const out: Array<{ name: string; index: number }> = [];
+  for (const m of text.matchAll(/(?<![\p{L}\p{N}])(\p{Lu}\p{Ll}+)\s+(\p{Lu})\.\s+(\p{Lu}\p{Ll}+)(?![\p{L}\p{N}])/gu)) {
+    const [first, initial, last] = [m[1]!, m[2]!, m[3]!];
+    const bad = (t: string) =>
+      TITLE_NON_NAME_WORDS.has(t.toLowerCase()) || isThingToken(t) || isPlaceToken(t) || PERSON_NAME_SKIP_PHRASES.has(t.toLowerCase());
+    if (bad(first) || bad(last) || isSentenceOpener(first)) continue;
+    out.push({ name: `${first} ${initial}. ${last}`, index: m.index ?? 0 });
+  }
+  return out;
 }
 
 /**
@@ -13858,8 +13898,27 @@ export function extractPersonNamesFromText(text: string): string[] {
       // Place names are only decisive when the WHOLE run is one. "New York" is a place;
       // "George Washington" is a person whose surname happens to also name places.
       if (significant.length > 0 && significant.every(isPlaceToken)) continue;
+      /**
+       * OCTOBER 2026 — "West Berlin" was locked as the film's person: "West" is no place word, so
+       * the whole-run rule above let it through. A compass or qualifier word in front of a place is
+       * still that place ("East Germany", "Upper Silesia"); "George Washington" is unaffected.
+       */
+      if (namesPlaceOrThing(seg)) continue;
       found.add(joined);
     }
+  }
+
+  /**
+   * OCTOBER 2026 — A MIDDLE INITIAL IS PART OF THE NAME.
+   *
+   * The run pattern breaks at "F.", so "John F. Kennedy" came out as "Kennedy" (and, beside it,
+   * "West Berlin" as the sentence's person). "First I. Last" is read as one name when both outer
+   * words are name-shaped and neither is a sentence opener, a title word, a thing or a place.
+   */
+  for (const { name: full } of initialledPersonNames(text)) {
+    const parts = full.split(" ");
+    for (const shorter of [`${parts[0]} ${parts[2]}`, parts[2]!]) found.delete(shorter);
+    found.add(full);
   }
 
   // RONDE 72: a bare surname, when the sentence itself says it is a person.

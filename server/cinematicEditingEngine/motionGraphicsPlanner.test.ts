@@ -36,14 +36,14 @@ function makeScene(overrides: Partial<Scene> = {}): Scene {
 
 describe("Motion Graphics Planner (Phase 4)", () => {
   it("emits a progress_bar for a percentage stat callout", () => {
-    const graphics = planMotionGraphics(makeIntent(), makeScene({ statCallout: "87%" }), 0, 4);
+    const graphics = planMotionGraphics(makeIntent({ spokenText: "Adoption reached 87% of users." }), makeScene({ statCallout: "87%" }), 0, 4);
     const pb = graphics.find((g) => g.graphicType === "progress_bar");
     expect(pb).toBeDefined();
     expect(pb!.data.toValue).toBe(87);
   });
 
   it("emits a statistic_counter for a non-percentage numeric stat callout", () => {
-    const graphics = planMotionGraphics(makeIntent(), makeScene({ statCallout: "$3,499" }), 0, 4);
+    const graphics = planMotionGraphics(makeIntent({ spokenText: "The Vision Pro costs $3,499." }), makeScene({ statCallout: "$3,499" }), 0, 4);
     const counter = graphics.find((g) => g.graphicType === "statistic_counter");
     expect(counter).toBeDefined();
     expect(counter!.data.toValue).toBe(3499);
@@ -108,5 +108,28 @@ describe("Motion Graphics Planner (Phase 4)", () => {
     const graphics = planMotionGraphics(makeIntent({ objects: ["headset"], companies: ["Apple"] }), undefined, 0, 4);
     expect(graphics.length).toBeGreaterThan(0);
     for (const g of graphics) expect(g.reason.length).toBeGreaterThan(0);
+  });
+});
+
+describe("OCTOBER 2026 — the scene's stat only under the sentence that says it", () => {
+  it("a sentence that does not say the figure gets no counter", () => {
+    const graphics = planMotionGraphics(makeIntent(), makeScene({ statCallout: "$3,499" }), 0, 4);
+    expect(graphics.find((g) => g.graphicType === "statistic_counter")).toBeUndefined();
+  });
+});
+
+describe("OCTOBER 2026 — a timeline card only for a named event", () => {
+  it("a sentence fragment as 'event' gives a date card, a named event gives the timeline", () => {
+    const frag = planMotionGraphics(
+      makeIntent({ spokenText: "In 1961 the border that ran through Berlin was sealed.", events: ["border ran"], historicalContext: "Cold War", visualTime: "1961" }),
+      undefined, 0, 4
+    );
+    expect(frag.some((g) => g.graphicType === "timeline")).toBe(false);
+    expect(frag.find((g) => g.graphicType === "date_card")?.data.text).toBe("1961");
+    const named = planMotionGraphics(
+      makeIntent({ spokenText: "In 1945 the Battle of Berlin began.", events: ["Battle of Berlin"], historicalContext: "WWII", visualTime: "1945" }),
+      undefined, 0, 4
+    );
+    expect(named.some((g) => g.graphicType === "timeline")).toBe(true);
   });
 });

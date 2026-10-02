@@ -790,7 +790,16 @@ export function translateEdl(params: {
        * contained: a word that begins a tenth of a second before the caption appears is still that
        * caption's word, and dropping it would leave the first word of a karaoke line unhighlighted.
        */
-      const spoken = (params.words ?? []).filter((w) => w.endSec > start && w.startSec < end);
+      /**
+       * OCTOBER 2026 — by the word's MIDPOINT, so a word belongs to one caption. Overlap gave a word
+       * straddling two captions to both, and the render's word list (the captions' words, joined)
+       * then held it twice: the showcase read "1961, 1961, East Germany…" and "come down. down.".
+       * A word that begins just before the caption is still its word: most of it is inside.
+       */
+      const spoken = (params.words ?? []).filter((w) => {
+        const mid = (w.startSec + w.endSec) / 2;
+        return mid >= start && mid < end;
+      });
       const el = {
         id: timelineElementId("cap", decision.beatId, caption.captionType, caption.startSec),
         text: caption.subtitle ? `${caption.text}\n${caption.subtitle}` : caption.text,

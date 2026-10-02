@@ -21,6 +21,7 @@
  *  visible) — unlike the other planners, this one returns an array, one entry per applicable
  *  text instruction, or an empty array when nothing about the beat calls for on-screen text.
  */
+import { statSpokenInBeat } from "./motionGraphicsPlanner";
 import type { Scene } from "../pipeline/types";
 import type { VisualIntent } from "../visualMatchingV2/types";
 import type { CaptionInstruction, VisualContinuityState } from "./types";
@@ -205,7 +206,8 @@ export function planCaptions(
     });
   }
 
-  if (scene?.statCallout) {
+  /** OCTOBER 2026 — only under the sentence that says the figure (see statSpokenInBeat). */
+  if (scene?.statCallout && statSpokenInBeat(scene.statCallout, intent.spokenText)) {
     out.push({
       captionType: "statistic",
       text: scene.statCallout,

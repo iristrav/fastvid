@@ -112,6 +112,12 @@ function textKind(t: TimelineText): Kind {
 }
 
 function graphicKind(g: TimelineGraphic): Kind {
+  /**
+   * OCTOBER 2026 — a map of a real place IS that place's card: rule 4 then shows the place once,
+   * by the map, instead of letting a loose "Berlin" text switch the map off (seen in the showcase
+   * render: the word won, the map of Berlin was "same_place_same_time").
+   */
+  if (g.graphicType === "map_point" && readGeoPoint(g.data ?? {})) return "place";
   switch (g.graphicType) {
     case "lower_third":
       return "name";
@@ -282,7 +288,13 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
     if (userEdited(e) || e.el.disabled || e.kind !== "date") continue;
     const year = e.key.slice("date:".length);
     const place = elements.find(
-      (p) => p.track === "graphic" && !p.el.disabled && p.kind === "place" && Math.abs(p.el.start - e.el.start) < 1
+      (p) =>
+        p.track === "graphic" &&
+        !p.el.disabled &&
+        p.kind === "place" &&
+        /** A map draws no subtitle; a year merged into it would vanish. */
+        p.el.graphicType !== "map_point" &&
+        Math.abs(p.el.start - e.el.start) < 1
     );
     if (!place || place.track !== "graphic" || !/^\d{4}$/.test(year)) continue;
     const data = place.el.data ?? {};

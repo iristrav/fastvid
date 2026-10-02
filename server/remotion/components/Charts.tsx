@@ -98,6 +98,18 @@ export function niceTicks(min: number, max: number, target = 4): number[] {
   return ticks;
 }
 
+/**
+ * OCTOBER 2026 — the value range a line chart's axis covers. A line shows CHANGE, so a series that
+ * stays far above zero (79.8 → 83.2 million) is drawn on its own range; from zero it read as a flat
+ * line. Values that start near zero, cross it, or swing widely keep the zero baseline.
+ */
+export function lineChartRange(values: readonly number[]): [number, number] {
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const lo = min > 0 && max - min < 0.5 * max ? min : Math.min(min, 0);
+  return [lo, max];
+}
+
 /** A value as the chart prints it: the payload's decimals, thousands separators, its unit. */
 export function formatValue(v: number, decimals: number, prefix = "", suffix = ""): string {
   const n = v.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
@@ -235,7 +247,7 @@ export const LineChart: React.FC<{
   const top = title ? 96 : 60;
   const plotW = W - pad * 2;
   const plotH = H - 70 - top;
-  const ticks = niceTicks(Math.min(...series.map((d) => d.value), 0), Math.max(...series.map((d) => d.value)));
+  const ticks = niceTicks(...lineChartRange(series.map((d) => d.value)));
   const min = ticks[0]!;
   const max = ticks[ticks.length - 1]!;
   const span = Math.max(1e-6, max - min);

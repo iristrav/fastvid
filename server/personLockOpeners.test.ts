@@ -74,3 +74,18 @@ describe("the film's person lock", () => {
     expect(lock).not.toMatch(/Dominated|Despite/);
   });
 });
+
+describe("OCTOBER 2026 (showcase render) — a middle initial is part of the name; a qualified place is no person", () => {
+  it("John F. Kennedy and George W. Bush keep their initial; West Berlin is not a person", () => {
+    const t = "In 1963, John F. Kennedy spoke to hundreds of thousands of people in West Berlin.";
+    expect(extractPersonNamesFromText(t)).toEqual(["John F. Kennedy"]);
+    expect(extractPrimaryPersonFromText(t)).toBe("John F. Kennedy");
+    expect(extractPersonNamesFromText("George W. Bush visited Berlin.")).toEqual(["George W. Bush"]);
+  });
+
+  it("a compass word in front of a place is still that place; George Washington is still a person", () => {
+    expect(extractPersonNamesFromText("Troops entered East Germany.")).toEqual([]);
+    expect(extractPrimaryPersonFromText("They crossed into West Berlin.")).toBe("");
+    expect(extractPersonNamesFromText("George Washington crossed the Delaware.")).toEqual(["George Washington"]);
+  });
+});

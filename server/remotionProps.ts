@@ -236,6 +236,20 @@ function graphicBoxSize(
   return measureText(label?.trim() || graphicType, style, frame);
 }
 
+/**
+ * OCTOBER 2026 — one entry per spoken word. Captions stored before the midpoint rule
+ * (edlToTimeline) can share a boundary word; joined, it would be drawn twice.
+ */
+function uniqueWords(words: RemotionWordTiming[]): RemotionWordTiming[] {
+  const seen = new Set<string>();
+  return words.filter((w) => {
+    const key = `${w.word}|${w.startSec}|${w.endSec}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** A word as the comparison reads it: lower case, letters and digits only ("$3.5," → "35"). */
 const wordKey = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
@@ -432,9 +446,11 @@ export function timelineToRemotionProps(params: {
   /** The measured word timing — see `words` below; read here too so a graphic can start on its word. */
   const measuredWords: RemotionWordTiming[] =
     params.words ??
-    captionTrack(timeline)
-      .filter((c) => !c.disabled)
-      .flatMap((c) => c.words ?? []);
+    uniqueWords(
+      captionTrack(timeline)
+        .filter((c) => !c.disabled)
+        .flatMap((c) => c.words ?? [])
+    );
 
   return {
     fps,

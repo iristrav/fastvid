@@ -46,6 +46,18 @@ export function parseNumericStat(
   };
 }
 
+/**
+ * OCTOBER 2026 — whether a beat speaks the number a scene's stat callout carries. A callout with
+ * no number in it is not checked (it is a phrase, not a figure).
+ */
+export function statSpokenInBeat(callout: string, spokenText: string): boolean {
+  const parsed = parseNumericStat(callout);
+  if (!parsed) return true;
+  const digits = (s: string) => s.replace(/[^\d.]/g, "");
+  const want = digits(parsed.token);
+  return spokenText.split(/\s+/).some((w) => digits(w).replace(/\.$/, "") === want);
+}
+
 const UNIT_WORD = "(million|billion|thousand|trillion|bn|%)?";
 const NUMBER = "([$€£])?(\\d[\\d,]*(?:\\.\\d+)?)";
 const YEAR = "((?:1[5-9]|20)\\d{2})";
@@ -86,6 +98,40 @@ export function yearSeriesFromText(
   };
 }
 
+/** Past-tense verbs a clause fragment ends on; "-ed" covers the regular ones. */
+const CLAUSE_END_VERBS = new Set([
+  "ran", "was", "were", "had", "did", "went", "came", "took", "made", "said", "got", "began", "became",
+  "fell", "rose", "grew", "held", "stood", "led", "left", "saw", "gave", "found", "built", "won", "lost",
+  "met", "sent", "kept", "broke", "spoke", "told", "brought", "thought", "is", "are", "has",
+]);
+
+/** OCTOBER 2026 — whether a VisualIntent event label names an event rather than a clause fragment. */
+export function isEventName(label: string): boolean {
+  const words = label.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return false;
+  const last = words[words.length - 1]!.toLowerCase();
+  if (/\p{Lu}/u.test(label) && words.length > 1 && !CLAUSE_END_VERBS.has(last)) return true;
+  return !CLAUSE_END_VERBS.has(last) && !/ed$/.test(last);
+}
+
+const titleCase = (s: string) => s.replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+
+/**
+ * OCTOBER 2026 — a chart's title from the sentence itself: the measure it names right before its
+ * first figure ("Its population was 79.8 million…" → "Population") and the subject the beat is
+ * about ("Population of Germany"). Nothing is added that the narration does not say; with neither,
+ * the title is empty and the chart shows only its axis.
+ */
+export function chartTitle(spokenText: string, subject?: string): string {
+  const measure = spokenText.match(
+    /\b([a-z]+)\s+(?:was|were|is|are|reached|hit|stood at|grew to|rose to|fell to|of)\s+(?:about\s+|around\s+|nearly\s+|over\s+)?[$€£]?\d/i
+  )?.[1];
+  const what = measure && !/^(it|its|this|that|they|there|which|and|but)$/i.test(measure) ? titleCase(measure.toLowerCase()) : "";
+  const who = subject?.trim() ? titleCase(subject.trim().toLowerCase()) : "";
+  if (what && who && !what.toLowerCase().includes(who.toLowerCase())) return `${what} of ${who}`;
+  return what || who;
+}
+
 function findWorldLocation(text: string): { loc: (typeof WORLD_LOCATIONS)[number]; keyword: string } | null {
   const lower = text.toLowerCase();
   for (const loc of WORLD_LOCATIONS) {
@@ -117,7 +163,11 @@ export function planMotionGraphics(
 
   if (scene?.statCallout) {
     const parsed = parseNumericStat(scene.statCallout);
-    if (parsed) {
+    /**
+     * OCTOBER 2026 — the scene's stat belongs under the sentence that SAYS it. The showcase render
+     * counted to 140 under three sentences in a row because every beat of the scene got it.
+     */
+    if (parsed && statSpokenInBeat(scene.statCallout, intent.spokenText)) {
       if (parsed.suffix === "%") {
         out.push(
           graphic(
@@ -175,7 +225,12 @@ export function planMotionGraphics(
     );
   }
 
-  if (intent.events.length > 0 && intent.historicalContext.trim()) {
+  /**
+   * OCTOBER 2026 — only a NAMED event goes on a timeline card ("Battle of Berlin"). The showcase
+   * render put "1961 — border ran" on screen: a fragment of "the border that ran through Berlin".
+   * A label that ends in a verb is a clause, not an event; the year is then shown by the date card.
+   */
+  if (intent.events.length > 0 && intent.historicalContext.trim() && isEventName(intent.events[0] ?? "")) {
     const yearMatch = intent.visualTime.match(/\b(1[0-9]{3}|20[0-9]{2})\b/);
     out.push(
       graphic(
@@ -216,7 +271,7 @@ export function planMotionGraphics(
       graphic(
         "line_chart",
         {
-          title: intent.visualSubject?.trim() || chartSignal || "",
+          title: chartTitle(intent.spokenText, intent.visualSubject),
           series: series.series,
           ...(unit ? { suffix: unit } : {}),
           ...(series.prefix ? { prefix: series.prefix } : {}),

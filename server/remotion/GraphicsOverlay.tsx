@@ -62,7 +62,7 @@ export type GraphicsOverlayProps = {
 };
 
 /** The words spoken inside one caption's window — its own slice of the measured alignment. */
-function wordsWithin(
+export function wordsWithin(
   words: GraphicsOverlayProps["words"],
   fromFrame: number,
   durationInFrames: number,
@@ -70,7 +70,15 @@ function wordsWithin(
 ): GraphicsOverlayProps["words"] {
   const start = fromFrame / fps;
   const end = (fromFrame + durationInFrames) / fps;
-  return words.filter((w) => w.endSec > start && w.startSec < end);
+  /**
+   * OCTOBER 2026 — each word belongs to ONE caption: the one its midpoint falls in. "Overlaps the
+   * window" put a word that straddles two captions in both, and the showcase render read
+   * "On 13 August 1961, 1961," / "1961, 1961, East Germany…" / "come down. down.".
+   */
+  return words.filter((w) => {
+    const mid = (w.startSec + w.endSec) / 2;
+    return mid >= start && mid < end;
+  });
 }
 
 type TextLike = {

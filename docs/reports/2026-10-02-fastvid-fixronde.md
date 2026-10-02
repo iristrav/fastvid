@@ -28,7 +28,7 @@ All of this is the existing pipeline: one route, one Visual Judge, one adoption,
 - **Typecheck** (`tsc --noEmit`): clean.
 - **Lint** (eslint on all changed files): clean.
 - **Build** (`npm run build`): OK.
-- **Full suite (vitest), 2nd full run:** 723 files, **9,810 tests: 9,799 passed, 10 skipped, 1 red** — that one was my temporary showcase script (it uses `drawtext`, which the burned-in-text test guards against); the script was moved out of the repo and that test is 12/12 green. After the map-rule fix (7e): all 20 test files that touch the planning chain, 338/338 green.
+- **Full suite (vitest), 3rd full run after the test-video fixes: 9,810 passed, 10 skipped, 0 failed.** Earlier 2nd full run: 723 files, **9,810 tests: 9,799 passed, 10 skipped, 1 red** — that one was my temporary showcase script (it uses `drawtext`, which the burned-in-text test guards against); the script was moved out of the repo and that test is 12/12 green. After the map-rule fix (7e): all 20 test files that touch the planning chain, 338/338 green.
 - **New tests:**
   - `judgeAlwaysLooks` (49)
   - `personLockOpeners`
@@ -146,6 +146,7 @@ After this push to `main`, Railway deploys automatically. The real Kardashian/Kr
 - `server/cinematicEditingEngine/motionGraphicsPlanner.ts`
 - `server/cinematicEditingEngine/types.ts`
 - `server/onScreenTextDirector.ts`
+- `server/edlToTimeline.ts`, `server/remotion/GraphicsOverlay.tsx`, `server/cinematicEditingEngine/captionPlanner.ts` (after the test video)
 - `server/remotion/Root.tsx`
 - `server/remotion/components/{Charts,Graphics,Text,animation}.tsx/ts`
 - Tests updated (see section 2).
@@ -153,3 +154,35 @@ After this push to `main`, Railway deploys automatically. The real Kardashian/Kr
 ### Also in this commit
 
 Earlier rounds that were not yet committed (editor work V1–V8: timeline editor, autosave/version history, audio fades, …).
+
+---
+
+## 8. Test video (made here, after the push) — and what it exposed
+
+**How it was made:** a 9-sentence script about the Berlin Wall (people, places, years, a figure, a population series) through the **real** planner (`buildCinematicSceneInputs` → `runCinematicPipeline`) and the **production** render route (`renderTimeline` + Remotion overlay + ffmpeg). Result: 45 s, 1080p/30 fps, 9 graphics, 14 captions, music track mixed.
+
+**Stand-ins (clearly marked in the frame):** footage (generated grain; YouTube/archive unreachable here), narration timing (evenly spread over each sentence; no TTS here), music (generated pad; Freesound unreachable). So the video shows the graphics/caption/edit layer, **not** clip selection or the judge.
+
+The render exposed six real problems the tests did not. Each was fixed in the same round, with a test:
+
+| Found in the render | Cause | Fix |
+|---|---|---|
+| The real map never appeared (all 3 switched off) | `onScreenTextDirector` rule 2 turned every `map_point` into a location card; rule 6 ranked a map as "other", so a loose "Berlin" word beat it | A map with lon/lat stays on and counts as the place's card (shown once, the first time); rule 4b does not merge a year into a map |
+| Lower third "West Berlin"; "John F. Kennedy" missing; person lock on "West Berlin" | The name pattern broke at the middle initial; a compass word + place passed as a person; the primary-person function had no place check at all | Names with a middle initial read whole ("John F. Kennedy", "George W. Bush"); qualifier + place = place; the same place/thing check in the person lock |
+| Counter "140" under three sentences | A scene's stat was placed under every beat of the scene | Only under the sentence that says the figure (counter and statistic caption) |
+| Chart title "germany", line flat on 0–100 | Title was the lowercase subject; axis always started at zero | Title from the sentence's own measure ("Population of Germany"); a line chart of a small change uses its own range |
+| Event card "1961 — border ran" | A clause fragment was used as an event name | A label ending in a verb is no event; the year becomes a date card |
+| Captions repeated words ("1961, 1961,", "come down. down.") | A word straddling two captions was given to both (overlap rule in `edlToTimeline` and in the overlay); the joined word list then held it twice | A word belongs to the caption that holds its midpoint; the joined list is de-duplicated |
+
+**What the final render shows (checked frame by frame):**
+- The world map moves in to Europe, with Germany highlighted and a Berlin pin.
+- Lower thirds: "John F. Kennedy" and "Ronald Reagan".
+- Date cards: 1963, 1989 (typed in).
+- Location card: "Brandenburg Gate · 1987".
+- The counter counts to 140 under the sentence that says it.
+- The line chart is titled "Population of Germany" (79.8 → 82.3 → 83.2 million) with a visible trend.
+- Captions sit on a translucent plate as wide as the text, with no repeated words and no overflow.
+
+**Still visible, not fixed:**
+- The editing engine plans a "dust" effect on archive clips that the renderer does not execute (reported as "kept on the timeline, not executed").
+- When a graphic is moved to its spoken word, it keeps its original end, so its time on screen can shrink to about 2 s.

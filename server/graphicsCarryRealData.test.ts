@@ -214,3 +214,57 @@ describe("the real map reaches the film (onScreenTextDirector rule 2)", () => {
     expect(out.converted).toEqual(["flat map_point → location_card (Paris)"]);
   });
 });
+
+describe("OCTOBER 2026 (showcase render) — what the real render showed", () => {
+  it("a real map is the place's card: a loose 'Berlin' text no longer switches it off", async () => {
+    const { directOnScreenText } = await import("./onScreenTextDirector");
+    const { emptyTimeline } = await import("./projectTimeline");
+    const t = emptyTimeline(2, { widthPx: 1920, heightPx: 1080, fps: 30 });
+    t.durationSec = 6;
+    const g = t.tracks.find((x) => x.kind === "GRAPHICS") as { graphics: Array<Record<string, unknown>> };
+    const tx = t.tracks.find((x) => x.kind === "TEXT") as { texts: Array<Record<string, unknown>> };
+    g.graphics.push({ id: "map", graphicType: "map_point", start: 0, end: 4.5, label: "Berlin, Germany", data: { locationName: "Berlin, Germany", lon: 13.4, lat: 52.52, iso3: "DEU" } });
+    tx.texts.push({ id: "word", role: "location", text: "Berlin", start: 0, end: 3, style: { fontSizePx: 40, color: "white", backgroundOpacity: 0, position: "bottom" } });
+    directOnScreenText(t as never);
+    expect(g.graphics[0]!.disabled).toBeFalsy();
+    expect(tx.texts[0]!.disabled).toBe(true);
+  });
+
+  it("the scene's stat is counted only under the sentence that says it", async () => {
+    const { statSpokenInBeat } = await import("./cinematicEditingEngine/motionGraphicsPlanner");
+    expect(statSpokenInBeat("140", "At least 140 people were killed at the wall.")).toBe(true);
+    expect(statSpokenInBeat("140", "For 28 years, families could not cross.")).toBe(false);
+    const scene = { statCallout: "140" } as never;
+    expect(planMotionGraphics(intent("For 28 years, families could not cross."), scene, 0, 5).some((x) => x.graphicType === "statistic_counter")).toBe(false);
+    expect(planMotionGraphics(intent("At least 140 people were killed at the wall."), scene, 5, 5).some((x) => x.graphicType === "statistic_counter")).toBe(true);
+  });
+
+  it("a chart's title is the measure the sentence names, of its subject", async () => {
+    const { chartTitle } = await import("./cinematicEditingEngine/motionGraphicsPlanner");
+    expect(chartTitle("Its population was 79.8 million in 1990, 82.3 million in 2000.", "germany")).toBe("Population of Germany");
+    expect(chartTitle("It earned 3 million in 2010 and 5 million in 2012.", "")).toBe("");
+  });
+});
+
+describe("OCTOBER 2026 (showcase render) — captions and the line chart", () => {
+  it("a word straddling two captions belongs to one of them, not both", async () => {
+    const { wordsWithin } = await import("./remotion/GraphicsOverlay");
+    const words = [
+      { word: "On", startSec: 0.2, endSec: 0.6 },
+      { word: "1961,", startSec: 1.1, endSec: 1.7 },
+      { word: "East", startSec: 1.7, endSec: 2.1 },
+    ];
+    const fps = 30;
+    const first = wordsWithin(words, 0, Math.round(1.284 * fps), fps).map((w) => w.word);
+    const second = wordsWithin(words, Math.round(1.284 * fps), Math.round(3.7 * fps), fps).map((w) => w.word);
+    expect([...first, ...second]).toEqual(["On", "1961,", "East"]);
+  });
+
+  it("a line chart of a small change is drawn on its own range, a large swing keeps zero", async () => {
+    const { lineChartRange, niceTicks } = await import("./remotion/components/Charts");
+    expect(lineChartRange([79.8, 82.3, 83.2])).toEqual([79.8, 83.2]);
+    expect(niceTicks(...lineChartRange([79.8, 82.3, 83.2]))[0]).toBeGreaterThan(70);
+    expect(lineChartRange([2.5, 4.1, 6.1, 8.0])).toEqual([0, 8.0]);
+    expect(lineChartRange([-3, 5])).toEqual([-3, 5]);
+  });
+});

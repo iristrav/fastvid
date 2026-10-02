@@ -76,7 +76,7 @@ describe("Caption Planner (Phase 4)", () => {
   });
 
   it("emits a statistic caption from the scene's statCallout", () => {
-    const captions = planCaptions(makeIntent(), 0, 4, { scene: makeScene({ statCallout: "$3,499" }) });
+    const captions = planCaptions(makeIntent({ spokenText: "The Vision Pro costs $3,499." }), 0, 4, { scene: makeScene({ statCallout: "$3,499" }) });
     expect(captions.find((c) => c.captionType === "statistic")?.text).toBe("$3,499");
   });
 
