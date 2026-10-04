@@ -547,6 +547,8 @@ export type FinalTimelineClip = {
   timelineStart: number;
   timelineEnd: number;
   source: { provider?: string | null; providerAssetId?: string | null; archiveAssetId?: number | null };
+  /** GRAPHICS FIX — a clip at opacity 0 shows no picture (a graphic's dark ground). */
+  transform?: { opacity?: number } | null;
 };
 
 /**
@@ -568,7 +570,8 @@ export function finalTimelineFootageRefusal(
 ): string | null {
   const share = computeScreenTimeShare(
     clips
-      .filter((c) => !c.disabled)
+      /** GRAPHICS FIX — a clip that shows nothing (opacity 0, a graphic's dark ground) is no footage on screen. */
+      .filter((c) => !c.disabled && c.transform?.opacity !== 0)
       .map((c) => {
         const sourceFootage =
           c.source.archiveAssetId != null ? youtubeVideoByArchiveAsset.get(c.source.archiveAssetId) : undefined;

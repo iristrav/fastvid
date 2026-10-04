@@ -39,7 +39,13 @@ const ARROW_SIGNALS = ["points to", "shows", "reveals", "indicates", "highlights
 export function parseNumericStat(
   text: string
 ): { value: number; suffix: string; prefix: string; decimals: number; token: string } | null {
-  const match = text.match(/([$€£])?\s?(\d[\d,]*(?:\.\d+)?)\s*(%|k|K|M|B|bn|million|billion|thousand|trillion)?/);
+  /**
+   * GRAPHICS FIX — the unit is a whole word: "1945 Berlin" is a year before a city, never "1945B".
+   * "percent" is the spoken spelling of "%".
+   */
+  const match = text.match(
+    /([$€£])?\s?(\d[\d,]*(?:\.\d+)?)\s*(?:(%|k|K|M|B|bn|million|billion|thousand|trillion|percent)(?![\p{L}\p{N}]))?/u
+  );
   if (!match) return null;
   const digits = match[2]!.replace(/,/g, "");
   const value = parseFloat(digits);
@@ -47,7 +53,7 @@ export function parseNumericStat(
   const dot = digits.indexOf(".");
   return {
     value,
-    suffix: match[3] ?? "",
+    suffix: match[3] === "percent" ? "%" : (match[3] ?? ""),
     prefix: match[1] ?? "",
     decimals: dot < 0 ? 0 : Math.min(3, digits.length - dot - 1),
     token: match[2]!,
@@ -76,6 +82,22 @@ export function statesAQuantity(text: string | undefined): boolean {
   if (yearSeriesFromText(t)) return true;
   const lower = ` ${t.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ")} `;
   return QUANTITY_WORDS.some((w) => lower.includes(` ${w} `));
+}
+
+/**
+ * GRAPHICS FIX — the first figure the sentence itself SAYS with a unit or a currency ("10%",
+ * "70 million", "$2.4 billion"), as the words that say it. A bare number or a year is not a figure.
+ * Nothing is added: the label is the sentence's own spelling of the figure.
+ */
+export function spokenStat(text: string | undefined): (ReturnType<typeof parseNumericStat> & { label: string }) | null {
+  const t = (text ?? "").trim();
+  for (const m of t.matchAll(/[$€£]?\s?\d/g)) {
+    const stat = parseNumericStat(t.slice(m.index));
+    if (!stat || !(stat.suffix || stat.prefix)) continue;
+    const unit = stat.suffix === "%" ? "%" : stat.suffix ? ` ${stat.suffix}` : "";
+    return { ...stat, label: `${stat.prefix}${stat.token}${unit}` };
+  }
+  return null;
 }
 
 /**
@@ -164,13 +186,27 @@ export function chartTitle(spokenText: string, subject?: string): string {
   return what || who;
 }
 
+/**
+ * GRAPHICS FIX — a map keyword is a whole word or phrase, never a fragment of one: "uk" is in
+ * "the UK", not in "Duke"; "gaza" is not in "magazine".
+ */
+function saysWholeWord(lowerText: string, keyword: string): boolean {
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "u").test(lowerText);
+}
+
 function findWorldLocation(text: string): { loc: (typeof WORLD_LOCATIONS)[number]; keyword: string } | null {
   const lower = text.toLowerCase();
   for (const loc of WORLD_LOCATIONS) {
-    const keyword = loc.keywords.find((kw) => lower.includes(kw));
+    const keyword = loc.keywords.find((kw) => saysWholeWord(lower, kw));
     if (keyword) return { loc, keyword };
   }
   return null;
+}
+
+/** GRAPHICS FIX — whether the text names a place the world map can draw (whole words only). */
+export function namesAMappablePlace(text: string): boolean {
+  return findWorldLocation(text) !== null;
 }
 
 function graphic(
@@ -231,6 +267,41 @@ export function planMotionGraphics(
         );
       }
     }
+  }
+
+  /**
+   * GRAPHICS FIX — the figure the sentence itself says, when the scene's callout did not already
+   * put one under it. Same payload, same anchor rule (it appears on the word that says it); a
+   * sentence stating a series gets the line chart below instead.
+   */
+  const spoken = spokenStat(intent.spokenText);
+  const statPlanned = out.some((g) => g.graphicType === "progress_bar" || g.graphicType === "statistic_counter");
+  if (spoken && !statPlanned && !yearSeriesFromText(intent.spokenText)) {
+    out.push(
+      spoken.suffix === "%"
+        ? graphic(
+            "progress_bar",
+            { toValue: Math.min(100, spoken.value), suffix: "%", label: spoken.label, anchorWord: spoken.token },
+            beatVoiceStartSec,
+            dur,
+            `Narration states a percentage ("${spoken.label}") — shown as a filling progress bar.`
+          )
+        : graphic(
+            "statistic_counter",
+            {
+              fromValue: 0,
+              toValue: spoken.value,
+              suffix: spoken.suffix,
+              label: spoken.label,
+              ...(spoken.prefix ? { prefix: spoken.prefix } : {}),
+              decimals: spoken.decimals,
+              anchorWord: spoken.token,
+            },
+            beatVoiceStartSec,
+            dur,
+            `Narration states a figure ("${spoken.label}") — animated as a counting-up statistic.`
+          )
+    );
   }
 
   const found = findWorldLocation([intent.visualLocation, intent.spokenText].join(" "));
@@ -464,4 +535,99 @@ export function planMotionGraphics(
    * the renderer's own predicate, so a graphic planned here is a graphic the renderer will draw.
    */
   return out.filter(plannedGraphicIsDrawable);
+}
+
+/* ═════════ GRAPHICS FIX — a graphic as the sentence's own picture ═════════ */
+
+/**
+ * The planner's graphics that can stand as a sentence's PICTURE, not only lie over one: the data
+ * graphics (a chart, a counter, a ring) and the real map. A name, a year, a place card or a quote is
+ * text and stays an overlay.
+ */
+const PRIMARY_DATA_GRAPHICS = ["line_chart", "statistic_counter", "progress_bar"] as const;
+const PRIMARY_MAP_GRAPHICS = ["map"] as const;
+
+/**
+ * GRAPHICS FIX — the graphic that becomes a sentence's picture when sourcing found none.
+ *
+ * Asked only for a sentence with NO approved picture; footage and photos always come first. The
+ * sentence's MediaForm decides which kind may stand in: DATA_VISUALIZATION a data graphic, MAP a
+ * map, GRAPHIC either. The graphic itself is the planner's own, so it carries only what the sentence
+ * says and is drawable by construction (`plannedGraphicIsDrawable`); a form with no drawable
+ * graphic here (PROCESS, DOCUMENT, …) gets none. It fills the sentence's whole window.
+ */
+export function primaryGraphicFor(
+  intent: VisualIntent,
+  scene: Scene | undefined,
+  preferredForms: readonly string[],
+  startSec: number,
+  durationSec: number
+): MotionGraphicInstruction | null {
+  if (!(durationSec > 0)) return null;
+  const wants = new Set(preferredForms);
+  const types: string[] = [
+    ...(wants.has("DATA_VISUALIZATION") || wants.has("GRAPHIC") ? PRIMARY_DATA_GRAPHICS : []),
+    ...(wants.has("MAP") || wants.has("GRAPHIC") ? PRIMARY_MAP_GRAPHICS : []),
+  ];
+  if (!types.length) return null;
+  const planned = planMotionGraphics(intent, scene, startSec, durationSec);
+  for (const type of types) {
+    const g = planned.find((p) => p.graphicType === type);
+    if (g) {
+      return {
+        ...g,
+        startSec,
+        durationSec,
+        reason: `${g.reason} No picture was approved for this sentence, so this graphic is its picture.`,
+      };
+    }
+  }
+  return null;
+}
+
+/* ═════════ GRAPHICS FIX — an extracted entity is checked before it goes on screen ═════════ */
+
+const LOCATIVE_BEFORE = /\b(?:in|at|from|to|near|across|into|over|outside|inside)\s+(?:the\s+)?$/i;
+
+/** Whether `name` is written in `text` right after a word that places something ("in Qatar"). */
+function placedByPreposition(name: string, text: string): boolean {
+  const at = text.indexOf(name);
+  return at > 0 && LOCATIVE_BEFORE.test(text.slice(0, at));
+}
+
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * A person name a lower third may carry: two to four words, each capitalised; not a company,
+ * brand or object the same sentence names ("Tesla"), and not a place the sentence puts something
+ * in ("in San Francisco"). Unsure is no.
+ */
+export function plausiblePersonName(name: string, text: string, notPersons: readonly string[] = []): boolean {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length < 2 || words.length > 4) return false;
+  if (!words.every((w) => /^\p{Lu}/u.test(w))) return false;
+  if (notPersons.some((n) => sameName(n, name))) return false;
+  return !placedByPreposition(name, text);
+}
+
+/**
+ * A place a location card or caption may carry: one the world map knows ("Battle of Berlin"), or one
+ * written after a word that places something ("in Qatar", "at Waterloo"); never something else the
+ * sentence names (an event like "Macworld", a person, a company). "Soviet troops" and "the Duke of
+ * Wellington" name no place. Unsure is no.
+ */
+export function plausiblePlace(place: string, text: string, otherEntities: readonly string[] = []): boolean {
+  const p = place.trim();
+  if (!p || !/^\p{Lu}/u.test(p)) return false;
+  if (otherEntities.some((n) => sameName(n, p))) return false;
+  return namesAMappablePlace(p) || placedByPreposition(p, text);
+}
+
+/**
+ * An event a timeline card may carry: a named one ("Battle of Berlin", "Marshall Plan"), not a
+ * clause fragment ("border ran") and not a lower-case phrase the extractor took from the sentence
+ * ("trillion dollars", "modern world").
+ */
+export function plausibleEventName(label: string): boolean {
+  return /\p{Lu}/u.test(label) && isEventName(label);
 }

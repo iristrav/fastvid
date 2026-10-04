@@ -173,7 +173,8 @@ describe("RONDE 151 §2 — an unknown field is empty, never plausible", () => {
   });
 
   it("uses the pipeline's OWN extractors when they are injected — never a second copy", () => {
-    const intent = intentFrom(beat(0, 0), 0, 0, adoption(), {
+    /** GRAPHICS FIX — the sentence must say what the extractors found; an unsaid place is not a place. */
+    const intent = intentFrom({ ...beat(0, 0), text: "Tim Cook walked on stage in Cupertino." }, 0, 0, adoption(), {
       people: () => ["Tim Cook"],
       place: () => "Cupertino",
       action: () => "walking on stage",

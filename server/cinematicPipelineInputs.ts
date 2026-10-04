@@ -57,6 +57,16 @@ import { identityHasRehydrationRoute } from "./assetRehydrator";
 /** F-1 — the local-file check below asks the filesystem rather than trusting a name. */
 import fs from "node:fs";
 import type { CinematicBeatInput, CinematicSceneInput } from "./cinematicPipeline";
+import type { MotionGraphicInstruction } from "./cinematicEditingEngine/types";
+import {
+  namesAMappablePlace,
+  plausibleEventName,
+  plausiblePersonName,
+  plausiblePlace,
+  primaryGraphicFor,
+  statesAQuantity,
+} from "./cinematicEditingEngine/motionGraphicsPlanner";
+import { mediaFormsForIntent } from "./beatVisualIntent";
 
 /* ═══════════════════════ what the production pipeline supplies ═══════════════════════ */
 
@@ -141,6 +151,47 @@ export type AdoptionFacts = {
  * extractor that disagreed with the one the retrieval stage used would make the captions describe
  * a different video from the one that was sourced.
  */
+export type PrimaryGraphicSlot = {
+  beatId: string;
+  sceneIndex: number;
+  beatIndex: number;
+  startSec: number;
+  endSec: number;
+  graphic: MotionGraphicInstruction;
+};
+
+/** The shortest window a graphic is put up as a sentence's picture: long enough to read. */
+export const MIN_PRIMARY_GRAPHIC_SEC = 1;
+
+/**
+ * GRAPHICS FIX — the graphic that stands in for a sentence with no picture, or null.
+ *
+ * The sentence's MediaForm is the existing `mediaFormsForIntent`, read from the same intent the
+ * planner gets plus two facts the planner's own readers establish: it states a quantity, it names
+ * a place the world map can draw. Only then does `primaryGraphicFor` look for a drawable graphic.
+ */
+export function primaryGraphicForBeat(
+  intent: VisualIntent,
+  scene: Scene | undefined,
+  startSec: number,
+  endSec: number
+): MotionGraphicInstruction | null {
+  if (endSec - startSec < MIN_PRIMARY_GRAPHIC_SEC) return null;
+  const need = mediaFormsForIntent(
+    {
+      people: intent.people,
+      location: intent.visualLocation.trim() ? [intent.visualLocation] : [],
+      period: intent.visualTime.trim() ? [intent.visualTime] : [],
+      objects: intent.objects,
+      event: intent.events,
+      action: intent.visualAction.trim() ? [intent.visualAction] : [],
+    },
+    statesAQuantity(intent.spokenText),
+    namesAMappablePlace(intent.spokenText)
+  );
+  return primaryGraphicFor(intent, scene, need.preferred, startSec, endSec - startSec);
+}
+
 export type EntityExtractors = {
   people?: (text: string) => string[];
   place?: (text: string) => string;
@@ -250,6 +301,12 @@ export type AdapterIssue = {
 
 export type CinematicInputsResult = {
   scenes: CinematicSceneInput[];
+  /**
+   * GRAPHICS FIX — sentences with no approved picture whose MediaForm asks for a data graphic or a
+   * map the planner can draw from the sentence's own words: that graphic is the sentence's picture,
+   * over its whole window (absolute seconds). See `primaryGraphicFor`.
+   */
+  primaryGraphics?: PrimaryGraphicSlot[];
   /**
    * What the adapter found wrong with its OWN output. Empty on a healthy render.
    *
@@ -545,9 +602,19 @@ export function intentFrom(
   adoption: AdoptionFacts | null,
   extractors: EntityExtractors
 ): VisualIntent {
-  const people = extractors.people?.(beat.text) ?? [];
   const action = extractors.action?.(beat.text) ?? "";
   const named = extractors.namedEntities?.(beat.text) ?? { brands: [], companies: [], objects: [] };
+  /**
+   * GRAPHICS FIX — an extracted entity is checked before a card or caption can carry it: a person
+   * is a plausible person name that is not a company ("Tesla") or a place ("in San Francisco"); a
+   * place is one the sentence puts something in and not an event or name it also names ("Macworld",
+   * "Soviet"); an event is a named one ("trillion dollars" is not). Unsure is left out.
+   */
+  const extractedPeople = extractors.people?.(beat.text) ?? [];
+  const notPersons = [...named.brands, ...named.companies, ...named.objects];
+  const people = extractedPeople.filter((n) => plausiblePersonName(n, beat.text, notPersons));
+  const extractedPlace = extractors.place?.(beat.text) ?? "";
+  const place = plausiblePlace(extractedPlace, beat.text, [...extractedPeople, ...notPersons]) ? extractedPlace : "";
   /** The fullest period the beat states ("April 1945"), or "" when it states no year. */
   const period = extractPeriodPhrase(beat.text);
   /**
@@ -567,7 +634,7 @@ export function intentFrom(
     /** The pipeline's own chosen search anchor — the closest thing it has to a visual subject. */
     visualSubject: beat.powerWord ?? beat.searchQuery ?? "",
     visualAction: action,
-    visualLocation: extractors.place?.(beat.text) ?? "",
+    visualLocation: place,
     visualTime: period,
     historicalContext: historicalContextFrom(beat.text, period, event),
     emotion: "",
@@ -580,7 +647,7 @@ export function intentFrom(
     brands: named.brands,
     companies: named.companies,
     countries: [],
-    events: event ? [event] : [],
+    events: event && plausibleEventName(event) ? [event] : [],
     people,
     /**
      * The QUERY THAT ACTUALLY RAN, from the lineage record, rather than a hash recomputed here.
@@ -900,6 +967,7 @@ export function buildCinematicSceneInputs(params: {
   const dropped: string[] = [];
   const out: CinematicSceneInput[] = [];
   const beatWindows: CinematicInputsResult["beatWindows"] = [];
+  const primaryGraphics: PrimaryGraphicSlot[] = [];
   const stats = {
     scenes: 0, beats: 0, planned: 0, withTrim: 0, withProbe: 0,
     laidOut: 0, clampedToScene: 0, localOnlyIdentity: 0,
@@ -1018,6 +1086,25 @@ export function buildCinematicSceneInputs(params: {
           `[CinematicDrop] scene=${scene.index} beat=${beatIndex} asset=none ` +
             `reason=NO_ADOPTED_CLIP`
         );
+        /** GRAPHICS FIX — no picture: a graphic may be the sentence's picture, when its form asks for one. */
+        const standIn = primaryGraphicForBeat(
+          intentFrom(beat, scene.index, beatIndex, null, extractors),
+          scene,
+          sceneOffsetSec + start,
+          sceneOffsetSec + end
+        );
+        if (standIn) {
+          primaryGraphics.push({
+            beatId, sceneIndex: scene.index, beatIndex,
+            startSec: Number((sceneOffsetSec + start).toFixed(3)),
+            endSec: Number((sceneOffsetSec + end).toFixed(3)),
+            graphic: standIn,
+          });
+          console.log(
+            `[CinematicGraphicVisual] scene=${scene.index} beat=${beatIndex} graphic=${standIn.graphicType} ` +
+              `${(end - start).toFixed(2)}s — the sentence's picture is a graphic`
+          );
+        }
         return;
       }
       const rehydratable = identityFrom(adopted.adoption);
@@ -1183,7 +1270,7 @@ export function buildCinematicSceneInputs(params: {
    * already named, and a check that judged the input would report faults in beats that are not in
    * the plan. What has to hold is that the SURVIVING set is internally possible.
    */
-  return { scenes: out, dropped, adapterIssues: checkCinematicSceneInputs(out), stats, beatWindows };
+  return { scenes: out, dropped, adapterIssues: checkCinematicSceneInputs(out), stats, beatWindows, primaryGraphics };
 }
 
 /* ═══════════════════════ the adapter checks its own work ═══════════════════════ */

@@ -332,6 +332,7 @@ export async function planAndStoreCinematicTimeline(
        */
       emotionalCurve: params.emotionalCurve,
       ...(params.fillerApprovedFor ? { fillerFits: fillerFitsFor(built.beatWindows, params.fillerApprovedFor) } : {}),
+      ...(built.primaryGraphics?.length ? { primaryGraphics: built.primaryGraphics } : {}),
       musicCatalogue,
     });
   } catch (err) {

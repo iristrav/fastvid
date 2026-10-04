@@ -330,10 +330,10 @@ export type MediaFormNeed = {
  * everywhere except a beat that specifically needs motion, and this model does not claim to know
  * that. REAL_FOOTAGE is acceptable everywhere for the same reason.
  *
- * What this does NOT do: MAP, DOCUMENT, GRAPHIC and INTERVIEW are declared in `MediaForm` and never
- * inferred here — nothing in the current intent can prove a beat needs a map. DATA_VISUALIZATION is
- * the one exception, and only when the caller passes `statesQuantity` (a number with a unit, a
- * series of years or a word for a quantity's movement, read by the graphics planner's own reader).
+ * What this does NOT do: DOCUMENT, GRAPHIC and INTERVIEW are declared in `MediaForm` and never
+ * inferred here. DATA_VISUALIZATION and MAP are the exceptions, and only when the caller says so:
+ * `statesQuantity` (a number with a unit, a series of years or a word for a quantity's movement) and
+ * `mappablePlace` (a typed location the graphics planner's world map can draw).
  * adoptClip reads the first preferred form to stop demoting stills for such a sentence.
  */
 export function mediaFormsForIntent(
@@ -352,7 +352,12 @@ export function mediaFormsForIntent(
    * AUDIT RC3 — the sentence states a quantity or its movement. Read by the caller with the
    * extractor that already reads numbers (`statesAQuantity`); this module joins, it does not extract.
    */
-  statesQuantity = false
+  statesQuantity = false,
+  /**
+   * GRAPHICS FIX — the sentence names a place the world map can draw (read by the caller with the
+   * graphics planner's own place table). MAP is then preferred before LOCATION; footage stays acceptable.
+   */
+  mappablePlace = false
 ): MediaFormNeed {
   const has = (list: readonly string[] | undefined): boolean => (list?.length ?? 0) > 0;
   if (!intent) return { preferred: [], acceptable: ["B_ROLL"] };
@@ -372,6 +377,7 @@ export function mediaFormsForIntent(
 
   if (dated) push("ARCHIVAL_FOOTAGE");
   if (has(intent.people)) push("PERSON");
+  if (mappablePlace) push("MAP");
   if (has(intent.location)) push("LOCATION");
   if (has(intent.objects)) push("OBJECT");
   if (has(intent.event)) push(dated ? "ARCHIVAL_FOOTAGE" : "NEWS");

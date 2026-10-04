@@ -41,7 +41,7 @@ import {
 import type { EDL, EditDecision } from "./cinematicEditingEngine/types";
 import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput } from "./aiDirector";
 import type { DirectorOutput } from "./aiDirector/types";
-import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
+import { translateEdl, type EdlTranslationInput, type PrimaryGraphicInput } from "./edlToTimeline";
 import { directOnScreenText, type TextDirection } from "./onScreenTextDirector";
 import { limitLongShots } from "./longShotLimit";
 import type { YoutubeSourceFacts } from "./youtubeShotLimit";
@@ -104,6 +104,8 @@ export type CinematicPipelineParams = {
   scenes: CinematicSceneInput[];
   /** AUDIT RC1 — may a shot approved for another sentence fill a hole here? See `holdPictureUnderVoice`. */
   fillerFits?: (filler: TimelineVideoClip, startSec: number, endSec: number) => boolean;
+  /** GRAPHICS FIX — sentences with no picture whose graphic is their picture. See `placePrimaryGraphics`. */
+  primaryGraphics?: ReadonlyArray<PrimaryGraphicInput>;
   /** The persisted narration, when there is one. Never regenerated — RONDE 146 stores it. */
   voice?: { url: string; durationSec: number } | null;
   /** The measured TTS alignment, carried so captions land on real word boundaries. */
@@ -349,6 +351,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
      */
     words: params.words ?? [],
     ...(params.fillerFits ? { fillerFits: params.fillerFits } : {}),
+    ...(params.primaryGraphics?.length ? { primaryGraphics: params.primaryGraphics } : {}),
   });
 
   /**

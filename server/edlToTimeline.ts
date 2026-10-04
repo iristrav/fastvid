@@ -55,6 +55,7 @@ import type {
   CameraMovementType,
   CaptionInstruction,
   EditDecision,
+  MotionGraphicInstruction,
   MotionGraphicType,
   TransitionType,
 } from "./cinematicEditingEngine/types";
@@ -461,7 +462,8 @@ export function holdPictureUnderVoice(params: {
    * scene before another — each for at most its own stretch of source and never the shots on
    * either side of the hole. Only a film with no other shot to offer still holds, as before.
    */
-  const originals = clips.filter((c) => !c.disabled);
+  /** GRAPHICS FIX — a graphic's dark ground is never lent to another sentence. */
+  const originals = clips.filter((c) => !c.disabled && !isGraphicBackdrop(c));
   const fillerUses = new Map<string, number>();
   const windowOf = (c: TimelineVideoClip): number | null =>
     c.sourceIn != null && c.sourceOut != null && c.sourceOut - c.sourceIn > EPS ? c.sourceOut - c.sourceIn : null;
@@ -614,6 +616,97 @@ export function holdPictureUnderVoice(params: {
  * counter or a clock here would break §12 and make an edit made against one translation
  * unrecognisable in the next.
  */
+/* ═══════════════════════ GRAPHICS FIX — a graphic as a sentence's picture ═══════════════════════ */
+
+export type PrimaryGraphicInput = {
+  beatId: string;
+  startSec: number;
+  endSec: number;
+  graphic: MotionGraphicInstruction;
+};
+
+/** The id suffix of a graphic's dark ground on the VIDEO track. */
+const GRAPHIC_BACKDROP_RE = /_graphic\d+$/;
+
+/** Whether this VIDEO clip is the dark ground under a graphic that is a sentence's picture. */
+export function isGraphicBackdrop(c: { id: string }): boolean {
+  return GRAPHIC_BACKDROP_RE.test(c.id);
+}
+
+/**
+ * GRAPHICS FIX — a sentence with no picture, whose graphic is its picture.
+ *
+ * The VIDEO track must be continuous, and the renderer already draws a clip at `opacity` 0 as plain
+ * black ("below 1 the clip is composited over black"). So the hole the sentence leaves gets one
+ * piece cut from the neighbouring shot at opacity 0 — nothing of that shot is visible, no new media
+ * kind, nothing to fetch that the film does not already fetch — and the graphic goes on the
+ * GRAPHICS track over the same span, through the same translation and drawability check as every
+ * planned graphic. Only the part of the window no clip covers is used; a sliver under a second, or a
+ * graphic the renderer cannot draw, is left to the holds exactly as before.
+ */
+export function placePrimaryGraphics(
+  clips: TimelineVideoClip[],
+  graphics: TimelineGraphic[],
+  slots: ReadonlyArray<PrimaryGraphicInput>
+): Array<{ backdrop: TimelineVideoClip; graphic: TimelineGraphic }> {
+  const placed: Array<{ backdrop: TimelineVideoClip; graphic: TimelineGraphic }> = [];
+  const MIN_SEC = 1;
+  let n = 0;
+  for (const slot of [...slots].sort((a, b) => a.startSec - b.startSec)) {
+    const live = clips.filter((c) => !c.disabled).sort((a, b) => a.timelineStart - b.timelineStart);
+    const before = live.filter((c) => c.timelineStart < slot.startSec + 0.001);
+    const after = live.filter((c) => c.timelineStart >= slot.startSec + 0.001);
+    const start = Math.max(slot.startSec, ...before.map((c) => c.timelineEnd));
+    const end = Math.min(slot.endSec, ...after.map((c) => c.timelineStart));
+    if (end - start < MIN_SEC) continue;
+    const ground = [...before].reverse().find((c) => !isGraphicBackdrop(c)) ?? after.find((c) => !isGraphicBackdrop(c));
+    if (!ground) continue;
+    const type = rendererGraphicType(slot.graphic.graphicType);
+    const label = graphicLabel(type, slot.graphic.data);
+    if (!graphicIsRenderable(type, slot.graphic.data, label ?? null)) continue;
+    n++;
+    const backdrop: TimelineVideoClip = {
+      ...ground,
+      id: `${ground.id}_graphic${n}`,
+      timelineStart: Number(start.toFixed(3)),
+      timelineEnd: Number(end.toFixed(3)),
+      transform: { ...(ground.transform ?? {}), opacity: 0 },
+      motion: "none",
+      transitionIn: "hard_cut",
+      transitionOut: "hard_cut",
+      effects: [],
+    };
+    delete backdrop.camera;
+    delete backdrop.sourceIn;
+    delete backdrop.sourceOut;
+    delete backdrop.transitionInSec;
+    delete backdrop.transitionOutSec;
+    /** The ground belongs to the sentence it stands under, not to the shot it was cut from. */
+    const owner = beatIndexFromBeatId(slot.beatId);
+    if (owner) {
+      backdrop.sceneIndex = owner.sceneIndex;
+      backdrop.beatIndex = owner.beatIndex;
+    }
+    const graphic: TimelineGraphic = {
+      id: timelineElementId("gfx", slot.beatId, type, start),
+      graphicType: type,
+      data: slot.graphic.data,
+      start: backdrop.timelineStart,
+      end: backdrop.timelineEnd,
+      label,
+      reason:
+        type === slot.graphic.graphicType
+          ? slot.graphic.reason
+          : `${slot.graphic.reason} [planned as "${slot.graphic.graphicType}"]`,
+    };
+    clips.push(backdrop);
+    graphics.push(graphic);
+    placed.push({ backdrop, graphic });
+  }
+  clips.sort((a, b) => a.timelineStart - b.timelineStart);
+  return placed;
+}
+
 export function translateEdl(params: {
   videoId: number;
   inputs: readonly EdlTranslationInput[];
@@ -658,6 +751,8 @@ export function translateEdl(params: {
   words?: readonly { word: string; startSec: number; endSec: number }[];
   /** AUDIT RC1 — see `holdPictureUnderVoice`. Absent: fillers are chosen as before. */
   fillerFits?: (filler: TimelineVideoClip, startSec: number, endSec: number) => boolean;
+  /** GRAPHICS FIX — sentences whose picture is a graphic; see `placePrimaryGraphics`. */
+  primaryGraphics?: ReadonlyArray<PrimaryGraphicInput>;
 }): EdlTranslation {
   const timeline = emptyTimeline(params.videoId, params.format ?? DEFAULT_FORMAT);
   if (params.look) timeline.look = params.look;
@@ -990,6 +1085,8 @@ export function translateEdl(params: {
   }
 
   clips.sort((a, b) => a.timelineStart - b.timelineStart);
+  /** GRAPHICS FIX — a sentence without a picture whose graphic is its picture: placed before the holds. */
+  const graphicVisuals = placePrimaryGraphics(clips, graphics, params.primaryGraphics ?? []);
   /**
    * Close the holes BEFORE the length is measured — see `holdPictureUnderVoice`.
    *
@@ -1001,6 +1098,12 @@ export function translateEdl(params: {
     voiceDurationSec: params.voice?.durationSec ?? null,
     ...(params.fillerFits ? { fillerFits: params.fillerFits } : {}),
   });
+  /** GRAPHICS FIX — a graphic's dark ground held over a next hole keeps its graphic on screen with it. */
+  for (const { backdrop, graphic } of graphicVisuals) graphic.end = Math.max(graphic.end, backdrop.timelineEnd);
+  covered.push(...graphicVisuals.map(({ backdrop, graphic }) =>
+    `${backdrop.id}: ${(backdrop.timelineEnd - backdrop.timelineStart).toFixed(3)}s without a picture of its own — ` +
+      `the sentence's picture is the graphic ${graphic.id} (${graphic.graphicType})`
+  ));
   /** VIDEO 626 — a filler taken from a YouTube shot is a YouTube shot: the five-second rule holds it too. */
   for (const c of clips) {
     const origin = /^(.*)_fill\d+$/.exec(c.id)?.[1];
