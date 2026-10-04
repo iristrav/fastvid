@@ -9,7 +9,7 @@
  *      "trillion dollars" is no event, "Soviet" is no place);
  *   6  the graphics that already worked still do.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildCinematicSceneInputs,
@@ -21,6 +21,8 @@ import {
 } from "./cinematicPipelineInputs";
 import { runCinematicPipeline } from "./cinematicPipeline";
 import {
+  GENERATED_IMAGE_FALLBACK,
+  generatedImageFallbackFor,
   namesAMappablePlace,
   parseNumericStat,
   planMotionGraphics,
@@ -351,5 +353,83 @@ describe("6 — the existing graphics still plan", () => {
   it("a statCallout counter still counts", () => {
     const g = plan("By 1945, more than 70 million people had died in the war.", "70 million");
     expect(g.find((x) => x.graphicType === "statistic_counter")?.data.toValue).toBe(70);
+  });
+});
+
+/* ═══════════════════════ 7 — GENERATED_IMAGE_FALLBACK ═══════════════════════ */
+
+describe("7 — GENERATED_IMAGE_FALLBACK: Remotion draws the sentence's subject when no source had a picture", () => {
+  const SENTENCES = [
+    "The economy grew slowly through the decade.",
+    "Scientists cut a single gene inside a living cell.",
+    "Families felt it in every shop.",
+  ];
+  /** The VisualIntent subject reaches the beat as its power word (hydrateBeatScriptVisuals). */
+  const withSubject = (subject: string, pictured: boolean[]): SceneFacts => {
+    const facts = sceneFacts(SENTENCES, pictured);
+    facts.beats[1] = { ...facts.beats[1]!, powerWord: subject, searchQuery: subject };
+    return facts;
+  };
+  const build = (facts: SceneFacts) => buildCinematicSceneInputs({ scenes: [facts], extractors: EXTRACTORS });
+
+  it("no picture from any source → a drawn card of the VisualIntent subject, as the sentence's picture", () => {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void logs.push(a.join(" ")));
+    let built: ReturnType<typeof build>;
+    try {
+      built = build(withSubject("CRISPR gene editing laboratory", [true, false, true]));
+    } finally {
+      spy.mockRestore();
+    }
+    const slot = built!.primaryGraphics?.find((p) => p.beatId === "s0b1");
+    expect(slot?.graphic.graphicType).toBe("chapter_card");
+    expect(slot?.graphic.data.title).toBe("Crispr Gene Editing Laboratory");
+    expect(slot?.graphic.reason.startsWith(GENERATED_IMAGE_FALLBACK)).toBe(true);
+    expect(logs.some((l) => l.includes("[CinematicGraphicVisual]") && l.includes(GENERATED_IMAGE_FALLBACK))).toBe(true);
+
+    /** And it is an ordinary visual in the timeline: the drawn card over the sentence's window, centred. */
+    const { timeline } = (() => {
+      const r = runCinematicPipeline({ videoId: 1, scenes: built!.scenes, primaryGraphics: built!.primaryGraphics });
+      return { timeline: r.timeline as ProjectTimeline };
+    })();
+    const card = graphicsOf(timeline).find((g) => g.graphicType === "chapter_card");
+    expect(card?.start).toBeCloseTo(4, 3);
+    expect(card?.end).toBeCloseTo(8, 3);
+    expect(card?.style?.position).toBe("center");
+    expect(graphicIsRenderable(card!.graphicType, card!.data, card!.label ?? null)).toBe(true);
+    expect(videoClips(timeline).find(isGraphicBackdrop)?.transform?.opacity).toBe(0);
+  });
+
+  it("a good existing picture → no generation", () => {
+    const built = build(withSubject("CRISPR gene editing laboratory", [true, true, true]));
+    expect(built.primaryGraphics ?? []).toEqual([]);
+  });
+
+  it("real data or a real map still come before a drawn card", () => {
+    const intent = intentFrom(beat(0, "Inflation reached 10% in 2022."), 0, 0, null, EXTRACTORS);
+    expect(primaryGraphicForBeat({ ...intent, visualSubject: "inflation prices" }, undefined, 0, 4)?.graphicType).toBe("progress_bar");
+  });
+
+  it("the card matches the VisualIntent and the sentence — never a subject the voice does not say", () => {
+    const intent = (subject: string) => ({
+      ...intentFrom(beat(0, "Scientists cut a single gene inside a living cell."), 0, 0, null, EXTRACTORS),
+      visualSubject: subject,
+    });
+    expect(generatedImageFallbackFor(intent("gene editing laboratory"), 0, 4)?.data.title).toBe("Gene Editing Laboratory");
+    /** Unrelated to the sentence: no card. */
+    expect(generatedImageFallbackFor(intent("rocket launch pad"), 0, 4)).toBeNull();
+    /** Only production words: no card. */
+    expect(generatedImageFallbackFor(intent("documentary broll scene"), 0, 4)).toBeNull();
+    expect(generatedImageFallbackFor(intent(""), 0, 4)).toBeNull();
+  });
+
+  it("a named event or person leads, and a stated year is added", () => {
+    const marshall = {
+      ...intentFrom(beat(0, "In 1948 the Marshall Plan began to rebuild Europe."), 0, 0, null, EXTRACTORS),
+      events: ["Marshall Plan"],
+    };
+    expect(generatedImageFallbackFor(marshall, 0, 4)?.data.title).toBe("Marshall Plan · 1948");
+    const messi = intentFrom(beat(0, "Lionel Messi wept on the pitch."), 0, 0, null, EXTRACTORS);
+    expect(generatedImageFallbackFor(messi, 0, 4)?.data.title).toBe("Lionel Messi");
   });
 });

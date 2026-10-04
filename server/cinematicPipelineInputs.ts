@@ -57,14 +57,16 @@ import { identityHasRehydrationRoute } from "./assetRehydrator";
 /** F-1 — the local-file check below asks the filesystem rather than trusting a name. */
 import fs from "node:fs";
 import type { CinematicBeatInput, CinematicSceneInput } from "./cinematicPipeline";
-import type { MotionGraphicInstruction } from "./cinematicEditingEngine/types";
 import {
+  GENERATED_IMAGE_FALLBACK,
+  generatedImageFallbackFor,
   namesAMappablePlace,
   plausibleEventName,
   plausiblePersonName,
   plausiblePlace,
   primaryGraphicFor,
   statesAQuantity,
+  type PictureGraphic,
 } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import { mediaFormsForIntent } from "./beatVisualIntent";
 
@@ -157,7 +159,7 @@ export type PrimaryGraphicSlot = {
   beatIndex: number;
   startSec: number;
   endSec: number;
-  graphic: MotionGraphicInstruction;
+  graphic: PictureGraphic;
 };
 
 /** The shortest window a graphic is put up as a sentence's picture: long enough to read. */
@@ -175,7 +177,7 @@ export function primaryGraphicForBeat(
   scene: Scene | undefined,
   startSec: number,
   endSec: number
-): MotionGraphicInstruction | null {
+): PictureGraphic | null {
   if (endSec - startSec < MIN_PRIMARY_GRAPHIC_SEC) return null;
   const need = mediaFormsForIntent(
     {
@@ -189,7 +191,11 @@ export function primaryGraphicForBeat(
     statesAQuantity(intent.spokenText),
     namesAMappablePlace(intent.spokenText)
   );
-  return primaryGraphicFor(intent, scene, need.preferred, startSec, endSec - startSec);
+  return (
+    primaryGraphicFor(intent, scene, need.preferred, startSec, endSec - startSec) ??
+    /** GENERATED_IMAGE_FALLBACK — last of all: Remotion draws the sentence's subject. */
+    generatedImageFallbackFor(intent, startSec, endSec - startSec)
+  );
 }
 
 export type EntityExtractors = {
@@ -1102,7 +1108,8 @@ export function buildCinematicSceneInputs(params: {
           });
           console.log(
             `[CinematicGraphicVisual] scene=${scene.index} beat=${beatIndex} graphic=${standIn.graphicType} ` +
-              `${(end - start).toFixed(2)}s — the sentence's picture is a graphic`
+              `${(end - start).toFixed(2)}s — the sentence's picture is a graphic` +
+              (standIn.reason.startsWith(GENERATED_IMAGE_FALLBACK) ? ` ${GENERATED_IMAGE_FALLBACK}` : "")
           );
         }
         return;

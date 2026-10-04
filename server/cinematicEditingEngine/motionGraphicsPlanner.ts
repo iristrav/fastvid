@@ -21,9 +21,10 @@ import type { VisualIntent } from "../visualMatchingV2/types";
 import type { MotionGraphicInstruction } from "./types";
 import { graphicIsRenderable } from "../graphicsVocabulary";
 import { graphicLabel, rendererGraphicType } from "../edlToTimeline";
+import { subjectWords } from "../youtubeNonFootage";
 
 /** The renderer's answer for one planned graphic, under the name and label the timeline gives it. */
-export function plannedGraphicIsDrawable(g: MotionGraphicInstruction): boolean {
+export function plannedGraphicIsDrawable(g: Pick<MotionGraphicInstruction, "data"> & { graphicType: string }): boolean {
   const type = rendererGraphicType(g.graphicType);
   return graphicIsRenderable(type, g.data, graphicLabel(type, g.data) ?? null);
 }
@@ -562,7 +563,7 @@ export function primaryGraphicFor(
   preferredForms: readonly string[],
   startSec: number,
   durationSec: number
-): MotionGraphicInstruction | null {
+): PictureGraphic | null {
   if (!(durationSec > 0)) return null;
   const wants = new Set(preferredForms);
   const types: string[] = [
@@ -630,4 +631,60 @@ export function plausiblePlace(place: string, text: string, otherEntities: reado
  */
 export function plausibleEventName(label: string): boolean {
   return /\p{Lu}/u.test(label) && isEventName(label);
+}
+
+/* ═════════ GENERATED_IMAGE_FALLBACK — the last picture a sentence can have ═════════ */
+
+/**
+ * A graphic that is a sentence's PICTURE: one of the planner's own, or the drawn title card of the
+ * last fallback. `chapter_card` is deliberately not in `MotionGraphicType` — it is never planned as
+ * an overlay, only drawn here as the picture of a sentence nothing else could illustrate.
+ */
+export type PictureGraphic = Omit<MotionGraphicInstruction, "graphicType"> & {
+  graphicType: MotionGraphicInstruction["graphicType"] | "chapter_card";
+};
+
+/** The log and reason marker of a picture Remotion drew because no source had one. */
+export const GENERATED_IMAGE_FALLBACK = "GENERATED_IMAGE_FALLBACK";
+
+/**
+ * GENERATED_IMAGE_FALLBACK — a picture Remotion draws for a sentence no source could illustrate.
+ *
+ * Asked last: only for a sentence with no approved picture from YouTube, the archive, the open
+ * sources or stock, and only when neither a data graphic nor a map could stand in. Remotion draws
+ * designs, not photographs, so the picture is the renderer's own designed title card
+ * (`chapter_card`) carrying what the sentence is ABOUT, in this order: the named event it states
+ * ("Marshall Plan"), the person it names, or its VisualIntent subject — the last one only when it
+ * shares a subject word with the sentence, so the card can never be about something the voice does
+ * not say. A year the sentence states is added. Nothing else is written; with no such subject, or
+ * only production words ("documentary broll scene"), there is no card.
+ */
+export function generatedImageFallbackFor(
+  intent: VisualIntent,
+  startSec: number,
+  durationSec: number
+): PictureGraphic | null {
+  if (!(durationSec > 0)) return null;
+  const said = new Set(subjectWords(intent.spokenText));
+  const event = intent.events[0]?.trim() ?? "";
+  const person = intent.people[0]?.trim() ?? "";
+  const subject = subjectWords(intent.visualSubject ?? "").filter(Boolean);
+  const subjectSaid = subject.some((w) => said.has(w));
+  const main =
+    (event && plausibleEventName(event) ? event : "") ||
+    person ||
+    (subjectSaid ? titleCase(subject.slice(0, 5).join(" ")) : "");
+  if (!main.trim()) return null;
+  const year = `${intent.visualTime} ${intent.spokenText}`.match(/\b(1[0-9]{3}|20[0-9]{2})\b/)?.[0];
+  const title = year && !main.includes(year) ? `${main} · ${year}` : main;
+  const g: PictureGraphic = {
+    graphicType: "chapter_card",
+    data: { title, label: title },
+    startSec,
+    durationSec,
+    reason:
+      `${GENERATED_IMAGE_FALLBACK}: no source had a picture for this sentence — Remotion draws a title ` +
+      `card of what it is about ("${title}").`,
+  };
+  return plannedGraphicIsDrawable(g) ? g : null;
 }

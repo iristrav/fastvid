@@ -39,8 +39,11 @@ const FPS = 12;
 const TEXTS = [
   "The economy grew slowly through the decade.",
   "Inflation reached 10% in 2022.",
+  "Scientists cut a single gene inside a living cell.",
   "Families felt it in every shop.",
 ];
+/** The sentences with no clip of their own; the third carries its VisualIntent subject. */
+const NO_PICTURE = new Set([1, 2]);
 
 const beat = (index: number, text: string): ProductionBeat => ({
   index, text, searchQuery: "", powerWord: "", keywords: [], holdSec: 4, visualDescription: "",
@@ -49,11 +52,12 @@ const beat = (index: number, text: string): ProductionBeat => ({
 
 function plannedTimeline(): ProjectTimeline {
   const beats = TEXTS.map((t, i) => beat(i, t));
+  beats[2] = { ...beats[2]!, powerWord: "gene editing laboratory", searchQuery: "gene editing laboratory" };
   const facts: SceneFacts = {
-    scene: { index: 0, text: TEXTS.join(" "), visualCue: "", pexelsQuery: "", aiImagePrompt: "", duration: 12 },
+    scene: { index: 0, text: TEXTS.join(" "), visualCue: "", pexelsQuery: "", aiImagePrompt: "", duration: 16 },
     beats,
     clips: beats.map((_, i) =>
-      i === 1
+      NO_PICTURE.has(i)
         ? null
         : {
             facts: { localPath: `/tmp/gfxpic-${i}.mp4`, durationSec: 10, widthPx: W, heightPx: H },
@@ -114,7 +118,7 @@ describeRender("a graphic as a sentence's picture reaches the delivered MP4", ()
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "gfx-as-picture-"));
     const red = path.join(dir, "red.mp4");
     await execFileAsync(resolveFFmpegBin(), [
-      "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=red:s=${W}x${H}:d=12:r=${FPS}`,
+      "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=red:s=${W}x${H}:d=16:r=${FPS}`,
       "-c:v", "libx264", "-pix_fmt", "yuv420p", red,
     ]);
     timeline = plannedTimeline();
@@ -160,8 +164,19 @@ describeRender("a graphic as a sentence's picture reaches the delivered MP4", ()
     expect(f.black, `black share ${f.black}`).toBeGreaterThan(0.5);
   });
 
+  it("GENERATED_IMAGE_FALLBACK: under the sentence nothing could illustrate, Remotion's drawn card is the picture", async () => {
+    const gfx = timeline.tracks.find((t) => t.kind === "GRAPHICS");
+    const card = gfx && gfx.kind === "GRAPHICS" ? gfx.graphics.find((g) => g.graphicType === "chapter_card") : undefined;
+    expect(card?.reason).toContain("GENERATED_IMAGE_FALLBACK");
+    expect(card?.start).toBeCloseTo(8, 2);
+    const f = await frameAt(out, 11.0, path.join(dir, "card.raw"));
+    expect(f.red, `red share ${f.red}`).toBeLessThan(0.005);
+    expect(f.other, `drawn share ${f.other}`).toBeGreaterThan(0.002);
+    expect(f.black, `black share ${f.black}`).toBeGreaterThan(0.5);
+  });
+
   it("under the sentences with a clip: their own picture, as before", async () => {
-    for (const [sec, name] of [[2, "first"], [10, "last"]] as const) {
+    for (const [sec, name] of [[2, "first"], [14, "last"]] as const) {
       const f = await frameAt(out, sec, path.join(dir, `${name}.raw`));
       expect(f.red, `${name}: red share ${f.red}`).toBeGreaterThan(0.6);
     }

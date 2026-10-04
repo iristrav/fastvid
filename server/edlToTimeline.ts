@@ -622,7 +622,7 @@ export type PrimaryGraphicInput = {
   beatId: string;
   startSec: number;
   endSec: number;
-  graphic: MotionGraphicInstruction;
+  graphic: Pick<MotionGraphicInstruction, "data" | "reason"> & { graphicType: string };
 };
 
 /** The id suffix of a graphic's dark ground on the VIDEO track. */
@@ -694,6 +694,8 @@ export function placePrimaryGraphics(
       start: backdrop.timelineStart,
       end: backdrop.timelineEnd,
       label,
+      /** A drawn title card is the whole picture: in the middle of the frame, not at its foot. */
+      ...(type === "chapter_card" ? { style: { ...DEFAULT_TEXT_STYLE, position: "center" as const } } : {}),
       reason:
         type === slot.graphic.graphicType
           ? slot.graphic.reason
