@@ -246,13 +246,13 @@ describeRender("R160 §7 — every graphic type puts ink on a real frame", () =>
     expect(drawn.graphicsDrawn).toBe(TYPES.length);
   });
 
-  it("produced a real ProRes 4444 file with an alpha channel", async () => {
+  it("produced a real alpha .mov (PNG frames, rgba) — OCTOBER 2026, was ProRes 4444", async () => {
     expect(fs.existsSync(overlayPath)).toBe(true);
     const { stdout } = await execFileAsync("ffprobe", [
       "-v", "error", "-select_streams", "v:0",
       "-show_entries", "stream=pix_fmt,width,height", "-of", "default=nw=1", overlayPath,
     ]);
-    expect(stdout).toMatch(/pix_fmt=yuva/);
+    expect(stdout).toMatch(/pix_fmt=rgba/) /* OCTOBER 2026 — the PNG frames in the .mov carry the alpha as rgba (was yuva444p10le ProRes) */;
     expect(stdout).toContain(`width=${WIDTH}`);
     expect(stdout).toContain(`height=${HEIGHT}`);
   });

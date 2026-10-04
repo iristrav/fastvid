@@ -60,6 +60,7 @@ export function productionGraphicsOverlay(
     if (!hasGraphicsLayer(timeline)) return null;
     if (!graphicsOverlayAvailable()) return null;
 
+    const startedAt = Date.now();
     const result = await renderGraphicsOverlay({
       timeline,
       overlayPath: path.join(deps.workDir, "graphics_overlay.mov"),
@@ -72,7 +73,9 @@ export function productionGraphicsOverlay(
       `[GraphicsOverlay] video=${timeline.videoId} ` +
         `graphics=${result.graphicsDrawn} captions=${result.captionsDrawn} ` +
         `texts=${result.textsDrawn} frames=${result.durationInFrames} ` +
-        `skipped=${result.skipped.length}`
+        `skipped=${result.skipped.length}` +
+        /** OCTOBER 2026 — how long the layer took, so a render log answers the performance question. */
+        ` ms=${Date.now() - startedAt}`
     );
 
     /** The ids travel with the file — see `GraphicsOverlayFile` for the two stages they unlock. */
