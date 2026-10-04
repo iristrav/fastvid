@@ -229,37 +229,97 @@ async function oneLength(minutes: number): Promise<boolean> {
   return !compError;
 }
 
+/**
+ * The browser processes THIS test started: descendants of this node process whose command line
+ * names the headless shell. Read from /proc rather than a `pkill -f` pattern, which matched the
+ * shell running it (its own command line held the pattern) and never reached the browser.
+ */
+function ownBrowserPids(): number[] {
+  const parent = new Map<number, number>();
+  const cmd = new Map<number, string>();
+  for (const d of fs.readdirSync("/proc")) {
+    if (!/^\d+$/.test(d)) continue;
+    try {
+      const stat = fs.readFileSync(`/proc/${d}/stat`, "utf8");
+      const [state, ppid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      /** A killed child nobody reaped yet (state Z) is not a running browser. */
+      if (state === "Z") continue;
+      parent.set(Number(d), Number(ppid));
+      cmd.set(Number(d), fs.readFileSync(`/proc/${d}/cmdline`, "utf8").replace(/\0/g, " "));
+    } catch {
+      /* the process ended while being read */
+    }
+  }
+  const descends = (pid: number) => {
+    let p = parent.get(pid);
+    for (let i = 0; i < 64 && p; i++) {
+      if (p === process.pid) return true;
+      p = parent.get(p);
+    }
+    return false;
+  };
+  return [...parent.keys()].filter((pid) => descends(pid) && /headless[-_]shell/.test(cmd.get(pid) ?? ""));
+}
+
 /** A browser that dies mid-render: the frame folder must go with it. */
 async function failureCleanup(): Promise<void> {
   const workDir = path.join(ROOT, "fail");
   fs.rmSync(workDir, { recursive: true, force: true });
   fs.mkdirSync(workDir, { recursive: true });
   const freeBefore = freeDiskMB(ROOT);
-  const killer = setTimeout(() => {
-    try {
-      execSync("pkill -9 -f headless_shell || pkill -9 -f chrome", { stdio: "ignore" });
-    } catch {
-      /* nothing to kill is reported below as "did not fail" */
-    }
-  }, 40_000);
+  /**
+   * Kill only once frames are provably being written, so the render cannot have finished. Remotion
+   * relaunches a crashed browser and retries the frame (measured: one kill alone was recovered and
+   * the render completed), so every relaunch is killed too, up to MAX_KILL_ROUNDS.
+   */
+  const KILL_AT_PNG = 300;
+  const MAX_KILL_ROUNDS = 5;
   let pngAtKill = 0;
-  const peek = setTimeout(() => { pngAtKill = countPng(workDir); }, 39_000);
+  let killedPids = 0;
+  let killRounds = 0;
+  let killedAtMs = 0;
+  const t0 = Date.now();
+  const watcher = setInterval(() => {
+    if (killRounds >= MAX_KILL_ROUNDS) return;
+    if (!killRounds && countPng(workDir) < KILL_AT_PNG) return;
+    const pids = ownBrowserPids();
+    if (!pids.length) return;
+    if (!killRounds) {
+      pngAtKill = countPng(workDir);
+      killedAtMs = Date.now() - t0;
+    }
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone with its parent */
+      }
+    }
+    killedPids += pids.length;
+    killRounds++;
+  }, 250);
   let error: string | null = null;
-  try {
-    await productionGraphicsOverlay({ workDir, cacheDir: path.join(ROOT, "bundle") })(timeline(2));
-  } catch (err) {
-    error = (err as Error).message.slice(0, 200);
-  }
-  clearTimeout(killer);
-  clearTimeout(peek);
+  let finished = false;
+  const render = productionGraphicsOverlay({ workDir, cacheDir: path.join(ROOT, "bundle") })(timeline(2)).then(
+    () => { finished = true; },
+    (err) => { error = (err as Error).message.slice(0, 200).replace(/"/g, "'").replace(/\s+/g, " "); }
+  );
+  /** A render that hangs after the kill is a result too, not a reason for the test to hang. */
+  await Promise.race([render, new Promise((r) => setTimeout(r, 15 * 60_000))]);
+  clearInterval(watcher);
+  const settledMs = Date.now() - t0;
   const left = countPng(workDir);
   const framesDirs = fs.readdirSync(workDir).filter((f) => f.endsWith(".frames"));
+  const files = fs.readdirSync(workDir);
   log(
-    `FAILURE_TEST failed=${error != null} error="${error ?? "none — the render finished before the kill"}" ` +
-      `pngBeforeKill=${pngAtKill} pngLeftAfter=${left} framesDirsLeft=${framesDirs.length} ` +
-      `workDirMB=${dirMB(workDir)} freeDiskBeforeMB=${freeBefore} freeDiskAfterMB=${freeDiskMB(ROOT)}`
+    `FAILURE_TEST killRounds=${killRounds} killedPids=${killedPids} killedAtMs=${killedAtMs} pngBeforeKill=${pngAtKill} ` +
+      `failed=${error != null} finished=${finished} hung=${error == null && !finished} settledMs=${settledMs} ` +
+      `error="${error ?? "none"}" pngLeftAfter=${left} framesDirsLeft=${framesDirs.length} ` +
+      `filesLeft=${files.length}${files.length ? `(${files.join(",")})` : ""} workDirMB=${dirMB(workDir)} ` +
+      `browserPidsAlive=${ownBrowserPids().length} freeDiskBeforeMB=${freeBefore} freeDiskAfterMB=${freeDiskMB(ROOT)}`
   );
   fs.rmSync(workDir, { recursive: true, force: true });
+  log(`FAILURE_TEST_CLEANED workDirExists=${fs.existsSync(workDir)} freeDiskMB=${freeDiskMB(ROOT)}`);
 }
 
 async function main(): Promise<void> {
