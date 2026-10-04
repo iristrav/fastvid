@@ -14301,8 +14301,13 @@ interface SceneBeat {
 
 export interface VisualDedupState {
   /**
-   * VIDEO 621 — the text a beat is judged against when it is not its own sentence: a scene that
-   * found nothing is searched on the video's main subject, keyed `"<scene>:<beat>"`.
+   * VIDEO 621 / 627 — the sentence a beat is judged against while its search runs on something
+   * else: a scene that found nothing is SEARCHED on the video's main subject, but every picture is
+   * still JUDGED against the beat's own sentence, keyed `"<scene>:<beat>"`.
+   *
+   * Video 627 judged against the main subject itself ("Nazi") and approved Nazi rallies under
+   * sentences about post-war cities and Antarctica; six sentences of scene 1 shared one verdict,
+   * because "Nazi" was the same question for all of them.
    */
   beatJudgeTextOverride?: Map<string, string>;
   /** VIDEO 623 — the video's main subject; a sentence that names nothing of its own searches on it. */
@@ -20553,8 +20558,11 @@ async function judgeBeatClipRelevance(
   if (!params.placeholder) {
     noteEligibleForJudgement(dedup, params.clipPath, "judged", sceneIndex, beatIndex);
   }
+  /** VIDEO 627 — a beat searched on something else is still judged on its own sentence. */
+  const ownSentence = dedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`);
   const { decision } = await judgePicture({
     ...params,
+    ...(ownSentence?.trim() ? { ctx: { ...params.ctx, beatText: ownSentence } } : {}),
     onSpend: (spent) => noteVisionSpend(dedup, sceneIndex, beatIndex, spent),
   });
   /**
@@ -21114,12 +21122,14 @@ async function fetchSceneVisualsInner(
   await applyVoiceAlignmentToBeats(beats, sceneAudioPath, scene.duration, dedup, scene.index);
   /**
    * VIDEO 621 — the main-subject search. The beats keep their timing and the recorded narration (the
-   * array above stays what the film says); the search and the picture editor are handed the main
-   * subject instead of the sentence, for this scene's beats only.
+   * array above stays what the film says); the SEARCH is handed the main subject instead of the
+   * sentence, for this scene's beats only. The picture editor still judges against the sentence
+   * (video 627 — see `beatJudgeTextOverride`).
    */
   const rescue = rescueSubject?.trim();
   if (rescue) {
-    for (const b of beats) (dedup.beatJudgeTextOverride ??= new Map()).set(`${scene.index}:${b.index}`, rescue);
+    /** VIDEO 627 — searched on the main subject, judged on the sentence (see `beatJudgeTextOverride`). */
+    for (const b of beats) (dedup.beatJudgeTextOverride ??= new Map()).set(`${scene.index}:${b.index}`, b.text);
     beats = beats.map((b) => ({
       ...b,
       text: rescue,
@@ -22143,8 +22153,8 @@ async function _runVideoPipelineInner(
      * the same counters the download sites incremented.
      */
     /**
-     * VIDEO 621 — the text a beat is judged against: its own sentence, or the video's main subject
-     * when the beat belongs to a scene searched on it. One reader for both judging scopes.
+     * VIDEO 621 / 627 — the text a beat is judged against: always its own sentence, also when the
+     * beat belongs to a scene searched on the main subject. One reader for both judging scopes.
      */
     const judgedBeatText = (sceneIndex: number, beatIndex: number): string | undefined =>
       visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ??
@@ -22695,9 +22705,10 @@ async function _runVideoPipelineInner(
     /**
      * VIDEO 621 — A SCENE THAT FOUND NOTHING SEARCHES ONCE MORE, ON THE VIDEO'S MAIN SUBJECT ONLY.
      *
-     * Every beat of it, with its own timing, searched and judged on the main subject instead of its
-     * sentence — the same sources, the same picture editor, the same text, black and duplicate
-     * checks. It gets what is left of the picture time, and at least `EMPTY_SCENE_RESCUE_MIN_MS`
+     * Every beat of it, with its own timing, searched on the main subject instead of its sentence —
+     * the same sources, the same picture editor, the same text, black and duplicate checks. The
+     * picture editor judges against the beat's own sentence (video 627: judged against "Nazi", it
+     * approved Nazi rallies under a sentence about post-war cities). It gets what is left of the picture time, and at least `EMPTY_SCENE_RESCUE_MIN_MS`
      * even when the deadline has passed: a scene with no picture is a film that is refused.
      */
     {

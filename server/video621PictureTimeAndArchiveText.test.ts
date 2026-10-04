@@ -106,9 +106,14 @@ describe("Video 621 — a scene that finds nothing searches on the video's main 
     expect(src).toContain("scenes[si]!, workDir, topicContext, visualDedup, undefined, audioPaths[si], mainSubject");
   });
 
-  it("the beats keep their timing and recorded narration; the search and the picture editor get the main subject", () => {
+  it("the beats keep their timing and recorded narration; the search gets the main subject, the picture editor the sentence", () => {
     const src = read("server/videoPipeline.ts");
-    expect(src).toContain("for (const b of beats) (dedup.beatJudgeTextOverride ??= new Map()).set(`${scene.index}:${b.index}`, rescue);");
+    /**
+     * VIDEO 627 — was `.set(…, rescue)`: the picture editor judged against the main subject itself,
+     * and approved Nazi rallies under sentences about post-war cities. The search keeps the main
+     * subject; the judge keeps the beat's own sentence. See video627ContentFixes.test.ts.
+     */
+    expect(src).toContain("for (const b of beats) (dedup.beatJudgeTextOverride ??= new Map()).set(`${scene.index}:${b.index}`, b.text);");
     expect(src).toContain("text: rescue,\n      searchQuery: rescue,\n      powerWord: rescue,\n      keywords: [rescue],");
     expect(src).toContain("visualDedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`) ??\n      visualDedup.sceneBeatsBySceneIndex");
     expect(src).toContain("const beatText = judgedBeatText(sceneIndex, beatIndex);");

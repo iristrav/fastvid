@@ -156,7 +156,8 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
     });
   }
 
-  /* Video 612 — one piece of footage held under the whole narration is not a film. */
+  /* Video 612 — one piece of footage held under the whole narration is not a film. Video 627 — nor
+   * is a film made mostly of shots borrowed from other sentences (same field, see `borrowedShotsRefusal`). */
   if (input.footageRefusal?.trim()) {
     failures.push({ code: "ONE_FOOTAGE_FILLS_FILM", detail: input.footageRefusal });
   }
@@ -553,7 +554,7 @@ export type FinalTimelineClip = {
  *
  * Pieces cut from one source count as one piece of footage: the key is the source asset, never the
  * clip id. Returns the refusal reason, or null when no single piece of footage fills more than
- * `maxShare` of the film.
+ * `maxShare` of the film and the borrowed shots stay within `MAX_BORROWED_SHOT_SHARE` (video 627).
  *
  * `youtubeVideoByArchiveAsset` — the original YouTube video behind an archive asset, when the
  * caller could read it (the archive stores several segments of one video as separate assets). Those
@@ -587,10 +588,40 @@ export function finalTimelineFootageRefusal(
       })
   );
   const top = share.byFootage[0];
-  if (!top || top.share <= maxShare) return null;
+  if (top && top.share > maxShare) {
+    return (
+      `one piece of footage (${top.key}, source=${top.source}) fills ${pct(top.share)} of the final timeline ` +
+      `(${top.sec.toFixed(1)}s of ${share.totalSec.toFixed(1)}s in ${top.appearances} piece(s), limit ${pct(maxShare)})`
+    );
+  }
+  return borrowedShotsRefusal(clips);
+}
+
+/**
+ * VIDEO 627 — above this share the film is mostly shots borrowed from other sentences, and it is
+ * NOT delivered.
+ *
+ * A hole in the edit is filled with the film's other approved shots (`coverHoles`, ids `…_fillN`).
+ * Video 627 had 49.7 s of its 90.6 s filled that way — one scene of 46 s had a single shot of its
+ * own — and passed every check, because no ONE piece of footage passed `maxShare`: the film's nine
+ * sources took turns. Measured on the same final timeline as the rule above.
+ */
+export const MAX_BORROWED_SHOT_SHARE = 0.4;
+
+export function borrowedShotsRefusal(
+  clips: readonly FinalTimelineClip[],
+  maxShare = MAX_BORROWED_SHOT_SHARE
+): string | null {
+  const live = clips.filter((c) => !c.disabled);
+  const total = live.reduce((sum, c) => sum + Math.max(0, c.timelineEnd - c.timelineStart), 0);
+  if (total <= 0) return null;
+  const borrowed = live
+    .filter((c) => /_fill\d+(?:_p\d+)?$/.test(c.id))
+    .reduce((sum, c) => sum + Math.max(0, c.timelineEnd - c.timelineStart), 0);
+  if (borrowed / total <= maxShare) return null;
   return (
-    `one piece of footage (${top.key}, source=${top.source}) fills ${pct(top.share)} of the final timeline ` +
-    `(${top.sec.toFixed(1)}s of ${share.totalSec.toFixed(1)}s in ${top.appearances} piece(s), limit ${pct(maxShare)})`
+    `shots borrowed from other sentences fill ${pct(borrowed / total)} of the final timeline ` +
+    `(${borrowed.toFixed(1)}s of ${total.toFixed(1)}s, limit ${pct(maxShare)}) — the sentences have too few pictures of their own`
   );
 }
 

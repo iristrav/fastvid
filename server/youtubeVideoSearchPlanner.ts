@@ -141,11 +141,28 @@ export function analyzeVideo(input: PlannerInput): VideoAnalysis {
     if (STOP.has(w) || OPENERS.has(w) || isSentenceOpener(w)) return true;
     return new RegExp(`(?<![\\p{L}])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "u").test(allText);
   };
+  /**
+   * VIDEO 627 — "World War II's reach was staggering" was counted as "War II's": the possessive
+   * stayed on the name, and "World" was dropped as an opener because the narration also says
+   * "our world's". So "World War II", said in two scenes, counted for one, and the video's main
+   * subject became "Nazi". A name keeps no possessive, and an opening run the narration also
+   * writes in the middle of a sentence is that name, whole.
+   */
+  const withoutPossessive = (t: string): string => t.replace(/['’]s$/u, "");
+  const saidMidSentence = (t: string): boolean =>
+    new RegExp(`[\\p{Ll},;:]\\s+${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "u").test(allText);
   sentences.forEach((s, i) => {
     const seen = new Set<string>();
-    for (const found of s.matchAll(phrase)) {
-      let term = found[0].trim();
-      if (found.index === s.length - s.trimStart().length) {
+    /** "Elon Musk's Tesla" is two names: a possessive inside a capitalised run ends the first. */
+    const runs = [...s.matchAll(phrase)].flatMap((found) =>
+      found[0]
+        .trim()
+        .split(/['’]s\s+(?=\p{Lu})/u)
+        .map((piece, k) => ({ piece, opensSentence: k === 0 && found.index === s.length - s.trimStart().length }))
+    );
+    for (const { piece, opensSentence } of runs) {
+      let term = withoutPossessive(piece.trim());
+      if (opensSentence && !(term.includes(" ") && saidMidSentence(term))) {
         const parts = term.split(/\s+/);
         if (notAName(parts[0]!)) {
           if (parts.length === 1) continue;
@@ -454,8 +471,15 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
   }
   /** Deterministic fallback: the recurring terms that pass every rule, with the right production word. */
   const multi = analysis.recurring.filter((r) => r.scenes >= 2 || r.beats >= 2).map((r) => r.term);
-  for (const n of [3, 2, 1]) {
-    const q = multi.slice(0, n).join(" ").trim();
+  /**
+   * VIDEO 627 — and the main subject beside one more name the narration says. A one-word subject
+   * ("Apple") is under the two-word floor on its own, and a video whose names each recur once had
+   * no query at all; the rule already allows one single-scene subject next to the main one.
+   */
+  const withOneMore = multi[0]
+    ? analysis.recurring.map((r) => r.term).filter((t) => t !== multi[0]).map((t) => `${multi[0]} ${t}`)
+    : [];
+  for (const q of [...[3, 2, 1].map((n) => multi.slice(0, n).join(" ").trim()), ...withOneMore]) {
     const why = refuseQuery(q, { analysis, mainSubject: multi[0], gate });
     if (!why) {
       const sent = gateText(gate, q);

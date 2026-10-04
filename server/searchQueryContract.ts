@@ -2128,9 +2128,10 @@ export function narrowToCanonicalQuery(
    * A beat about one member of a family carries several verified persons, and the query names
    * which one. Reading that instead of assuming it is the whole of the first fix: overlap is
    * counted in WORDS, so "Kylie Jenner" matches `Kylie Jenner` on two and `Kris Jenner` on one,
-   * and the query keeps its own subject. Ties and no-overlap keep the existing behaviour exactly
-   * — `Rumors kardashians Kardashians` shares no word with any person and still anchors to the
-   * render's primary subject, as it did in production.
+   * and the query keeps its own subject. Ties keep the existing behaviour exactly, and so does
+   * no-overlap with ONE person — `Rumors kardashians Kardashians` shares no word with any person
+   * and still anchors to the render's primary subject, as it did in production. No-overlap with
+   * several people, or with a person only the scene names, is not narrowed (video 627, below).
    */
   const persons = verifiedTerms(ctx.persons);
   if (persons.length === 0) return { query: original, narrowed: false };
@@ -2144,6 +2145,29 @@ export function narrowToCanonicalQuery(
       bestOverlap = overlap;
       anchor = person;
     }
+  }
+  /**
+   * VIDEO 627 — A QUERY THAT NAMES NOBODY IS ANCHORED ONLY WHEN THERE IS ONE PERSON TO ANCHOR TO.
+   *
+   * A documentary about World War II sent "Franklin D. Roosevelt landscape entirely" for a sentence
+   * about the post-war landscape (Roosevelt came from the scene, not the sentence), and the
+   * whole-video YouTube search turned "Nazi" into "Henri Guisan" — the first of three people its
+   * narration names once each. With no word in common, the person is a guess unless exactly one
+   * person belongs to this text; a person borrowed from the scene does not.
+   */
+  if (bestOverlap === 0) {
+    /**
+     * And a query that names its own verified place keeps it as its subject: a film about Roosevelt
+     * asking for "Pearl Harbor fleet" wants the harbour, not "Franklin D. Roosevelt Pearl Harbor".
+     */
+    const lowered = ` ${originalWords.join(" ")} `;
+    const namesItsOwnPlace = [...verifiedTerms(ctx.places), ...verifiedTerms(ctx.countries)].some((p) => {
+      const words = conceptWords(p);
+      return words.length > 0 && lowered.includes(` ${words.join(" ")} `);
+    });
+    const own = (ctx.persons ?? []).filter((t) => t.verified && t.term.trim() && t.source !== "scene_text");
+    if (namesItsOwnPlace || own.length !== 1) return { query: original, narrowed: false };
+    anchor = own[0]!.term.trim();
   }
   if (!anchor) return { query: original, narrowed: false };
   /**
