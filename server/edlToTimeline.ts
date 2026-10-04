@@ -66,6 +66,7 @@ import { ambienceGainDb, gainFromDb } from "./cinematicAmbient";
 import { beatIndexFromBeatId } from "./cinematicPipelineInputs";
 import { limitYoutubeShots, type YoutubeSourceFacts } from "./youtubeShotLimit";
 import { MAX_SHOT_SEC, pieceCamera } from "./longShotLimit";
+import { isGeneratedImageClip } from "./generatedImageFallback";
 
 /**
  * VIDEO 626 — how long a shot may be held past its own end before the hole is filled with another.
@@ -462,8 +463,11 @@ export function holdPictureUnderVoice(params: {
    * scene before another — each for at most its own stretch of source and never the shots on
    * either side of the hole. Only a film with no other shot to offer still holds, as before.
    */
-  /** GRAPHICS FIX — a graphic's dark ground is never lent to another sentence. */
-  const originals = clips.filter((c) => !c.disabled && !isGraphicBackdrop(c));
+  /**
+   * GRAPHICS FIX — a graphic's dark ground is never lent to another sentence; nor is a generated
+   * still (GENERATED_IMAGE_FALLBACK): it was made for its own sentence only.
+   */
+  const originals = clips.filter((c) => !c.disabled && !isGraphicBackdrop(c) && !isGeneratedImageClip(c));
   const fillerUses = new Map<string, number>();
   const windowOf = (c: TimelineVideoClip): number | null =>
     c.sourceIn != null && c.sourceOut != null && c.sourceOut - c.sourceIn > EPS ? c.sourceOut - c.sourceIn : null;

@@ -58,8 +58,8 @@ import { identityHasRehydrationRoute } from "./assetRehydrator";
 import fs from "node:fs";
 import type { CinematicBeatInput, CinematicSceneInput } from "./cinematicPipeline";
 import {
-  GENERATED_IMAGE_FALLBACK,
-  generatedImageFallbackFor,
+  CHAPTER_CARD_FALLBACK,
+  chapterCardFallbackFor,
   namesAMappablePlace,
   plausibleEventName,
   plausiblePersonName,
@@ -179,6 +179,24 @@ export function primaryGraphicForBeat(
   endSec: number
 ): PictureGraphic | null {
   if (endSec - startSec < MIN_PRIMARY_GRAPHIC_SEC) return null;
+  return (
+    dataOrMapGraphicForBeat(intent, scene, startSec, endSec) ??
+    /** CHAPTER_CARD_FALLBACK — last of all: Remotion draws the sentence's subject. */
+    chapterCardFallbackFor(intent, startSec, endSec - startSec)
+  );
+}
+
+/**
+ * The data graphic or map that can be a sentence's picture (step 3), without the drawn card. The
+ * generated-image step asks this first, so a graphic that can stand in is never pre-empted.
+ */
+export function dataOrMapGraphicForBeat(
+  intent: VisualIntent,
+  scene: Scene | undefined,
+  startSec: number,
+  endSec: number
+): PictureGraphic | null {
+  if (endSec - startSec < MIN_PRIMARY_GRAPHIC_SEC) return null;
   const need = mediaFormsForIntent(
     {
       people: intent.people,
@@ -191,11 +209,7 @@ export function primaryGraphicForBeat(
     statesAQuantity(intent.spokenText),
     namesAMappablePlace(intent.spokenText)
   );
-  return (
-    primaryGraphicFor(intent, scene, need.preferred, startSec, endSec - startSec) ??
-    /** GENERATED_IMAGE_FALLBACK — last of all: Remotion draws the sentence's subject. */
-    generatedImageFallbackFor(intent, startSec, endSec - startSec)
-  );
+  return primaryGraphicFor(intent, scene, need.preferred, startSec, endSec - startSec);
 }
 
 export type EntityExtractors = {
@@ -1107,9 +1121,11 @@ export function buildCinematicSceneInputs(params: {
             graphic: standIn,
           });
           console.log(
-            `[CinematicGraphicVisual] scene=${scene.index} beat=${beatIndex} graphic=${standIn.graphicType} ` +
-              `${(end - start).toFixed(2)}s — the sentence's picture is a graphic` +
-              (standIn.reason.startsWith(GENERATED_IMAGE_FALLBACK) ? ` ${GENERATED_IMAGE_FALLBACK}` : "")
+            standIn.reason.startsWith(CHAPTER_CARD_FALLBACK)
+              ? `[${CHAPTER_CARD_FALLBACK}] s${scene.index}b${beatIndex} ${(end - start).toFixed(2)}s — no source, ` +
+                  `graphic or generated image gave this sentence a picture; Remotion draws a chapter card`
+              : `[CinematicGraphicVisual] scene=${scene.index} beat=${beatIndex} graphic=${standIn.graphicType} ` +
+                  `${(end - start).toFixed(2)}s — the sentence's picture is a graphic`
           );
         }
         return;

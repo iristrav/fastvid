@@ -164,10 +164,10 @@ describeRender("a graphic as a sentence's picture reaches the delivered MP4", ()
     expect(f.black, `black share ${f.black}`).toBeGreaterThan(0.5);
   });
 
-  it("GENERATED_IMAGE_FALLBACK: under the sentence nothing could illustrate, Remotion's drawn card is the picture", async () => {
+  it("CHAPTER_CARD_FALLBACK: under the sentence nothing could illustrate, Remotion's drawn card is the picture", async () => {
     const gfx = timeline.tracks.find((t) => t.kind === "GRAPHICS");
     const card = gfx && gfx.kind === "GRAPHICS" ? gfx.graphics.find((g) => g.graphicType === "chapter_card") : undefined;
-    expect(card?.reason).toContain("GENERATED_IMAGE_FALLBACK");
+    expect(card?.reason).toContain("CHAPTER_CARD_FALLBACK");
     expect(card?.start).toBeCloseTo(8, 2);
     const f = await frameAt(out, 11.0, path.join(dir, "card.raw"));
     expect(f.red, `red share ${f.red}`).toBeLessThan(0.005);

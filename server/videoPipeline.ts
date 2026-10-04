@@ -195,7 +195,17 @@ import type { BeatOutcomeAudit } from "./beatOutcomeAudit";
 import { createBeatOutcomeAudit, noteBeatCandidatesOffered, noteBeatVisionVerdict, resolveBeatCoverage, coverageHasRealFootage, noteBeatEligible, noteBeatAdopted, noteBeatVision, renderBeatFunnelReport, formatEligibleNotAdoptedByProvider } from "./beatOutcomeAudit";
 import { beginReplayRecording, recordReplayFact, replayRecordingActive } from "./renderReplay";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
-import type { AdoptionFacts } from "./cinematicPipelineInputs";
+import { dataOrMapGraphicForBeat, intentFrom, type AdoptionFacts } from "./cinematicPipelineInputs";
+import {
+  GENERATED_IMAGE_FALLBACK,
+  GENERATED_IMAGE_PROVIDER,
+  GENERATED_IMAGES_PER_FILM,
+  beatsWithoutPicture,
+  generatedImageDecision,
+  generatedImagePrompt,
+  generatedStillSec,
+  stillImageGenerator,
+} from "./generatedImageFallback";
 import { bindLineageLedger, bindRelevanceLedger, bindContentKeyResolver, createClipAdoptAudit, formatUnjudgedAdoptions, formatAdoptionEvidence } from "./clipAdoptAudit";
 import { UNVERIFIED_PROVIDER, VisualSourceLedger, formatAssetLifecycleAudit, formatAssetUsageSummary, formatAuditReport, formatFinalVisualReport, formatRenderManifest, formatSelectedButNotRendered, formatFillerOverAdoptedAsset, formatFunnelReport, formatProviderFunnelInvariant, formatProviderTrace, lifecyclesOf, formatLifecycleInvariants, formatSourceSummary, assertNoSelectedClipWithoutOutcome, recordAssetOutcome, ensureCuratedAssetLineageOn, type VisualLineageRecord } from "./visualSourceLineage";
 import {
@@ -7587,6 +7597,139 @@ async function fetchSerpAPIImages(
  * editor still has its say. At most `ARTICLE_SCREENSHOTS_PER_VIDEO` per film.
  */
 const articleScreenshotsByRender = new WeakMap<VisualDedupState, number>();
+
+/**
+ * GENERATED_IMAGE_FALLBACK — the sentences still without a picture once EVERY source has had its
+ * turn (the beat ladder, its still rungs, stock, the main-subject rescue) get one generated, where
+ * `generatedImageDecision` allows it. A data graphic or map that can stand in is never pre-empted.
+ * Bounded: `GENERATED_IMAGES_PER_FILM` pictures, and only while the render has time left. A
+ * generated picture is pushed like any other (see `fetchBeatGeneratedImage`) and lands in the
+ * scene's clip list under its own sentence.
+ */
+async function generateMissingBeatImages(
+  scenes: Scene[],
+  sceneVisualResults: Array<SceneVisualsResult | undefined>,
+  dedup: VisualDedupState,
+  workDir: string,
+  videoTitle: string | undefined
+): Promise<void> {
+  let made = 0;
+  for (let si = 0; si < scenes.length; si++) {
+    const scene = scenes[si]!;
+    if (scene.isChapterCard) continue;
+    const result = sceneVisualResults[si];
+    const beats = dedup.sceneBeatsBySceneIndex.get(scene.index) ?? result?.beats ?? [];
+    for (const beat of beatsWithoutPicture(beats, result?.clipBeatIndices ?? [])) {
+      const remaining = get_activeBudgetTracker()?.remainingMs?.();
+      if (remaining != null && remaining < 4 * 60_000) {
+        console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — ${Math.round(remaining / 1000)}s left in the render`);
+        return;
+      }
+      const clip = await fetchBeatGeneratedImage(beat, scene, workDir, si, dedup, videoTitle, GENERATED_IMAGES_PER_FILM - made);
+      if (!clip) continue;
+      made++;
+      const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
+      target.clips.push(clip);
+      target.beatDurations.push(generatedStillSec(beat));
+      (target.clipBeatIndices ??= []).push(beat.index);
+    }
+  }
+}
+
+async function fetchBeatGeneratedImage(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  dedup: VisualDedupState,
+  videoTitle: string | undefined,
+  budgetLeft: number
+): Promise<string | null> {
+  const where = `s${scene.index}b${beat.index}`;
+  const sentence = dedup.beatJudgeTextOverride?.get(`${scene.index}:${beat.index}`) ?? beat.text;
+  const productionBeat = {
+    index: beat.index, text: sentence, searchQuery: beat.searchQuery, powerWord: beat.powerWord,
+    keywords: beat.keywords, holdSec: beat.holdSec, visualDescription: beat.visualDescription,
+  };
+  const intent = intentFrom(productionBeat, scene.index, beat.index, null, {
+    people: (t) => extractPersonNamesFromText(t),
+    place: (t) => extractVisualPlacePhrase(t),
+    action: (t) => extractActionCue(t),
+    namedEntities: (t) => beatNamedEntitiesByKind(t),
+  });
+  const contract = dedup.documentaryPlan
+    ? (await import("./documentaryPlanningEngine")).getRetrievalContract(dedup.documentaryPlan, sceneIndex, beat.index)
+    : null;
+  const decision = generatedImageDecision({
+    hasPicture: false,
+    graphicCanStandIn: dataOrMapGraphicForBeat(intent, scene, 0, Math.max(beat.holdSec ?? 5, 1)) !== null,
+    people: intent.people,
+    forbidden: contract?.forbiddenContent ?? [],
+    budgetLeft,
+  });
+  if (!decision.generate) {
+    console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} not generated — ${decision.reason}`);
+    return null;
+  }
+  const plan = storedVisualIntentForBeat(sentence);
+  const prompt = generatedImagePrompt({
+    sentence,
+    visualDescription: plan?.visual_description ?? beat.visualDescription,
+    searchQuery: plan?.search_query,
+  });
+  if (!prompt) {
+    console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} not generated — the sentence and its VisualIntent name too little to show`);
+    return null;
+  }
+  fs.mkdirSync(workDir, { recursive: true });
+  const base = `scene_${sceneIndex}_genimg_b${beat.index}`;
+  const png = path.join(workDir, `${base}.png`);
+  const assetId = createHash("sha256").update(prompt).digest("hex").slice(0, 16);
+  const outPath = tagPathWithProviderAsset(path.join(workDir, `${base}.mp4`), GENERATED_IMAGE_PROVIDER, assetId, dedup.sourcingCache, {
+    sceneIndex,
+    beatIndex: beat.index,
+    title: (plan?.visual_description ?? sentence).slice(0, 200),
+    mediaType: "image",
+    query: prompt.slice(0, 200),
+    searchRoute: "fetchBeatGeneratedImage",
+  });
+  const made = await stillImageGenerator()(prompt, png).catch(() => false);
+  if (!made || !fs.existsSync(png)) {
+    recordProviderDownloadOutcome(dedup.sourcingCache, outPath, false, "the image service produced nothing");
+    console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} the image service produced nothing — the sentence keeps its fallbacks`);
+    return null;
+  }
+  await stillImageToVideo(png, outPath, generatedStillSec(beat), `generated image ${where}`, false, sceneIndex, beat.index);
+  try { fs.unlinkSync(png); } catch { /* already gone */ }
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 1_000) return null;
+  recordProviderDownloadOutcome(dedup.sourcingCache, outPath, true);
+  dedup.clipAnnotationMeta.set(outPath, {
+    ...(dedup.clipAnnotationMeta.get(outPath) ?? {}),
+    providerText: { title: plan?.visual_description ?? sentence },
+  });
+  /**
+   * The same gates and the same picture editor as every other candidate, against this sentence.
+   * One generated picture is all there is to offer: every real candidate was already refused.
+   */
+  const offered = [outPath];
+  const clip = await withBeatProvenance(beat, scene, () =>
+    adoptClip(offered, dedup, sceneIndex, beat.index, sentence, workDir, plan?.search_query ?? sentence, {
+      requireBeatMatch: false,
+      scriptAnchored: false,
+      sceneText: scene.text,
+      videoTitle,
+    })
+  );
+  if (!clip || !isRealVideoClip(clip)) {
+    console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} generated, but not approved for the sentence — not used`);
+    return null;
+  }
+  console.log(
+    `[${GENERATED_IMAGE_FALLBACK}] ${where} used provider=${GENERATED_IMAGE_PROVIDER} ` +
+      `prompt="${prompt.slice(0, 160)}"`
+  );
+  return clip;
+}
 
 async function fetchBeatArticleScreenshot(
   beat: SceneBeat,
@@ -22971,6 +23114,9 @@ async function _runVideoPipelineInner(
     } finally {
       clearInterval(visualHeartbeat);
     }
+
+    /** GENERATED_IMAGE_FALLBACK — after every source and the main-subject rescue: see `generateMissingBeatImages`. */
+    await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);
 
     /**
      * A scene with no picture is a gap the timeline holds over. A film with no picture in ANY scene

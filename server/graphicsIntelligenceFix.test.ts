@@ -21,8 +21,8 @@ import {
 } from "./cinematicPipelineInputs";
 import { runCinematicPipeline } from "./cinematicPipeline";
 import {
-  GENERATED_IMAGE_FALLBACK,
-  generatedImageFallbackFor,
+  CHAPTER_CARD_FALLBACK,
+  chapterCardFallbackFor,
   namesAMappablePlace,
   parseNumericStat,
   planMotionGraphics,
@@ -356,9 +356,9 @@ describe("6 — the existing graphics still plan", () => {
   });
 });
 
-/* ═══════════════════════ 7 — GENERATED_IMAGE_FALLBACK ═══════════════════════ */
+/* ═══════════════════════ 7 — CHAPTER_CARD_FALLBACK ═══════════════════════ */
 
-describe("7 — GENERATED_IMAGE_FALLBACK: Remotion draws the sentence's subject when no source had a picture", () => {
+describe("7 — CHAPTER_CARD_FALLBACK: Remotion draws the sentence's subject when no source had a picture", () => {
   const SENTENCES = [
     "The economy grew slowly through the decade.",
     "Scientists cut a single gene inside a living cell.",
@@ -384,8 +384,8 @@ describe("7 — GENERATED_IMAGE_FALLBACK: Remotion draws the sentence's subject 
     const slot = built!.primaryGraphics?.find((p) => p.beatId === "s0b1");
     expect(slot?.graphic.graphicType).toBe("chapter_card");
     expect(slot?.graphic.data.title).toBe("Crispr Gene Editing Laboratory");
-    expect(slot?.graphic.reason.startsWith(GENERATED_IMAGE_FALLBACK)).toBe(true);
-    expect(logs.some((l) => l.includes("[CinematicGraphicVisual]") && l.includes(GENERATED_IMAGE_FALLBACK))).toBe(true);
+    expect(slot?.graphic.reason.startsWith(CHAPTER_CARD_FALLBACK)).toBe(true);
+    expect(logs.some((l) => l.startsWith(`[${CHAPTER_CARD_FALLBACK}] s`))).toBe(true);
 
     /** And it is an ordinary visual in the timeline: the drawn card over the sentence's window, centred. */
     const { timeline } = (() => {
@@ -415,12 +415,12 @@ describe("7 — GENERATED_IMAGE_FALLBACK: Remotion draws the sentence's subject 
       ...intentFrom(beat(0, "Scientists cut a single gene inside a living cell."), 0, 0, null, EXTRACTORS),
       visualSubject: subject,
     });
-    expect(generatedImageFallbackFor(intent("gene editing laboratory"), 0, 4)?.data.title).toBe("Gene Editing Laboratory");
+    expect(chapterCardFallbackFor(intent("gene editing laboratory"), 0, 4)?.data.title).toBe("Gene Editing Laboratory");
     /** Unrelated to the sentence: no card. */
-    expect(generatedImageFallbackFor(intent("rocket launch pad"), 0, 4)).toBeNull();
+    expect(chapterCardFallbackFor(intent("rocket launch pad"), 0, 4)).toBeNull();
     /** Only production words: no card. */
-    expect(generatedImageFallbackFor(intent("documentary broll scene"), 0, 4)).toBeNull();
-    expect(generatedImageFallbackFor(intent(""), 0, 4)).toBeNull();
+    expect(chapterCardFallbackFor(intent("documentary broll scene"), 0, 4)).toBeNull();
+    expect(chapterCardFallbackFor(intent(""), 0, 4)).toBeNull();
   });
 
   it("a named event or person leads, and a stated year is added", () => {
@@ -428,8 +428,8 @@ describe("7 — GENERATED_IMAGE_FALLBACK: Remotion draws the sentence's subject 
       ...intentFrom(beat(0, "In 1948 the Marshall Plan began to rebuild Europe."), 0, 0, null, EXTRACTORS),
       events: ["Marshall Plan"],
     };
-    expect(generatedImageFallbackFor(marshall, 0, 4)?.data.title).toBe("Marshall Plan · 1948");
+    expect(chapterCardFallbackFor(marshall, 0, 4)?.data.title).toBe("Marshall Plan · 1948");
     const messi = intentFrom(beat(0, "Lionel Messi wept on the pitch."), 0, 0, null, EXTRACTORS);
-    expect(generatedImageFallbackFor(messi, 0, 4)?.data.title).toBe("Lionel Messi");
+    expect(chapterCardFallbackFor(messi, 0, 4)?.data.title).toBe("Lionel Messi");
   });
 });

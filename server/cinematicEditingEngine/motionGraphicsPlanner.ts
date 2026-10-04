@@ -633,7 +633,7 @@ export function plausibleEventName(label: string): boolean {
   return /\p{Lu}/u.test(label) && isEventName(label);
 }
 
-/* ═════════ GENERATED_IMAGE_FALLBACK — the last picture a sentence can have ═════════ */
+/* ═════════ CHAPTER_CARD_FALLBACK — the last picture a sentence can have ═════════ */
 
 /**
  * A graphic that is a sentence's PICTURE: one of the planner's own, or the drawn title card of the
@@ -644,14 +644,17 @@ export type PictureGraphic = Omit<MotionGraphicInstruction, "graphicType"> & {
   graphicType: MotionGraphicInstruction["graphicType"] | "chapter_card";
 };
 
-/** The log and reason marker of a picture Remotion drew because no source had one. */
-export const GENERATED_IMAGE_FALLBACK = "GENERATED_IMAGE_FALLBACK";
+/**
+ * The log and reason marker of a title card Remotion drew because no source — and no generated
+ * image (`generatedImageFallback.ts`, GENERATED_IMAGE_FALLBACK) — gave the sentence a picture.
+ */
+export const CHAPTER_CARD_FALLBACK = "CHAPTER_CARD_FALLBACK";
 
 /**
- * GENERATED_IMAGE_FALLBACK — a picture Remotion draws for a sentence no source could illustrate.
+ * CHAPTER_CARD_FALLBACK — a picture Remotion draws for a sentence no source could illustrate.
  *
  * Asked last: only for a sentence with no approved picture from YouTube, the archive, the open
- * sources or stock, and only when neither a data graphic nor a map could stand in. Remotion draws
+ * sources, stock or a generated image, and only when neither a data graphic nor a map could stand in. Remotion draws
  * designs, not photographs, so the picture is the renderer's own designed title card
  * (`chapter_card`) carrying what the sentence is ABOUT, in this order: the named event it states
  * ("Marshall Plan"), the person it names, or its VisualIntent subject — the last one only when it
@@ -659,7 +662,7 @@ export const GENERATED_IMAGE_FALLBACK = "GENERATED_IMAGE_FALLBACK";
  * not say. A year the sentence states is added. Nothing else is written; with no such subject, or
  * only production words ("documentary broll scene"), there is no card.
  */
-export function generatedImageFallbackFor(
+export function chapterCardFallbackFor(
   intent: VisualIntent,
   startSec: number,
   durationSec: number
@@ -683,7 +686,7 @@ export function generatedImageFallbackFor(
     startSec,
     durationSec,
     reason:
-      `${GENERATED_IMAGE_FALLBACK}: no source had a picture for this sentence — Remotion draws a title ` +
+      `${CHAPTER_CARD_FALLBACK}: no source had a picture for this sentence — Remotion draws a title ` +
       `card of what it is about ("${title}").`,
   };
   return plannedGraphicIsDrawable(g) ? g : null;
