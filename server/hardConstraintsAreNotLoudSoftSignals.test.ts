@@ -203,9 +203,12 @@ describe("R265 §3 — a beat that states nothing is ordered exactly as before",
     expect(at, "the hard key is not in the sort").toBeGreaterThan(-1);
     const block = CODE.slice(at, at + 500);
     expect(block).toContain("if (hard !== 0) return hard;");
+    /** AUDIT 3f9ba94 — through `compareScoredCandidates`, which still ends in the old comparator. */
     expect(block, "the existing comparator was replaced rather than preceded").toContain(
-      "return compareBeatCandidates("
+      "return compareScoredCandidates("
     );
+    const helper = CODE.slice(CODE.indexOf("export function compareScoredCandidates("));
+    expect(helper.slice(0, helper.indexOf("\n}\n"))).toContain("return compareBeatCandidates(");
   });
 });
 
@@ -230,7 +233,8 @@ describe("R265 §4 — not a gate", () => {
   });
 
   it("the sort still returns every candidate it was handed", () => {
-    const at = CODE.indexOf("const sortedPaths = [...paths].sort((a, b) => {");
+    /** AUDIT 3f9ba94 — the sort reads `offered`: every path minus a file refused earlier this render. */
+    const at = CODE.indexOf("const sortedPaths = [...offered].sort((a, b) => {");
     expect(at).toBeGreaterThan(-1);
     const block = CODE.slice(at, at + 700);
     expect(block, "the sort became a filter").not.toContain(".filter(");

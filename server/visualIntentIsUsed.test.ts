@@ -139,7 +139,7 @@ describe("the intent reaches the decisions it is for", () => {
     const at = PIPE.indexOf("async function adoptClip(");
     const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
     const built = body.indexOf("ensureBeatVisualIntent(dedup.beatIntent");
-    const sorted = body.indexOf("const sortedPaths = [...paths].sort(");
+    const sorted = body.indexOf("const sortedPaths = [...offered].sort(");
     expect(built, "the intent is never built").toBeGreaterThan(-1);
     expect(sorted).toBeGreaterThan(-1);
     expect(built, "the intent is joined after the order was already fixed").toBeLessThan(sorted);

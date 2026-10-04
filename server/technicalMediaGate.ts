@@ -313,15 +313,44 @@ export const ADOPT_MIN_FILE_BYTES = 180_000;
  * The checks that need only the file system — asked first, before anything is spawned, so a
  * missing or truncated file never costs an ffprobe.
  */
-export function technicalFileRefusal(filePath: string): string | null {
+export function technicalFileRefusal(filePath: string, measuredDurationSec?: number): string | null {
   let size: number;
   try {
     size = fs.statSync(filePath).size;
   } catch {
     return "file_missing";
   }
-  if (size < ADOPT_MIN_FILE_BYTES) return `below_size_floor_${size}_bytes`;
+  if (size < ADOPT_MIN_FILE_BYTES && !smallFileIsAShortShot(size, measuredDurationSec)) {
+    return `below_size_floor_${size}_bytes`;
+  }
   return null;
+}
+
+/**
+ * AUDIT 3f9ba94 — A SHORT SHOT IS A SMALL FILE.
+ *
+ * The floor above was set for a whole clip. A YouTube moment is one shot of a few seconds, and
+ * render 628 refused six of them at 102–143 KB before the picture editor ever saw one — every
+ * YouTube picture that render had. Below the floor a file may still pass when its duration was
+ * MEASURED and the bytes per second are those of real video: at least 0.8 s, at least 24 KB, and at
+ * least 20 KB for every second (160 kbit/s). A truncated download or a placeholder that claims a
+ * long duration stays far below that rate and is refused exactly as before; without a measured
+ * duration the old floor stands unchanged. Decoding is still checked after this (`not_a_valid_video`).
+ */
+export const ADOPT_MIN_BYTES_PER_SEC = 20_000;
+export const ADOPT_MIN_SHORT_SHOT_BYTES = 24_000;
+export const ADOPT_MIN_SHORT_SHOT_SEC = 0.8;
+
+export function smallFileIsAShortShot(sizeBytes: number, measuredDurationSec?: number): boolean {
+  if (!measuredDurationSec || !Number.isFinite(measuredDurationSec)) return false;
+  if (measuredDurationSec < ADOPT_MIN_SHORT_SHOT_SEC) return false;
+  if (sizeBytes < ADOPT_MIN_SHORT_SHOT_BYTES) return false;
+  return sizeBytes / measuredDurationSec >= ADOPT_MIN_BYTES_PER_SEC;
+}
+
+/** Whether a refusal is the size floor — the one check a measured duration can answer. */
+export function isSizeFloorRefusal(refusal: string | null): boolean {
+  return Boolean(refusal?.startsWith("below_size_floor_"));
 }
 
 /**

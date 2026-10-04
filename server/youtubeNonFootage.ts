@@ -181,6 +181,83 @@ export function sentenceOnlyQueries(
   return wordsTheSentenceSays(queries, allowed, "", null);
 }
 
+/** Words about HOW footage is made, not WHAT is on it — never the subject of a search. */
+const PRODUCTION_WORDS = new Set([
+  "footage", "archival", "archive", "documentary", "broll", "b-roll", "stock", "video", "videos",
+  "clip", "clips", "shot", "shots", "scene", "scenes", "cinematic", "photo", "photos", "image",
+  "images", "picture", "wide", "medium", "close-up", "closeup", "establishing", "aerial", "tracking",
+]);
+
+/**
+ * AUDIT 3f9ba94 — WHAT THE VIEWER MUST SEE, AS ONE SHORT QUESTION.
+ *
+ * The cut above keeps only words the sentence says, so a sentence that names nobody ("Scientists
+ * cut a single gene…") asked nothing, and a named one asked only its names. The stored VisualIntent
+ * already says what belongs on screen, and the search gate already accepts its words as proof
+ * (`planEvidenceText`). This reads it: the sentence's own names first (at most two), then the
+ * plan's search query — or its keyword, or the start of its description — without production
+ * words, function words or repeats, at most seven words. No plan, no query: the cut stands alone.
+ */
+export function visualIntentSearchQuery(
+  entry: { search_query?: string; primary_keyword?: string; visual_description?: string } | undefined,
+  sentence: string,
+  sceneText = ""
+): string {
+  if (!entry) return "";
+  const source =
+    [entry.search_query, entry.primary_keyword, entry.visual_description?.split(/\s+/).slice(0, 8).join(" ")]
+      .map((s) => (s ?? "").trim())
+      .find((s) => s && s.toLowerCase() !== "documentary broll scene") ?? "";
+  const usable = (raw: string): string | null => {
+    const w = sentenceWords(raw)[0];
+    if (!w || FILLER_WORDS.has(w) || FUNCTION_WORDS.has(w) || GLUE_WORDS.has(w) || PRODUCTION_WORDS.has(w)) return null;
+    if (isContraction(w)) return null;
+    return raw.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/['’]s$/, "");
+  };
+  const intentWords = source.split(/\s+/).map(usable).filter((w): w is string => Boolean(w));
+  if (intentWords.length === 0) return "";
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (w: string) => {
+    const key = w.toLowerCase();
+    if (!w || seen.has(key) || out.length >= 7) return;
+    seen.add(key);
+    out.push(w);
+  };
+  for (const name of namesInSentence(sentence, [], sceneText).slice(0, 2)) {
+    for (const w of name.split(/\s+/)) if (usable(w)) add(w);
+  }
+  for (const w of intentWords) add(w);
+  return out.join(" ");
+}
+
+/**
+ * AUDIT 3f9ba94 — the words that say what a sentence (or its VisualIntent) is ABOUT: no function,
+ * filler, glue or production words, nothing shorter than three letters, each word once.
+ */
+export function subjectWords(text: string): string[] {
+  return [
+    ...new Set(
+      sentenceWords(text).filter(
+        (w) =>
+          w.length >= 3 &&
+          !FILLER_WORDS.has(w) &&
+          !FUNCTION_WORDS.has(w) &&
+          !GLUE_WORDS.has(w) &&
+          !PRODUCTION_WORDS.has(w) &&
+          !isContraction(w)
+      )
+    ),
+  ];
+}
+
+/** How many of `words` a candidate's own text (title, description, tags) says, as whole words. */
+export function subjectWordOverlap(candidateText: string, words: readonly string[]): number {
+  if (!candidateText || !words.length) return 0;
+  const have = new Set(sentenceWords(candidateText));
+  return words.filter((w) => have.has(w)).length;
+}
+
 /** A contraction ("isn't", "don't", "they're") is grammar, never a subject. */
 function isContraction(w: string): boolean {
   return /n['’]t$|['’](re|ve|ll|d|m)$/.test(w);
@@ -205,6 +282,12 @@ function wordsTheSentenceSays(
         if (verbWord && w === verbWord) return false;
         return allowed.has(w);
       });
+    /** A word said twice ("Messi Messi World Cup", "Amazon Amazon") is asked once. */
+    for (let i = kept.length - 1; i >= 0; i--) {
+      const w = sentenceWords(kept[i]!)[0] ?? "";
+      if (GLUE_WORDS.has(w)) continue;
+      if (kept.slice(0, i).some((k) => (sentenceWords(k)[0] ?? "") === w)) kept.splice(i, 1);
+    }
     while (kept.length && GLUE_WORDS.has(sentenceWords(kept[0]!)[0] ?? "")) kept.shift();
     while (kept.length && GLUE_WORDS.has(sentenceWords(kept[kept.length - 1]!)[0] ?? "")) kept.pop();
     if (!kept.some((raw) => !GLUE_WORDS.has(sentenceWords(raw)[0] ?? ""))) continue;
@@ -280,7 +363,8 @@ export function namesInSentence(sentence: string, alsoNamedIn: readonly string[]
     } else if (run.length && GLUE_WORDS.has(w) && /^\p{Ll}/u.test(raw)) {
       run.push(raw);
     } else if (run.length) close();
-    if (run.length && /[.,;:!?)]$/.test(raw)) close();
+    /** An initial ("Dwight D. Eisenhower") is part of the name, not the end of it. */
+    if (run.length && /[.,;:!?)]$/.test(raw) && !/^\p{Lu}\.$/u.test(raw)) close();
   });
   if (run.length) close();
   return [...new Set(runs.filter(Boolean))];

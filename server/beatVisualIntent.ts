@@ -64,6 +64,11 @@ export type BeatVisualIntent = {
   foldedTerms: readonly string[];
   /** True when subject (and shot, if given) came from the stored VisualDirector plan. */
   fromPlan?: boolean;
+  /**
+   * AUDIT RC3 — what KIND of picture this sentence wants, from its typed terms and its own words.
+   * Built with the intent, so every route that reads the intent at the selection point has it.
+   */
+  mediaForm?: MediaFormNeed;
 };
 
 export type BeatVisualIntentState = {
@@ -99,6 +104,8 @@ export function buildBeatVisualIntent(input: {
   narrativePurpose?: string;
   /** STAP 1 — the stored VisualDirector plan for this beat. Its subject and shot lead. */
   plan?: { search_query?: string; visual_description?: string; camera_shot?: string } | null;
+  /** AUDIT RC3 — the sentence states a quantity; see `mediaFormsForIntent`. */
+  statesQuantity?: boolean;
 }): BeatVisualIntent {
   const { sceneIndex, beatIndex, ctx, contract, plan } = input;
 
@@ -167,6 +174,7 @@ export function buildBeatVisualIntent(input: {
     narrativePurpose: (input.narrativePurpose ?? contract?.visualGoal ?? "").toString(),
     forbidden: (contract?.forbiddenContent ?? []).map((t) => t.trim()).filter(Boolean),
     foldedTerms: content.map((t) => foldSearchText(t)).filter(Boolean),
+    mediaForm: mediaFormsForIntent({ people, event, location, period, objects, action }, input.statesQuantity === true),
   };
 }
 
@@ -297,6 +305,7 @@ export type MediaFormNeed = {
   acceptable: readonly MediaForm[];
 };
 
+
 /**
  * INFERRED FROM WHAT THE BEAT ALREADY TYPED — no LLM call, no new API, no new extractor.
  *
@@ -321,12 +330,11 @@ export type MediaFormNeed = {
  * everywhere except a beat that specifically needs motion, and this model does not claim to know
  * that. REAL_FOOTAGE is acceptable everywhere for the same reason.
  *
- * What this does NOT do: MAP, DOCUMENT, GRAPHIC, DATA_VISUALIZATION and INTERVIEW are declared in
- * `MediaForm` and never inferred here. Nothing in the current intent can prove a beat needs a map
- * or a chart — the extractors do not type quantities, and guessing from a word like "percent"
- * would be exactly the kind of inference this codebase keeps removing. They are in the type so a
- * later round that CAN prove them has a name to use, and naming them without inferring them is
- * the honest state.
+ * What this does NOT do: MAP, DOCUMENT, GRAPHIC and INTERVIEW are declared in `MediaForm` and never
+ * inferred here — nothing in the current intent can prove a beat needs a map. DATA_VISUALIZATION is
+ * the one exception, and only when the caller passes `statesQuantity` (a number with a unit, a
+ * series of years or a word for a quantity's movement, read by the graphics planner's own reader).
+ * adoptClip reads the first preferred form to stop demoting stills for such a sentence.
  */
 export function mediaFormsForIntent(
   intent:
@@ -339,7 +347,12 @@ export function mediaFormsForIntent(
         action?: readonly string[];
       }
     | null
-    | undefined
+    | undefined,
+  /**
+   * AUDIT RC3 — the sentence states a quantity or its movement. Read by the caller with the
+   * extractor that already reads numbers (`statesAQuantity`); this module joins, it does not extract.
+   */
+  statesQuantity = false
 ): MediaFormNeed {
   const has = (list: readonly string[] | undefined): boolean => (list?.length ?? 0) > 0;
   if (!intent) return { preferred: [], acceptable: ["B_ROLL"] };
@@ -349,6 +362,13 @@ export function mediaFormsForIntent(
   const push = (form: MediaForm): void => {
     if (!preferred.includes(form)) preferred.push(form);
   };
+  /**
+   * AUDIT RC3 — a sentence that states a quantity or its movement is better SHOWN as data. Read
+   * from the sentence's own words only, never from a typed field (those still prove no chart). A
+   * preference, not a requirement: the footage forms below stay acceptable, so a beat whose data
+   * graphic cannot be drawn is sourced exactly as before.
+   */
+  if (statesQuantity) push("DATA_VISUALIZATION");
 
   if (dated) push("ARCHIVAL_FOOTAGE");
   if (has(intent.people)) push("PERSON");
@@ -393,7 +413,7 @@ export function formatVisualIntent(intent: BeatVisualIntent): string {
   if (intent.narrativePurpose) parts.push(`purpose=${intent.narrativePurpose}`);
   add("forbidden", intent.forbidden);
   /** The need, on the same line as the terms it was derived from, so the two can be compared. */
-  parts.push(formatMediaFormNeed(mediaFormsForIntent(intent)));
+  parts.push(formatMediaFormNeed(intent.mediaForm ?? mediaFormsForIntent(intent)));
   return `[VisualIntent] ${parts.join(" ")}`;
 }
 

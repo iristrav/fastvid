@@ -429,6 +429,12 @@ export function holdPictureUnderVoice(params: {
   clips: TimelineVideoClip[];
   /** How long the narration runs. Absent or zero means "no voice to cover". */
   voiceDurationSec?: number | null;
+  /**
+   * AUDIT RC1 — may this shot, approved for another sentence, stand under [startSec, endSec)?
+   * The production caller answers from the picture editor's own verdicts for the sentences in that
+   * span; a shot without such a verdict is not used as a filler, and the hole is held as before.
+   */
+  fillerFits?: (filler: TimelineVideoClip, startSec: number, endSec: number) => boolean;
 }): string[] {
   const covered: string[] = [];
   const clips = params.clips;
@@ -486,9 +492,15 @@ export function holdPictureUnderVoice(params: {
     const fillers: TimelineVideoClip[] = [];
     let at = holdEnd;
     let previous: TimelineVideoClip = outgoing;
+    /** How long a piece of this shot would run from `at` — the same rule as `len` below. */
+    const pieceLen = (c: TimelineVideoClip): number => {
+      const l = Math.min(until - at, MAX_SHOT_SEC, windowOf(c) ?? MAX_SHOT_SEC);
+      return until - at - l < MIN_FILL_SEC ? until - at : l;
+    };
     while (until - at > EPS) {
       const pick = [...candidates]
         .filter((c) => c !== previous)
+        .filter((c) => !params.fillerFits || params.fillerFits(c, at, at + pieceLen(c)))
         .sort(
           (x, y) =>
             (fillerUses.get(x.id) ?? 0) - (fillerUses.get(y.id) ?? 0) ||
@@ -644,6 +656,8 @@ export function translateEdl(params: {
    * than a caption that stays a sentence and says so.
    */
   words?: readonly { word: string; startSec: number; endSec: number }[];
+  /** AUDIT RC1 — see `holdPictureUnderVoice`. Absent: fillers are chosen as before. */
+  fillerFits?: (filler: TimelineVideoClip, startSec: number, endSec: number) => boolean;
 }): EdlTranslation {
   const timeline = emptyTimeline(params.videoId, params.format ?? DEFAULT_FORMAT);
   if (params.look) timeline.look = params.look;
@@ -985,6 +999,7 @@ export function translateEdl(params: {
   const covered = holdPictureUnderVoice({
     clips,
     voiceDurationSec: params.voice?.durationSec ?? null,
+    ...(params.fillerFits ? { fillerFits: params.fillerFits } : {}),
   });
   /** VIDEO 626 — a filler taken from a YouTube shot is a YouTube shot: the five-second rule holds it too. */
   for (const c of clips) {

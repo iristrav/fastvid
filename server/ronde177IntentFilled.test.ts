@@ -188,11 +188,16 @@ describe("R177 — the object the beat centres on", () => {
     expect(intentOf("The Titanic was a ship of the White Star Line.").objects[0]).toBe("Titanic");
   });
 
-  it("makes the motion graphics planner able to draw a highlight box", () => {
-    const graphics = planMotionGraphics(intentOf("He held the pistol in his right hand."), undefined, 0, 4);
-    const highlight = graphics.find((g) => g.graphicType === "highlight_box");
-    expect(highlight, "the highlight box rule is still unreachable").toBeTruthy();
-    expect(JSON.stringify(highlight!.data)).toContain("pistol");
+  /**
+   * AUDIT RC2 — the object still reaches the intent (asserted above); the planner no longer turns
+   * it into a highlight box, because a box needs a REGION of the frame and the planner has only the
+   * word. Video 627 planned five such boxes and drew none.
+   */
+  it("the object reaches the intent, and no undrawable highlight box is planned from it", () => {
+    const intent = intentOf("He held the pistol in his right hand.");
+    expect(intent.objects).toContain("pistol");
+    const graphics = planMotionGraphics(intent, undefined, 0, 4);
+    expect(graphics.find((g) => g.graphicType === "highlight_box")).toBeUndefined();
   });
 });
 

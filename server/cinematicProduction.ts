@@ -48,7 +48,7 @@ import {
   formatQualitySummary,
   type QualityFinding,
 } from "./directorQualityRules";
-import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
+import type { AssetSourceIdentity, ProjectTimeline, TimelineVideoClip } from "./projectTimeline";
 import type { YoutubeSourceFacts } from "./youtubeShotLimit";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 /**
@@ -178,7 +178,28 @@ export type CinematicPlanParams = {
    * without a database. Absent = no beat is treated as YouTube.
    */
   youtubeSourceFacts?: (identity: AssetSourceIdentity) => Promise<YoutubeSourceFacts | null>;
+  /**
+   * AUDIT RC1 — did the picture editor approve this shot for that sentence? Production answers from
+   * the render's verdict ledger. When given, a hole is filled only with shots approved for every
+   * sentence the piece would run under; absent, fillers are chosen as before.
+   */
+  fillerApprovedFor?: (filler: TimelineVideoClip, sceneIndex: number, beatIndex: number) => boolean;
 };
+
+/**
+ * AUDIT RC1 — a piece of a filler over [startSec, endSec) fits when every sentence it overlaps
+ * approved that shot. A span no sentence covers has nobody to approve it, so it does not fit.
+ */
+export function fillerFitsFor(
+  windows: ReadonlyArray<{ sceneIndex: number; beatIndex: number; startSec: number; endSec: number }>,
+  approvedFor: (filler: TimelineVideoClip, sceneIndex: number, beatIndex: number) => boolean
+): (filler: TimelineVideoClip, startSec: number, endSec: number) => boolean {
+  const EPS = 0.001;
+  return (filler, startSec, endSec) => {
+    const under = windows.filter((w) => w.startSec < endSec - EPS && w.endSec > startSec + EPS);
+    return under.length > 0 && under.every((w) => approvedFor(filler, w.sceneIndex, w.beatIndex));
+  };
+}
 
 /**
  * Plan one video the cinematic way, validate the plan, and store it.
@@ -310,6 +331,7 @@ export async function planAndStoreCinematicTimeline(
        * anything measured the intensity between them.
        */
       emotionalCurve: params.emotionalCurve,
+      ...(params.fillerApprovedFor ? { fillerFits: fillerFitsFor(built.beatWindows, params.fillerApprovedFor) } : {}),
       musicCatalogue,
     });
   } catch (err) {

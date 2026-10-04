@@ -55,7 +55,7 @@ import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadR
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry } from "./youtubeLookahead";
-import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyQueries, sentenceOnlyYoutubeQueries, youtubeResultIsShort } from "./youtubeNonFootage";
+import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyQueries, sentenceOnlyYoutubeQueries, subjectWordOverlap, subjectWords, visualIntentSearchQuery, youtubeResultIsShort } from "./youtubeNonFootage";
 import { loadUnusableYoutubeVideos, recordYoutubeVideoOutcome, unreliableChannelsLast, unreliableYoutubeChannels, withoutUnusableYoutubeVideos, youtubeVideoUnusable } from "./youtubeUnusableVideos";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { buildSimpleStillVF, buildMatFramedStillVF, buildStillEncodeArgs, documentaryStyleEnabled, resolveStillCompositionVF, stillOutputFrameCount } from "./documentaryStyle";
@@ -159,6 +159,7 @@ import {
   formatTechnicalReject,
   minShortSideForSource,
   technicalFileRefusal,
+  isSizeFloorRefusal,
   technicalMediaRefusal,
   videoResolutionVerdict,
   type MediaProbes,
@@ -213,6 +214,7 @@ import { formatGlobalBudget, withGlobalMediaFetch } from "./globalResourceBudget
 import { buildBeatSearchLadder, buildPrioritisedQueries, checkPersonName, formatSearchGateReport, type VerifiedSearchQuery, emptyQueryContext, getQueryScope, getRenderTopic, getSearchProvenance, searchGateDecision, withRenderTopic, withSearchProvenance, withQueryScope, isFunctionWord, isPronounToken, provenToken, type VerifiedQueryContext } from "./searchQueryContract";
 import { awaitVideoYoutubePool, buildVideoYoutubePool, emptyVideoYoutubePool, hasVideoYoutubePool, videoPoolMayOfferYoutube, poolGaveNoYoutube, poolRowsForBeat, registerVideoYoutubePool, releaseVideoYoutubePool, noteVideoYoutubePoolRefusal, type VideoYoutubePool } from "./youtubeVideoPool";
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
+import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import { videoMainSubject } from "./mainSubject";
 import { readPeopleInNarration } from "./personNames";
 import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots, type StockShot } from "./youtubeShotStock";
@@ -251,13 +253,9 @@ import {
 } from "./documentaryTasteModel";
 import {
   editorialGraphicsEnabled,
-  planVideoGraphics,
-  generateGraphicClip,
   emptyUsageSummary,
-  recordGraphicUsage,
   printGraphicsUsageReport,
   type GraphicsUsageSummary,
-  type GraphicPlan,
 } from "./editorialGraphicsEngine";
 import {
   buildEditorScenesFromPipeline,
@@ -3758,11 +3756,23 @@ export function youtubeQueriesForSentence(
 export function youtubeQueryPlanForSentence(
   queries: readonly string[],
   sentence: string | undefined,
-  sceneText?: string
-): { queries: string[]; from: "sentence" | "previous" | "next" | "none" } {
+  sceneText?: string,
+  /** AUDIT 3f9ba94 — this sentence's stored VisualIntent; read from the render's plan by default. */
+  intent: Parameters<typeof visualIntentSearchQuery>[0] = storedVisualIntentForBeat(sentence ?? "")
+): { queries: string[]; from: "intent" | "sentence" | "previous" | "next" | "none" } {
   const cut = (text: string, extra: readonly string[] = []) =>
     sentenceOnlyYoutubeQueries([...queries, ...extra], text, extractActionCue(text) ?? "", sceneText ?? "", extractBeatGeoPlaceTags(text));
   const own = cut(sentence ?? "");
+  /**
+   * AUDIT 3f9ba94 — what the viewer must see asks first: the sentence's names plus its
+   * VisualIntent, then the sentence's own words. A sentence that names nobody no longer ends with
+   * nothing while its plan says exactly what belongs on screen.
+   */
+  const seen = visualIntentSearchQuery(intent, sentence ?? "", sceneText ?? "");
+  if (seen) {
+    const rest = own.filter((q) => q.toLowerCase() !== seen.toLowerCase());
+    return { queries: [seen, ...rest], from: own.length > 0 ? "sentence" : "intent" };
+  }
   if (own.length > 0) return { queries: own, from: "sentence" };
   const { previous, next } = neighbourSentences(sceneText, sentence);
   for (const [from, text] of [["previous", previous], ["next", next]] as const) {
@@ -14339,6 +14349,13 @@ export interface VisualDedupState {
    * because "Nazi" was the same question for all of them.
    */
   beatJudgeTextOverride?: Map<string, string>;
+  /**
+   * AUDIT 3f9ba94 — assets refused this render for what the FILE is (not a valid video, black, too
+   * small for its length, someone else's burned-in text), keyed by content key. Such a refusal is
+   * true for every sentence, so the asset is not offered again: render 628 offered one Internet
+   * Archive clip to five sentences and refused it five times for the same on-screen text.
+   */
+  refusedAssetsThisRender?: Map<string, string>;
   /** VIDEO 623 — the video's main subject; a sentence that names nothing of its own searches on it. */
   mainSubject?: string | null;
   /** VIDEO 623 — YouTube files a lookahead delivered after its sentence stopped waiting. */
@@ -17290,6 +17307,44 @@ export function historicalDateAlignmentScore(
  */
 export const MOTION_TIE_BREAK_MARGIN = 3;
 
+/**
+ * AUDIT 3f9ba94 — a refusal about the FILE (it does not decode, it is black, it is too small for its
+ * length, it carries someone else's burned-in text) is the same answer for every sentence. A refusal
+ * about the PICTURE is not: a shot wrong for one sentence may be right for the next, so those are
+ * never remembered here.
+ */
+/**
+ * AUDIT 3f9ba94 — adoptClip's order within one hard-requirement tier: the score; within the motion
+ * margin, the candidate whose own text says more of the sentence's subject words; then the
+ * existing motion preference (`still` false when the sentence's MediaForm prefers a still).
+ */
+export function compareScoredCandidates(
+  a: { score: number; subjectWords: number; still: boolean },
+  b: { score: number; subjectWords: number; still: boolean }
+): number {
+  if (Math.abs(b.score - a.score) <= MOTION_TIE_BREAK_MARGIN && b.subjectWords !== a.subjectWords) {
+    return b.subjectWords - a.subjectWords;
+  }
+  // Content decides; motion only breaks a tie. See compareBeatCandidates.
+  return compareBeatCandidates(a.score, a.still, b.score, b.still);
+}
+
+/** The candidates still worth offering: none this render already refused for what the file is. */
+export function pathsNotRefusedEarlier(
+  paths: readonly string[],
+  refused: ReadonlyMap<string, string> | undefined,
+  keyOf: (p: string) => string
+): string[] {
+  return refused?.size ? paths.filter((p) => !refused.has(keyOf(p))) : [...paths];
+}
+
+/** The forms a still answers as well as footage does — see adoptClip's MediaForm preference. */
+export const STILL_FRIENDLY_FORMS: ReadonlySet<string> = new Set(["DATA_VISUALIZATION", "MAP", "DOCUMENT", "PHOTO", "GRAPHIC"]);
+
+export function refusalHoldsForEverySentence(reason: string): boolean {
+  return /^(not_a_valid_video|pipeline_fallback|mostly_black|below_size_floor|baked_edit_text)/.test(reason);
+}
+
 export function compareBeatCandidates(
   scoreA: number,
   isStillA: boolean,
@@ -18137,6 +18192,7 @@ async function adoptClip(
     contract: _contract,
     narrativePurpose: _contract?.visualGoal,
     plan: storedVisualIntentForBeat(beatText),
+    statesQuantity: statesAQuantity(beatText),
   });
   if (!dedup.beatIntentLogged.has(`s${sceneIndex}b${beatIndex}`)) {
     dedup.beatIntentLogged.add(`s${sceneIndex}b${beatIndex}`);
@@ -18194,15 +18250,54 @@ async function adoptClip(
     }
     return m;
   };
-  const sortedPaths = [...paths].sort((a, b) => {
+  /**
+   * AUDIT 3f9ba94 — WHEN THE SCORES TIE, WHAT THE SENTENCE IS ABOUT DECIDES.
+   *
+   * Render 628 logged `margin=+0` on every runner-up line: the score had nothing to tell the
+   * candidates apart, so the pool's own order chose which picture the editor looked at first — and
+   * the first one it approved was adopted. Within the motion tie-break margin, the candidate whose
+   * own title, description and tags say more of this sentence's subject words (its words plus its
+   * VisualIntent query) now goes first. It only ORDERS: the picture editor still decides every
+   * candidate, and a refused one is never adopted because its title shares a word.
+   */
+  const wantedWords = subjectWords(
+    [beatText, visualIntentSearchQuery(storedVisualIntentForBeat(beatText), beatText, opts.sceneText ?? "")].join(" ")
+  );
+  const subjectMatchCache = new Map<string, number>();
+  const subjectMatchOf = (p: string): number => {
+    let n = subjectMatchCache.get(p);
+    if (n == null) {
+      const t = dedup.clipAnnotationMeta.get(p)?.providerText;
+      n = subjectWordOverlap([t?.title, t?.description, t?.tags].filter(Boolean).join(" "), wantedWords);
+      subjectMatchCache.set(p, n);
+    }
+    return n;
+  };
+  /**
+   * AUDIT 3f9ba94 — THE SENTENCE'S MEDIAFORM, AS A PREFERENCE.
+   *
+   * The motion tie-break demotes a still against comparable footage. A sentence whose first wish
+   * is a chart, a map, a document, a photo or a graphic is better served by a still than by any
+   * moving shot of equal score, so for such a sentence the still is not demoted. Nothing is
+   * refused: footage stays acceptable and still wins on content, exactly as before.
+   */
+  const stillsPreferred = STILL_FRIENDLY_FORMS.has(_intent.mediaForm?.preferred[0] ?? "");
+  const stillDemoted = (p: string): boolean => !stillsPreferred && isStillPhotoClip(p);
+  /** AUDIT 3f9ba94 — an asset this render already refused for what the file is, is not offered again. */
+  const refusedEarlier = dedup.refusedAssetsThisRender;
+  const offered = pathsNotRefusedEarlier(paths, refusedEarlier, clipContentKey);
+  if (offered.length < paths.length) {
+    console.log(
+      `[VisualSelection] scene=${sceneIndex} beat=${beatIndex} not offered again: ` +
+        `${paths.length - offered.length} asset(s) refused earlier this render for what the file is`
+    );
+  }
+  const sortedPaths = [...offered].sort((a, b) => {
     const hard = compareHardMatch(hardMatchOf(a), hardMatchOf(b));
     if (hard !== 0) return hard;
-    // Content decides; motion only breaks a tie. See compareBeatCandidates.
-    return compareBeatCandidates(
-      candidateScore(a) + intentScore(a),
-      isStillPhotoClip(a),
-      candidateScore(b) + intentScore(b),
-      isStillPhotoClip(b)
+    return compareScoredCandidates(
+      { score: candidateScore(a) + intentScore(a), subjectWords: subjectMatchOf(a), still: stillDemoted(a) },
+      { score: candidateScore(b) + intentScore(b), subjectWords: subjectMatchOf(b), still: stillDemoted(b) }
     );
   });
   if (sortedPaths.length > 1) {
@@ -18279,6 +18374,7 @@ async function adoptClip(
               top.object !== runnerUp.object ? "object" : null,
               top.date !== runnerUp.date ? "date" : null,
               top.genericPenalty !== runnerUp.genericPenalty ? "genericPenalty" : null,
+              subjectMatchOf(topPath) !== subjectMatchOf(runnerUpPath) ? "subjectWords" : null,
             ]
               .filter(Boolean)
               .join(",") || "visual/narration only"
@@ -18639,6 +18735,9 @@ async function adoptClip(
        */
       const refuse = (reason: string): true => {
         registerRejection(dedup.rejections, sceneIndex, beatIndex, p, reason, sourceQuery);
+        if (refusalHoldsForEverySentence(reason)) {
+          (dedup.refusedAssetsThisRender ??= new Map()).set(clipContentKey(p), reason);
+        }
         /** VIDEO 616 — a YouTube fragment refused for what its pixels show is not fetched again. */
         if (reason === "mostly_black" || reason === "baked_edit_text_before_vision") {
           rememberRefusedYoutubeFragment(dedup, p, reason);
@@ -18654,7 +18753,9 @@ async function adoptClip(
        * already adopted never costs a probe, a black-frame pass or a look (Invariant 2: no duplicate
        * work — this is the authoritative same-render asset-identity gate).
        */
-      const fileRefusal = technicalFileRefusal(p);
+      let fileRefusal = technicalFileRefusal(p);
+      /** AUDIT 3f9ba94 — below the size floor, the measured duration decides (a short shot is small). */
+      if (isSizeFloorRefusal(fileRefusal)) fileRefusal = technicalFileRefusal(p, await probeVideoDurationSec(p));
       if (fileRefusal && refuse(fileRefusal)) continue;
       const contentKey = clipContentKey(p);
       /** The one dedup question — every identity, the YouTube seconds included (visualDedupRegistry). */
@@ -19290,7 +19391,9 @@ async function gatherHistoricalBeatVideoPoolInner(
    * NUMBER of questions the ordinary pass would have asked — just better ones. That is what makes
    * this affordable: it does not add provider calls, it redirects them.
    */
-  const allQueries = uniqueQueryStrings([...(opts.leadQueries ?? []), ...entityYt, ...queries]).slice(
+  /** AUDIT 3f9ba94 — what the viewer must see (the sentence's VisualIntent) asks first, inside the same cap. */
+  const intentLead = visualIntentSearchQuery(storedVisualIntentForBeat(beat.text), beat.text, scene.text);
+  const allQueries = uniqueQueryStrings([...(opts.leadQueries ?? []), ...(intentLead ? [intentLead] : []), ...entityYt, ...queries]).slice(
     0,
     queryCap
   );
@@ -22370,24 +22473,12 @@ async function _runVideoPipelineInner(
       }
     }
 
-    // Plan graphic clips (fast, no LLM) and pre-generate them concurrently
-    if (editorialGraphicsEnabled()) {
-      const graphicPlans = planVideoGraphics(scenes, videoTitle ?? "");
-      if (graphicPlans.length > 0) {
-        console.log(`[EditorialGraphics] Pre-generating ${graphicPlans.length} graphic clip(s)`);
-        await Promise.all(
-          graphicPlans.map(async (plan: GraphicPlan) => {
-            const key = `s${plan.sceneIndex}b${plan.beatIndex}`;
-            const clip = await generateGraphicClip(plan, workDir);
-            if (clip) {
-              visualDedup.graphicClips.set(key, clip.clipPath);
-              recordGraphicUsage(visualDedup.graphicsUsageSummary, plan.type);
-            }
-          })
-        );
-        console.log(`[EditorialGraphics] Ready: ${visualDedup.graphicClips.size} clip(s)`);
-      }
-    }
+    /**
+     * AUDIT RC4 — the editorial engine's cards were generated here into `graphicClips`, and nothing
+     * read them: no route adopted one and the timeline never saw one, so the work was wasted and the
+     * progress line counted graphics that could not appear. Not generated any more; the film's
+     * graphics are the timeline's GRAPHICS track (`cinematicProgress.graphicsPlanned`).
+     */
 
     if (visualSearchPlanEnabled()) {
       visualDedup.videoVisualContext = await buildVideoVisualContext(
@@ -24546,6 +24637,24 @@ async function _runVideoPipelineInner(
           includeSubtitles: true,
           /** The render's own id, so an adapter refusal names the run that produced it. */
           renderId: lineage.renderId,
+          /**
+           * AUDIT RC1 — a shot fills a hole only where the picture editor already approved it for
+           * that sentence (the render's own verdicts, no new look). Positions are the plan's; the
+           * ledger is keyed by the beat's own index.
+           */
+          fillerApprovedFor: (filler, sceneIndex, beatPosition) => {
+            if (filler.sceneIndex == null || filler.beatIndex == null) return false;
+            const file = localFileForClip(filler.sceneIndex, filler.beatIndex, filler);
+            if (!file) return false;
+            const beatIndex = visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatPosition]?.index ?? beatPosition;
+            const found = relevanceVerdictForRenderedAsset(visualDedup.beatRelevance, {
+              localPath: file,
+              contentKey: clipContentKey(file),
+              sceneIndex,
+              beatIndex,
+            });
+            return found?.verdict === "fits" && found.evaluated !== false && !found.reprieved;
+          },
           scenes: scenes.map((scene, i) => {
             /**
              * RENDER 562 — from the render's own record, not from the clip list.
@@ -25548,8 +25657,8 @@ async function _runVideoPipelineInner(
         captionsEnabled: enableSubtitles,
         captionsPlanned: enableSubtitles ? allBeats.length : 0,
         /** VIDEO 624 — the graphics the cinematic plan wrote, not the compose route's old tally. */
-        graphicsEnabled: visualDedup.graphicClips.size > 0 || cinematicProgress.graphicsPlanned > 0,
-        graphicsPlanned: Math.max(visualDedup.graphicClips.size, cinematicProgress.graphicsPlanned),
+        graphicsEnabled: cinematicProgress.graphicsPlanned > 0,
+        graphicsPlanned: cinematicProgress.graphicsPlanned,
         /**
          * RONDE 661 — read off the delivered timeline: every join into a clip that is not a hard
          * cut. The compose montage's own tally went with the compose route.

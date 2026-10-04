@@ -293,6 +293,12 @@ export type CinematicInputsResult = {
      */
     localOnlyIdentity: number;
   };
+  /**
+   * AUDIT RC1 — where every sentence sits on the whole video's clock, planned or dropped: the
+   * same start and end this adapter computes for the plan. A hole in the edit is a span of these,
+   * so a filler can be asked about the sentences it would run under.
+   */
+  beatWindows: Array<{ sceneIndex: number; beatIndex: number; startSec: number; endSec: number }>;
 };
 
 /* ═══════════════════════ the translation ═══════════════════════ */
@@ -893,6 +899,7 @@ export function buildCinematicSceneInputs(params: {
   const extractors = params.extractors ?? {};
   const dropped: string[] = [];
   const out: CinematicSceneInput[] = [];
+  const beatWindows: CinematicInputsResult["beatWindows"] = [];
   const stats = {
     scenes: 0, beats: 0, planned: 0, withTrim: 0, withProbe: 0,
     laidOut: 0, clampedToScene: 0, localOnlyIdentity: 0,
@@ -997,6 +1004,7 @@ export function buildCinematicSceneInputs(params: {
        */
       const end = clamped ? Math.max(start, sceneLengthSec) : rawEnd;
       beatCursorSec = Math.max(beatCursorSec, end);
+      beatWindows.push({ sceneIndex: scene.index, beatIndex, startSec: sceneOffsetSec + start, endSec: sceneOffsetSec + end });
 
       const adopted = sceneFacts.clips[beatIndex] ?? null;
       if (!adopted) {
@@ -1175,7 +1183,7 @@ export function buildCinematicSceneInputs(params: {
    * already named, and a check that judged the input would report faults in beats that are not in
    * the plan. What has to hold is that the SURVIVING set is internally possible.
    */
-  return { scenes: out, dropped, adapterIssues: checkCinematicSceneInputs(out), stats };
+  return { scenes: out, dropped, adapterIssues: checkCinematicSceneInputs(out), stats, beatWindows };
 }
 
 /* ═══════════════════════ the adapter checks its own work ═══════════════════════ */

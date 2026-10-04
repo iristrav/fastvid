@@ -56,13 +56,15 @@ describe("RONDE 83 §A — graphic encoding is limited", () => {
     }
   });
 
-  it("the pipeline's pre-generation site no longer needs its own limiter", () => {
-    // The Promise.all is still there and still starts every plan — that is intended. The
-    // limiter inside the engine is what keeps only N of them in flight.
-    expect(PIPELINE_SRC).toContain("graphicPlans.map(async (plan: GraphicPlan)");
-    const start = PIPELINE_SRC.indexOf("graphicPlans.map(async (plan: GraphicPlan)");
-    const block = PIPELINE_SRC.slice(start, start + 500);
-    expect(block).toContain("generateGraphicClip(plan, workDir)");
+  /**
+   * AUDIT RC4 — the pipeline no longer pre-generates the editorial cards at all: nothing ever read
+   * them (`graphicClips` had no reader but a progress count). The engine's own limiter above is
+   * unchanged for any caller that still generates one.
+   */
+  it("the pipeline does not pre-generate editorial cards nobody reads", () => {
+    expect(PIPELINE_SRC).not.toContain("graphicPlans.map(async (plan: GraphicPlan)");
+    expect(PIPELINE_SRC).not.toContain("generateGraphicClip(plan, workDir)");
+    expect(PIPELINE_SRC).not.toContain("visualDedup.graphicClips.set(");
   });
 });
 

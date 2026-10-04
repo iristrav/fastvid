@@ -54,7 +54,7 @@ import {
   formatGraphicsLifecycle,
   graphicsLifecycle,
 } from "./graphicsLifecycle";
-import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
+import type { AssetSourceIdentity, ProjectTimeline, TimelineVideoClip } from "./projectTimeline";
 import { intensityAtFrom, typewriterSfxClips } from "./typewriterSound";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 import { planMusicCues, scoreCues, type CurvePoint, type MusicCatalogue, type ScoredCue } from "./musicDirector";
@@ -102,6 +102,8 @@ export type CinematicSceneInput = {
 export type CinematicPipelineParams = {
   videoId: number;
   scenes: CinematicSceneInput[];
+  /** AUDIT RC1 — may a shot approved for another sentence fill a hole here? See `holdPictureUnderVoice`. */
+  fillerFits?: (filler: TimelineVideoClip, startSec: number, endSec: number) => boolean;
   /** The persisted narration, when there is one. Never regenerated — RONDE 146 stores it. */
   voice?: { url: string; durationSec: number } | null;
   /** The measured TTS alignment, carried so captions land on real word boundaries. */
@@ -346,6 +348,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
      * run on the route that renders a real video.
      */
     words: params.words ?? [],
+    ...(params.fillerFits ? { fillerFits: params.fillerFits } : {}),
   });
 
   /**

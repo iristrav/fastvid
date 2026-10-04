@@ -19,6 +19,14 @@ import { WORLD_LOCATIONS } from "../cinematicMotion/locationMap";
 import type { Scene } from "../pipeline/types";
 import type { VisualIntent } from "../visualMatchingV2/types";
 import type { MotionGraphicInstruction } from "./types";
+import { graphicIsRenderable } from "../graphicsVocabulary";
+import { graphicLabel, rendererGraphicType } from "../edlToTimeline";
+
+/** The renderer's answer for one planned graphic, under the name and label the timeline gives it. */
+export function plannedGraphicIsDrawable(g: MotionGraphicInstruction): boolean {
+  const type = rendererGraphicType(g.graphicType);
+  return graphicIsRenderable(type, g.data, graphicLabel(type, g.data) ?? null);
+}
 
 const COMPARISON_SPLIT_RE = /\s+(?:vs\.?|versus|compared to)\s+/i;
 const CHART_SIGNALS = ["growth", "increase", "decline", "decrease", "trend", "sales", "revenue", "market share", "rate rose", "rate fell"];
@@ -44,6 +52,30 @@ export function parseNumericStat(
     decimals: dot < 0 ? 0 : Math.min(3, digits.length - dot - 1),
     token: match[2]!,
   };
+}
+
+/**
+ * AUDIT RC3 — does this sentence state a quantity, or how one moved? A number with a unit or a
+ * currency ("40 percent", "$3.5 billion" — `parseNumericStat`), a series over years, or a word that
+ * only describes a measured change: this planner's own `CHART_SIGNALS`, and the verbs and nouns of
+ * the same kind ("soared", "doubled", "market value"). Topic-neutral; a bare year is not a quantity.
+ */
+const QUANTITY_WORDS = [
+  ...CHART_SIGNALS,
+  "market value", "market cap", "valuation", "profit", "profits", "prices", "inflation",
+  "soared", "surged", "skyrocketed", "exploded", "plunged", "plummeted", "doubled", "tripled", "halved",
+];
+export function statesAQuantity(text: string | undefined): boolean {
+  const t = (text ?? "").trim();
+  if (!t) return false;
+  /** Every number the sentence says, not only the first: "By 1945, 70 million people…" */
+  for (const m of t.matchAll(/[$€£]?\s?\d/g)) {
+    const stat = parseNumericStat(t.slice(m.index));
+    if (stat && (stat.suffix || stat.prefix)) return true;
+  }
+  if (yearSeriesFromText(t)) return true;
+  const lower = ` ${t.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ")} `;
+  return QUANTITY_WORDS.some((w) => lower.includes(` ${w} `));
 }
 
 /**
@@ -425,5 +457,11 @@ export function planMotionGraphics(
     );
   }
 
-  return out;
+  /**
+   * AUDIT RC2 — only what this build can draw is planned. `highlight_box` without a region and
+   * `chart`, `arrow`, `animated_icon`, `comparison` (no component) were planned on every render and
+   * dropped later (video 627: 14 planned, 5 drawn). Asked with the timeline's own translation and
+   * the renderer's own predicate, so a graphic planned here is a graphic the renderer will draw.
+   */
+  return out.filter(plannedGraphicIsDrawable);
 }

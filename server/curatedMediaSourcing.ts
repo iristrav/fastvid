@@ -373,33 +373,86 @@ export type ArchiveRouteInput = {
   nicheTags?: string[] | null;
 };
 
-/** Score how well archive metadata matches a video topic (name, description, niche tags). */
+/**
+ * AUDIT 3f9ba94 — WORDS THAT SAY NOTHING ABOUT WHICH ARCHIVE A SENTENCE NEEDS.
+ *
+ * The router's tags are the sentence's own words, so "this", "just", "from" and the shot words a
+ * fallback adds ("broll", "scene", "wide", "footage") reached the archive scorer as if they were
+ * subjects. Render 628 routed "archive, footage, showing, 1950" to an archive named "YouTube".
+ */
+const ARCHIVE_ROUTE_STOPWORDS = new Set([
+  "the", "a", "an", "this", "that", "these", "those", "just", "from", "with", "over", "into", "onto",
+  "about", "after", "before", "also", "very", "much", "more", "most", "some", "such", "than", "then",
+  "when", "what", "which", "while", "where", "who", "how", "why", "their", "there", "they", "them",
+  "its", "his", "her", "our", "your", "has", "have", "had", "was", "were", "are", "been", "being",
+  "will", "would", "could", "should", "can", "may", "might", "not", "but", "and", "for", "yet",
+  "however", "still", "even", "only", "once", "now", "here", "each", "every", "all", "any",
+  "showing", "shows", "show", "footage", "scene", "scenes", "broll", "b-roll", "wide", "medium",
+  "close", "closeup", "close-up", "shot", "shots", "archive", "archival", "documentary", "video",
+  "videos", "clip", "clips", "detail", "establishing", "aerial", "tracking", "montage", "image",
+  "images", "photo", "photos", "picture", "pictures",
+]);
+
+/** A tag's words, lower case, split on anything that is not a letter or a digit. */
+function archiveWords(text: string): string[] {
+  return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+/** Whether every word of `phrase` appears, in order and side by side, among the words of `text`. */
+function phraseInWords(phrase: string[], text: string[]): boolean {
+  if (!phrase.length || phrase.length > text.length) return false;
+  outer: for (let i = 0; i + phrase.length <= text.length; i++) {
+    for (let j = 0; j < phrase.length; j++) if (text[i + j] !== phrase[j]) continue outer;
+    return true;
+  }
+  return false;
+}
+
+/** The tags that can say which archive this is: no stop or shot word, never a fragment of one. */
+function archiveRouteTags(tags: string[]): string[] {
+  return normalizeMediaTags(tags).filter((t) => {
+    const words = archiveWords(t);
+    return words.length > 0 && words.some((w) => !ARCHIVE_ROUTE_STOPWORDS.has(w));
+  });
+}
+
+/**
+ * AUDIT 3f9ba94 — WHOLE WORDS ONLY.
+ *
+ * Every comparison used to be `includes` in both directions, so "war" matched "software" and
+ * "warsaw", "explore" leaned on "explorers", and a two-letter niche tag sat inside half the
+ * dictionary. Render 628 routed a Roosevelt and Churchill sentence to an "Elon Musk" archive.
+ * A tag now matches only as whole words in the same order ("berlin" in "cold war berlin", "hitler"
+ * in "adolf hitler"); the weights and the floor are exactly what they were.
+ */
 export function scoreArchiveMetadata(
   archive: ArchiveRouteInput,
   queryTags: string[],
   anchorTags: string[]
 ): number {
-  const combined = normalizeMediaTags([...queryTags, ...anchorTags]);
-  if (!combined.length) return 1;
+  const combined = archiveRouteTags([...queryTags, ...anchorTags]);
+  if (!normalizeMediaTags([...queryTags, ...anchorTags]).length) return 1;
 
-  const name = archive.name.toLowerCase();
-  const desc = (archive.description ?? "").toLowerCase();
-  const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
-  const nameWords = name.split(/[\s\-_/]+/).filter((w) => w.length >= 3);
+  const name = archiveWords(archive.name);
+  const desc = archiveWords(archive.description ?? "");
+  const nicheTags = normalizeMediaTags(archive.nicheTags ?? []).map(archiveWords).filter((t) => t.length > 0);
+  const nameWords = name.filter((w) => w.length >= 3 && !ARCHIVE_ROUTE_STOPWORDS.has(w));
   let score = 0;
 
-  for (const q of combined) {
-    if (nicheTags.some((t) => t === q || t.includes(q) || q.includes(t))) score += 28;
-    if (q.length >= 3 && name.includes(q)) score += 22;
-    if (q.length >= 3 && desc.includes(q)) score += 14;
+  for (const tag of combined) {
+    const q = archiveWords(tag);
+    if (nicheTags.some((t) => phraseInWords(q, t) || phraseInWords(t, q))) score += 28;
+    if (phraseInWords(q, name)) score += 22;
+    if (phraseInWords(q, desc)) score += 14;
     for (const w of nameWords) {
-      if (w === q || w.includes(q) || q.includes(w)) score += 16;
+      if (q.includes(w)) score += 16;
     }
   }
 
-  for (const anchor of anchorTags) {
-    if (nicheTags.includes(anchor)) score += 20;
-    if (name.includes(anchor)) score += 18;
+  for (const anchor of archiveRouteTags(anchorTags)) {
+    const a = archiveWords(anchor);
+    if (nicheTags.some((t) => t.join(" ") === a.join(" "))) score += 20;
+    if (phraseInWords(a, name)) score += 18;
   }
 
   return score;
@@ -410,14 +463,12 @@ function scoreArchiveAssetSample(
   combinedTags: string[],
   sampleSize = 48
 ): number {
-  if (!combinedTags.length || !assets.length) return 0;
+  const tags = archiveRouteTags(combinedTags).map(archiveWords);
+  if (!tags.length || !assets.length) return 0;
   let hits = 0;
   for (const asset of assets.slice(0, sampleSize)) {
-    const assetTags = normalizeMediaTags(asset.tags ?? []);
-    const matched = combinedTags.some(
-      (q) =>
-        assetTags.some((t) => t === q || t.includes(q) || q.includes(t))
-    );
+    const assetTags = normalizeMediaTags(asset.tags ?? []).map(archiveWords);
+    const matched = tags.some((q) => assetTags.some((t) => phraseInWords(q, t) || phraseInWords(t, q)));
     if (matched) hits++;
   }
   return Math.min(50, hits * 6);

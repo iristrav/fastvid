@@ -274,7 +274,8 @@ describe("6. the text the director keeps is in the made video, and the matrix sa
     const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     expect(src).toContain("cinematicProgress.graphicsOnTimeline = graphicsTrack(t).filter((g) => !g.disabled).length;");
     expect(src).toContain("cinematicProgress.captionsOnTimeline = captionTrack(t).filter((c) => !c.disabled).length;");
-    expect(src).toContain("graphicsPlanned: Math.max(visualDedup.graphicClips.size, cinematicProgress.graphicsPlanned),");
+    /** AUDIT RC4 — the plan's own graphics only; the editorial cards were never in the film. */
+    expect(src).toContain("graphicsPlanned: cinematicProgress.graphicsPlanned,");
   });
 });
 

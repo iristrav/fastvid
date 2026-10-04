@@ -540,7 +540,48 @@ function lookupPartialSentenceIntent(
     if (overlap < 0.45) continue;
     if (!best || overlap > best.overlap) best = { intent, overlap };
   }
-  return best?.intent;
+  return best?.intent ?? lookupSentenceIntentByWords(beatText, map);
+}
+
+/** The words a sentence is made of, without punctuation or articles ("a", "an", "the"). */
+function sentenceContentWords(text: string): string[] {
+  return normalizeSentenceKey(text)
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w && w !== "a" && w !== "an" && w !== "the");
+}
+
+/**
+ * AUDIT 3f9ba94 — THE SAME SENTENCE, SPELLED A LITTLE DIFFERENTLY.
+ *
+ * Render 628 matched 8 of 15 sentences to their plan: the narration the voice read had lost an
+ * article or a comma ("signaled new global order" against the plan's "signaled a new global order"),
+ * or a sentence had been cut in two. Character matching cannot see past that; words can. A beat
+ * matches a plan sentence when nearly all of its words are in it (it is that sentence, or a piece
+ * of it) and it is a real share of that sentence. Only a clear winner counts — two plan sentences
+ * that fit about equally well leave the beat on the word rules, as before.
+ */
+function lookupSentenceIntentByWords(
+  beatText: string,
+  map: Map<string, ScriptVisualIntentEntry>
+): ScriptVisualIntentEntry | undefined {
+  const beat = new Set(sentenceContentWords(beatText));
+  if (beat.size < 4) return undefined;
+  const scored: Array<{ intent: ScriptVisualIntentEntry; coverage: number }> = [];
+  for (const [sentKey, intent] of map) {
+    const plan = new Set(sentenceContentWords(sentKey));
+    if (!plan.size) continue;
+    let shared = 0;
+    for (const w of beat) if (plan.has(w)) shared++;
+    const coverage = shared / beat.size;
+    if (coverage < 0.8 || shared / plan.size < 0.2) continue;
+    scored.push({ intent, coverage });
+  }
+  scored.sort((a, b) => b.coverage - a.coverage);
+  const [best, second] = scored;
+  if (!best) return undefined;
+  if (second && best.coverage - second.coverage < 0.15) return undefined;
+  return best.intent;
 }
 
 /** `found` — the beat is a planned sentence (or holds one); `partial` — it overlaps one. */

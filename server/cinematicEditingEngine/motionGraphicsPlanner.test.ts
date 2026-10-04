@@ -66,37 +66,40 @@ describe("Motion Graphics Planner (Phase 4)", () => {
     expect(graphics.some((g) => g.graphicType === "timeline")).toBe(true);
   });
 
-  it("emits a comparison graphic when the narration draws an explicit comparison", () => {
+  /**
+   * AUDIT RC2 — these five types were planned and never drawn: `comparison`, `chart`, `arrow` and
+   * `animated_icon` have no component, and `highlight_box` carried a label without the region the
+   * component needs (video 627: 14 planned, 5 drawn). The planner now emits only what the renderer
+   * can draw, so the same narration plans none of them.
+   */
+  it("plans no comparison: no component draws a side-by-side", () => {
     const graphics = planMotionGraphics(
       makeIntent({ spokenText: "Sales this year versus sales last year tell a different story." }),
       undefined,
       0,
       4
     );
-    const comparison = graphics.find((g) => g.graphicType === "comparison");
-    expect(comparison).toBeDefined();
+    expect(graphics.find((g) => g.graphicType === "comparison")).toBeUndefined();
   });
 
-  it("emits a chart graphic when the narration references a trend/data concept", () => {
+  it("plans no chart from a trend word alone: there is no series to plot", () => {
     const graphics = planMotionGraphics(makeIntent({ spokenText: "Revenue growth accelerated sharply." }), undefined, 0, 4);
-    expect(graphics.some((g) => g.graphicType === "chart")).toBe(true);
+    expect(graphics.some((g) => g.graphicType === "chart")).toBe(false);
   });
 
-  it("emits a highlight_box for a named object", () => {
+  it("plans no highlight_box without a region to draw it around", () => {
     const graphics = planMotionGraphics(makeIntent({ objects: ["headset"] }), undefined, 0, 4);
-    const box = graphics.find((g) => g.graphicType === "highlight_box");
-    expect(box?.data.label).toBe("headset");
+    expect(graphics.find((g) => g.graphicType === "highlight_box")).toBeUndefined();
   });
 
-  it("emits an arrow when the action language points something out", () => {
+  it("plans no arrow: the arrow shape cannot carry the label it would point out", () => {
     const graphics = planMotionGraphics(makeIntent({ visualAction: "the chart shows a sharp rise" }), undefined, 0, 4);
-    expect(graphics.some((g) => g.graphicType === "arrow")).toBe(true);
+    expect(graphics.some((g) => g.graphicType === "arrow")).toBe(false);
   });
 
-  it("emits an animated_icon for a named brand or company", () => {
+  it("plans no animated_icon for a brand name: no icon path exists for it", () => {
     const graphics = planMotionGraphics(makeIntent({ companies: ["Apple"] }), undefined, 0, 4);
-    const icon = graphics.find((g) => g.graphicType === "animated_icon");
-    expect(icon?.data.label).toBe("Apple");
+    expect(graphics.find((g) => g.graphicType === "animated_icon")).toBeUndefined();
   });
 
   it("returns an empty array for a beat with no motion-graphic-worthy signal", () => {
@@ -105,7 +108,8 @@ describe("Motion Graphics Planner (Phase 4)", () => {
   });
 
   it("every emitted graphic carries a non-empty reason (NO RANDOMNESS requirement)", () => {
-    const graphics = planMotionGraphics(makeIntent({ objects: ["headset"], companies: ["Apple"] }), undefined, 0, 4);
+    /** AUDIT RC2 — a drawable graphic (the percentage ring), since undrawable ones are no longer planned. */
+    const graphics = planMotionGraphics(makeIntent({ spokenText: "Adoption reached 87% of users." }), makeScene({ statCallout: "87%" }), 0, 4);
     expect(graphics.length).toBeGreaterThan(0);
     for (const g of graphics) expect(g.reason.length).toBeGreaterThan(0);
   });
