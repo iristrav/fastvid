@@ -573,7 +573,7 @@ export function primaryGraphicFor(
   if (!types.length) return null;
   const planned = planMotionGraphics(intent, scene, startSec, durationSec);
   for (const type of types) {
-    const g = planned.find((p) => p.graphicType === type);
+    const g = planned.find((p) => p.graphicType === type && (type !== "map" || mapPlaceIsWhereItHappens(p, intent.spokenText)));
     if (g) {
       return {
         ...g,
@@ -584,6 +584,19 @@ export function primaryGraphicFor(
     }
   }
   return null;
+}
+
+/**
+ * A map is a sentence's PICTURE only when its place is where something happens there — written
+ * after a word that places something ("landed in Normandy", "signed in Washington"). A place that is
+ * part of a name or the subject ("the Battle of Berlin", "Berlin was divided", "beat France") is
+ * not shown as a pin: the sentence keeps its later fallbacks (a generated image, then the card).
+ */
+function mapPlaceIsWhereItHappens(map: MotionGraphicInstruction, text: string): boolean {
+  const anchor = String((map.data as { anchorWord?: unknown } | undefined)?.anchorWord ?? "").trim();
+  if (!anchor) return false;
+  const said = new RegExp(`\\b${anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").exec(text)?.[0];
+  return said != null && placedByPreposition(said, text);
 }
 
 /* ═════════ GRAPHICS FIX — an extracted entity is checked before it goes on screen ═════════ */

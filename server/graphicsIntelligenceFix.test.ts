@@ -200,7 +200,8 @@ describe("2 — good footage wins, and the MediaForm decides which graphic may s
   });
 
   it("a mappable place makes MAP the form, and the real map stands in", () => {
-    const intent = intentFrom(beat(0, "Germany was reunified with Berlin as its capital."), 0, 0, null, EXTRACTORS);
+    /** MAP FIX — a place where something happens ("in Berlin"), not the sentence's subject. */
+    const intent = intentFrom(beat(0, "The treaty was signed in Berlin."), 0, 0, null, EXTRACTORS);
     const g = primaryGraphicForBeat(intent, undefined, 0, 4);
     expect(g?.graphicType).toBe("map");
     expect(typeof g?.data.lon).toBe("number");

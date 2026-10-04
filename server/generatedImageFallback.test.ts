@@ -335,3 +335,63 @@ describe("7 — a generated still is never lent to another sentence as a _fill",
     expect(clips.some((c) => /^(g|h)_fill\d+$/.test(c.id))).toBe(true);
   });
 });
+
+/* ═══════════════════ MAP FIX — a map stands in only where its place is where it happens ═══════════════════ */
+
+describe("MAP FIX — a map is the picture only when the sentence places something there", () => {
+  const standIn = (text: string) =>
+    dataOrMapGraphicForBeat(intentFrom(beat(0, text), 0, 0, null, EXTRACTORS), undefined, 0, 4);
+
+  it("1 — \"Troops landed in Normandy in June 1944.\" → MAP Normandy, no AI", () => {
+    expect(standIn("Troops landed in Normandy in June 1944.")?.data.locationName).toMatch(/Normandy/);
+    expect(decisionFor("Troops landed in Normandy in June 1944.")).toEqual({ generate: false, reason: "graphic_stands_in" });
+  });
+
+  it("2 — \"The treaty was signed in Washington.\" → MAP Washington, no AI", () => {
+    expect(standIn("The treaty was signed in Washington.")?.data.locationName).toMatch(/Washington/);
+    expect(decisionFor("The treaty was signed in Washington.")).toEqual({ generate: false, reason: "graphic_stands_in" });
+  });
+
+  it("3 — \"The Battle of Berlin…\" → no MAP as the picture, AI may", () => {
+    const text = "The Battle of Berlin marked the final days of Nazi Germany.";
+    expect(standIn(text)).toBeNull();
+    expect(decisionFor(text)).toEqual({ generate: true });
+  });
+
+  it("4 — \"Berlin was divided by a wall…\" → no MAP as the picture, AI may", () => {
+    const text = "Berlin was divided by a wall for 28 years.";
+    expect(standIn(text)).toBeNull();
+    expect(decisionFor(text)).toEqual({ generate: true });
+  });
+
+  it("5 — \"Argentina beat France in the final in Qatar.\" → never a France map; only a Qatar map placed \"in Qatar\"", () => {
+    const text = "Argentina beat France in the final in Qatar.";
+    const g = standIn(text);
+    expect(String(g?.data.locationName ?? "")).not.toMatch(/France|Paris/);
+    if (g) expect(g.data.locationName).toMatch(/Qatar|Doha/);
+    else expect(decisionFor(text)).toEqual({ generate: true });
+  });
+
+  it("6 — \"Inflation reached 10% in 2022.\" → the DATA graphic stays before AI", () => {
+    expect(standIn("Inflation reached 10% in 2022.")?.graphicType).toBe("progress_bar");
+    expect(decisionFor("Inflation reached 10% in 2022.")).toEqual({ generate: false, reason: "graphic_stands_in" });
+  });
+
+  it("7 — existing footage comes before everything: a sentence with a clip gets no graphic and no AI", () => {
+    const text = "Troops landed in Normandy in June 1944.";
+    const built = buildCinematicSceneInputs({
+      scenes: [{
+        scene: { index: 0, text, visualCue: "", pexelsQuery: "", aiImagePrompt: "", duration: 4 },
+        beats: [beat(0, text)],
+        clips: [{
+          facts: { localPath: "/tmp/normandy.mp4", durationSec: 8, widthPx: 1280, heightPx: 720 },
+          adoption: { provider: "internet_archive", providerAssetId: "ia-n", sourceUrl: "https://archive.invalid/n.mp4", assetTitle: "landing", query: "normandy landing" },
+        }] as SceneFacts["clips"],
+      }],
+      extractors: EXTRACTORS,
+    });
+    expect(built.primaryGraphics ?? []).toEqual([]);
+    expect(beatsWithoutPicture([{ index: 0 }], [0])).toEqual([]);
+    expect(generatedImageDecision({ ...ALLOWED, hasPicture: true })).toEqual({ generate: false, reason: "has_picture" });
+  });
+});
