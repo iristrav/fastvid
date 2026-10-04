@@ -363,7 +363,12 @@ describe("F. a sentence's YouTube query never carries a word the sentence does n
   });
 
   it("the single YouTube door and the lookahead both cut the queries to the sentence", () => {
-    expect(PIPE).toContain("const req: CentralYoutubeRequest = { ...input, queries: plan.queries };");
+    /**
+     * VIDEO 628 — the cut still decides; only a sentence it leaves EMPTY, in a video with a pool,
+     * gets its own text as the pool's label (no search). See video628PoolAndLadder.test.ts.
+     */
+    expect(PIPE).toContain("const pooled = youtubeQueriesOrVideoPool(plan.queries, input.beat.text,");
+    expect(PIPE).toContain("const req: CentralYoutubeRequest = { ...input, queries: pooled.queries };");
     expect(PIPE).toContain("youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text, scene.text)");
   });
 

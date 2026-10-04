@@ -498,6 +498,14 @@ export function hasVideoYoutubePool(videoId: number | undefined | null): boolean
   return videoId != null && pools.has(videoId);
 }
 
+/**
+ * VIDEO 628 — the video has a pool that is not known to have come back without YouTube. A pool
+ * still being built counts: the beat's own route waits for it and reads `poolGaveNoYoutube` then.
+ */
+export function videoPoolMayOfferYoutube(videoId: number | undefined | null): boolean {
+  return hasVideoYoutubePool(videoId) && !poolsWithoutYoutube.has(videoId!);
+}
+
 export function releaseVideoYoutubePool(videoId: number): void {
   pools.delete(videoId);
   poolTopUps.delete(videoId);

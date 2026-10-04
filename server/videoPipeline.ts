@@ -211,7 +211,7 @@ import {
 } from "./visualLineageSnapshot";
 import { formatGlobalBudget, withGlobalMediaFetch } from "./globalResourceBudget";
 import { buildBeatSearchLadder, buildPrioritisedQueries, checkPersonName, formatSearchGateReport, type VerifiedSearchQuery, emptyQueryContext, getQueryScope, getRenderTopic, getSearchProvenance, searchGateDecision, withRenderTopic, withSearchProvenance, withQueryScope, isFunctionWord, isPronounToken, provenToken, type VerifiedQueryContext } from "./searchQueryContract";
-import { awaitVideoYoutubePool, buildVideoYoutubePool, emptyVideoYoutubePool, hasVideoYoutubePool, poolGaveNoYoutube, poolRowsForBeat, registerVideoYoutubePool, releaseVideoYoutubePool, noteVideoYoutubePoolRefusal, type VideoYoutubePool } from "./youtubeVideoPool";
+import { awaitVideoYoutubePool, buildVideoYoutubePool, emptyVideoYoutubePool, hasVideoYoutubePool, videoPoolMayOfferYoutube, poolGaveNoYoutube, poolRowsForBeat, registerVideoYoutubePool, releaseVideoYoutubePool, noteVideoYoutubePoolRefusal, type VideoYoutubePool } from "./youtubeVideoPool";
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 import { videoMainSubject } from "./mainSubject";
 import { readPeopleInNarration } from "./personNames";
@@ -3545,7 +3545,15 @@ export async function runCentralYoutubeTurn(
         `using the ${plan.from} sentence: ${JSON.stringify(plan.queries.slice(0, 2))}`
     );
   }
-  const req: CentralYoutubeRequest = { ...input, queries: plan.queries };
+  /** VIDEO 628 — a sentence that names nothing of its own still sees the video's pool. */
+  const pooled = youtubeQueriesOrVideoPool(plan.queries, input.beat.text, videoPoolMayOfferYoutube(getActiveVideoId()));
+  if (pooled.fromPool) {
+    console.log(
+      `[YouTubeQuery] scene=${input.sceneIndex} beat=${input.beat.index} sentence names nothing — ` +
+        `offered the video's YouTube pool (no search)`
+    );
+  }
+  const req: CentralYoutubeRequest = { ...input, queries: pooled.queries };
   const { beat, sceneIndex, dedup } = req;
   const turnKey = youtubeTurnKey(sceneIndex, beat.index);
 
@@ -3763,6 +3771,27 @@ export function youtubeQueryPlanForSentence(
     if (borrowed.length > 0) return { queries: borrowed, from };
   }
   return { queries: [], from: "none" };
+}
+
+/**
+ * VIDEO 628 — A SENTENCE WITHOUT WORDS OF ITS OWN STILL SEES THE VIDEO'S POOL.
+ *
+ * Seven sentences of render 628 ("By 1950, former allies stood on the brink of nuclear conflict.")
+ * kept no query after the cut above, so their turn ended YOUTUBE_NO_QUERY before the video's pool —
+ * 27 shots already cut, waiting — was ever looked at. The pool needs no query: its rows are ranked
+ * on the sentence itself (`poolRowsForBeat`), and a beat no longer searches YouTube on its own. So
+ * when the video has a pool, the sentence itself is the turn's label and the turn goes to that pool;
+ * nothing is searched, and the picture editor judges every shot against this sentence as before.
+ * With no pool the answer stays YOUTUBE_NO_QUERY, and the turn stays open.
+ */
+export function youtubeQueriesOrVideoPool(
+  sentenceQueries: string[],
+  sentence: string | undefined,
+  videoHasPool: boolean
+): { queries: string[]; fromPool: boolean } {
+  const label = (sentence ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+  if (sentenceQueries.length > 0 || !videoHasPool || !label) return { queries: sentenceQueries, fromPool: false };
+  return { queries: [label], fromPool: true };
 }
 
 /** Milliseconds the enclosing scope is still holding back for YouTube. Zero once released. */
@@ -19236,6 +19265,12 @@ async function gatherHistoricalBeatVideoPoolInner(
   // `mismatchResearchedBeats` set, so this guard keeps its original meaning for every other route.
   const cascadeKey = `s${sceneIndex}b${beat.index}`;
   if (!opts.researchPass && dedup.historicalCascadeAttemptedBeats.has(cascadeKey)) {
+    /**
+     * VIDEO 628 — and the beat's ladder is told so. A second round for the same sentence (the
+     * main-subject rescue, a compose-time ladder) opens a fresh ladder; left on NOT_REACHED, tier 3
+     * refused all stock for the ten sentences of render 628 that had already asked the open sources.
+     */
+    declineTier("OPEN_SOURCES", "ALREADY_ASKED_THIS_RENDER");
     return null;
   }
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
