@@ -112,7 +112,9 @@ describe("one hard deadline for the visual phase", () => {
 
   it("the pipeline clamps every chunk to the one deadline and skips chunks after it", () => {
     /** VIDEO 621 — and at least as much picture time as the video is long, at the one-minute rate. */
-    expect(PIPE).toContain("const visualDeadlineMs = visualDeadlineForVideoMs(\n      (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length,");
+    expect(PIPE).toContain("const byLengthDeadlineMs = visualDeadlineForVideoMs(\n      (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length,");
+    /** P5 / VIDEO 630 — and never less than one judged turn per sentence (video630JudgeTime.test.ts). */
+    expect(PIPE).toContain("const visualDeadlineMs = judgeableVisualDeadlineMs(\n      byLengthDeadlineMs,");
     expect(PIPE).toContain("const visualTimeLeftMs = visualDeadlineAtMs - Date.now();");
     /** VIDEO 621 — and each chunk to its share of what is left, not to all of it. */
     expect(PIPE).toMatch(

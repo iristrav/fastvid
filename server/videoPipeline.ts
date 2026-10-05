@@ -226,6 +226,7 @@ import { awaitVideoYoutubePool, buildVideoYoutubePool, emptyVideoYoutubePool, ha
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import { videoMainSubject } from "./mainSubject";
+import { sentencesOf } from "./youtubeVideoSearchPlanner";
 import { readPeopleInNarration } from "./personNames";
 import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
 import {
@@ -4421,6 +4422,71 @@ export const PICTURE_SEC_PER_VIDEO_SEC = 2.85;
 export function visualDeadlineForVideoMs(perSceneTotalMs: number, videoSec: number): number {
   const byLength = Number.isFinite(videoSec) && videoSec > 0 ? Math.round(videoSec * PICTURE_SEC_PER_VIDEO_SEC * 1000) : 0;
   return Math.max(perSceneTotalMs, byLength);
+}
+
+/**
+ * P5 / VIDEO 630 — THE PICTURE TIME A SENTENCE NEEDS TO HAVE A PICTURE JUDGED.
+ *
+ * Render 630 had its YouTube stock ready (27 shots) before the picture clock started, and still
+ * delivered nothing: 255 s for 17 sentences, scenes side by side, sentences one after another. The
+ * picture editor takes 10–20 s a look and a sentence often needs two; sentences opened with 2–13 s,
+ * and the one fit scene 0 found arrived after its sentence's search had been cut. `2.85 s per video
+ * second` was sized when a sentence's time was mostly search; with the pool and stock gathered before
+ * the clock starts, what a sentence spends is judging.
+ *
+ * So the picture time is never less than one judged turn per sentence along the path the chunks
+ * actually walk: chunks run one after another, the scenes inside one side by side, so a chunk needs
+ * its longest scene's sentences. It is never more than the stage was already allowed (the visual
+ * stage wall clock) nor past force-export (the emergency threshold), so the render's own limits bind.
+ */
+export const JUDGED_BEAT_TURN_MS = 45_000;
+
+export function judgeableVisualDeadlineMs(
+  baseMs: number,
+  /** Per chunk, the number of sentences in each of its scenes. */
+  sentencesByChunk: number[][],
+  capMs: number
+): number {
+  const floor = sentencesByChunk.reduce((sum, chunk) => sum + Math.max(0, ...chunk) * JUDGED_BEAT_TURN_MS, 0);
+  const capped = Number.isFinite(capMs) && capMs > 0 ? Math.min(floor, capMs) : floor;
+  return Math.max(baseMs, capped);
+}
+
+/**
+ * P5 / VIDEO 630 — A JUDGEMENT ALREADY UNDER WAY FINISHES INSIDE ITS SENTENCE'S OWN TURN.
+ *
+ * A sentence's own search gets `BEAT_RESOLVE_SHARE` of its turn. In render 630 sentence s0b3 had
+ * 50 s: its search was cut at 37 s while the picture editor was looking at a YouTube shot, and the
+ * verdict — "fits" — came back at 47 s, still inside the turn, into a search nobody was waiting for.
+ * The scene closed empty and the export was refused.
+ *
+ * When the search share ends, its scope is aborted exactly as before (downloads and child processes
+ * are killed, and a scope opened inside it is refused). What was already running may still settle
+ * until the sentence's own turn ends — the 25 % the fallbacks would have had — and a clip it returns
+ * is pushed like any other, through the same picture check at the push. Never longer than the turn;
+ * a clip nobody judged is never taken (the push asks for the verdict as it always does).
+ */
+export async function resolveWithinBeatTurn<T>(
+  resolve: () => Promise<T | null>,
+  searchMs: number,
+  turnDeadlineAtMs: number,
+  label: string
+): Promise<{ value: T | null; late: boolean; error?: Error }> {
+  const running: { p: Promise<T | null> | null } = { p: null };
+  try {
+    const value = await withSceneFetchTimeout(() => (running.p = resolve()), searchMs, label);
+    return { value, late: false };
+  } catch (err) {
+    const leftMs = turnDeadlineAtMs - Date.now();
+    if (!running.p || !(leftMs > 0)) return { value: null, late: false, error: err as Error };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const value = await Promise.race([
+      running.p.catch(() => null),
+      new Promise<null>((r) => (timer = setTimeout(() => r(null), leftMs))),
+    ]);
+    if (timer) clearTimeout(timer);
+    return { value, late: value != null, error: err as Error };
+  }
 }
 
 /** VIDEO 623 — see `fillBeatWithMoreClips`: how many more clips a sentence may take, and when. */
@@ -21743,18 +21809,23 @@ async function fetchSceneVisualsInner(
       onBeatProgress?.(bi, beats.length, "beat");
     }, 10_000);
     try {
-      clip = await withSceneFetchTimeout(
+      /** P5 / VIDEO 630 — a look already under way may finish inside the turn; see `resolveWithinBeatTurn`. */
+      const resolved = await resolveWithinBeatTurn(
         () => resolveBeatClip(beat, scene, workDir, scene.index, clipFetchDur, dedup, {
           personName, videoTitle, adoptOpts: beatAdoptOpts, scenePersons,
         }),
         Math.max(1, Math.round(beatWallMs * BEAT_RESOLVE_SHARE)),
+        beatDeadlineMs,
         `scene ${scene.index} beat ${bi} visuals`
       );
-    } catch (err) {
-      console.warn(
-        `[Pipeline] Scene ${scene.index} beat ${beat.index}: capped at ${Math.round(beatWallMs / 1000)}s:`,
-        (err as Error).message
-      );
+      clip = resolved.value;
+      if (resolved.error) {
+        console.warn(
+          `[Pipeline] Scene ${scene.index} beat ${beat.index}: capped at ${Math.round(beatWallMs / 1000)}s:`,
+          resolved.error.message,
+          resolved.late ? "— the look under way finished inside the sentence's turn; its clip is used" : ""
+        );
+      }
     } finally {
       clearInterval(beatPulse);
     }
@@ -22855,13 +22926,22 @@ async function _runVideoPipelineInner(
       sceneTexts: scenes.filter((s) => !s.isChapterCard).map((s) => s.text),
     });
     visualDedup.mainSubject = mainSubject;
-    const visualDeadlineMs = visualDeadlineForVideoMs(
+    const byLengthDeadlineMs = visualDeadlineForVideoMs(
       (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length,
       scenes.reduce((sum, s) => sum + (s.duration || 0), 0)
     );
+    /** P5 / VIDEO 630 — and never less than one judged turn per sentence; see `judgeableVisualDeadlineMs`. */
+    const visualDeadlineMs = judgeableVisualDeadlineMs(
+      byLengthDeadlineMs,
+      chunks.map((c) =>
+        scenes.slice(c.start, c.end).filter((s) => !s.isChapterCard).map((s) => sentencesOf(s.text ?? "").length)
+      ),
+      Math.min(visualStageTimeoutMs(videoLength, perf), pipelineEmergencyFinishMs(videoLength))
+    );
     const visualDeadlineAtMs = Date.now() + visualDeadlineMs;
     console.log(
-      `[Pipeline] video=${videoId} visual deadline ${Math.round(visualDeadlineMs / 1000)}s — ` +
+      `[Pipeline] video=${videoId} visual deadline ${Math.round(visualDeadlineMs / 1000)}s ` +
+        `(by length ${Math.round(byLengthDeadlineMs / 1000)}s) — ` +
         `after it no search or download starts and an empty beat is a gap`
     );
 

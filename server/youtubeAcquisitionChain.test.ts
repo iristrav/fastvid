@@ -261,7 +261,7 @@ describe("T1 — YouTube gets its time, and a hang cannot hold the render", () =
     expect(YOUTUBE_STOCK_WAIT_MAX_MS).toBe(180_000);
     const wait = PIPE.indexOf("await waitForYoutubeStockBeforePictures(videoId, {");
     const clock = PIPE.indexOf("visualDedup.pipelineStartedMs = Date.now();");
-    const deadline = PIPE.indexOf("const visualDeadlineMs = visualDeadlineForVideoMs(");
+    const deadline = PIPE.indexOf("const visualDeadlineMs = judgeableVisualDeadlineMs(");
     expect(wait).toBeGreaterThan(-1);
     expect(wait).toBeLessThan(clock);
     expect(clock).toBeLessThan(deadline);
