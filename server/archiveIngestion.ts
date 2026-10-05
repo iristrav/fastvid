@@ -23,6 +23,7 @@ import { formatPreviewRefusal, verifyArchivePreview } from "./archivePreviewChec
 import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
 import { judgeOnScreenText } from "./visualJudge";
+import type { OverlayTextKind } from "./archiveClipFilter";
 import { cutLocalVideoIntoShots, productionLocalShotCutter, shotSourceUrl, type LocalShotCutter } from "./archiveShotPieces";
 import * as os from "os";
 import { isArticleScreenshotFile } from "./articleScreenshot";
@@ -313,6 +314,18 @@ async function ingestAsSingleShots(
   }
 }
 
+/**
+ * P0 (VIDEO 630) — the production store's one exception to the text refusal: the film's own record
+ * of a clip whose added text lies over real footage (or whose kind the detector did not say).
+ * Text that IS the picture (`fills_picture`) is never an exception. See the call site.
+ */
+export function filmRecordMayCarryOverlayText(
+  overlay: { decision: string; textKind?: OverlayTextKind } | null | undefined,
+  usedInFilm: boolean | undefined
+): boolean {
+  return overlay?.decision === "REJECT" && usedInFilm === true && overlay.textKind !== "fills_picture";
+}
+
 async function ingestExternalClipToArchiveInner(
   localPath: string,
   metadata: IngestMetadata
@@ -389,7 +402,22 @@ async function ingestExternalClipToArchiveInner(
      * VIDEO 619 — a video reaches this check one shot at a time (cut above), so a shot with text is
      * refused and the clean shots of the same download are kept.
      */
-    if (overlay?.decision === "REJECT") {
+    /**
+     * P0 (VIDEO 630) — THE FILM'S OWN RECORD OF A CLIP THE PICTURE EDITOR LET THROUGH.
+     *
+     * A clip reaches the production store (`usedInFilm`) after the push asked the picture editor.
+     * When its text lies over real footage (a logo, a subtitle) or its kind is unknown, refusing it
+     * here refused an approved picture for the text the beat already decided to accept. It is
+     * stored as the film's record — switched off, marked as having text, never offered to a later
+     * film — the way an article screenshot already is. Text that IS the picture is still refused.
+     */
+    if (overlay?.decision === "REJECT" && filmRecordMayCarryOverlayText(overlay, metadata.usedInFilm)) {
+      console.log(
+        `[Ingestion] "${metadata.title.slice(0, 60)}" carries added text over the picture ` +
+          `(${overlay.textKind ?? "kind unknown"}) — stored as this film's record only: switched off, marked as having text`
+      );
+      metadata.storeSwitchedOff = true;
+    } else if (overlay?.decision === "REJECT") {
       console.log(
         `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
       );

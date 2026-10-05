@@ -40,8 +40,13 @@ describe("R222 §1 — three answers, because there were always three", () => {
   });
 
   it("the detector's own return type admits it", () => {
+    /**
+     * P0 (video 630) — the same call now also says whether the text fills the picture, so the
+     * answer is an object instead of a boolean. What this test is for is unchanged: `null` — the
+     * detector saying it does not know — is still part of the type.
+     */
     expect(FILTER).toContain(
-      "async function detectOnScreenTextInImages(dataUrls: string[]): Promise<boolean | null>"
+      "async function detectOnScreenTextInImages(dataUrls: string[]): Promise<OverlayDetectorAnswer | null>"
     );
   });
 

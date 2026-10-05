@@ -24,6 +24,7 @@ import {
   archiveClipBakedEditTextVerdict,
   archiveClipTextVerdict,
   cachedClipBakedEditTextVerdict,
+  type OverlayTextKind,
 } from "./archiveClipFilter";
 import {
   checkBeatRelevance,
@@ -546,7 +547,7 @@ export async function judgeOnScreenText(input: {
   mimeType: string;
   memoKey?: string;
   budget?: number;
-}): Promise<VisualJudgeVerdict & { notAskedReason?: string }> {
+}): Promise<VisualJudgeVerdict & { notAskedReason?: string; textKind?: OverlayTextKind }> {
   const result =
     input.memoKey && input.budget !== undefined
       ? await cachedClipBakedEditTextVerdict(input.path, input.mimeType, input.memoKey, input.budget)
@@ -554,7 +555,11 @@ export async function judgeOnScreenText(input: {
         ? await archiveClipTextVerdict(input.path, input.mimeType, input.memoKey)
         : await archiveClipBakedEditTextVerdict(input.path, input.mimeType);
   if (result.verdict === "has_text") {
-    return { ...reject("on_screen_text", result.reason ?? "baked_edit_text", 0.9), evaluated: true };
+    return {
+      ...reject("on_screen_text", result.reason ?? "baked_edit_text", 0.9),
+      evaluated: true,
+      ...(result.textKind ? { textKind: result.textKind } : {}),
+    };
   }
   if (result.verdict === "not_asked") {
     return {
@@ -564,6 +569,22 @@ export async function judgeOnScreenText(input: {
     };
   }
   return { ...accept("on_screen_text", "clean", 0.9), evaluated: true };
+}
+
+/**
+ * P0 (VIDEO 630) — TEXT ON SCREEN IS NOT THE SAME AS AN UNUSABLE PICTURE.
+ *
+ * Render 630 refused twelve of twelve YouTube stock shots on `has_text` before the picture editor
+ * saw one, and put 0 seconds of YouTube in the film. Before the picture editor, only text that IS
+ * the picture — a title card, a leader, a screenshot of a page (`fills_picture`) — is refused.
+ * A logo, a watermark or a subtitle over real footage (`overlay`), and a `has_text` whose kind the
+ * detector did not say, go on to the same picture editor and the same push checks as every other
+ * clip; nothing here approves anything.
+ */
+export function onScreenTextRefusesBeforeVision(
+  text: Pick<VisualJudgeVerdict, "decision"> & { textKind?: OverlayTextKind } | null | undefined
+): boolean {
+  return text?.decision === "REJECT" && text.textKind === "fills_picture";
 }
 
 /**

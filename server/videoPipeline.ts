@@ -187,7 +187,7 @@ import { audioTrackOf, captionTrack, graphicsTrack, videoTrack, type TimelineVid
 import { type StillStyleContext } from "./motionGraphicsEngine";
 import { PipelineStepTiming, recordPipelineTiming, timePipelineStep } from "./pipelineStepTiming";
 import { type BeatGeoRegion } from "./vidrushQuality";
-import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveBeatClip, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
+import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, onScreenTextRefusesBeforeVision, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveBeatClip, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
 import type { RejectionRegistry } from "./rejectionRegistry";
 import { registerRejection, createRejectionRegistry, beatRejectCount, beatRejectReasons, noteRepeatedRefusal } from "./rejectionRegistry";
 // RONDE 70: one funnel line per beat, for every beat. Counting only — see beatOutcomeAudit.ts.
@@ -299,7 +299,7 @@ import { dbRenderLockStore, dbYoutubeSearchBudgetStore } from "./db";
 import { newRenderId } from "./renderCorrelation";
 import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, type BeatImageGateState } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
-import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
+import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
 import {
   coverageOfAdoptEntry,
   formatBeatVisualProblems,
@@ -2361,6 +2361,57 @@ async function youtubeFirstBeatSlice(
 }
 
 /**
+ * P1 (VIDEO 630) — AN ARCHIVE HIT IS A CANDIDATE, NOT AN ANSWER.
+ *
+ * Render 630 routed "As dawn broke on June 1944, the D-Day Invasion launched…" to its "Space Race &
+ * NASA" archive, took the first clip as the beat's answer — `ARCHIVE_HIT — no supplier asked` — and
+ * the picture editor refused that space telescope at the push, when the beat had no turn left for
+ * anyone else. The film's stock held D-Day footage for that very sentence.
+ *
+ * The question the push asks is asked here instead: the same look (`ensureVerdictBeforeCompose`,
+ * `finalSay`, exactly as the push asks it), read back by the same reader. Only a definite refusal —
+ * a model looked, said `does_not_fit`, nothing reprieved it — sends the beat on to its suppliers.
+ * An approval, an unclear answer or a look that could not be taken keep the old behaviour: the hit
+ * goes to the push, which decides as before and then reads this verdict back without paying again.
+ */
+export function archiveHitIsRefused(
+  found: { verdict: string; evaluated: boolean; reprieved: boolean } | null
+): boolean {
+  return Boolean(found && found.evaluated && !found.reprieved && found.verdict === "does_not_fit");
+}
+
+async function archiveHitRefusedByPictureEditor(
+  dedup: VisualDedupState,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number
+): Promise<boolean> {
+  if (!dedup.beatRelevance) return false;
+  const contentKey = clipContentKey(clipPath);
+  try {
+    await ensureVerdictBeforeCompose({
+      clipPath,
+      contentKey,
+      sceneIndex,
+      beatIndex,
+      route: "archive_first",
+      finalSay: true,
+    });
+  } catch {
+    return false;
+  }
+  return archiveHitIsRefused(
+    relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
+      localPath: clipPath,
+      currentFilename: path.basename(clipPath),
+      contentKey,
+      sceneIndex,
+      beatIndex,
+    })
+  );
+}
+
+/**
  * ARCHIVE FIRST, SUPPLIERS SECOND — AND VIDEO ALWAYS COMES BEFORE A PICTURE.
  *
  * The own archive is asked first. When it holds a video for this beat, that is the answer and no
@@ -2419,15 +2470,24 @@ export async function fetchBeatArchivalThenPexels(
   );
   /** The own archive holds photographs too; one of those waits until no source had a video. */
   const ownArchiveStill = ownArchiveClip !== null && isCuratedPreparedStillClip(ownArchiveClip);
+  let archiveHitRefused = false;
   if (ownArchiveClip !== null && !ownArchiveStill) {
-    console.log(`[ArchiveFirst] s${sceneIndex}b${beat.index} ARCHIVE_HIT — no supplier asked`);
-    return ownArchiveClip;
+    /** P1 (video 630) — the hit is a candidate: the picture editor is asked before it ends the beat. */
+    archiveHitRefused = await archiveHitRefusedByPictureEditor(dedup, ownArchiveClip, sceneIndex, beat.index);
+    if (!archiveHitRefused) {
+      console.log(`[ArchiveFirst] s${sceneIndex}b${beat.index} ARCHIVE_HIT — no supplier asked`);
+      return ownArchiveClip;
+    }
+    console.log(
+      `[ArchiveFirst] s${sceneIndex}b${beat.index} ARCHIVE_HIT_REFUSED — the picture editor refused ` +
+        `${path.basename(ownArchiveClip)}; the suppliers are asked within this beat's turn`
+    );
   }
 
   /** The YouTube turn runs beside the cascade; the cascade itself never asks YouTube. */
   noteTierAttempted("YOUTUBE", "youtube_first_turn");
   console.log(
-    `[ArchiveFirst] s${sceneIndex}b${beat.index} ARCHIVE_GAP (${ownArchiveStill ? "photo only" : "no match"}) — ` +
+    `[ArchiveFirst] s${sceneIndex}b${beat.index} ARCHIVE_GAP (${ownArchiveStill ? "photo only" : archiveHitRefused ? "archive hit refused" : "no match"}) — ` +
       `asking suppliers: youtube, ` +
       HISTORICAL_SOURCE_TIER_ORDER.join("/")
   );
@@ -18852,6 +18912,17 @@ async function adoptClip(
   }
   // RONDE 67: a working copy, because the loop below appends to it — see the reprieve.
   const finalPaths = [...lessFilled.paths];
+  /** P2 (video 630) — refused for another sentence: asked last, never refused here (beatVisualRelevance). */
+  const refusedElsewhere = putRefusedElsewhereLast(finalPaths, (p) =>
+    contentRefusedOnAnotherBeat(dedup.beatRelevance, clipContentKey(p), sceneIndex, beatIndex)
+  );
+  if (refusedElsewhere.moved.length) {
+    finalPaths.splice(0, finalPaths.length, ...refusedElsewhere.paths);
+    console.log(
+      `[ShortlistOrder] s${sceneIndex}b${beatIndex}: ${refusedElsewhere.moved.length} candidate(s) moved back — ` +
+        `the picture editor already refused them for another sentence`
+    );
+  }
   /**
    * RONDE 119 — THE COUNTER THAT SAID ZERO BECAUSE NOBODY CALLED IT.
    *
@@ -19080,7 +19151,14 @@ async function adoptClip(
           memoKey: onScreenTextVerdictKey(dedup, p, contentKey),
           budget: beatClipTextFilterMaxChecks(),
         }).catch(() => null);
-        if (text?.decision === "REJECT" && refuse("baked_edit_text_before_vision")) continue;
+        /** P0 (video 630) — only text that IS the picture is refused here; see onScreenTextRefusesBeforeVision. */
+        if (onScreenTextRefusesBeforeVision(text) && refuse("baked_edit_text_before_vision")) continue;
+        if (text?.decision === "REJECT") {
+          console.log(
+            `[OnScreenText] s${sceneIndex}b${beatIndex}: ${path.basename(p)} carries added text ` +
+              `(${text.textKind ?? "kind unknown"}) over the picture — the picture editor decides`
+          );
+        }
       }
       /**
        * USAGE — counted after the judge, so a candidate the judge refuses never spends a still

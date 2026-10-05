@@ -375,6 +375,46 @@ export function notePushOutcomeForBeat(
 }
 
 /**
+ * P2 (VIDEO 630) — A PICTURE THE EDITOR ALREADY REFUSED FOR ANOTHER SENTENCE IS ASKED ABOUT LAST.
+ *
+ * Render 630 spent 11 of its 37 looks on pictures the editor had already refused for a different
+ * sentence — one moment of one YouTube video was judged four times, a protest sign twice — and
+ * three sentences reached their look ceiling with fresh candidates never seen. A refusal stays a
+ * fact about ONE sentence: nothing here forbids the picture, approves it, or touches a ceiling. It
+ * only says which candidates a beat should spend its looks on first.
+ *
+ * True when a model LOOKED at this content for another beat of this render and said `does_not_fit`
+ * (not reprieved). Only canonical asset identities count — a filename is not a picture.
+ */
+export function contentRefusedOnAnotherBeat(
+  ledger: Pick<BeatRelevanceLedger, "byBeat"> | undefined,
+  contentKey: string | null | undefined,
+  sceneIndex: number,
+  beatIndex: number
+): boolean {
+  if (!ledger || !isCanonicalAssetKey(contentKey)) return false;
+  const ownBeat = `s${sceneIndex}b${beatIndex}\u0000`;
+  const handle = `\u0000content:${contentKey}`;
+  for (const [key, entry] of ledger.byBeat) {
+    if (!key.endsWith(handle) || key.startsWith(ownBeat)) continue;
+    const d = entry.decision;
+    if (d.verdict === "does_not_fit" && d.evaluated !== false && !d.reprieved) return true;
+  }
+  return false;
+}
+
+/** Stable: fresh candidates keep their order, then the ones refused elsewhere keep theirs. */
+export function putRefusedElsewhereLast(
+  paths: readonly string[],
+  refusedElsewhere: (clipPath: string) => boolean
+): { paths: string[]; moved: string[] } {
+  const fresh: string[] = [];
+  const moved: string[] = [];
+  for (const p of paths) (refusedElsewhere(p) ? moved : fresh).push(p);
+  return { paths: [...fresh, ...moved], moved };
+}
+
+/**
  * The key one beat's verdict about one clip is filed under.
  *
  * `kind` keeps the two handles in separate namespaces: a clip's path and a clip's content identity
