@@ -92,12 +92,13 @@ import {
   blankPictureFinding,
   deliveryGate,
   finalTimelineFootageRefusal,
+  primaryGraphicSeconds,
   formatDeliveryBlock,
   TIMELINE_ARCHIVE_REFERENCE,
 } from "./deliveryGate";
 import { footageSourceForArchiveAssets } from "./youtubeFootageInFilm";
 import type { ProjectTimeline } from "./projectTimeline";
-import { audioTrackOf, videoTrack } from "./projectTimeline";
+import { audioTrackOf, graphicsTrack, videoTrack } from "./projectTimeline";
 import { maxConcurrentRenderJobs } from "./config";
 
 /* ═══════════════════════ the outcome of one job ═══════════════════════ */
@@ -1086,7 +1087,8 @@ export async function runRenderJob(params: {
       footageRefusal: finalTimelineFootageRefusal(
         videoTrack(timeline),
         undefined,
-        await footageSourceForArchiveAssets(videoTrack(timeline), getMediaArchiveAssetById)
+        await footageSourceForArchiveAssets(videoTrack(timeline), getMediaArchiveAssetById),
+        primaryGraphicSeconds(graphicsTrack(timeline))
       ),
     });
     for (const line of gate.lines) {

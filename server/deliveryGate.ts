@@ -566,7 +566,14 @@ export type FinalTimelineClip = {
 export function finalTimelineFootageRefusal(
   clips: readonly FinalTimelineClip[],
   maxShare = MAX_DELIVERABLE_FOOTAGE_SHARE,
-  youtubeVideoByArchiveAsset: ReadonlyMap<number, string> = new Map()
+  youtubeVideoByArchiveAsset: ReadonlyMap<number, string> = new Map(),
+  /**
+   * FULLSCREEN PRIMARY — seconds in which a graphic that explains the sentence (a map, a counter,
+   * a ring, a chart — `primaryGraphicSeconds`) IS the picture. It is no footage source, but it is
+   * film the viewer watches, so it is part of the film this share is taken of. A drawn chapter
+   * card is not counted: one shot plus title cards is still one shot.
+   */
+  primaryGraphicSec = 0
 ): string | null {
   const share = computeScreenTimeShare(
     clips
@@ -591,13 +598,30 @@ export function finalTimelineFootageRefusal(
       })
   );
   const top = share.byFootage[0];
-  if (top && top.share > maxShare) {
+  const graphicSec = Math.max(0, primaryGraphicSec);
+  const filmSec = share.totalSec + graphicSec;
+  const topShare = top && filmSec > 0 ? top.sec / filmSec : 0;
+  if (top && topShare > maxShare) {
     return (
-      `one piece of footage (${top.key}, source=${top.source}) fills ${pct(top.share)} of the final timeline ` +
-      `(${top.sec.toFixed(1)}s of ${share.totalSec.toFixed(1)}s in ${top.appearances} piece(s), limit ${pct(maxShare)})`
+      `one piece of footage (${top.key}, source=${top.source}) fills ${pct(topShare)} of the final timeline ` +
+      `(${top.sec.toFixed(1)}s of ${filmSec.toFixed(1)}s in ${top.appearances} piece(s), limit ${pct(maxShare)}` +
+      (graphicSec > 0 ? `; ${graphicSec.toFixed(1)}s of primary graphics counted in the film` : "") +
+      `)`
     );
   }
   return borrowedShotsRefusal(clips);
+}
+
+/**
+ * FULLSCREEN PRIMARY — how long graphics that explain their sentence are the picture: the graphics
+ * the edit placed as a sentence's picture (`primaryVisual`), except a drawn chapter card.
+ */
+export function primaryGraphicSeconds(
+  graphics: ReadonlyArray<{ graphicType: string; start: number; end: number; data?: Record<string, unknown>; disabled?: boolean }>
+): number {
+  return graphics
+    .filter((g) => !g.disabled && g.data?.primaryVisual === true && g.graphicType !== "chapter_card")
+    .reduce((sum, g) => sum + Math.max(0, g.end - g.start), 0);
 }
 
 /**

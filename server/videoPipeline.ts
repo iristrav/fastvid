@@ -701,6 +701,7 @@ import {
   enforceQualityExportGate,
   filmWithoutPictureRefusal,
   finalTimelineFootageRefusal,
+  primaryGraphicSeconds,
   judgeYoutubeRequirement,
   visionCoverageRefusal,
 } from "./deliveryGate";
@@ -25197,7 +25198,8 @@ async function _runVideoPipelineInner(
           ? finalTimelineFootageRefusal(
               videoTrack(outcome.timeline),
               undefined,
-              await footageSourceForArchiveAssets(videoTrack(outcome.timeline), getMediaArchiveAssetById)
+              await footageSourceForArchiveAssets(videoTrack(outcome.timeline), getMediaArchiveAssetById),
+              primaryGraphicSeconds(graphicsTrack(outcome.timeline))
             )
           : null;
         if (footageRefusal) {

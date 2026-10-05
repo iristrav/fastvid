@@ -418,6 +418,13 @@ export const DonutChart: React.FC<{
   );
 };
 
+/** Whether a ring's label says nothing but its own figure: "10%", "10 %", "10 percent". */
+export function ringLabelRestatesFigure(label: string, percent: number): boolean {
+  const words = label.toLowerCase().replace(/percent/g, "").replace(/[\d.,%\s]/g, "");
+  const digits = label.replace(/[^\d.]/g, "");
+  return words === "" && digits !== "" && Number(digits) === percent;
+}
+
 export const PercentageRing: React.FC<{
   data: Record<string, unknown>;
   durationInFrames: number;
@@ -431,7 +438,12 @@ export const PercentageRing: React.FC<{
   const shown = target * t;
   const r = 150;
   const circumference = 2 * Math.PI * r;
-  const label = readText(data, "label", "title");
+  /**
+   * FULLSCREEN PRIMARY — a label that only restates the figure ("10%" under 10%) is not drawn twice;
+   * one that says what the figure is ("Inflation 10%") still is.
+   */
+  const rawLabel = readText(data, "label", "title");
+  const label = rawLabel && ringLabelRestatesFigure(rawLabel, target) ? null : rawLabel;
 
   return (
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>

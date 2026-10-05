@@ -691,15 +691,21 @@ export function placePrimaryGraphics(
       backdrop.sceneIndex = owner.sceneIndex;
       backdrop.beatIndex = owner.beatIndex;
     }
+    /**
+     * FULLSCREEN PRIMARY — the graphic IS the picture: drawn full frame on its own ground
+     * (`primaryVisual`, read by Graphics.tsx), from the sentence's first frame. The spoken-word
+     * anchor is for an overlay that waits for its word; before it this frame would be empty.
+     */
+    const { anchorWord: _spokenAnchor, ...payload } = slot.graphic.data;
     const graphic: TimelineGraphic = {
       id: timelineElementId("gfx", slot.beatId, type, start),
       graphicType: type,
-      data: slot.graphic.data,
+      data: { ...payload, primaryVisual: true },
       start: backdrop.timelineStart,
       end: backdrop.timelineEnd,
       label,
-      /** A drawn title card is the whole picture: in the middle of the frame, not at its foot. */
-      ...(type === "chapter_card" ? { style: { ...DEFAULT_TEXT_STYLE, position: "center" as const } } : {}),
+      /** The whole picture: in the middle of the frame, not at its foot. */
+      style: { ...DEFAULT_TEXT_STYLE, position: "center" as const },
       reason:
         type === slot.graphic.graphicType
           ? slot.graphic.reason

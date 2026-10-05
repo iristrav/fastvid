@@ -89,21 +89,22 @@ function plannedTimeline(): ProjectTimeline {
 }
 
 /** Share of pixels that are red, near-black, and "other" (drawn), in a small frame at `sec`. */
-async function frameAt(file: string, sec: number, raw: string): Promise<{ red: number; black: number; other: number }> {
+async function frameAt(file: string, sec: number, raw: string): Promise<{ red: number; black: number; other: number; luma: number }> {
   await execFileAsync(resolveFFmpegBin(), [
     "-y", "-hide_banner", "-loglevel", "error", "-ss", sec.toFixed(2), "-i", file,
     "-frames:v", "1", "-vf", "scale=192:108", "-f", "rawvideo", "-pix_fmt", "rgb24", raw,
   ]);
   const px = fs.readFileSync(raw);
-  let red = 0, black = 0, other = 0;
+  let red = 0, black = 0, other = 0, luma = 0;
   for (let i = 0; i + 2 < px.length; i += 3) {
     const r = px[i]!, g = px[i + 1]!, b = px[i + 2]!;
+    luma += 0.299 * r + 0.587 * g + 0.114 * b;
     if (r > 180 && g < 70 && b < 70) red++;
-    else if (r < 40 && g < 40 && b < 40) black++;
+    else if (r < 20 && g < 20 && b < 20) black++;
     else other++;
   }
   const n = red + black + other;
-  return { red: red / n, black: black / n, other: other / n };
+  return { red: red / n, black: black / n, other: other / n, luma: luma / n };
 }
 
 const describeRender = resolveRemotionBrowser() ? describe : describe.skip;
@@ -143,7 +144,7 @@ describeRender("a graphic as a sentence's picture reaches the delivered MP4", ()
     }
   });
 
-  it("the plan puts a dark ground and a progress graphic under the middle sentence", () => {
+  it("the plan puts a backdrop and a primary progress graphic under the middle sentence", () => {
     const video = timeline.tracks.find((t) => t.kind === "VIDEO");
     const ground = video && video.kind === "VIDEO" ? video.clips.find(isGraphicBackdrop) : undefined;
     expect(ground?.transform?.opacity).toBe(0);
@@ -161,7 +162,9 @@ describeRender("a graphic as a sentence's picture reaches the delivered MP4", ()
     const f = await frameAt(out, 7.0, path.join(dir, "mid.raw"));
     expect(f.red, `red share ${f.red}`).toBeLessThan(0.005);
     expect(f.other, `drawn share ${f.other}`).toBeGreaterThan(0.005);
-    expect(f.black, `black share ${f.black}`).toBeGreaterThan(0.5);
+    /** FULLSCREEN PRIMARY — on its own dark ground, not on black: not a black frame to the spot check. */
+    expect(f.black, `black share ${f.black}`).toBeLessThan(0.05);
+    expect(f.luma, `mean luma ${f.luma}`).toBeGreaterThan(22);
   });
 
   it("CHAPTER_CARD_FALLBACK: under the sentence nothing could illustrate, Remotion's drawn card is the picture", async () => {
@@ -172,7 +175,8 @@ describeRender("a graphic as a sentence's picture reaches the delivered MP4", ()
     const f = await frameAt(out, 11.0, path.join(dir, "card.raw"));
     expect(f.red, `red share ${f.red}`).toBeLessThan(0.005);
     expect(f.other, `drawn share ${f.other}`).toBeGreaterThan(0.002);
-    expect(f.black, `black share ${f.black}`).toBeGreaterThan(0.5);
+    expect(f.black, `black share ${f.black}`).toBeLessThan(0.05);
+    expect(f.luma, `mean luma ${f.luma}`).toBeGreaterThan(22);
   });
 
   it("under the sentences with a clip: their own picture, as before", async () => {

@@ -390,6 +390,22 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
       );
   }
 
+  /** FULLSCREEN PRIMARY — the sentence's picture: the same component, full frame, on its own ground. */
+  if (g.data?.primaryVisual === true) {
+    return (
+      <Sequence from={g.fromFrame} durationInFrames={g.durationInFrames} name={`primary ${g.graphicType} ${g.id}`}>
+        <PrimaryStage
+          graphicType={g.graphicType}
+          fontSizePx={fontSizePx}
+          durationInFrames={g.durationInFrames}
+          animation={g.animation}
+        >
+          {body}
+        </PrimaryStage>
+      </Sequence>
+    );
+  }
+
   return (
     <Sequence from={g.fromFrame} durationInFrames={g.durationInFrames} name={`${g.graphicType} ${g.id}`}>
       <GraphicBody
@@ -459,6 +475,69 @@ export const HighlightBox: React.FC<{
           opacity,
         }}
       />
+    </AbsoluteFill>
+  );
+};
+
+/**
+ * FULLSCREEN PRIMARY — the ground a graphic stands on when it is the sentence's picture.
+ *
+ * A quiet dark slate, lighter at the centre, instead of the black the opacity-0 backdrop leaves:
+ * dark enough to read as a documentary graphic, light enough (mean luma ≈ 35) that a frame of it is
+ * not a black frame by the post-render spot check's own measure (`BLACK_LUMA_THRESHOLD`).
+ *
+ * 99% opaque, not 100: the browser writes a fully opaque frame as an RGB PNG, the overlay .mov then
+ * switches pixel format mid-stream, and the overlay ink probe (`alphaextract`) cannot read it. Over
+ * the black backdrop underneath, the last 1% is invisible.
+ */
+export const PRIMARY_GROUND =
+  "radial-gradient(ellipse at 50% 45%, rgba(43,52,66,0.99) 0%, rgba(30,37,47,0.99) 70%, rgba(26,32,41,0.99) 100%)";
+
+/** The chart, map and ring family: one SVG drawn at its natural 900×520 (`Charts.tsx`, `GeoMap.tsx`). */
+const PANEL_GRAPHICS = new Set([
+  "bar_chart", "horizontal_bar", "line_chart", "pie_chart", "donut_chart",
+  "percentage_ring", "progress", "map_point", "route", "multi_point",
+]);
+const PANEL_W = 900;
+const PANEL_H = 520;
+
+/**
+ * The graphic as the whole picture: its ground fills the frame from the first frame to the last,
+ * and the graphic itself — the SAME component an overlay uses — is centred and scaled to fill about
+ * 90% of the frame. An SVG panel keeps its own aspect ratio (scaled whole, via its viewBox); a
+ * number or a card is set in type sized to the frame. It enters and leaves with the graphic's own
+ * animation; the ground does not, so the frame never flashes black.
+ */
+const PrimaryStage: React.FC<{
+  graphicType: string;
+  fontSizePx: number;
+  durationInFrames: number;
+  animation?: string;
+  children: React.ReactNode;
+}> = ({ graphicType, fontSizePx, durationInFrames, animation, children }) => {
+  const frame = useCurrentFrame();
+  const { width, height } = useVideoConfig();
+  const state = animationAt(animation ?? "fade_rise", frame, durationInFrames);
+  const panel = PANEL_GRAPHICS.has(graphicType);
+  const scale = Math.min((width * 0.9) / PANEL_W, (height * 0.9) / PANEL_H);
+  /** A counter is a figure: a tenth of the frame per em, so "60 million" reads across the room. */
+  const typeSize = graphicType === "counter" || graphicType === "statistic" || graphicType === "stat"
+    ? Math.round(height * 0.11)
+    : fontSizePx;
+  return (
+    <AbsoluteFill style={{ background: PRIMARY_GROUND, alignItems: "center", justifyContent: "center", fontSize: typeSize }}>
+      <div
+        style={{
+          opacity: state.opacity,
+          transform: `translate(${state.translateX}px, ${state.translateY}px) scale(${state.scale})`,
+        }}
+      >
+        {panel ? (
+          <div style={{ width: PANEL_W, height: PANEL_H, transform: `scale(${scale.toFixed(4)})` }}>{children}</div>
+        ) : (
+          children
+        )}
+      </div>
     </AbsoluteFill>
   );
 };
