@@ -182,11 +182,11 @@ describe("D/E. YTContext is asked only when the video's length is unknown", () =
 
 /* ═══════════════════════ F — the one-footage rule is untouched ═══════════════════════ */
 
-describe("F. ONE_FOOTAGE_FILLS_FILM still refuses a film of one piece of footage", () => {
+describe("F. ONE_FOOTAGE_FILLS_FILM still measures a film of one piece of footage — reported, not blocked", () => {
   const clip = (id: string, start: number, end: number, archiveAssetId: number): FinalTimelineClip =>
     ({ id, timelineStart: start, timelineEnd: end, source: { provider: "youtube", providerAssetId: String(archiveAssetId), archiveAssetId } });
 
-  it("video 616's timeline — 21 pieces of one clip over 75.8 s — is refused", () => {
+  it("video 616's timeline — 21 pieces of one clip over 75.8 s — is named, and still delivered", () => {
     const pieces = Array.from({ length: 21 }, (_, i) => clip(`vc_p${i}`, (75.78 / 21) * i, (75.78 / 21) * (i + 1), 58019));
     const refusal = finalTimelineFootageRefusal(pieces);
     expect(refusal).toContain("100%");
@@ -199,7 +199,7 @@ describe("F. ONE_FOOTAGE_FILLS_FILM still refuses a film of one piece of footage
       assetsOnly: true,
       footageRefusal: refusal,
     });
-    expect(verdict.allow).toBe(false);
-    expect(verdict.allow === false && verdict.failures.map((f) => f.code)).toContain("ONE_FOOTAGE_FILLS_FILM");
+    expect(verdict.allow).toBe(true);
+    expect(verdict.lines.join("\n")).toContain("QUALITY_NOTE ONE_FOOTAGE_FILLS_FILM");
   });
 });

@@ -19441,7 +19441,7 @@ async function adoptClip(
       /** VIDEO 618 — and for which beat, so that beat's own push is not refused on this mark. */
       noteAdoptedForBeat(dedup, contentKey, sceneIndex, beatIndex);
       /** VIDEO 631 — an approved picture is on its way; see `ladderWithinCap`. */
-      if (beatEvidence === "FIT" && !requeuedAfterRefusal.has(p)) noteApprovedPickForBeat(dedup, sceneIndex, beatIndex);
+      if (beatEvidence === "FIT" && !requeuedAfterRefusal.has(p)) noteApprovedPickForBeat(dedup, sceneIndex, beatIndex, contentKey);
       /**
        * RONDE 88A — ONE DECISION, BOTH REGISTRIES.
        *
@@ -20212,28 +20212,49 @@ async function resolveBeatClipForBeat(
   const historicalDoc =
     isHistoricalDocumentary(videoTitle, scene.text, beat.text) && !dedup.personTopicLock;
   const primary = historicalDoc ? "" : (scenePersons[0] ?? personName ?? dedup.primaryPerson ?? "");
-  /** VIDEO 631 — a picture approved before the cap is still taken; see `ladderWithinCap`. */
-  const capped = await ladderWithinCap<string>(dedup, sceneIndex, beat.index, (track) =>
-    withSceneFetchTimeout(
-      () => track(beatPrimaryFetch(
-        beat, scene, workDir, sceneIndex, clipFetchDur, dedup,
-        primary || personName, videoTitle, { ...beatAdoptOpts, keywords: beat.keywords },
-        scenePersons, `b${beat.index}_primary`, "beat ladder"
-      )),
-      beatWallWithYoutubeTurn(beatVideoSearchWallMs()),
-      `video search s${sceneIndex} b${beat.index}`
-    )
-  );
-  const c = capped.value;
-  if (capped.error) {
-    console.warn(
-      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: video search capped:`,
-      capped.error.message,
-      capped.keptAfterCap ? "— a picture approved before the cap was still being prepared; it is placed (no new look)" : ""
+  /** VIDEO 631 RE-RUN — this ladder's answer is kept for the scene, whenever it comes; see `takeLateApprovedPicks`. */
+  const approvedBefore = approvedPicksForBeat(dedup, sceneIndex, beat.index);
+  let late: Promise<string | null> | undefined;
+  const answer = (async (): Promise<string | null> => {
+    /** VIDEO 631 — a picture approved before the cap is still taken; see `ladderWithinCap`. */
+    const capped = await ladderWithinCap<string>(dedup, sceneIndex, beat.index, (track) =>
+      withSceneFetchTimeout(
+        () => track(beatPrimaryFetch(
+          beat, scene, workDir, sceneIndex, clipFetchDur, dedup,
+          primary || personName, videoTitle, { ...beatAdoptOpts, keywords: beat.keywords },
+          scenePersons, `b${beat.index}_primary`, "beat ladder"
+        )),
+        beatWallWithYoutubeTurn(beatVideoSearchWallMs()),
+        `video search s${sceneIndex} b${beat.index}`
+      )
     );
-  }
-  if (c && !(await technicalMediaRefusal(c, MEDIA_PROBES))) return c;
-  return null;
+    const c = capped.value;
+    if (capped.error) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: video search capped:`,
+        capped.error.message,
+        capped.keptAfterCap ? "— a picture approved before the cap was still being prepared; it is placed (no new look)" : ""
+      );
+      /** Nothing approved at the cap: a look already under way may still finish. The sentence does not wait for it. */
+      late = capped.late;
+    }
+    if (c && !(await technicalMediaRefusal(c, MEDIA_PROBES))) return c;
+    return null;
+  })();
+  /**
+   * What the SCENE follows: this answer, or — when the cap ended the sentence with nothing — the
+   * ladder's own answer whenever it lands. The sentence itself moves on at once, exactly as before.
+   */
+  const forScene = answer.then(
+    async (c) => {
+      if (c || !late) return c;
+      const v = await late.catch(() => null);
+      return v && !(await technicalMediaRefusal(v, MEDIA_PROBES)) ? v : null;
+    },
+    () => null
+  );
+  noteLadderForBeat(dedup, sceneIndex, beat.index, approvedBefore, forScene);
+  return answer;
 }
 
 // ─── Unified beat-clip retrieval entry point ─────────────────────────────────
@@ -20954,16 +20975,138 @@ export function noteAdoptedForBeat(
  * that transform can tell an approved picture is on its way. Per render (keyed on its dedup state).
  */
 const approvedPicksByRender = new WeakMap<object, Map<string, number>>();
+/** Which pictures, by content key, were approved for which sentence — see `takeLateApprovedPicks`. */
+const approvedKeysByRender = new WeakMap<object, Map<string, Set<string>>>();
 
-export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatIndex: number): void {
+export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey?: string): void {
   const byBeat = approvedPicksByRender.get(dedup) ?? new Map<string, number>();
   approvedPicksByRender.set(dedup, byBeat);
   const key = `${sceneIndex}:${beatIndex}`;
   byBeat.set(key, (byBeat.get(key) ?? 0) + 1);
+  if (contentKey) {
+    const keys = approvedKeysByRender.get(dedup) ?? new Map<string, Set<string>>();
+    approvedKeysByRender.set(dedup, keys);
+    const set = keys.get(key) ?? new Set<string>();
+    set.add(contentKey);
+    keys.set(key, set);
+  }
 }
 
 export function approvedPicksForBeat(dedup: object, sceneIndex: number, beatIndex: number): number {
   return approvedPicksByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`) ?? 0;
+}
+
+/** Was THIS picture (by content key) approved for THIS sentence? */
+export function pictureApprovedForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey: string): boolean {
+  return Boolean(contentKey) && Boolean(approvedKeysByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`)?.has(contentKey));
+}
+
+/**
+ * VIDEO 631 RE-RUN (360046e) — A PICTURE APPROVED A MOMENT AFTER ITS SENTENCE CLOSED IS STILL PLACED.
+ *
+ *     19:11:44.852  [Pipeline] Scene 1 beat 3: video search capped … — s1b3: no picture — gap
+ *     19:11:44.853  [BeatRelevance] s1b3 adopt fits … border guards observing a checkpoint
+ *     19:11:46      transformed, ADOPTED — never pushed; s1b3 got a drawn chapter card
+ *
+ * The look was already in flight when the cap fired; its FIT came one millisecond late, so
+ * `ladderWithinCap` saw no approval and the sentence closed. No new look starts after a cap (see
+ * `sceneTurnIsOver`), so only an answer already on its way can arrive like this.
+ *
+ * Every sentence's ladder is kept here with its answer. The scene asks for them between sentences
+ * and at its end, and places an answer only when (1) the picture editor approved THAT picture for
+ * THAT sentence, (2) the answer never reached the scene, and (3) the sentence still has no picture.
+ * Anything else is named in the log with its reason — nothing disappears without one.
+ */
+type LateLadder = {
+  sceneIndex: number;
+  beatIndex: number;
+  approvedBefore: number;
+  promise: Promise<string | null>;
+  settled: { value: string | null } | null;
+};
+const lateLaddersByRender = new WeakMap<object, LateLadder[]>();
+const offeredToSceneByRender = new WeakMap<object, Set<string>>();
+
+export function noteLadderForBeat(
+  dedup: object,
+  sceneIndex: number,
+  beatIndex: number,
+  approvedBefore: number,
+  promise: Promise<string | null>
+): void {
+  const list = lateLaddersByRender.get(dedup) ?? [];
+  lateLaddersByRender.set(dedup, list);
+  const entry: LateLadder = { sceneIndex, beatIndex, approvedBefore, promise, settled: null };
+  list.push(entry);
+  promise.then(
+    (value) => { entry.settled = { value }; },
+    () => { entry.settled = { value: null }; }
+  );
+}
+
+/** Every clip `pushSceneClip` was handed, whatever it decided — those answers did reach the scene. */
+export function noteOfferedToScene(dedup: object, sceneIndex: number, beatIndex: number, clipPath: string): void {
+  const set = offeredToSceneByRender.get(dedup) ?? new Set<string>();
+  offeredToSceneByRender.set(dedup, set);
+  set.add(`${sceneIndex}:${beatIndex}:${clipPath}`);
+}
+
+export type LateLadderAnswer = { beatIndex: number; clip: string; approved: boolean };
+
+/**
+ * The scene's ladder answers that never reached it. `waitMs` > 0 (the scene's end) also waits, up to
+ * that long, for a ladder whose sentence has an approval it has not delivered yet — a picture in its
+ * preparation. Settled answers are taken off the list; at the scene's end every entry is.
+ */
+export async function takeLateApprovedPicks(
+  dedup: object,
+  sceneIndex: number,
+  waitMs: number
+): Promise<LateLadderAnswer[]> {
+  const list = lateLaddersByRender.get(dedup);
+  if (!list) return [];
+  const mine = list.filter((e) => e.sceneIndex === sceneIndex);
+  if (waitMs > 0) {
+    const preparing = mine.filter(
+      (e) => !e.settled && approvedPicksForBeat(dedup, e.sceneIndex, e.beatIndex) > e.approvedBefore
+    );
+    if (preparing.length > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const all = Promise.allSettled(preparing.map((e) => e.promise));
+      await (Number.isFinite(waitMs)
+        ? Promise.race([all, new Promise<void>((r) => { timer = setTimeout(r, waitMs); })])
+        : all);
+      if (timer) clearTimeout(timer);
+      /** `then` handlers run after the awaited promise; give them their turn. */
+      await Promise.resolve();
+    }
+  }
+  const offered = offeredToSceneByRender.get(dedup);
+  const out: LateLadderAnswer[] = [];
+  for (const e of mine) {
+    if (!e.settled) {
+      if (waitMs > 0) {
+        list.splice(list.indexOf(e), 1);
+        console.warn(
+          approvedPicksForBeat(dedup, e.sceneIndex, e.beatIndex) > e.approvedBefore
+            ? `[LateApproved] s${e.sceneIndex}b${e.beatIndex}: a picture approved for this sentence was still being ` +
+                `prepared when the scene closed — not placed (scene time over)`
+            : `[LateApproved] s${e.sceneIndex}b${e.beatIndex}: its search was still running when the scene closed ` +
+                `and nothing had been approved — no answer to place`
+        );
+      }
+      continue;
+    }
+    list.splice(list.indexOf(e), 1);
+    const clip = e.settled.value;
+    if (!clip || offered?.has(`${e.sceneIndex}:${e.beatIndex}:${clip}`)) continue;
+    out.push({
+      beatIndex: e.beatIndex,
+      clip,
+      approved: pictureApprovedForBeat(dedup, e.sceneIndex, e.beatIndex, clipContentKey(clip)),
+    });
+  }
+  return out;
 }
 
 /**
@@ -20988,7 +21131,7 @@ export async function ladderWithinCap<T>(
   beatIndex: number,
   /** The capped search itself; `track` hands this helper the ladder's own promise. */
   capped: (track: (ladder: Promise<T | null>) => Promise<T | null>) => Promise<T | null>
-): Promise<{ value: T | null; error?: Error; keptAfterCap?: boolean }> {
+): Promise<{ value: T | null; error?: Error; keptAfterCap?: boolean; late?: Promise<T | null> }> {
   const approvedBefore = approvedPicksForBeat(dedup, sceneIndex, beatIndex);
   const running: { p: Promise<T | null> | null } = { p: null };
   const track = (ladder: Promise<T | null>) => (running.p = ladder);
@@ -20999,7 +21142,8 @@ export async function ladderWithinCap<T>(
       const value = await running.p.catch(() => null);
       return { value, error: err as Error, keptAfterCap: value != null };
     }
-    return { value: null, error: err as Error };
+    /** VIDEO 631 RE-RUN — the ladder, still running, handed back so the scene can follow it (`takeLateApprovedPicks`). */
+    return { value: null, error: err as Error, ...(running.p ? { late: running.p } : {}) };
   }
 }
 
@@ -21818,6 +21962,8 @@ async function fetchSceneVisualsInner(
   };
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    /** VIDEO 631 RE-RUN — this answer reached the scene, whatever is decided below; see `takeLateApprovedPicks`. */
+    noteOfferedToScene(dedup, scene.index, beatIndex, clipPath);
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     const identity = {
@@ -21956,9 +22102,37 @@ async function fetchSceneVisualsInner(
       if (!ok) return;
     }
   };
+  /**
+   * VIDEO 631 RE-RUN — a picture the picture editor approved for a sentence after that sentence's
+   * cap closed it is placed here, between sentences and at the scene's end, when the sentence still
+   * has no picture. Every answer that is not placed is named with its reason. No new look: the
+   * verdict is the one already given (see `takeLateApprovedPicks`).
+   */
+  const placeLateApprovedPicks = async (sceneEnd: boolean): Promise<void> => {
+    const waitMs = sceneEnd ? remainingScopeMs() : 0;
+    for (const late of await takeLateApprovedPicks(dedup, scene.index, waitMs)) {
+      const beat = beats.find((b) => b.index === late.beatIndex);
+      const at = `[LateApproved] s${scene.index}b${late.beatIndex}: ${path.basename(late.clip)}`;
+      if (!beat) continue;
+      if (!late.approved) {
+        console.log(`${at} arrived after the sentence closed, without the picture editor's approval for it — not placed`);
+        continue;
+      }
+      if (clipBeatIndices.includes(late.beatIndex)) {
+        console.log(`${at} approved after the sentence closed — not placed: the sentence already has its picture`);
+        continue;
+      }
+      const ok = await withAdoptionIntent("beat_fetch", () => pushSceneClip(late.clip, beat.holdSec, late.beatIndex));
+      console.log(
+        `${at} approved after the sentence's search was capped — ` +
+          (ok ? "placed (no new look)" : "refused at the push (reason logged by [PushTrace])")
+      );
+    }
+  };
   try {
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi];
+    await placeLateApprovedPicks(false);
     await fillBeatWithMoreClips();
     closeBeatLadder?.();
     /**
@@ -22047,6 +22221,7 @@ async function fetchSceneVisualsInner(
       );
     }
   }
+    await placeLateApprovedPicks(true);
     await fillBeatWithMoreClips();
   } finally {
     /** The last beat's ladder, and any beat the loop left through a throw. */
@@ -24991,7 +25166,7 @@ async function _runVideoPipelineInner(
       clips: TimelineVideoClip[];
       basis: "rendered_timeline" | "planned_timeline";
     } | null = null;
-    /** VIDEO 616 — the timeline the delivery gate refused, kept only so its YouTube share can be reported. */
+    /** VIDEO 616 — the planned timeline, kept only so its YouTube share can be reported when the render does not deliver. */
     let refusedTimelineClips: TimelineVideoClip[] | null = null;
     /**
      * The cinematic refusal, hoisted so the final gate can read it.
@@ -25538,11 +25713,13 @@ async function _runVideoPipelineInner(
         /** R195 — read once, here, because the flag lives behind this block's dynamic import. */
         cinematicProgress.enabled = true;
         /**
-         * Video 612 — the timeline as it will be rendered, after its holds and YouTube pieces. When
-         * one piece of footage fills it, nothing is rendered: the render job's delivery gate would
-         * refuse the same film five minutes later, on the same measurement.
+         * Video 612 — the timeline as it will be rendered, after its holds and YouTube pieces, measured
+         * for one piece of footage filling it.
+         *
+         * RELEASE RULE — measured and reported, never a reason to render nothing. Too few pictures is a
+         * quality matter; the film is still rendered and the DeliveryGate checks the file it produces.
          */
-        const footageRefusal = outcome.ok
+        const footageNote = outcome.ok
           ? finalTimelineFootageRefusal(
               videoTrack(outcome.timeline),
               undefined,
@@ -25552,12 +25729,17 @@ async function _runVideoPipelineInner(
               chapterCardSeconds(graphicsTrack(outcome.timeline))
             )
           : null;
-        if (footageRefusal) {
-          if (outcome.ok) refusedTimelineClips = videoTrack(outcome.timeline);
-          cinematicRefusal = `ONE_FOOTAGE_FILLS_FILM — ${footageRefusal}`;
-          console.error(pipelineReport.add("summary", `[DeliveryGate] video=${videoId} not rendered: ${cinematicRefusal}`));
+        if (outcome.ok) refusedTimelineClips = videoTrack(outcome.timeline);
+        if (footageNote) {
+          console.warn(
+            pipelineReport.add(
+              "summary",
+              `[DeliveryGate] video=${videoId} QUALITY_NOTE ONE_FOOTAGE_FILLS_FILM — ${footageNote} ` +
+                `(rendered anyway: few pictures is a quality matter, never a reason to deliver nothing)`
+            )
+          );
         }
-        if (outcome.ok && cinematicProgress.enabled && !footageRefusal) {
+        if (outcome.ok && cinematicProgress.enabled) {
           try {
             const { claimRenderAttempt, createRenderJob, claimQueuedRenderJob, getRenderJobById } =
               await import("./db");

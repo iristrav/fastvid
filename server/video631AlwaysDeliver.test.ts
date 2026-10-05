@@ -7,7 +7,8 @@
  *
  *   1–3   an approved picture survives its sentence's cap; nothing new is looked at after it
  *   4–7   without an approval the normal fallback runs; a film with footage gets no empty beat
- *   8     ONE_FOOTAGE_FILLS_FILM counts the drawn cards as film, and still refuses video 612
+ *   8     ONE_FOOTAGE_FILLS_FILM counts the drawn cards as film, and still names video 612
+ *         (since the release rule a quality note, never a block — see releaseRuleAlwaysDeliver)
  *   9–10  technical faults stay a hard block; a valid file passes
  *   11    every beat window of the planned timeline has a picture
  *   12    the customer never reads an internal reason or code
@@ -128,7 +129,7 @@ describe("FIX 1 — a picture approved before the cap is placed; nothing new is 
   it("wiring: the pipeline's ladder uses the cap helper, FIT acceptances are counted, the gate gets the hook", () => {
     expect(PIPE).toContain("const capped = await ladderWithinCap<string>(dedup, sceneIndex, beat.index, (track) =>");
     expect(PIPE).toContain("() => track(beatPrimaryFetch(");
-    expect(PIPE).toContain('if (beatEvidence === "FIT" && !requeuedAfterRefusal.has(p)) noteApprovedPickForBeat(dedup, sceneIndex, beatIndex);');
+    expect(PIPE).toContain('if (beatEvidence === "FIT" && !requeuedAfterRefusal.has(p)) noteApprovedPickForBeat(dedup, sceneIndex, beatIndex, contentKey);');
     expect(PIPE).toContain("state.beatImageGate.turnOver = sceneTurnIsOver;");
   });
 });
@@ -216,7 +217,7 @@ describe("FIX 2 — no approval → the normal fallback; a film with footage has
   });
 });
 
-describe("FIX 3 — ONE_FOOTAGE_FILLS_FILM blocks only what it exists for", () => {
+describe("FIX 3 — ONE_FOOTAGE_FILLS_FILM measures only what it exists for (a quality note since the release rule)", () => {
   const piece = (id: string, start: number, end: number, archiveAssetId: number): FinalTimelineClip => ({
     id, timelineStart: start, timelineEnd: end, source: { provider: "ww2", archiveAssetId },
   });
@@ -231,18 +232,18 @@ describe("FIX 3 — ONE_FOOTAGE_FILLS_FILM blocks only what it exists for", () =
     expect(finalTimelineFootageRefusal(clips, undefined, new Map(), 0, chapterCardSeconds(cards))).toBeNull();
   });
 
-  it("8b. video 612's shape — one footage cut into fifteen pieces under the whole narration — is still refused, cards or not", () => {
+  it("8b. video 612's shape — one footage cut into fifteen pieces under the whole narration — is still named, cards or not", () => {
     const clips = Array.from({ length: 15 }, (_, i) => piece(`p${i}`, i * 4.74, (i + 1) * 4.74, 612));
     expect(finalTimelineFootageRefusal(clips, undefined, new Map(), 0)).toMatch(/fills 100%/);
     expect(finalTimelineFootageRefusal(clips, undefined, new Map(), 0, 300)).toMatch(/fills 100%/);
   });
 
-  it("8c. one shot plus drawn chapter cards only is still one shot: refused — cards never prove footage", () => {
+  it("8c. one shot plus drawn chapter cards only is still one shot: named — cards never prove footage", () => {
     const clips = [piece("shot", 0, 16, 7)];
     expect(finalTimelineFootageRefusal(clips, undefined, new Map(), 0, chapterCardSeconds([card(16, 36), card(36, 56)]))).toMatch(/fills 100%/);
   });
 
-  it("8d. with two footages, one that dominates the whole film including the cards is still refused", () => {
+  it("8d. with two footages, one that dominates the whole film including the cards is still named", () => {
     const clips = [piece("big", 0, 40, 1), piece("small", 40, 45, 2)];
     expect(finalTimelineFootageRefusal(clips, undefined, new Map(), 0, chapterCardSeconds([card(45, 60)]))).toMatch(/one piece of footage \(archive:1/);
     /** And a card is never footage: no footage on screen, nothing to refuse here (the film-without-picture rule decides that). */

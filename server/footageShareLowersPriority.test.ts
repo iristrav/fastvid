@@ -82,9 +82,10 @@ describe("the beat's ranking", () => {
     expect(preferLessFilledFootage(ranked, key, {}).paths).toEqual(ranked);
   });
 
-  it("the delivery gate stays the last check, unchanged", () => {
+  it("the share is still measured at the end — reported as a quality note, never a block", () => {
     expect(MAX_DELIVERABLE_FOOTAGE_SHARE).toBe(0.5);
-    expect(PIPE).toContain("cinematicRefusal = `ONE_FOOTAGE_FILLS_FILM — ${footageRefusal}`;");
+    expect(PIPE).toContain("QUALITY_NOTE ONE_FOOTAGE_FILLS_FILM — ${footageNote}");
+    expect(PIPE).not.toContain("cinematicRefusal = `ONE_FOOTAGE_FILLS_FILM");
   });
 });
 

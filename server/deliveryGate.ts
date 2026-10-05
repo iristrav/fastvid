@@ -12,8 +12,9 @@
  *                                `visionCoverageRefusal`           footage nobody judged
  *                                `enforceQualityExportGate`        nothing verified / provenance lost
  *                                `finalTimelineFootageRefusal`     one piece of footage fills the film
+ *                                                                  (a quality note — it never blocks)
  *   on the rendered file         `deliveryGate`                    render, timeline, every clip, the MP4,
- *                                                                  a blank picture, one footage fills it
+ *                                                                  a blank picture
  *   after the timeline render    `judgeYoutubeRequirement`         a deployment's YouTube minimum
  *   on the published file        `finalVideoRefusals`              size, streams, minimum duration
  *
@@ -91,7 +92,10 @@ export type DeliveryGateInput = {
   voiceoverSec?: number | null;
   /** How far the delivered duration may sit from the voiceover before it is a fault. */
   durationToleranceSec?: number;
-  /** `finalTimelineFootageRefusal` on the rendered timeline — set when one footage fills the film. */
+  /**
+   * `finalTimelineFootageRefusal` on the rendered timeline — set when one footage fills the film.
+   * Printed as a quality note beside the verdict; it never blocks (see the release rule in the gate).
+   */
   footageRefusal?: string | null;
   /** RONDE 662 — `blankPictureFinding` on the delivered file's spot check; null when not blank or not sampled. */
   blankPicture?: string | null;
@@ -108,7 +112,6 @@ export type DeliveryGateFailureCode =
   | "DELIVERED_FILE_NO_VIDEO"
   | "DELIVERED_FILE_NO_AUDIO"
   | "DELIVERED_DURATION_WRONG"
-  | "ONE_FOOTAGE_FILLS_FILM"
   | "FINAL_PICTURE_IS_BLACK";
 
 export type DeliveryGateVerdict =
@@ -156,10 +159,20 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
     });
   }
 
-  /* Video 612 — one piece of footage held under the whole narration is not a film. Video 627 — nor
-   * is a film made mostly of shots borrowed from other sentences (same field, see `borrowedShotsRefusal`). */
+  /**
+   * Video 612 — one piece of footage held under the whole narration; video 627 — a film made mostly
+   * of shots borrowed from other sentences (same field, see `borrowedShotsRefusal`).
+   *
+   * RELEASE RULE — a QUALITY finding, never a block. Too few pictures is not a broken file: renders
+   * 616, 621, 629, 630 and 631 were technically valid films that the customer never received. The
+   * measurement is kept and printed with the verdict; the customer replaces the shots in the editor.
+   */
+  const qualityNotes: string[] = [];
   if (input.footageRefusal?.trim()) {
-    failures.push({ code: "ONE_FOOTAGE_FILLS_FILM", detail: input.footageRefusal });
+    qualityNotes.push(
+      `[DeliveryGate]   QUALITY_NOTE ONE_FOOTAGE_FILLS_FILM — ${input.footageRefusal} ` +
+        `(not blocking: few pictures is a quality matter, the file is checked below)`
+    );
   }
 
   /* §11 — every production media clip, one by one. */
@@ -231,11 +244,12 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
     `checks=${input.assetsOnly ? "assets" : "assets+file"}`;
 
   if (failures.length === 0) {
-    lines.push(`[DeliveryGate] ${DELIVERY_GATE_PASS} ${at} ${summary}`);
+    lines.push(`[DeliveryGate] ${DELIVERY_GATE_PASS} ${at} ${summary}`, ...qualityNotes);
     return { allow: true, checked: input.clips.length, lines };
   }
   lines.push(`[DeliveryGate] ${DELIVERY_GATE_FAIL} ${at} ${summary} failures=${failures.length}`);
   for (const f of failures) lines.push(`[DeliveryGate]   ${f.code} — ${f.detail}`);
+  lines.push(...qualityNotes);
   return { allow: false, failures, lines };
 }
 

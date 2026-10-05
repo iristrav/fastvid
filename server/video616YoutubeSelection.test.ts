@@ -406,7 +406,7 @@ describe("Fix 4. an archive clip of YouTube origin is reported as YouTube, deliv
     expect(PIPE).toContain("if (outcome.ok) refusedTimelineClips = videoTrack(outcome.timeline);");
   });
 
-  it("ONE_FOOTAGE_FILLS_FILM still refuses that timeline", () => {
+  it("ONE_FOOTAGE_FILLS_FILM still names that timeline — as a quality note, not a block", () => {
     const pieces: FinalTimelineClip[] = Array.from({ length: 21 }, (_, i) => ({
       id: `vc_p${i}`, timelineStart: (75.78 / 21) * i, timelineEnd: (75.78 / 21) * (i + 1),
       source: { provider: "youtube", providerAssetId: "58019", archiveAssetId: 58019 },
@@ -414,7 +414,8 @@ describe("Fix 4. an archive clip of YouTube origin is reported as YouTube, deliv
     const refusal = finalTimelineFootageRefusal(pieces, undefined, new Map([[58019, "gx1T7-L8kns"]]));
     expect(refusal).toContain("youtube:gx1T7-L8kns");
     const verdict = deliveryGate({ videoId: 616, route: "cinematic_timeline", timelineExists: true, clips: [], delivered: null, assetsOnly: true, footageRefusal: refusal });
-    expect(verdict.allow === false && verdict.failures.map((x) => x.code)).toContain("ONE_FOOTAGE_FILLS_FILM");
+    expect(verdict.allow).toBe(true);
+    expect(verdict.lines.join("\n")).toContain("QUALITY_NOTE ONE_FOOTAGE_FILLS_FILM — one piece of footage (youtube:gx1T7-L8kns");
   });
 });
 

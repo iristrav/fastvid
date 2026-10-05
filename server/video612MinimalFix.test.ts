@@ -215,7 +215,7 @@ describe("D. 5.7 s of footage under 70 s of voice is not delivered", () => {
     expect(refusal).toContain("15 piece(s)");
   });
 
-  it("the delivery gate refuses it with its own code", () => {
+  it("the delivery gate reports it with its own code — a quality note, never a block (release rule)", () => {
     const verdict = deliveryGate({
       videoId: 612,
       route: "cinematic_timeline",
@@ -225,8 +225,8 @@ describe("D. 5.7 s of footage under 70 s of voice is not delivered", () => {
       assetsOnly: true,
       footageRefusal: finalTimelineFootageRefusal([clip("a", 0, 70, 57924)]),
     });
-    expect(verdict.allow).toBe(false);
-    expect(verdict.allow === false && verdict.failures.map((f) => f.code)).toContain("ONE_FOOTAGE_FILLS_FILM");
+    expect(verdict.allow).toBe(true);
+    expect(verdict.lines.join("\n")).toContain("QUALITY_NOTE ONE_FOOTAGE_FILLS_FILM");
   });
 
   it("an ordinary edit of many sources passes", () => {
@@ -234,9 +234,10 @@ describe("D. 5.7 s of footage under 70 s of voice is not delivered", () => {
     expect(finalTimelineFootageRefusal(clips)).toBeNull();
   });
 
-  it("the pipeline does not queue the render of such a timeline, and the worker's gate reads the same measure", () => {
+  it("the pipeline still renders such a timeline (release rule), and the worker's gate reads the same measure", () => {
     expect(PIPE).toContain("await footageSourceForArchiveAssets(videoTrack(outcome.timeline), getMediaArchiveAssetById)");
-    expect(PIPE).toContain("if (outcome.ok && cinematicProgress.enabled && !footageRefusal) {");
+    expect(PIPE).toContain("if (outcome.ok && cinematicProgress.enabled) {");
+    expect(PIPE).not.toContain("!footageRefusal");
     const WORKER = fs.readFileSync(path.join(__dirname, "renderJobWorker.ts"), "utf8");
     expect(WORKER).toContain("await footageSourceForArchiveAssets(videoTrack(timeline), getMediaArchiveAssetById)");
   });
