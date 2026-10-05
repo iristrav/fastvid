@@ -93,6 +93,7 @@ import {
   deliveryGate,
   finalTimelineFootageRefusal,
   primaryGraphicSeconds,
+  chapterCardSeconds,
   formatDeliveryBlock,
   TIMELINE_ARCHIVE_REFERENCE,
 } from "./deliveryGate";
@@ -1088,7 +1089,9 @@ export async function runRenderJob(params: {
         videoTrack(timeline),
         undefined,
         await footageSourceForArchiveAssets(videoTrack(timeline), getMediaArchiveAssetById),
-        primaryGraphicSeconds(graphicsTrack(timeline))
+        primaryGraphicSeconds(graphicsTrack(timeline)),
+        /** VIDEO 631 — cards count only beside two or more footages; see the rule. */
+        chapterCardSeconds(graphicsTrack(timeline))
       ),
     });
     for (const line of gate.lines) {

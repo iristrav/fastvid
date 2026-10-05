@@ -573,7 +573,20 @@ export function finalTimelineFootageRefusal(
    * film the viewer watches, so it is part of the film this share is taken of. A drawn chapter
    * card is not counted: one shot plus title cards is still one shot.
    */
-  primaryGraphicSec = 0
+  primaryGraphicSec = 0,
+  /**
+   * VIDEO 631 — seconds of drawn chapter cards (`chapterCardSeconds`), counted in the film ONLY when
+   * the film shows two or more pieces of footage.
+   *
+   * Render 631 had two footages, 8.7 s and 8.5 s, and 45 s of cards for the sentences no source
+   * could illustrate. Measured on the footage alone the larger one "filled 51 % of the final
+   * timeline" — of a 67.9 s timeline in which it was on screen 8.7 s — and the film was refused.
+   * With several footages the question is whether ONE of them dominates the film the viewer sees,
+   * and that film includes the cards. With a single footage the cards prove nothing: one shot plus
+   * title cards is still one shot, and stays refused (the test beside the rule above says so).
+   * A card is never footage: it adds film seconds, never a source or footage seconds.
+   */
+  chapterCardSec = 0
 ): string | null {
   const share = computeScreenTimeShare(
     clips
@@ -598,7 +611,8 @@ export function finalTimelineFootageRefusal(
       })
   );
   const top = share.byFootage[0];
-  const graphicSec = Math.max(0, primaryGraphicSec);
+  const cardSec = share.byFootage.length >= 2 ? Math.max(0, chapterCardSec) : 0;
+  const graphicSec = Math.max(0, primaryGraphicSec) + cardSec;
   const filmSec = share.totalSec + graphicSec;
   const topShare = top && filmSec > 0 ? top.sec / filmSec : 0;
   if (top && topShare > maxShare) {
@@ -621,6 +635,15 @@ export function primaryGraphicSeconds(
 ): number {
   return graphics
     .filter((g) => !g.disabled && g.data?.primaryVisual === true && g.graphicType !== "chapter_card")
+    .reduce((sum, g) => sum + Math.max(0, g.end - g.start), 0);
+}
+
+/** VIDEO 631 — how long drawn chapter cards are a sentence's picture. See `finalTimelineFootageRefusal`. */
+export function chapterCardSeconds(
+  graphics: ReadonlyArray<{ graphicType: string; start: number; end: number; data?: Record<string, unknown>; disabled?: boolean }>
+): number {
+  return graphics
+    .filter((g) => !g.disabled && g.data?.primaryVisual === true && g.graphicType === "chapter_card")
     .reduce((sum, g) => sum + Math.max(0, g.end - g.start), 0);
 }
 

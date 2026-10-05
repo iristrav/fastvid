@@ -8,10 +8,8 @@ import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import {
   APP_ERROR,
-  appErrorText,
   getLoginUrl,
   matchesAppError,
-  parseAppErrorCode,
   toastErrorMessage,
 } from "@/const";
 import { toast } from "sonner";
@@ -42,6 +40,10 @@ import {
 } from "@/components/GenerationProgressBar";
 import { useVideoProgressStream } from "@/hooks/useVideoProgressStream";
 import { useVoicePreview } from "@/hooks/useVoicePreview";
+
+/** VIDEO 631 — what a customer reads on a video that could not be made: no internal reason, no code. */
+const CUSTOMER_FAILED_VIDEO_TEXT =
+  "This video could not be finished. Please try again — if it happens again, contact support.";
 
 const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
   opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
@@ -344,16 +346,10 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
             ) : currentStatus === "failed" ? (
               <div className="flex flex-col items-center gap-2 px-4 py-3 text-center w-full">
                 <XCircle className="w-10 h-10 text-red-400/60 shrink-0" />
-                {video.errorMessage && (
-                  <p className="text-[10px] text-red-300/90 leading-snug line-clamp-4 w-full">
-                    {appErrorText(video.errorMessage)}
-                  </p>
-                )}
-                {video.errorMessage && parseAppErrorCode(video.errorMessage) !== null && (
-                  <p className="text-[9px] font-mono text-slate-500">
-                    Code {parseAppErrorCode(video.errorMessage)}
-                  </p>
-                )}
+                {/* VIDEO 631 — the customer never sees the render's internal reason or code; the admin page keeps them. */}
+                <p className="text-[10px] text-red-300/90 leading-snug line-clamp-4 w-full">
+                  {CUSTOMER_FAILED_VIDEO_TEXT}
+                </p>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => onRetry(video.id)}

@@ -706,6 +706,8 @@ export function notAskedReasonForDecline(cause: VisionDeclineCause): NotAskedRea
     /** Both ceilings are the same finding for the funnel: the looks were spent before this one. */
     case "RENDER_BUDGET_SPENT":
     case "BEAT_LOOK_CEILING":
+    /** VIDEO 631 — the sentence's time, not its looks, ran out; the same finding for the funnel. */
+    case "BEAT_TURN_OVER":
       return "VISION_BUDGET_EXHAUSTED";
     /**
      * The bytes arrived and nothing showable came out of them. That is exactly what

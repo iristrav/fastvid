@@ -779,6 +779,15 @@ export async function checkBeatRelevance(
     noteJudgementSkipped(state, "BEAT_LOOK_CEILING");
     return pass("BEAT_LOOK_CEILING", "unknown", `per-beat look ceiling reached (${spentOnBeat})`);
   }
+  /**
+   * VIDEO 631 — no new look once the sentence's turn is over. Its search was capped, so whatever
+   * this look approved could only be thrown away (render 631's s1b4 looked 22 s after its cap). A
+   * verdict already given is still read for free above; only a fresh look is declined.
+   */
+  if (!alreadyKnown && state.turnOver?.()) {
+    noteJudgementSkipped(state, "BEAT_TURN_OVER");
+    return pass("BEAT_TURN_OVER", "unknown", "the sentence's turn is over — no new look");
+  }
   if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat()) {
     // RONDE 199: past the ceiling, deliberately, because this one is the beat's picture. See
     // `finalSay`. Printed so the extra spend is visible rather than inferred from a total.

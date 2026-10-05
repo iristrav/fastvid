@@ -79,6 +79,8 @@ export type VisionDeclineCause =
   | "RENDER_BUDGET_SPENT"
   /** This beat's own look ceiling was already reached. See `maxRelevanceLooksPerBeat`. */
   | "BEAT_LOOK_CEILING"
+  /** VIDEO 631 — the sentence's turn was over (its search was capped) before this look began. */
+  | "BEAT_TURN_OVER"
   /** No frame could be sampled from the clip — nothing existed to show a model. */
   | "NO_FRAME"
   /** Frames existed on disk and none of them could be decoded into an image. */
@@ -261,6 +263,8 @@ export type BeatImageGateState = {
    * outside a render, where names are read from capital letters as before. See `namedPeople`.
    */
   personAsRead?: (name: string) => string | null | undefined;
+  /** VIDEO 631 — true when the sentence's turn is over (its scope was aborted): no new look starts. */
+  turnOver?: () => boolean;
   /**
    * RONDE 115 — why the gate produced no verdict, counted by reason.
    *

@@ -704,6 +704,7 @@ import {
   filmWithoutPictureRefusal,
   finalTimelineFootageRefusal,
   primaryGraphicSeconds,
+  chapterCardSeconds,
   judgeYoutubeRequirement,
   visionCoverageRefusal,
 } from "./deliveryGate";
@@ -2579,9 +2580,16 @@ export async function fetchBeatArchivalThenPexels(
     historicalDoc
   );
   if (still && isRealVideoClip(still)) return still;
+  /**
+   * VIDEO 631 — an approved still is the sentence's picture unless a video beats it. It was adopted
+   * (looked at, approved, marked used) and then dropped here because it is not a video: the rescue
+   * chains that used to pick it up are gone, so render 631's s2b0 lost its approved Brandenburg Gate.
+   * Licensed stock video is still tried first; this is what is returned when there is none.
+   */
+  const approvedStill = still && !isPipelineFallbackClip(still) ? still : null;
 
   /** A picture found from the script's own words — historical topics asked for it above already. */
-  if (!historicalDoc && canUseGlobalStillPhoto(dedup)) {
+  if (!approvedStill && !historicalDoc && canUseGlobalStillPhoto(dedup)) {
     const scriptImage = await fetchBeatScriptImageClip(
       beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle,
       { ...adoptOpts, scriptImageFallback: true }, `${tag}_img`
@@ -2589,7 +2597,7 @@ export async function fetchBeatArchivalThenPexels(
     if (scriptImage && !isPipelineFallbackClip(scriptImage)) return scriptImage;
   }
 
-  if (!canUseLicensedStockBeat(dedup)) return null;
+  if (!canUseLicensedStockBeat(dedup)) return approvedStill;
 
   const stock = await fetchBeatStockFallback(
     beat,
@@ -2607,7 +2615,7 @@ export async function fetchBeatArchivalThenPexels(
     markLicensedStockBeatUsed(dedup);
     return stock;
   }
-  return null;
+  return approvedStill;
 }
 
 /** The own archive's clip for a beat, bounded by the archive's own per-beat budget. */
@@ -15454,6 +15462,8 @@ export function createVisualDedupState(
   };
   /** VIDEO 630 — the identity rule reads who is a person from the render's own reading (`personAsRead`). */
   state.beatImageGate.personAsRead = personAsRead;
+  /** VIDEO 631 — no new look once the sentence's turn is over; see `sceneTurnIsOver`. */
+  state.beatImageGate.turnOver = sceneTurnIsOver;
   // RONDE 86: every recordClipAdopt call in this file hands over `dedup.clipAdoptAudit`, so
   // binding the ledger to that array once here wires lineage into all of them at once — and
   // makes it impossible for a future adoption route to record an audit entry without one.
@@ -19430,6 +19440,8 @@ async function adoptClip(
       });
       /** VIDEO 618 — and for which beat, so that beat's own push is not refused on this mark. */
       noteAdoptedForBeat(dedup, contentKey, sceneIndex, beatIndex);
+      /** VIDEO 631 — an approved picture is on its way; see `ladderWithinCap`. */
+      if (beatEvidence === "FIT" && !requeuedAfterRefusal.has(p)) noteApprovedPickForBeat(dedup, sceneIndex, beatIndex);
       /**
        * RONDE 88A — ONE DECISION, BOTH REGISTRIES.
        *
@@ -20200,21 +20212,24 @@ async function resolveBeatClipForBeat(
   const historicalDoc =
     isHistoricalDocumentary(videoTitle, scene.text, beat.text) && !dedup.personTopicLock;
   const primary = historicalDoc ? "" : (scenePersons[0] ?? personName ?? dedup.primaryPerson ?? "");
-  let c: string | null = null;
-  try {
-    c = await withSceneFetchTimeout(
-      () => beatPrimaryFetch(
+  /** VIDEO 631 — a picture approved before the cap is still taken; see `ladderWithinCap`. */
+  const capped = await ladderWithinCap<string>(dedup, sceneIndex, beat.index, (track) =>
+    withSceneFetchTimeout(
+      () => track(beatPrimaryFetch(
         beat, scene, workDir, sceneIndex, clipFetchDur, dedup,
         primary || personName, videoTitle, { ...beatAdoptOpts, keywords: beat.keywords },
         scenePersons, `b${beat.index}_primary`, "beat ladder"
-      ),
+      )),
       beatWallWithYoutubeTurn(beatVideoSearchWallMs()),
       `video search s${sceneIndex} b${beat.index}`
-    );
-  } catch (err) {
+    )
+  );
+  const c = capped.value;
+  if (capped.error) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: video search capped:`,
-      (err as Error).message
+      capped.error.message,
+      capped.keptAfterCap ? "— a picture approved before the cap was still being prepared; it is placed (no new look)" : ""
     );
   }
   if (c && !(await technicalMediaRefusal(c, MEDIA_PROBES))) return c;
@@ -20931,6 +20946,70 @@ export function noteAdoptedForBeat(
   beatIndex: number
 ): void {
   (dedup.adoptedAwaitingPush ??= new Map()).set(contentKey, `${sceneIndex}:${beatIndex}`);
+}
+
+/**
+ * VIDEO 631 — pictures the picture editor APPROVED for a sentence and `adoptClip` accepted, counted
+ * at acceptance: before the fair-use transform, so a sentence whose search time runs out during
+ * that transform can tell an approved picture is on its way. Per render (keyed on its dedup state).
+ */
+const approvedPicksByRender = new WeakMap<object, Map<string, number>>();
+
+export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatIndex: number): void {
+  const byBeat = approvedPicksByRender.get(dedup) ?? new Map<string, number>();
+  approvedPicksByRender.set(dedup, byBeat);
+  const key = `${sceneIndex}:${beatIndex}`;
+  byBeat.set(key, (byBeat.get(key) ?? 0) + 1);
+}
+
+export function approvedPicksForBeat(dedup: object, sceneIndex: number, beatIndex: number): number {
+  return approvedPicksByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`) ?? 0;
+}
+
+/**
+ * VIDEO 631 — A PICTURE APPROVED BEFORE THE CAP IS NOT THROWN AWAY BY THE CAP.
+ *
+ *     16:48:15  [BeatRelevance] s0b0 adopt fits … soldiers at a border barrier, likely Berlin
+ *     16:48:15  [Pipeline] Scene 0: fair-use transform clip 0
+ *     16:48:17  [Pipeline] Scene 0 beat 0: video search capped: … exceeded 53s
+ *     16:48:19  [Pipeline] Scene 0: clip 0 transformed for fair use        ← nobody took it
+ *
+ * The ladder races its cap. When the cap won, the ladder's answer was ignored even when the picture
+ * editor had already approved a picture for this sentence and only its preparation was still
+ * running; the picture was marked used and lost. Now, ONLY when a picture was approved for this
+ * sentence after the ladder started, the ladder's own answer is still taken. Nothing new can be
+ * looked at meanwhile (the cap aborted the scope; see `sceneTurnIsOver`), no search is issued in an
+ * aborted scope, and the caller's turn deadline still bounds the wait. Without an approval the cap
+ * ends the search exactly as before.
+ */
+export async function ladderWithinCap<T>(
+  dedup: object,
+  sceneIndex: number,
+  beatIndex: number,
+  /** The capped search itself; `track` hands this helper the ladder's own promise. */
+  capped: (track: (ladder: Promise<T | null>) => Promise<T | null>) => Promise<T | null>
+): Promise<{ value: T | null; error?: Error; keptAfterCap?: boolean }> {
+  const approvedBefore = approvedPicksForBeat(dedup, sceneIndex, beatIndex);
+  const running: { p: Promise<T | null> | null } = { p: null };
+  const track = (ladder: Promise<T | null>) => (running.p = ladder);
+  try {
+    return { value: await capped(track) };
+  } catch (err) {
+    if (running.p && approvedPicksForBeat(dedup, sceneIndex, beatIndex) > approvedBefore) {
+      const value = await running.p.catch(() => null);
+      return { value, error: err as Error, keptAfterCap: value != null };
+    }
+    return { value: null, error: err as Error };
+  }
+}
+
+/**
+ * VIDEO 631 — the sentence's turn is over: the scope this work runs in was aborted by its cap.
+ * Render 631's s1b4 started a look 22 s after its search had been capped; that picture could only
+ * ever be thrown away. Searches in an aborted scope were already declined; a look now is too.
+ */
+export function sceneTurnIsOver(): boolean {
+  return Boolean(sceneFetchScopeStorage.getStore()?.controller.signal.aborted);
 }
 
 /** True — once — when this push is the beat `adoptClip` approved this picture for. */
@@ -25468,7 +25547,9 @@ async function _runVideoPipelineInner(
               videoTrack(outcome.timeline),
               undefined,
               await footageSourceForArchiveAssets(videoTrack(outcome.timeline), getMediaArchiveAssetById),
-              primaryGraphicSeconds(graphicsTrack(outcome.timeline))
+              primaryGraphicSeconds(graphicsTrack(outcome.timeline)),
+              /** VIDEO 631 — cards count only beside two or more footages; see the rule. */
+              chapterCardSeconds(graphicsTrack(outcome.timeline))
             )
           : null;
         if (footageRefusal) {
