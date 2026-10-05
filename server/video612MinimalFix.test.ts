@@ -372,7 +372,12 @@ describe("F. a sentence's YouTube query never carries a word the sentence does n
     expect(PIPE).toContain("youtubeQueriesForSentence(buildBeatYoutubeQueries(beat, scene, videoTitle, personName), beat.text, scene.text)");
   });
 
-  it("the whole-video planner sends no production word, whatever the model answers", async () => {
+  /**
+   * P5 — the model's production words are still removed; the planner itself adds ONE fixed phrase,
+   * "archival footage", and only when the user asked for a historical subject (here "The Roman
+   * Empire"). A modern prompt gets no production word at all.
+   */
+  it("the whole-video planner sends no production word of the model's; only its own archive phrase for a historical prompt", async () => {
     expect(withoutProductionWords("Rome Carthage archival footage")).toBe("Rome Carthage");
     expect(withoutProductionWords("Kim Kardashian documentary video")).toBe("Kim Kardashian");
     const lines: string[] = [];
@@ -386,9 +391,18 @@ describe("F. a sentence's YouTube query never carries a word the sentence does n
       },
       roman
     );
-    expect(planned?.query).toBeTruthy();
-    expect(planned!.query).not.toMatch(/\b(archival|footage|documentary)\b/i);
-    for (const l of lines) expect(l).not.toMatch(/query="[^"]*\b(archival|footage|documentary)\b/i);
+    expect(planned?.query).toBe("Rome Carthage archival footage");
+    for (const l of lines) expect(l).not.toMatch(/query="[^"]*\b(documentary|video)\b/i);
+    const modern = await planVideoQuery(
+      {
+        llm: async () => ({
+          choices: [{ message: { content: JSON.stringify({ mainSubject: "Rome", recurringSubjects: [], query: "Rome Carthage archival footage" }) } }],
+        }),
+        gate: () => ({ ok: true }),
+      },
+      { ...roman, prompt: "Rome travel guide" }
+    );
+    expect(modern!.query).toBe("Rome Carthage");
   });
 });
 

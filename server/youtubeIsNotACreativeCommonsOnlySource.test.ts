@@ -168,7 +168,12 @@ describe("R268 §4 — what a clip may honestly claim about its own licence", ()
      * has to be eligible, still has to be ranked, and still has to earn a Vision FIT.
      */
     expect(PIPE).toContain("const alreadyRefused = youtubeDownloadRefusal(videoId);");
-    expect(PIPE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {");
+    /**
+     * P5 — the door still stands; its price is now `YOUTUBE_POOL_TURN_MS`, the download floor. A beat
+     * reads the video's pool and searches nothing (RONDE 658), so the 12 s search was a charge for
+     * work it no longer does. Below the floor the door still shuts (youtubeAcquisitionChain.test.ts).
+     */
+    expect(PIPE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_POOL_TURN_MS)) {");
   });
 });
 

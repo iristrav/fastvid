@@ -152,7 +152,8 @@ describe("§2 — a wall that may host a turn is wide enough to hold one", () =>
 
 describe("§3 — five readers, one implementation", () => {
   it("the door guard asks the predicate rather than doing the arithmetic", () => {
-    expect(PIPELINE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {");
+    /** P5 — the door's price is now the download floor: a beat reads the pool and searches nothing. */
+    expect(PIPELINE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_POOL_TURN_MS)) {");
     expect(
       PIPELINE,
       "the guard still carries its own comparison"

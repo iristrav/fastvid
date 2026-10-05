@@ -148,7 +148,12 @@ describe("§5 — no budget was raised and no gate moved", () => {
      * reserve and the two beat walls cannot drift apart again. The PRICE is untouched: still
      * `YOUTUBE_MIN_TURN_MS`, still one search plus the download floor.
      */
-    expect(PIPELINE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {");
+    /**
+     * P5 — the door still stands; its price is now `YOUTUBE_POOL_TURN_MS`, the download floor. A beat
+     * reads the video's pool and searches nothing (RONDE 658), so the 12 s search was a charge for
+     * work it no longer does. Below the floor the door still shuts (youtubeAcquisitionChain.test.ts).
+     */
+    expect(PIPELINE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_POOL_TURN_MS)) {");
   });
 
   it("the transfer reserve RONDE 259 built is untouched", () => {

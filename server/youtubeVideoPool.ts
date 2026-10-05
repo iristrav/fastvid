@@ -92,8 +92,14 @@ export type PoolDeps = PlannerDeps & {
 };
 
 const MIN_SOURCE_SEC = 10;
-/** The downloader fetches whole sources under an 80 MB ceiling: longer than this is not fetchable. */
-const MAX_SOURCE_SEC = 20 * 60;
+/**
+ * P5 — the longest source the pool keeps. It was 20 minutes, "the downloader fetches whole sources
+ * under an 80 MB ceiling" — no longer so: the one download route left, the cloud yt-dlp service,
+ * fetches only the requested section (`download_ranges`, services/ytdlp-download/main.py) and
+ * checks the 80 MB against that cut. The 20-minute line threw away the long archive compilations
+ * a historical query finds most of. Two hours keeps a bound; live streams stay refused.
+ */
+const MAX_SOURCE_SEC = 2 * 60 * 60;
 
 async function mapLimit<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);

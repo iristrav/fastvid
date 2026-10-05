@@ -106,7 +106,8 @@ describe("R260 §2 — a turn is declined before it is performed", () => {
      * and render 597 still searched once, because the two it missed were enough to keep the source
      * shut. The PRICE is untouched: `YOUTUBE_MIN_TURN_MS`, one search plus the download floor.
      */
-    const door = fn.indexOf("if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {");
+    /** P5 — the price at this door is `YOUTUBE_POOL_TURN_MS`, the download floor (see video629YoutubeTime). */
+    const door = fn.indexOf("if (!canAffordYoutubeTurn(YOUTUBE_POOL_TURN_MS)) {");
     expect(door, "no door check").toBeGreaterThan(-1);
     const firstSearch = fn.indexOf("uniqueQueryStrings(");
     expect(firstSearch).toBeGreaterThan(-1);

@@ -83,7 +83,8 @@ describe("2 — World War II is the main subject, and YouTube gets a query", () 
       },
       V627
     );
-    expect(plan?.query).toBe("World War II Nazi");
+    /** P5 — the user asked for World War II: the planner's own archive phrase is added (video629MainSubjectQuery). */
+    expect(plan?.query).toBe("World War II Nazi archival footage");
     expect(plan?.source).toBe("fallback");
   });
   it("the possessive was a general bug: person, sport, science, company and place names all recur now", () => {

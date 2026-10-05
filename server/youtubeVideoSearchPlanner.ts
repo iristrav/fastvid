@@ -109,6 +109,31 @@ function sameSubjectWord(a: string, b: string): boolean {
   return common >= short.length - 1;
 }
 
+/** I–XX as numbers, so "World War II" and "World War 2" read the same. */
+const ROMAN: Record<string, string> = Object.fromEntries(
+  "i ii iii iv v vi vii viii ix x xi xii xiii xiv xv xvi xvii xviii xix xx".split(" ").map((r, k) => [r, String(k + 1)])
+);
+
+/**
+ * P5 / VIDEO 629 — the subject, abbreviated: "WWII" or "WW2" for "World War II", "NASA" for
+ * "National Aeronautics and Space Administration". The initials of the subject's own words (a
+ * numeral stays whole), at least three characters. It reads the subject, never a list of topics.
+ */
+function initialsOf(subject: string): Set<string> {
+  const parts = words(subject).filter((w) => !STOP.has(w));
+  if (parts.length < 2) return new Set();
+  const spell = (numeral: (w: string) => string) =>
+    parts.map((w) => (ROMAN[w] || /^\d+$/.test(w) ? numeral(w) : w[0])).join("");
+  return new Set(
+    [spell((w) => w), spell((w) => ROMAN[w] ?? w)].filter((s) => s.length >= 3)
+  );
+}
+
+/** Does this query word name the main subject — one of its words, or its initials? */
+function namesSubject(word: string, subject: string[], initials: Set<string>): boolean {
+  return subject.some((sw) => sameSubjectWord(word, sw)) || initials.has(word);
+}
+
 function containsWord(text: string, w: string): boolean {
   const s = stem(w.toLowerCase());
   return words(text).some((t) => t.startsWith(s));
@@ -286,13 +311,22 @@ export function refuseQuery(
       return "'archival' on a modern subject — ask for footage of the subject itself";
     }
     const subject = ctx.mainSubject ? contentWords(ctx.mainSubject) : [];
-    if (subject.length && !subject.some((w) => cw.some((x) => sameSubjectWord(x, w)))) {
+    const initials = initialsOf(ctx.mainSubject ?? "");
+    /**
+     * P5 — a subject of three or more words is named by two of them (or its initials): one word of
+     * "World War II" is "war", which names every war. One or two words: one of them, as before
+     * (video 612's "Rome" for "The Roman Empire").
+     */
+    const named = subject.filter((sw) => cw.some((x) => sameSubjectWord(x, sw))).length;
+    const namedEnough = cw.some((x) => initials.has(x)) || named >= (subject.length >= 3 ? 2 : 1);
+    if (subject.length && !namedEnough) {
       return `the video's main subject "${ctx.mainSubject}" is not in the query`;
     }
     if (!ctx.allowSingleScene) {
       /** Not one scene: of the SUBJECTS beyond the main subject, at most one may come from a single scene. */
-      const extra = cw.filter((w) => !subject.some((sw) => sameSubjectWord(sw, w)));
-      const singleScene = extra.filter((w) => !recursThroughVideo(ctx.analysis, w) && !/^\d{4}$/.test(w));
+      const extra = cw.filter((w) => !namesSubject(w, subject, initials));
+      /** A year or a decade ("1940s") places the subject in time; it is not a scene's subject. */
+      const singleScene = extra.filter((w) => !recursThroughVideo(ctx.analysis, w) && !/^\d{4}s?$/.test(w));
       /**
        * Video 614 — "Los Angeles" is one place, not two single-scene words. A run of capitalised
        * words in the query is counted once, so a two-word name no longer reads as two subjects.
@@ -326,9 +360,33 @@ export function refuseQuery(
   return null;
 }
 
-/** What the gate will send for a query the rules accepted. */
-function gateText(gate: (q: string) => GateVerdict, query: string): string {
-  return gate(query).sentAs?.trim() || query;
+/**
+ * P5 — the one production phrase a HISTORICAL subject is searched with: "World War II" finds
+ * explainers, games and talk; "World War II archival footage" finds the film the editor needs.
+ * Video 612/613 still holds for the model: every production word it writes is removed. This
+ * phrase is the planner's own, fixed, added only for a historical subject (the same test
+ * `refuseQuery` already applies to "archival"), never counted as a meaningful word, and only
+ * when the gate admits it without dropping any word of the query.
+ */
+const HISTORICAL_FOOTAGE = "archival footage";
+
+/**
+ * Whether the USER asked for a historical subject — a year before 2000 or a historical marker in
+ * the prompt. Stricter than `analysis.historical`, which also follows the narration's years: "How
+ * airplanes work" dates the Wright brothers to 1903 and is still no request for archive film.
+ */
+function asksForArchiveFilm(input: PlannerInput): boolean {
+  return HISTORICAL_MARKERS.test(input.prompt) || (input.prompt.match(/\b(?:1[0-9]|20)\d{2}\b/g) ?? []).some((y) => Number(y) < 2000);
+}
+
+/** What the gate will send for a query the rules accepted — for a historical subject, as archive film. */
+function gateText(gate: (q: string) => GateVerdict, query: string, historical = false): string {
+  const sent = gate(query).sentAs?.trim() || query;
+  if (!historical || /\b(archival|footage)\b/i.test(sent)) return sent;
+  const asked = `${sent} ${HISTORICAL_FOOTAGE}`;
+  const verdict = gate(asked);
+  const film = verdict.ok ? verdict.sentAs?.trim() || asked : "";
+  return film.toLowerCase().startsWith(sent.toLowerCase()) ? film : sent;
 }
 
 /** The gate is asked once per distinct query, so its audit counts each query once. */
@@ -465,7 +523,7 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
     analysis.historical
   );
   if (res.query) {
-    const sent = gateText(gate, res.query);
+    const sent = gateText(gate, res.query, asksForArchiveFilm(input));
     log(`[YouTubeSearchPlanner] #1 query="${sent}" main="${res.mainSubject}" attempts=${res.attempts} refused=${JSON.stringify(res.refused)}`);
     return { query: sent, mainSubject: res.mainSubject, source: "llm", attempts: res.attempts, refused: res.refused };
   }
@@ -482,7 +540,7 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
   for (const q of [...[3, 2, 1].map((n) => multi.slice(0, n).join(" ").trim()), ...withOneMore]) {
     const why = refuseQuery(q, { analysis, mainSubject: multi[0], gate });
     if (!why) {
-      const sent = gateText(gate, q);
+      const sent = gateText(gate, q, asksForArchiveFilm(input));
       log(`[YouTubeSearchPlanner] #1 query="${sent}" source=fallback refused=${JSON.stringify(res.refused)}`);
       return { query: sent, mainSubject: multi[0] ?? "", source: "fallback", attempts: res.attempts, refused: res.refused };
     }
@@ -507,9 +565,34 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
     if (!recurs) continue;
     const why = refuseQuery(narrowed, { analysis, mainSubject: narrowed, gate });
     if (!why) {
-      const sent = gateText(gate, narrowed);
+      const sent = gateText(gate, narrowed, asksForArchiveFilm(input));
       log(`[YouTubeSearchPlanner] #1 query="${sent}" source=fallback_gate_subject refused=${JSON.stringify(res.refused)}`);
       return { query: sent, mainSubject: narrowed, source: "fallback", attempts: res.attempts, refused: res.refused };
+    }
+  }
+  /**
+   * P5 / VIDEO 629 — THE MAIN SUBJECT ITSELF.
+   *
+   * "How World War II Changed the Modern World" named every person and place once, so nothing above
+   * recurred; the model's three queries each lacked the subject or ran to nine words; and the video
+   * was never searched — though "World War II" passes every rule and the gate. The subject the model
+   * named (only when the prompt, title or narration says it) is tried alone, then beside one name the
+   * narration says, which a one-word subject ("SpaceX") needs. Same rules, same gate, one query.
+   */
+  const main = provenSubject(res.mainSubject, input);
+  if (main) {
+    const mainWords = contentWords(main);
+    const besides = analysis.recurring
+      .map((r) => r.term)
+      .filter((t) => !contentWords(t).every((w) => mainWords.some((m) => sameSubjectWord(m, w))))
+      .slice(0, 6)
+      /** "Tesla Roadster" already names "Tesla": it is tried as it is, not as "Tesla Tesla Roadster". */
+      .map((t) => (contentWords(t).some((w) => mainWords.includes(w)) ? t : `${main} ${t}`));
+    for (const q of [main, ...besides]) {
+      if (refuseQuery(q, { analysis, mainSubject: main, gate })) continue;
+      const sent = gateText(gate, q, asksForArchiveFilm(input));
+      log(`[YouTubeSearchPlanner] #1 query="${sent}" source=fallback_main_subject main="${main}" refused=${JSON.stringify(res.refused)}`);
+      return { query: sent, mainSubject: main, source: "fallback", attempts: res.attempts, refused: res.refused };
     }
   }
   log(`[YouTubeSearchPlanner] #1 NO_QUERY — nothing passed the rules; YouTube is skipped for this video refused=${JSON.stringify(res.refused)}`);
@@ -540,7 +623,7 @@ export async function planGapQuery(
     analysis.historical
   );
   if (res.query) {
-    const sent = gateText(gate, res.query);
+    const sent = gateText(gate, res.query, asksForArchiveFilm(input));
     log(`[YouTubeSearchPlanner] #2 query="${sent}" attempts=${res.attempts} refused=${JSON.stringify(res.refused)}`);
     return { query: sent, mainSubject: res.mainSubject, source: "llm", attempts: res.attempts, refused: res.refused };
   }
@@ -557,7 +640,7 @@ export async function planGapQuery(
   for (const n of [2, 1]) {
     const q = terms.slice(0, n).join(" ").trim();
     if (!refuseQuery(q, { analysis, mustDifferFrom: gap.query1, gate, allowSingleScene: true })) {
-      const sent = gateText(gate, q);
+      const sent = gateText(gate, q, asksForArchiveFilm(input));
       log(`[YouTubeSearchPlanner] #2 query="${sent}" source=fallback refused=${JSON.stringify(res.refused)}`);
       return { query: sent, mainSubject: "", source: "fallback", attempts: res.attempts, refused: res.refused };
     }

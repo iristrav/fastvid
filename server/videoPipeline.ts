@@ -227,7 +227,7 @@ import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import { videoMainSubject } from "./mainSubject";
 import { readPeopleInNarration } from "./personNames";
-import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots, type StockShot } from "./youtubeShotStock";
+import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
 import {
   chooseMoments,
   sectionMoments,
@@ -1109,6 +1109,13 @@ export const YOUTUBE_SEARCH_TIMEOUT_MS = 12_000;
  * and stopped — the whole ceremony of a download, with the network never touched.
  */
 export const YOUTUBE_MIN_TURN_MS = YOUTUBE_SEARCH_TIMEOUT_MS + YOUTUBE_MIN_DOWNLOAD_WINDOW_MS;
+
+/**
+ * P5 — what a beat's turn costs at the door now that it reads the video's pool (RONDE 658): no
+ * search, only the download floor. A ready stock shot needs no download at all; a pool video that
+ * is not in stock still needs the floor, and `downloadYouTubeCCClip` checks it again itself.
+ */
+export const YOUTUBE_POOL_TURN_MS = YOUTUBE_MIN_DOWNLOAD_WINDOW_MS;
 
 /**
  * RONDE 600 — THE PRICE A GUARD CHECKS IS NOT THE WINDOW A TURN NEEDS.
@@ -9618,6 +9625,60 @@ function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: strin
   return pool;
 }
 
+/**
+ * P5 — POOL AND STOCK FIRST, THEN THE PICTURE CLOCK.
+ *
+ * Video 629's picture stage had 257 s. The pool (search, details, a look at fifty thumbnails) and
+ * its stock (six videos, three at a time, each fetched and cut) need minutes of their own, and they
+ * ran against that clock: the first sentences of every scene were decided before the first stock
+ * shot existed, and a sentence waits for stock only for what its own turn has left. So the picture
+ * stage now starts once the pool is decided and its stock is ready or failed — never later than
+ * `YOUTUBE_STOCK_WAIT_MAX_MS`, so a hang cannot hold the render. Nothing is searched or downloaded
+ * here that was not already under way; every download keeps its own timeout.
+ */
+export const YOUTUBE_STOCK_WAIT_MAX_MS = 180_000;
+/** How often the wait looks up: a cancelled render stops within this, and progress stays fresh. */
+const YOUTUBE_STOCK_WAIT_STEP_MS = 5_000;
+
+export async function waitForYoutubeStockBeforePictures(
+  filmId: number,
+  opts: { maxWaitMs?: number; stepMs?: number; tick?: () => void; log?: (line: string) => void } = {}
+): Promise<{ waitedMs: number; outcome: "no_pool" | "pool_not_ready" | "no_youtube" | "stock_settled" | "stock_not_ready" }> {
+  const maxWaitMs = opts.maxWaitMs ?? YOUTUBE_STOCK_WAIT_MAX_MS;
+  const stepMs = opts.stepMs ?? YOUTUBE_STOCK_WAIT_STEP_MS;
+  const say = opts.log ?? ((l: string) => console.log(l));
+  const t0 = Date.now();
+  const left = () => Math.max(0, t0 + maxWaitMs - Date.now());
+  /** One step at a time: the render's cancel check and progress run between steps. */
+  const within = async <T>(p: Promise<T>): Promise<{ done: true; value: T } | { done: false }> => {
+    const settled = p.then((value) => ({ done: true as const, value }));
+    while (left() > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const step = new Promise<{ done: false }>((r) => (timer = setTimeout(() => r({ done: false }), Math.min(stepMs, left()))));
+      const got = await Promise.race([settled, step]);
+      if (timer) clearTimeout(timer);
+      if (got.done) return got;
+      opts.tick?.();
+    }
+    return { done: false };
+  };
+  const done = (outcome: Awaited<ReturnType<typeof waitForYoutubeStockBeforePictures>>["outcome"]) => {
+    const waitedMs = Date.now() - t0;
+    const s = stockSummary(filmId);
+    say(
+      `[YouTubeStock] video=${filmId} pictures start after ${Math.round(waitedMs / 1000)}s — ${outcome} ` +
+        `(stock videos=${s.videos} ready=${s.ready} failed=${s.failed} shots=${s.shots}, limit ${Math.round(maxWaitMs / 1000)}s)`
+    );
+    return { waitedMs, outcome };
+  };
+  if (!hasVideoYoutubePool(filmId)) return { waitedMs: 0, outcome: "no_pool" };
+  const pool = await within(awaitVideoYoutubePool(filmId, maxWaitMs));
+  if (!pool.done || !pool.value) return done("pool_not_ready");
+  if (poolGaveNoYoutube(pool.value)) return done("no_youtube");
+  const stock = await within(youtubeStockSettled(filmId));
+  return done(stock.done ? "stock_settled" : "stock_not_ready");
+}
+
 /** A stock shot, cut to the beat's length, at the path the beat's own download would have written. */
 async function stockShotToBeatFile(shot: StockShot, durationSec: number, outPath: string): Promise<boolean> {
   try {
@@ -10879,11 +10940,14 @@ export async function fetchYouTubeCCClips(
    * because that time was never available to the archive search. The line says which.
    */
   /**
-   * RONDE 604 — the same predicate the reserve and the walls use. The PRICE stays what it was:
-   * `YOUTUBE_MIN_TURN_MS`, one search plus the download floor, unchanged since RONDE 260.
+   * RONDE 604 — the same predicate the reserve and the walls use.
+   *
+   * P5 — the PRICE is the download floor, `YOUTUBE_POOL_TURN_MS`. Since RONDE 658 a beat reads the
+   * video's pool and never searches; charging it a 12 s search it does not make declined beats that
+   * had a ready stock shot and 15 s to take it. Below the floor the door still shuts.
    */
   const turnMs = remainingScopeMs();
-  if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {
+  if (!canAffordYoutubeTurn(YOUTUBE_POOL_TURN_MS)) {
     const scope = sceneFetchScopeStorage.getStore();
     const reserved = scope?.youtubeReservedMs ?? 0;
     const released = scope?.youtubeTurnEndedAtMs != null;
@@ -10891,9 +10955,9 @@ export async function fetchYouTubeCCClips(
       `[YouTube] TURN_DECLINED scene=${sceneIndex} reserved=${reserved}ms ` +
         `reserveState=${reserved <= 0 ? "NONE" : released ? "ALREADY_RELEASED" : "HELD"} — ` +
         `${Math.round(turnMs / 1000)}s left and a turn ` +
-        `costs ${Math.round(YOUTUBE_MIN_TURN_MS / 1000)}s (one ${Math.round(YOUTUBE_SEARCH_TIMEOUT_MS / 1000)}s ` +
-        `search plus the ${Math.round(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS / 1000)}s download floor). ` +
-        `Nothing is searched, so nothing is found that could not be fetched — ` +
+        `costs ${Math.round(YOUTUBE_POOL_TURN_MS / 1000)}s (the ${Math.round(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS / 1000)}s ` +
+        `download floor; the beat reads the video's pool and searches nothing). ` +
+        `Nothing is taken that could not be fetched — ` +
         describeEnclosingScope()
     );
     endYoutubeTurn("TURN_DECLINED_NO_WINDOW");
@@ -22765,6 +22829,13 @@ async function _runVideoPipelineInner(
     // every one of its six VisionGate-passed candidates to them. The hard wall-clock guard is
     // unaffected: assertPipelineWithinBudget stopped throwing on elapsed time in F3-47 and
     // only surfaces real cancellations, which still use pipelineWallStartMs.
+    /** P5 — the YouTube pool and its stock first; the picture clock below starts after. Bounded. */
+    await waitForYoutubeStockBeforePictures(videoId, {
+      tick: () => {
+        throwIfActiveRenderCancelled();
+        onProgress?.({ stage: STAGE_LABELS.visuals, percent: 20 });
+      },
+    });
     visualDedup.pipelineStartedMs = Date.now();
     console.log(
       `[Pipeline] video=${videoId} sourcing-ladder clock started at visual stage ` +

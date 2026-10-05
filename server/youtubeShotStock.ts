@@ -216,6 +216,12 @@ export function stockSummary(filmId: number): { videos: number; ready: number; f
   };
 }
 
+/** P5 — resolves when every video in the film's stock is ready or failed (at once when there is none). */
+export function youtubeStockSettled(filmId: number): Promise<void> {
+  const film = stocks.get(filmId);
+  return Promise.all([...(film?.values() ?? [])].map((e) => e.done)).then(() => undefined);
+}
+
 export function releaseYoutubeShotStock(filmId: number): void {
   stocks.delete(filmId);
 }
