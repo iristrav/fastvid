@@ -204,6 +204,7 @@ import {
   generatedImageDecision,
   generatedImagePrompt,
   generatedStillSec,
+  imageServiceStandingDown,
   stillImageGenerator,
 } from "./generatedImageFallback";
 import { bindLineageLedger, bindRelevanceLedger, bindContentKeyResolver, createClipAdoptAudit, formatUnjudgedAdoptions, formatAdoptionEvidence } from "./clipAdoptAudit";
@@ -299,7 +300,7 @@ import { dbRenderLockStore, dbYoutubeSearchBudgetStore } from "./db";
 import { newRenderId } from "./renderCorrelation";
 import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, type BeatImageGateState } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
-import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
+import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, pictureJudgedOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
 import {
   coverageOfAdoptEntry,
   formatBeatVisualProblems,
@@ -7757,6 +7758,11 @@ async function generateMissingBeatImages(
       const remaining = get_activeBudgetTracker()?.remainingMs?.();
       if (remaining != null && remaining < 4 * 60_000) {
         console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — ${Math.round(remaining / 1000)}s left in the render`);
+        return;
+      }
+      /** VIDEO 630 — the service refused the account (401/402/403): no sentence is asked again. */
+      if (imageServiceStandingDown()) {
+        console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — the image service refuses this account; the sentences keep their fallbacks`);
         return;
       }
       const clip = await fetchBeatGeneratedImage(beat, scene, workDir, si, dedup, videoTitle, GENERATED_IMAGES_PER_FILM - made);
@@ -15446,6 +15452,8 @@ export function createVisualDedupState(
     usageLedger: newLedger(),
     planRescueMissStreak: 0,
   };
+  /** VIDEO 630 — the identity rule reads who is a person from the render's own reading (`personAsRead`). */
+  state.beatImageGate.personAsRead = personAsRead;
   // RONDE 86: every recordClipAdopt call in this file hands over `dedup.clipAdoptAudit`, so
   // binding the ledger to that array once here wires lineage into all of them at once — and
   // makes it impossible for a future adoption route to record an audit entry without one.
@@ -19047,7 +19055,14 @@ async function adoptClip(
     // ranked or judged here, and finalPaths is the list the loop below is about to read.
     noteBeatCandidatesOffered(dedup.beatOutcomeAudit, sceneIndex, beatIndex, finalPaths.length);
 
+    /** P2 (video 630, second run) — see `postponeBehindFresherCandidate`. */
+    const refusedForAnotherSentence = (q: string): boolean =>
+      contentRefusedOnAnotherBeat(dedup.beatRelevance, clipContentKey(q), sceneIndex, beatIndex);
+    const visitedInLoop = new Set<string>();
+    const postponedBehindFresher = new Set<string>();
+    let cursor = -1;
     for (const p of finalPaths) {
+      cursor++;
       /**
        * RONDE 97 (production timeout) — a beat that has asked enough STOPS, it does not keep
        * paying and refusing.
@@ -19069,6 +19084,31 @@ async function adoptClip(
         break;
       }
       if (!p) continue;
+      if (postponeBehindFresherCandidate(finalPaths, cursor, refusedForAnotherSentence, visitedInLoop, postponedBehindFresher)) {
+        postponedBehindFresher.add(p);
+        finalPaths.push(p);
+        console.log(
+          `[ShortlistOrder] s${sceneIndex}b${beatIndex}: ${path.basename(p)} moved back at its turn — ` +
+            `the picture editor refused it for another sentence since the list was ordered`
+        );
+        continue;
+      }
+      /** P2 (video 630, third pass) — see `repeatWouldTakeLastLook`. */
+      if (
+        repeatWouldTakeLastLook({
+          refusedElsewhere: refusedForAnotherSentence(p),
+          judgedOnThisBeat: pictureJudgedOnBeat(dedup.beatRelevance, p, clipContentKey(p), sceneIndex, beatIndex),
+          looksLeft: looksLeftOnBeat(dedup.beatRelevance, sceneIndex, beatIndex),
+          finalRound: Boolean(dedup.beatJudgeTextOverride?.has(`${sceneIndex}:${beatIndex}`)),
+        })
+      ) {
+        console.log(
+          `[ShortlistOrder] s${sceneIndex}b${beatIndex}: ${path.basename(p)} not looked at — refused for another ` +
+            `sentence, and this sentence's last look is kept for a picture nobody has seen yet`
+        );
+        continue;
+      }
+      visitedInLoop.add(p);
       /**
        * RONDE 647 — A CANDIDATE THAT IS PASSED OVER SAYS WHY.
        *

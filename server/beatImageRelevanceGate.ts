@@ -256,6 +256,12 @@ export function maxBeatImageJudgementsPerRender(): number {
  */
 export type BeatImageGateState = {
   /**
+   * The render's own reading of who is a person (`personAsRead` in the pipeline: undefined when
+   * there is no reading, null when the reading names no such person, else the person). Absent
+   * outside a render, where names are read from capital letters as before. See `namedPeople`.
+   */
+  personAsRead?: (name: string) => string | null | undefined;
+  /**
    * RONDE 115 — why the gate produced no verdict, counted by reason.
    *
    * The reason was already returned to the caller and logged per clip, but a render that could
@@ -625,19 +631,34 @@ function nameSeenPlainly(depicts: string, token: string): boolean {
 }
 const IDENTITY_RE = /\b(person|subject|individual|figure|family|celebrity|someone|woman|man|people)\b/i;
 
-/** Names of people the line (or the shot's resolved subject) writes: runs of two or more capitalised words. */
-function namedPeople(beatText: string, subject?: string): string[] {
+/**
+ * Names of people the line (or the shot's resolved subject) writes: runs of two or more capitalised
+ * words.
+ *
+ * VIDEO 630 (second run) — a capital letter does not make a person. "As dawn broke on June 1944,
+ * the D-Day Invasion launched … across the English Channel" gave the runs "D-Day Invasion" and
+ * "English Channel", and two approvals of landing craft on a beach were refused as a guessed
+ * identity of nobody. When the render has read who the narration's people are (`personAsRead`),
+ * a run the reading does not know as a person — an event, a place, an organisation — is not one.
+ * Without a reading the capital letters decide, exactly as before.
+ */
+function namedPeople(
+  beatText: string,
+  subject?: string,
+  personAsRead?: (name: string) => string | null | undefined
+): string[] {
   const runs = [...`${beatText} . ${subject ?? ""}`.matchAll(/\b\p{Lu}[\p{L}'’-]+(?:\s+\p{Lu}[\p{L}'’-]+)+/gu)].map((m) => m[0]);
-  return [...new Set(runs)];
+  return [...new Set(runs)].filter((run) => personAsRead?.(run) !== null);
 }
 
 export function approvalRestsOnAGuess(
   judgement: Pick<BeatImageJudgement, "verdict" | "depicts" | "reason">,
   beatText: string,
-  subject?: string
+  subject?: string,
+  personAsRead?: (name: string) => string | null | undefined
 ): boolean {
   if (judgement.verdict !== "fits") return false;
-  const people = namedPeople(beatText, subject);
+  const people = namedPeople(beatText, subject, personAsRead);
   if (people.length === 0) return false;
   const reason = judgement.reason ?? "";
   if (!HEDGE_RE.test(reason) && !IDENTITY_FROM_THE_LINE_RE.test(reason)) return false;
@@ -671,17 +692,33 @@ export function approvalIsOnlyALogo(judgement: Pick<BeatImageJudgement, "verdict
   return depicts.split(/(?<=\.)\s+/).every((sentence) => ONLY_A_LOGO_RE.test(sentence) || /^the frames? (?:are|is) (?:consistent|the same)/i.test(sentence));
 }
 
+/**
+ * VIDEO 630 (second run) — a refusal this rule wrote is the rule's, not the model's.
+ *
+ * The durable store keeps the verdict AFTER this rule, so a refusal written under the old reading
+ * of capital letters ("identity guessed, not seen: …") would outlive the fix and keep refusing the
+ * same picture on every re-render. Such a stored refusal is read back as the approval the model
+ * gave and judged again by the rule as it stands — which refuses it again whenever it still rests on
+ * a guess about a person. Every other stored verdict is returned exactly as it was.
+ */
+const GUESS_PREFIX = "identity guessed, not seen: ";
+export function storedGuessAsGiven<T extends Pick<BeatImageJudgement, "verdict" | "reason">>(stored: T): T {
+  if (stored.verdict !== "does_not_fit" || !stored.reason?.startsWith(GUESS_PREFIX)) return stored;
+  return { ...stored, verdict: "fits", reason: stored.reason.slice(GUESS_PREFIX.length) };
+}
+
 /** The judgement a guessed identity becomes: a refusal that says why. */
 function refuseGuessedIdentity<T extends Pick<BeatImageJudgement, "verdict" | "depicts" | "reason">>(
   judgement: T,
   beatText: string,
-  subject?: string
+  subject?: string,
+  personAsRead?: (name: string) => string | null | undefined
 ): T {
   if (approvalIsOnlyALogo(judgement)) {
     return { ...judgement, verdict: "does_not_fit", reason: `only a logo: ${judgement.reason}`.slice(0, 160) };
   }
-  if (!approvalRestsOnAGuess(judgement, beatText, subject)) return judgement;
-  return { ...judgement, verdict: "does_not_fit", reason: `identity guessed, not seen: ${judgement.reason}`.slice(0, 160) };
+  if (!approvalRestsOnAGuess(judgement, beatText, subject, personAsRead)) return judgement;
+  return { ...judgement, verdict: "does_not_fit", reason: `${GUESS_PREFIX}${judgement.reason}`.slice(0, 160) };
 }
 
 /**
@@ -1017,7 +1054,9 @@ export async function judgeBeatImage(params: {
    */
   const stored = await lookupVerdict(seenKey).catch(() => null).then((storedRaw) =>
     /** Video 614 — a stored guess is read the same way a fresh one is. */
-    storedRaw ? refuseGuessedIdentity(storedRaw, beatText, params.anchors?.subject) : null
+    storedRaw
+      ? refuseGuessedIdentity(storedGuessAsGiven(storedRaw), beatText, params.anchors?.subject, state.personAsRead)
+      : null
   );
   if (stored) {
     const fromStore: BeatImageJudgement = {
@@ -1143,7 +1182,7 @@ export async function judgeBeatImage(params: {
       );
     }
     /** Video 614 — see `approvalRestsOnAGuess`. */
-    const judgement = refuseGuessedIdentity(judgementAfterSituation, beatText, params.anchors?.subject);
+    const judgement = refuseGuessedIdentity(judgementAfterSituation, beatText, params.anchors?.subject, state.personAsRead);
     if (judgement !== judgementAsGiven) {
       console.log(
         `[BeatImageGate] identity guessed, not seen — refused: depicts="${judgement.depicts.slice(0, 80)}" ` +

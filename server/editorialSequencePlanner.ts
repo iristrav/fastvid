@@ -123,7 +123,10 @@ For EACH beat, design one ideal archival/stock shot. Return ONLY this JSON array
   ...
 ]
 
-Rules:
+${SHOT_RULES}`;
+}
+
+const SHOT_RULES = `Rules:
 - shotType: wide/medium/close-up/aerial/extreme close-up/archival still/map/document
 - visualStyle: photograph/video footage/engraving/painting/newsreel/map/illustration
 - searchQuery: 4-7 words, specific and searchable on stock/archive sites
@@ -131,6 +134,64 @@ Rules:
 - emotion: somber/triumphant/tense/peaceful/chaotic/reverent/dramatic/neutral
 - If beat is abstract, find a concrete visual metaphor
 - Use the era and location from video context when relevant`;
+
+/** The value side of each `- field: value` rule above, lower case. */
+const RULE_VALUES = new Set(
+  [...SHOT_RULES.matchAll(/^- \w+: (.+)$/gm)].map((m) => m[1]!.trim().toLowerCase())
+);
+
+/** Each option list of the rules ("wide/medium/close-up/…"), as its separate options. */
+const RULE_OPTION_LISTS: ReadonlyArray<ReadonlySet<string>> = [...RULE_VALUES]
+  .filter((v) => v.includes("/"))
+  .map((v) => new Set(v.split("/").map((o) => o.trim())));
+
+const ruleWords = (text: string): string[] => text.toLowerCase().split(/[^\p{L}\p{N}-]+/u).filter(Boolean);
+const SHOT_RULE_WORDS = ruleWords(SHOT_RULES);
+
+/** Whether `words` stand side by side, in this order, somewhere in the rules. */
+function inRules(words: string[]): boolean {
+  outer: for (let i = 0; i + words.length <= SHOT_RULE_WORDS.length; i++) {
+    for (let j = 0; j < words.length; j++) if (SHOT_RULE_WORDS[i + j] !== words[j]) continue outer;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * One field is an echo of the rules when it is
+ *   - a whole rule value ("4-7 words, specific and searchable on stock/archive sites");
+ *   - two or more options of one rule list joined by "/" ("wide/medium/close-up") — a field holds
+ *     one choice, never the menu;
+ *   - three or more words that stand, in this order, in the rules ("4-7 words, specific",
+ *     "searchable on stock/archive sites").
+ * One option on its own ("extreme close-up", "photograph") is a real answer, and a real query
+ * ("Crowds gather at Checkpoint Charlie") shares no three-word run with the rules.
+ */
+function fieldEchoesRules(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (!v) return false;
+  if (RULE_VALUES.has(v)) return true;
+  if (v.includes("/")) {
+    const parts = v.split("/").map((p) => p.trim()).filter(Boolean);
+    if (parts.length >= 2 && RULE_OPTION_LISTS.some((list) => parts.every((p) => list.has(p)))) return true;
+  }
+  const words = ruleWords(v);
+  return words.length >= 3 && inRules(words);
+}
+
+/**
+ * VIDEO 630 — a shot that copies the rules is not a shot.
+ *
+ *     b0: [wide/medium/close-up/aerial/extreme close-up/archival still/map/document]
+ *         | style: photograph/video footage/engraving/painting/newsreel/map/illustration
+ *         | q: "4-7 words, specific and searchable on stock/archive sites"
+ *
+ * The model answered with the rule text as the shot. It became beat 0's search query, its power
+ * word and its planned framing for the ranking. A shot whose shot type, style or query IS one of
+ * the rule values is dropped, and the beat keeps what it had before the storyboard.
+ */
+export function shotEchoesRules(shot: Pick<ShotDescription, "shotType" | "visualStyle" | "searchQuery">): boolean {
+  return [shot.shotType, shot.visualStyle, shot.searchQuery].some(fieldEchoesRules);
 }
 
 // ─── Fallback ─────────────────────────────────────────────────────────────────
@@ -221,7 +282,12 @@ export async function getOrGenerateStoryboard(
           ? (s["alternatives"] as unknown[]).filter((a): a is string => typeof a === "string").slice(0, 3)
           : [],
         emotion: typeof s["emotion"] === "string" ? s["emotion"] : "neutral",
-      }));
+      }))
+      .filter((shot) => {
+        if (!shotEchoesRules(shot)) return true;
+        console.warn(`[Editorial] s${sceneIndex} b${shot.beatIndex}: the model returned the prompt's rules as a shot — ignored`);
+        return false;
+      });
 
     const storyboard: SceneStoryboard = {
       sceneIndex,

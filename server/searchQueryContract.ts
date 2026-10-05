@@ -582,9 +582,18 @@ export function compoundEvidenceFor(
 }
 
 export function evidenceStems(word: string): string[] {
-  const w = foldSearchText(word.trim()).replace(/[^\p{L}\p{N}'-]/gu, "");
+  /**
+   * VIDEO 630 — "World War II's destruction" did not prove "II", and "Germany's army" does not
+   * prove "Germany": the possessive stayed on the word, and the suffix rule below only strips the
+   * "s" ("germany'"). A possessive is not part of the word, so the word without it is proven too,
+   * whatever its length — it is the whole word, not a stem. The typographic apostrophes (’ ‘ ʼ)
+   * are read as the plain one first; they used to be deleted, which turned "II’s" into "iis".
+   */
+  const w = foldSearchText(word.trim().replace(/[’‘ʼ]/gu, "'")).replace(/[^\p{L}\p{N}'-]/gu, "");
   if (!w) return [];
   const out = new Set<string>([w]);
+  const bare = w.replace(/'s$/u, "");
+  if (bare !== w && bare) out.add(bare);
   const add = (s: string) => {
     if (s.length >= 4) out.add(s);
   };

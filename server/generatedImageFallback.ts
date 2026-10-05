@@ -24,6 +24,7 @@
  */
 import fs from "node:fs";
 
+import { classifyProviderFailure, formatProviderCooldown } from "./providerFailureClass";
 import { subjectWords } from "./youtubeNonFootage";
 
 export const GENERATED_IMAGE_FALLBACK = "GENERATED_IMAGE_FALLBACK";
@@ -107,6 +108,33 @@ export function setStillImageGeneratorForTests(g: StillImageGenerator | null): v
 }
 
 /**
+ * VIDEO 630 — an answer about the ACCOUNT, not about one picture.
+ *
+ *     [GENERATED_IMAGE_FALLBACK] the image service answered HTTP 402      (×9, one per sentence)
+ *
+ * 401, 402 and 403 say the key, the credits or the permission is missing: the next sentence's
+ * prompt cannot change that. After one such answer the service is not asked again for 30 minutes,
+ * and every sentence goes straight on to the fallbacks after this one. Any other refusal (a
+ * prompt the service would not draw, a 5xx, a timeout) stays per picture, exactly as before.
+ *
+ * The same process-wide "cooldown until" timestamp the Wikimedia stand-down uses
+ * (`wikimediaCooldownUntilMs`), the same failure classification and the same log line. Only ever
+ * moved later (`Math.max`), so parallel beats and renders can never shorten it.
+ */
+const ACCOUNT_REFUSAL_STATUSES = new Set([401, 402, 403]);
+export const ACCOUNT_REFUSAL_COOLDOWN_MS = 30 * 60_000;
+let imageServiceRefusedUntil = 0;
+
+/** True while the image service has refused this account (see above); no request is sent then. */
+export function imageServiceStandingDown(now = Date.now()): boolean {
+  return now < imageServiceRefusedUntil;
+}
+
+export function resetImageServiceStandDownForTests(): void {
+  imageServiceRefusedUntil = 0;
+}
+
+/**
  * The production generator: Stability's image endpoint with the key the worker already has
  * (`STABILITY_AI_API_KEY`) — the same endpoint and request `probeStabilityAI` (the existing
  * /api/health/stability-probe) already sends. No key, a refusal, a timeout or an empty file: false, and the sentence
@@ -115,6 +143,7 @@ export function setStillImageGeneratorForTests(g: StillImageGenerator | null): v
 const stabilityGenerator: StillImageGenerator = async (prompt, outPng) => {
   const key = process.env.STABILITY_AI_API_KEY?.trim();
   if (!key) return false;
+  if (imageServiceStandingDown()) return false;
   const form = new FormData();
   form.set("prompt", prompt.slice(0, 2000));
   form.set("aspect_ratio", "16:9");
@@ -131,6 +160,12 @@ const stabilityGenerator: StillImageGenerator = async (prompt, outPng) => {
     });
     if (!resp.ok) {
       console.warn(`[${GENERATED_IMAGE_FALLBACK}] the image service answered HTTP ${resp.status}`);
+      if (ACCOUNT_REFUSAL_STATUSES.has(resp.status)) {
+        imageServiceRefusedUntil = Math.max(imageServiceRefusedUntil, Date.now() + ACCOUNT_REFUSAL_COOLDOWN_MS);
+        console.warn(
+          formatProviderCooldown(GENERATED_IMAGE_PROVIDER, classifyProviderFailure({ status: resp.status }), ACCOUNT_REFUSAL_COOLDOWN_MS)
+        );
+      }
       return false;
     }
     const bytes = Buffer.from(await resp.arrayBuffer());

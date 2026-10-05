@@ -403,6 +403,77 @@ export function contentRefusedOnAnotherBeat(
   return false;
 }
 
+/**
+ * P2 (VIDEO 630, second run) — THE ORDER IS READ AGAIN WHEN A LOOK IS ABOUT TO BE SPENT.
+ *
+ * `putRefusedElsewhereLast` orders a beat's list once, before the beat waits for the render's
+ * shared lock. Render 630's s0b3 ordered at 14:04:12, s0b2 refused two of its candidates at
+ * 14:04:15 and 14:04:21, and s0b3 judged both again at 14:05:33 and 14:05:36 — a stale snapshot.
+ * So the question is asked again for the candidate at `at`: has the editor refused it for another
+ * sentence by now, while a candidate later in the queue is still unseen and not refused elsewhere?
+ * Then it waits behind them (once). Nothing is refused or approved, and when nothing fresher is
+ * left it is looked at as before.
+ */
+export function postponeBehindFresherCandidate(
+  queue: readonly string[],
+  at: number,
+  refusedElsewhere: (clipPath: string) => boolean,
+  visited: ReadonlySet<string>,
+  postponed: ReadonlySet<string>
+): boolean {
+  const p = queue[at];
+  if (!p || postponed.has(p) || !refusedElsewhere(p)) return false;
+  return queue
+    .slice(at + 1)
+    .some((q) => Boolean(q) && q !== p && !visited.has(q) && !postponed.has(q) && !refusedElsewhere(q));
+}
+
+/**
+ * P2 (VIDEO 630, third pass) — A REPEAT DOES NOT TAKE A SENTENCE'S LAST LOOK WHILE A LATER ROUND CAN COME.
+ *
+ * Ordering only works inside one list. Render 630's s0b3 had nothing but repeats left in its first
+ * round, spent looks 2–5 on them, and its main-subject rescue round then brought two SerpAPI pictures
+ * nobody could look at. Nothing in a normal round knows whether a later round will bring more; the
+ * rescue round knows it IS the last one (the pipeline marks its beats in `beatJudgeTextOverride`).
+ *
+ * So, in a normal round only, a picture the editor already refused for another sentence may use every
+ * look but the sentence's last one — that one is kept for a picture nobody has seen. In the rescue
+ * round, or for a picture this sentence already has a verdict on (which costs nothing), nothing is
+ * kept back. The ceiling is the same five looks; a look kept back is never added anywhere else.
+ */
+export function repeatWouldTakeLastLook(input: {
+  refusedElsewhere: boolean;
+  judgedOnThisBeat: boolean;
+  looksLeft: number;
+  finalRound: boolean;
+}): boolean {
+  return input.refusedElsewhere && !input.judgedOnThisBeat && !input.finalRound && input.looksLeft <= 1;
+}
+
+/** Looks this sentence may still spend under the per-sentence ceiling (`maxRelevanceLooksPerBeat`). */
+export function looksLeftOnBeat(
+  ledger: Pick<BeatRelevanceLedger, "spendByBeat"> | undefined,
+  sceneIndex: number,
+  beatIndex: number
+): number {
+  return maxRelevanceLooksPerBeat() - (ledger?.spendByBeat.get(`s${sceneIndex}b${beatIndex}`) ?? 0);
+}
+
+/** Whether this sentence already holds a verdict on this picture — a look at it would be free. */
+export function pictureJudgedOnBeat(
+  ledger: Pick<BeatRelevanceLedger, "byBeat"> | undefined,
+  clipPath: string,
+  contentKey: string | null | undefined,
+  sceneIndex: number,
+  beatIndex: number
+): boolean {
+  if (!ledger) return false;
+  return (
+    ledger.byBeat.has(beatRelevanceBeatKey(sceneIndex, beatIndex, "path", clipPath)) ||
+    (isCanonicalAssetKey(contentKey) && ledger.byBeat.has(beatRelevanceBeatKey(sceneIndex, beatIndex, "content", contentKey!)))
+  );
+}
+
 /** Stable: fresh candidates keep their order, then the ones refused elsewhere keep theirs. */
 export function putRefusedElsewhereLast(
   paths: readonly string[],
