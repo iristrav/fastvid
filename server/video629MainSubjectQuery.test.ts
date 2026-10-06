@@ -123,7 +123,7 @@ describe("the archive phrase: the planner's own, only for a historical request",
     expect(plan!.query).toBe("World War II Allies archival footage");
   });
 
-  it("a modern prompt gets no production word, even when its narration names an old year", async () => {
+  it("a modern prompt gets no ARCHIVE word, even when its narration names an old year — it asks for footage (video 635)", async () => {
     const planes: PlannerInput = {
       prompt: "How airplanes work",
       title: "How Do Airplanes Fly?",
@@ -131,7 +131,7 @@ describe("the archive phrase: the planner's own, only for a historical request",
     };
     expect(analyzeVideo(planes).historical).toBe(true);
     const plan = await planVideoQuery({ llm: model("airplanes", "airplanes wings footage"), gate: allow }, planes);
-    expect(plan!.query).toBe("airplanes wings");
+    expect(plan!.query).toBe("airplanes wings footage");
   });
 
   it("the gate has the last word on the phrase: refused or cut, the query goes out without it", async () => {
@@ -219,7 +219,8 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "Ancient Rome",
     missed: "Julius Caesar Rubicon Augustus Colosseum",
-    expected: "Ancient Rome",
+    /** VIDEO 635 — the archive phrase the planner adds for a historical request now survives the gate's narrowing. */
+    expected: "Ancient Rome archival footage",
     input: {
       prompt: "The rise and fall of Ancient Rome",
       title: "How Ancient Rome Ruled the World",
@@ -233,7 +234,7 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "Tesla",
     missed: "Elon Musk Roadster Gigafactory Nevada",
-    expected: "Tesla Roadster",
+    expected: "Tesla Roadster footage",
     input: {
       prompt: "How Elon Musk built Tesla",
       title: "Elon Musk and the Tesla Gamble",
@@ -247,7 +248,7 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "Taylor Swift",
     missed: "Eras Tour stadium Nashville Grammy 1989",
-    expected: "Taylor Swift",
+    expected: "Taylor Swift footage",
     input: {
       prompt: "Taylor Swift's rise to the top",
       title: "How Taylor Swift Became a Phenomenon",
@@ -261,7 +262,7 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "Amazon rainforest",
     missed: "Brazil deforestation jaguar Manaus river",
-    expected: "Amazon rainforest",
+    expected: "Amazon rainforest footage",
     input: {
       prompt: "Why the Amazon rainforest matters",
       title: "The Amazon Rainforest Is Disappearing",
@@ -275,7 +276,7 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "SpaceX",
     missed: "Falcon 9 Starship Boca Chica Dragon",
-    expected: "SpaceX International Space Station",
+    expected: "SpaceX International Space Station footage",
     input: {
       prompt: "How SpaceX changed spaceflight",
       title: "SpaceX: Rockets That Land",
@@ -303,7 +304,11 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "airplanes",
     missed: "Wright brothers Kitty Hawk jet engine wings",
-    expected: "airplanes Wings",
+    /**
+     * VIDEO 635 — the fallback "airplanes Orville Wright" is no longer cut to "Orville Wright 1903"
+     * (which lost the prompt's own word and was refused): the prompt's "airplanes" stays.
+     */
+    expected: "Orville Wright airplanes footage",
     input: {
       prompt: "How airplanes work",
       title: "How Do Airplanes Fly?",
@@ -317,7 +322,7 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "Dutch housing market",
     missed: "Amsterdam rents students campsites homes",
-    expected: "Dutch housing market",
+    expected: "Dutch housing market footage",
     input: {
       prompt: "Why the Dutch housing market is broken",
       title: "The Dutch Housing Market Crisis Explained",
@@ -331,7 +336,7 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "climate change",
     missed: "Greenland ice sheet wildfires Australia 2019",
-    expected: "climate change",
+    expected: "climate change footage",
     input: {
       prompt: "What climate change is doing to our planet",
       title: "Climate Change: The Evidence",
@@ -345,7 +350,7 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "football",
     missed: "Lionel Messi Barcelona Camp Nou Champions League",
-    expected: "football Barcelona",
+    expected: "football Barcelona footage",
     input: {
       prompt: "Why football is the world's favourite sport",
       title: "How Football Conquered the World",
@@ -359,7 +364,7 @@ const TOPICS: Array<{ main: string; missed: string; input: PlannerInput; expecte
   {
     main: "Italian cooking",
     missed: "Naples pizza oven Bologna pasta",
-    expected: "Italian cooking",
+    expected: "Italian cooking footage",
     input: {
       prompt: "The secrets of Italian cooking",
       title: "Why Italian Cooking Is So Good",

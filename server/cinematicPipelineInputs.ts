@@ -1141,7 +1141,9 @@ export function buildCinematicSceneInputs(params: {
           console.log(
             standIn.reason.startsWith(CHAPTER_CARD_FALLBACK)
               ? `[${CHAPTER_CARD_FALLBACK}] s${scene.index}b${beatIndex} ${(end - start).toFixed(2)}s — no source, ` +
-                  `graphic or generated image gave this sentence a picture; Remotion draws a chapter card`
+                  `graphic or generated image gave this sentence a picture; Remotion draws a chapter card ` +
+                  /** VIDEO 635 — which card: the sentence's own, or B1's film subject. */
+                  `origin=${filmSubjectCard ? "film_subject" : "sentence"} title="${String(standIn.data?.title ?? "")}"`
               : `[CinematicGraphicVisual] scene=${scene.index} beat=${beatIndex} graphic=${standIn.graphicType} ` +
                   `${(end - start).toFixed(2)}s — the sentence's picture is a graphic`
           );

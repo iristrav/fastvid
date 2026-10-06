@@ -2114,6 +2114,25 @@ function isProviderSyntax(text: string): boolean {
  */
 export function narrowToCanonicalQuery(
   text: string,
+  ctx: VerifiedQueryContext | undefined,
+  /**
+   * VIDEO 635 — a YouTube query that asks for FOOTAGE keeps asking for it. Narrowing reduces a
+   * query to subject + one concept, and "footage" is no concept, so "Elon Musk Tesla footage" went
+   * out as "Elon Musk Tesla" (and "… archival footage" lost its phrase the same way) — a search for
+   * videos ABOUT the subject, which on YouTube means interviews and talk.
+   */
+  keepFormPhrase = false
+): { query: string; narrowed: boolean } {
+  const out = narrowToCanonicalQueryInner(text, ctx);
+  if (!out.narrowed || !keepFormPhrase) return out;
+  const form = /\b(archival footage|footage)\s*$/i.exec((text ?? "").trim())?.[1];
+  if (!form || new RegExp(`\\b${form}\\s*$`, "i").test(out.query)) return out;
+  const query = `${out.query} ${form}`;
+  return query === (text ?? "").trim() ? { query, narrowed: false } : { query, narrowed: true };
+}
+
+function narrowToCanonicalQueryInner(
+  text: string,
   ctx: VerifiedQueryContext | undefined
 ): { query: string; narrowed: boolean } {
   const original = (text ?? "").trim();
@@ -2164,6 +2183,24 @@ export function narrowToCanonicalQuery(
    * narration names once each. With no word in common, the person is a guess unless exactly one
    * person belongs to this text; a person borrowed from the scene does not.
    */
+  /**
+   * VIDEO 635 — THE WORDS THE PERSON ASKED FOR ARE NOT PADDING.
+   *
+   * "How Elon Musk Built Tesla Into a Global Brand": the whole-video YouTube query "Elon Musk Tesla
+   * 2008" went out as "Elon Musk 2008" (the year was the beat's typed concept, "Tesla" no typed
+   * anything), filled the pool with 2008 interviews, and not one of its 16 clips was approved. The
+   * archive query "Tesla" went out as "Musk". A content word of the user's own prompt (`ctx.topic`)
+   * that the query already holds is kept: never traded for a year, never replaced by a person.
+   */
+  const anchorWordsForTopic = new Set(conceptWords(anchor));
+  const personWords = new Set(persons.flatMap((p) => conceptWords(p)));
+  /** A word is a name where the narration writes it capitalised after a lower-case word. */
+  const writtenMidSentence = (text: string, word: string): boolean =>
+    new RegExp(`(?:^|\\s)\\p{Ll}[\\p{L}\\p{N}'’-]*\\s+${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "u").test(text ?? "");
+  const topicWords = new Set(conceptWords(ctx.topic ?? "").filter((w) => wordCanBeConcept(w)));
+  const topicHit = originalWords.find(
+    (w) => !anchorWordsForTopic.has(w) && !personWords.has(w) && !/^\d+$/.test(w) && topicWords.has(w)
+  );
   if (bestOverlap === 0) {
     /**
      * And a query that names its own verified place keeps it as its subject: a film about Roosevelt
@@ -2175,7 +2212,7 @@ export function narrowToCanonicalQuery(
       return words.length > 0 && lowered.includes(` ${words.join(" ")} `);
     });
     const own = (ctx.persons ?? []).filter((t) => t.verified && t.term.trim() && t.source !== "scene_text");
-    if (namesItsOwnPlace || own.length !== 1) return { query: original, narrowed: false };
+    if (namesItsOwnPlace || topicHit || own.length !== 1) return { query: original, narrowed: false };
     anchor = own[0]!.term.trim();
   }
   if (!anchor) return { query: original, narrowed: false };
@@ -2208,6 +2245,33 @@ export function narrowToCanonicalQuery(
     ctx.evidence
   );
   if (!out.query || out.query === original) return { query: original, narrowed: false };
+  /**
+   * VIDEO 635 — and where the one concept left beside the subject is only a period, the prompt's
+   * own word takes its place: "Elon Musk 2008" → "Elon Musk Tesla". Built from the query's own
+   * words and the anchor, so the checks below hold exactly as for any other narrowing.
+   */
+  /**
+   * And a name the narration itself writes mid-sentence (a company, a product: "transform Tesla")
+   * is not traded for a year either, when the prompt does not carry it.
+   */
+  const surfaces = original.match(/[\p{L}\p{N}'’-]+/gu) ?? [];
+  const properNounHit = surfaces.find((s) => {
+    const w = conceptWords(s)[0] ?? "";
+    return (
+      /^\p{Lu}/u.test(s) && !anchorWords.has(w) && !personWords.has(w) && wordCanBeConcept(w) &&
+      writtenMidSentence(ctx.evidence, s)
+    );
+  });
+  const keepWord = topicHit ?? (properNounHit ? conceptWords(properNounHit)[0] : undefined);
+  if (keepWord && !conceptWords(out.query).includes(keepWord)) {
+    const periodWords = new Set([...verifiedTerms(ctx.time), ...verifiedTerms(ctx.years)].flatMap((t) => conceptWords(t)));
+    const conceptLeft = conceptWords(out.query).filter((w) => !anchorWords.has(w));
+    if (conceptLeft.length > 0 && conceptLeft.every((w) => periodWords.has(w) || /^\d{4}s?$/.test(w))) {
+      const surface = surfaces.find((t) => conceptWords(t)[0] === keepWord) ?? keepWord;
+      out.query = `${anchor} ${surface}`;
+    }
+  }
+  if (out.query === original) return { query: original, narrowed: false };
 
   /**
    * NARROWING REMOVES. IT NEVER INTRODUCES.
@@ -2440,7 +2504,7 @@ export function searchGateDecision(
    * word the gate has not already proven — but it is re-validated rather than assumed, because
    * "cannot" and "checked" are different claims and this is the line where that matters.
    */
-  const canonical = narrowToCanonicalQuery(text, ambient);
+  const canonical = narrowToCanonicalQuery(text, ambient, provider === "youtube");
   let sent = text;
   if (canonical.narrowed && canonical.query) {
     const recheck = validateSearchQuery(canonical.query, preVerified ? undefined : ambient);

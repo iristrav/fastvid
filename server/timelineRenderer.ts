@@ -460,6 +460,32 @@ export function oddSegmentsOut(
  * rotation a phone recording carries in its metadata (ffmpeg applies it on decode). Null when the
  * file cannot be read, which is not evidence either way.
  */
+/** VIDEO 635 — the slowest a shot is played to run its file once rather than loop its start. */
+export const MIN_FIT_SPEED = 0.5;
+
+/**
+ * The speed at which `clip` reads its file exactly to the end, when its own speed would read past
+ * it — or null when it already fits, the length is unknown, or the slow-down would exceed
+ * `MIN_FIT_SPEED`. The read starts `handleSec × speed` before the in-point when the file has it
+ * (see `renderSegment`), and from the file's start when it does not.
+ */
+export function speedThatFitsSource(
+  clip: Pick<TimelineVideoClip, "kind" | "speed" | "sourceIn">,
+  fileSec: number | null,
+  slotSec: number,
+  handleSec = 0
+): number | null {
+  if (fileSec == null || !(fileSec > 0) || !(slotSec > 0)) return null;
+  const speed = clipPlaybackSpeed(clip);
+  const inPoint = Math.max(0, clip.sourceIn ?? 0);
+  const readsTo = (s: number) => Math.max(0, inPoint - handleSec * s) + (slotSec + handleSec) * s;
+  if (readsTo(speed) <= fileSec + 0.02) return null;
+  let fit = (fileSec - inPoint) / slotSec;
+  if (inPoint < handleSec * fit) fit = fileSec / (slotSec + handleSec);
+  if (!(fit >= MIN_FIT_SPEED) || fit >= speed) return null;
+  return Math.floor(fit * 10_000) / 10_000;
+}
+
 export async function probeIsPortrait(file: string): Promise<boolean | null> {
   try {
     const { stdout } = await execFileAsync(FFPROBE, [
@@ -761,13 +787,28 @@ async function renderSegment(
    * provider is what the grade is calibrated against.
    */
   let handleFromSource = true;
+  /**
+   * VIDEO 635 — the file decides, not the plan. Three of the film's four shots asked for more source
+   * than the rehydrated file holds (5.36 s of a 4.00 s file, 7.98 of 7.00, 3.22 of 3.00), and
+   * `-stream_loop -1` filled the rest by starting the file again: the viewer saw the opening of the
+   * shot twice. Read the file's real length; when the slot asks for more, play the clip that much
+   * slower (down to `MIN_FIT_SPEED`) so the source runs once, in order. Below that, as before.
+   */
+  const fitSpeed =
+    clip.kind === "video" ? speedThatFitsSource(clip, await probeDurationSec(localMedia), slot, Math.max(0, handleSec)) : null;
+  if (fitSpeed != null) {
+    console.log(
+      `[ShotFit] clip=${clip.id} the file is shorter than the slot asks — played at ${fitSpeed}× instead of looping its start`
+    );
+  }
+  const fitted: TimelineVideoClip = fitSpeed != null ? { ...clip, speed: fitSpeed } : clip;
   const graded: TimelineVideoClip =
-    clip.sourceKind || !look || look.grade === "none"
-      ? clip
+    fitted.sourceKind || !look || look.grade === "none"
+      ? fitted
       : {
-          ...clip,
-          sourceKind: docGradeSourceKindForProvider(clip.source.provider, {
-            archiveAssetId: clip.source.archiveAssetId,
+          ...fitted,
+          sourceKind: docGradeSourceKindForProvider(fitted.source.provider, {
+            archiveAssetId: fitted.source.archiveAssetId,
           }),
         };
   /** RONDE 647 — a standing picture is filled with itself, blurred, instead of black bars. */
@@ -799,7 +840,7 @@ async function renderSegment(
      * and the caller reports the difference.
      */
     /** A sped-up clip reads `speed` seconds of source per second of slot (see `clipPlaybackSpeed`). */
-    const speed = clipPlaybackSpeed(clip);
+    const speed = clipPlaybackSpeed(fitted);
     const sourceHandle = Math.max(0, handleSec) * speed;
     const startAt = Math.max(0, inPoint - sourceHandle);
     handleFromSource = handleSec <= 0 || inPoint >= sourceHandle;

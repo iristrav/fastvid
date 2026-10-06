@@ -376,7 +376,7 @@ describe("F. a sentence's YouTube query never carries a word the sentence does n
   /**
    * P5 — the model's production words are still removed; the planner itself adds ONE fixed phrase,
    * "archival footage", and only when the user asked for a historical subject (here "The Roman
-   * Empire"). A modern prompt gets no production word at all.
+   * Empire"). A modern prompt gets no ARCHIVE phrase; since video 635 it asks for "footage".
    */
   it("the whole-video planner sends no production word of the model's; only its own archive phrase for a historical prompt", async () => {
     expect(withoutProductionWords("Rome Carthage archival footage")).toBe("Rome Carthage");
@@ -403,7 +403,8 @@ describe("F. a sentence's YouTube query never carries a word the sentence does n
       },
       { ...roman, prompt: "Rome travel guide" }
     );
-    expect(modern!.query).toBe("Rome Carthage");
+    /** VIDEO 635 — not the archive phrase, but footage of the subject: the planner's own word. */
+    expect(modern!.query).toBe("Rome Carthage footage");
   });
 });
 

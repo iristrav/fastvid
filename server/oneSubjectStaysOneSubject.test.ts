@@ -191,7 +191,8 @@ describe("the guards are present and switched on", () => {
      */
     const gate = CONTRACT.slice(CONTRACT.indexOf("export function searchGateDecision("));
     const validate = gate.indexOf("const verdict = validateSearchQuery(text");
-    const narrow = gate.indexOf("const canonical = narrowToCanonicalQuery(text, ambient);");
+    /** VIDEO 635 — the call also says whether this provider keeps a "footage" phrase; the order is the same. */
+    const narrow = gate.indexOf("const canonical = narrowToCanonicalQuery(text, ambient, ");
     expect(validate).toBeGreaterThan(-1);
     expect(narrow).toBeGreaterThan(validate);
   });

@@ -114,7 +114,8 @@ describe("2 — World War II is the main subject, and YouTube gets a query", () 
         ],
       }
     );
-    expect(plan?.query).toBe("Apple Steve Jobs");
+    /** VIDEO 635 — a modern subject is searched as footage of it. */
+    expect(plan?.query).toBe("Apple Steve Jobs footage");
   });
   it("a sentence-opening word that is not a name is still dropped", () => {
     const a = analyzeVideo({ prompt: "", title: "", sceneTexts: ["Despite Elon Musk tweeting.", "Elon Musk again."] });

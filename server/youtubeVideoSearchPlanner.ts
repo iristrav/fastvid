@@ -379,11 +379,20 @@ function asksForArchiveFilm(input: PlannerInput): boolean {
   return HISTORICAL_MARKERS.test(input.prompt) || (input.prompt.match(/\b(?:1[0-9]|20)\d{2}\b/g) ?? []).some((y) => Number(y) < 2000);
 }
 
-/** What the gate will send for a query the rules accepted — for a historical subject, as archive film. */
+/**
+ * VIDEO 635 — and a modern subject is searched as FOOTAGE of it. The pool exists to supply the moving
+ * picture every beat's MediaForm asks for (people at work, products, places, events — never a
+ * chart or a map, which YouTube does not serve), and "Elon Musk Tesla" alone returned interviews and
+ * talk: 16 clips, 0 approved. "footage" is the plain form of the same request, without the
+ * "archival" a modern subject is refused for.
+ */
+const MODERN_FOOTAGE = "footage";
+
+/** What the gate will send for a query the rules accepted — as film of the subject: archival or not. */
 function gateText(gate: (q: string) => GateVerdict, query: string, historical = false): string {
   const sent = gate(query).sentAs?.trim() || query;
-  if (!historical || /\b(archival|footage)\b/i.test(sent)) return sent;
-  const asked = `${sent} ${HISTORICAL_FOOTAGE}`;
+  if (/\b(archival|footage)\b/i.test(sent)) return sent;
+  const asked = `${sent} ${historical ? HISTORICAL_FOOTAGE : MODERN_FOOTAGE}`;
   const verdict = gate(asked);
   const film = verdict.ok ? verdict.sentAs?.trim() || asked : "";
   return film.toLowerCase().startsWith(sent.toLowerCase()) ? film : sent;

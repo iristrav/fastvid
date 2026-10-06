@@ -764,10 +764,14 @@ export function buildBeatImagePrompt(
   anchors?: BeatSubjectAnchors,
   /**
    * ONE ROUTE — the VisualIntent plan's own description of the shot this line was planned for.
-   * Context for the editor, never a requirement: a picture that fits the LINE fits, whether or not
-   * it is the shot that was planned.
+   *
+   * VIDEO 635 — no longer printed. It was marked "for background only — NOT a requirement", and the
+   * model used it as the requirement: 16 of render 635's 41 refusals asked for something only the
+   * plan imagined ("journalists or analysts in a conference room", "Tesla board members in a modern
+   * conference room", "a showroom of gasoline cars from 2008") under lines that say none of it. The
+   * picture is judged against the line the viewer hears. Kept in the signature so callers stay put.
    */
-  plannedVisual?: string
+  _plannedVisual?: string
 ): string {
   const many = frameCount > 1;
   return [
@@ -787,9 +791,6 @@ export function buildBeatImagePrompt(
       : "",
     `THE QUESTION — narration for this shot: "${beatText.slice(0, 300)}"`,
     ...formatAnchors(anchors),
-    plannedVisual?.trim()
-      ? `The script's visual plan for this line, for background only — NOT a requirement: "${plannedVisual.trim().slice(0, 240)}"`
-      : "",
     "",
     many
       ? "First say plainly what the clip shows — the subject, the period it looks like, any text" +
@@ -799,6 +800,18 @@ export function buildBeatImagePrompt(
     "",
     "Then decide, about that ONE line of narration. The viewer hears that sentence while looking",
     "at this picture.",
+    /**
+     * VIDEO 635 — 41 of 45 looks refused, many asking the frame to PROVE the line ("does not show the
+     * financial struggles of 2008", "not the acquisition of SolarCity"). The question is the one an
+     * editor asks; the rules below still decide what counts.
+     */
+    "The question is whether this is a credible documentary picture for that line — not whether",
+    "every word of the line can be proven from the frame.",
+    "A clause the line sets against its subject — \"despite …\", \"but not …\", \"rather than …\",",
+    "\"instead of …\", \"without …\" — is context, not something the picture has to show: the",
+    "situation is what the line says about its subject. Under \"the company kept building its cars",
+    "despite the crisis that year\", the company's cars, factory or people in that period belong; the",
+    "crisis need not be on screen.",
     "",
     /**
      * RENDER 564 — THE PERMISSION THIS PROMPT TOOK AWAY BY ACCIDENT.
@@ -869,10 +882,14 @@ export function buildBeatImagePrompt(
      * neither, and is still refused.
      */
     "  · the line is about something no camera can film — a rumour, a theory, a doubt, an",
-    "    investigation, a record, a claim — and the frame shows the world that idea is about: the",
-    "    person this shot is meant to show, or one of the places this documentary is about, in its",
-    "    period. Berlin in ruins in 1945 belongs under a line about the investigation into what",
-    "    happened in Berlin in 1945.",
+    "    investigation, a record, a claim, money (losses, profits, a near-bankruptcy), a deal or a",
+    "    takeover, a decision, a strategy, criticism — and the frame shows the world that idea is",
+    "    about: the person this shot is meant to show, at work in that story; the company the line",
+    "    is about — its people, its products, its factories, its events; or one of the places this",
+    "    documentary is about — in its period. For such a line, that IS the situation the line",
+    "    describes. Berlin in ruins in 1945 belongs under a line about the investigation into what",
+    "    happened in Berlin in 1945; the company's founder at its launch event belongs under a line",
+    "    about the company nearly going bankrupt that year.",
     "Archive material with no caption still belongs if what it shows fits that line.",
     "",
     "It DOES NOT belong when the frame is plainly about something else — a different subject,",

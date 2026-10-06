@@ -32,6 +32,19 @@ const EPS = 0.001;
 const round = (n: number) => Number(n.toFixed(3));
 
 /**
+ * VIDEO 635 — A SHOT A LITTLE LONGER THAN ITS SOURCE IS SLOWED, NOT REPLAYED.
+ *
+ * Every real shot of render 635 sat 0.3–0.8 s longer on screen than the stretch of source the
+ * planner gave it (the hold that closes the pause before the next sentence): 8.30 s over 7.98 s,
+ * 5.76 over 5.36, 5.10 over 4.28, 3.54 over 3.22. The rule above then cut each into two pieces and
+ * started the second at the window's beginning — so the viewer saw the first half of every shot
+ * twice. Up to this much overshoot the shot is played a touch slower instead (`speed`, which the
+ * renderer already honours): the same source, once, in order. Beyond it — 3.4 s held for 24 s —
+ * slowing would show, and the pieces come round to the start as before, each with its own move.
+ */
+export const MIN_STRETCH_SPEED = 0.8;
+
+/**
  * The move a piece makes, by its place in the shot: in, out, in, … around a slightly offset centre.
  *
  * VIDEO 626 — slow: 6% over the piece and a drift of 2% of the frame, so a move reads as the camera
@@ -72,19 +85,41 @@ export function limitLongShots(params: {
       out.push(clip);
       continue;
     }
-    const count = Math.max(2, Math.ceil(dur / maxSec - EPS), window != null ? Math.ceil(dur / window - EPS) : 0);
+    /** VIDEO 635 — the speed that plays the source exactly once across the slot, when it is close to 1. */
+    const ownSpeed = clip.speed == null || Math.abs(clip.speed - 1) < EPS;
+    const stretch =
+      pastItsSource && ownSpeed && window! / dur >= MIN_STRETCH_SPEED ? Number((window! / dur).toFixed(4)) : null;
+    if (stretch != null && dur <= maxSec + EPS) {
+      adjustedIds.push(clip.id);
+      notes.push(
+        `${clip.id}: ${dur.toFixed(2)}s on screen over ${window!.toFixed(2)}s of source → played at ${stretch}× ` +
+          `speed, once, instead of replaying its start`
+      );
+      out.push({ ...clip, speed: stretch, sourceOut: round(inSec + window!) });
+      continue;
+    }
+    const count =
+      stretch != null
+        ? Math.max(2, Math.ceil(dur / maxSec - EPS))
+        : Math.max(2, Math.ceil(dur / maxSec - EPS), window != null ? Math.ceil(dur / window - EPS) : 0);
     const len = dur / count;
     adjustedIds.push(clip.id);
     notes.push(
       `${clip.id}: ${dur.toFixed(2)}s on screen → ${count} pieces of ${len.toFixed(2)}s, each moving` +
-        (pastItsSource ? ` — its source holds ${window!.toFixed(2)}s, and no piece runs past it` : "")
+        (stretch != null
+          ? ` — its source holds ${window!.toFixed(2)}s, played at ${stretch}× speed, once, in order`
+          : pastItsSource
+            ? ` — its source holds ${window!.toFixed(2)}s, and no piece runs past it`
+            : "")
     );
     let at = clip.timelineStart;
     for (let k = 0; k < count; k++) {
       const last = k === count - 1;
       const end = last ? clip.timelineEnd : round(at + len);
-      let offset = k * len;
-      if (window != null) {
+      /** Seconds of source this piece reads: its slot, times the stretch when there is one. */
+      const reads = (end - at) * (stretch ?? 1);
+      let offset = k * len * (stretch ?? 1);
+      if (window != null && stretch == null) {
         offset %= window;
         if (offset + (end - at) > window + EPS) offset = 0;
       }
@@ -93,9 +128,10 @@ export function limitLongShots(params: {
         ...clip,
         id: `${clip.id}_p${k + 1}`,
         sourceIn: pieceIn,
-        sourceOut: round(pieceIn + (end - at)),
+        sourceOut: stretch != null ? round(Math.min(inSec + window!, pieceIn + reads)) : round(pieceIn + reads),
         timelineStart: round(at),
         timelineEnd: end,
+        ...(stretch != null ? { speed: stretch } : {}),
       };
       /** The first piece keeps the planner's move; every later one gets its own. */
       if (clip.camera) {

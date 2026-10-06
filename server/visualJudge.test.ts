@@ -229,13 +229,13 @@ describe("VisualJudge — the picture model sees the VisualIntent plan", () => {
       route: "test",
     });
 
-  it("a planned line: the plan's description is in the prompt, as context and never as a requirement", async () => {
+  it("a planned line: the plan's description is NOT in the prompt (video 635: the model took it as the requirement)", async () => {
     answers(true, "artillery in a ruined street");
     const { verdict } = await withRenderVisualPlan(plan, ask);
     expect(verdict).toMatchObject({ decision: "ACCEPT", stage: "picture", evaluated: true });
     const prompt = lastPrompt();
-    expect(prompt).toContain("Soviet artillery firing across a ruined Berlin street toward the Reichstag.");
-    expect(prompt).toContain("for background only — NOT a requirement");
+    expect(prompt).not.toContain("Soviet artillery firing across a ruined Berlin street toward the Reichstag.");
+    expect(prompt).not.toContain("visual plan for this line");
   });
 
   it("an unplanned line gets no plan line, and the model still decides", async () => {

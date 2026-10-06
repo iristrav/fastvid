@@ -38,7 +38,9 @@ describe("A — the judge may show the world an unfilmable line is about", () =>
 
   it("names the case and bounds it to the person or the documentary's own places", () => {
     expect(prompt).toContain("the line is about something no camera can film");
-    expect(prompt).toContain("person this shot is meant to show, or one of the places this documentary is about");
+    /** VIDEO 635 — the same bound, with the company's own world added for lines about money, deals, decisions. */
+    expect(prompt).toContain("person this shot is meant to show, at work in that story");
+    expect(prompt).toContain("its events; or one of the places this");
     expect(prompt).toContain("This shot is meant to show: Adolf Hitler");
     expect(prompt).toContain("Places this documentary is about: Berlin");
   });
