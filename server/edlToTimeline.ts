@@ -435,9 +435,9 @@ export type EdlTranslation = {
  *
  * This is what an editor does. A shot that runs a few seconds long is ordinary documentary
  * grammar; a cut to black under narration is a mistake, and a film that stops before the narrator
- * does is a broken deliverable. The renderer already makes the hold cheap and safe: a video input
- * is opened with `-stream_loop -1` and bounded by `-t`, so a clip asked to fill more time than its
- * source holds simply fills it.
+ * does is a broken deliverable. The renderer already makes the hold cheap and safe: a clip asked to
+ * fill more time than its source holds is played slower (`speedThatFitsSource`) and, past that, its
+ * last frame holds (VIDEO 636 — `tpad`, never `-stream_loop`, which replayed the shot's start).
  *
  * ── The rules, in the order an editor would apply them ──────────────────────────────────────
  *

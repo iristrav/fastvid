@@ -238,18 +238,26 @@ export async function editorialReorderScene(
 
     if (!Array.isArray(parsed.order)) return original;
 
-    // Validate and apply the new order
-    const newOrder = (parsed.order as unknown[])
-      .filter((v): v is number => typeof v === "number" && v >= 0 && v < clips.length)
-      .filter((v, i, arr) => arr.indexOf(v) === i); // deduplicate (duplicates allowed below)
-
-    // Allow one duplicate per clip for transition use (but limit total length)
-    const maxClips = Math.ceil(clips.length * 1.3);
-    const allowedOrder = (parsed.order as unknown[])
-      .filter((v): v is number => typeof v === "number" && v >= 0 && v < clips.length)
-      .slice(0, maxClips);
-
-    if (allowedOrder.length < 1) return original;
+    /**
+     * VIDEO 636 — A REORDER MOVES CLIPS; IT NEVER DROPS OR DOUBLES ONE.
+     *
+     * The model answered [0,2,1,3] for five clips, and the fifth — a picture the editor had approved
+     * for its sentence (58522, s1b6) — left the film without anyone refusing it. Duplicates were
+     * allowed too, which is the same picture twice. Only an order that names every clip exactly once
+     * is applied; anything else keeps the scene as it was.
+     */
+    const allowedOrder = (parsed.order as unknown[]).filter(
+      (v): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v < clips.length
+    );
+    const isPermutation =
+      allowedOrder.length === clips.length && new Set(allowedOrder).size === clips.length;
+    if (!isPermutation) {
+      console.warn(
+        `[Editorial] s${sceneIndex} reorder refused: the answer [${allowedOrder.join(",")}] does not name each of ` +
+          `the ${clips.length} clip(s) exactly once — the scene keeps its order`
+      );
+      return original;
+    }
 
     const reorderedClips = allowedOrder.map((idx) => clips[idx]!);
     const reorderedDurations = allowedOrder.map((idx) => beatDurations[idx] ?? 4);

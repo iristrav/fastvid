@@ -153,6 +153,24 @@ export function isStocked(filmId: number, videoId: string): boolean {
   return stocks.get(filmId)?.has(videoId) ?? false;
 }
 
+/** VIDEO 636 — whether this video's shots are already cut and waiting (no download left to do). */
+export function isStockReady(filmId: number, videoId: string): boolean {
+  return stocks.get(filmId)?.get(videoId)?.status === "ready";
+}
+
+/**
+ * VIDEO 636 — the beat's YouTube rows with the videos already in the film's stock first.
+ *
+ * The thumbnail ranker put an unstocked BBC interview first for nearly every sentence (similarities
+ * of 0.28–0.31: barely an opinion), so a beat spent its turn on a 63 s download while three stocked
+ * videos — "Tesla Factory Tour with Elon Musk!" among them — waited unseen, one of them for the whole
+ * render. A ready video costs nothing; the picture editor still judges every moment of it. The
+ * ranker's order is kept inside each group.
+ */
+export function stockedRowsFirst<T>(rows: readonly T[], ready: (row: T) => boolean): T[] {
+  return [...rows.filter((r) => ready(r)), ...rows.filter((r) => !ready(r))];
+}
+
 export type StockTake =
   | { shot: StockShot }
   /** Why no shot: not in the stock, its section still on its way, its download failed, or every shot refused. */

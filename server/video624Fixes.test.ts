@@ -176,12 +176,15 @@ describe("4. no piece runs past its source; an empty sentence is filled", () => 
 
   it("video 624: 3.4 s of source held for 24 s — every piece lies inside those 3.4 s", () => {
     const { clips } = limitLongShots({ clips: [clip("vc_38d6214afb", 23.95, 47.99, 0, 3.4)] });
-    expect(clips.length).toBeGreaterThanOrEqual(Math.ceil(24.04 / 3.4));
-    for (const c of clips) {
+    /** VIDEO 636 — in order and never from the start again: pieces of at most six seconds at 0.5×. */
+    expect(clips.length).toBe(Math.ceil(24.04 / 6));
+    for (let i = 0; i < clips.length; i++) {
+      const c = clips[i]!;
       expect(c.sourceIn!).toBeGreaterThanOrEqual(0);
       expect(c.sourceOut!).toBeLessThanOrEqual(3.4 + 0.001);
-      expect(c.timelineEnd - c.timelineStart).toBeLessThanOrEqual(3.4 + 0.001);
+      expect(c.timelineEnd - c.timelineStart).toBeLessThanOrEqual(6 + 0.001);
       expect(c.camera).toBeTruthy();
+      if (i > 0) expect(c.sourceIn!).toBeGreaterThanOrEqual(clips[i - 1]!.sourceIn!);
     }
     expect(clips[0]!.timelineStart).toBe(23.95);
     expect(clips.at(-1)!.timelineEnd).toBe(47.99);

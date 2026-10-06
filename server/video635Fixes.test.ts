@@ -64,13 +64,15 @@ describe("A — a shot is never replayed from its start because it sits a little
     }
   });
 
-  it("unchanged: 3.4 s held for 24 s (video 624) still comes round to the start, each piece moving", () => {
+  it("VIDEO 636: 3.4 s held for 24 s (video 624) never comes round to the start — 0.5×, in order, then its last frame holds", () => {
     const { clips } = limitLongShots({ clips: [clip("vc_38d6214afb", 23.95, 47.99, 0, 3.4)] });
-    expect(clips.length).toBeGreaterThanOrEqual(8);
-    for (const c of clips) {
-      expect(c.speed).toBeUndefined();
-      expect(c.sourceOut!).toBeLessThanOrEqual(3.4 + 0.001);
+    expect(clips.length).toBe(5);
+    for (let i = 0; i < clips.length; i++) {
+      expect(clips[i]!.speed).toBe(0.5);
+      expect(clips[i]!.sourceOut!).toBeLessThanOrEqual(3.4 + 0.001);
+      if (i > 0) expect(clips[i]!.sourceIn!).toBeGreaterThan(clips[i - 1]!.sourceIn! - 0.001);
     }
+    expect(clips[0]!.sourceIn).toBe(0);
   });
 
   it("unchanged: a shot with a speed of its own is not re-timed", () => {

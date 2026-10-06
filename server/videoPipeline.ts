@@ -229,7 +229,7 @@ import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner"
 import { videoMainSubject } from "./mainSubject";
 import { sentencesOf } from "./youtubeVideoSearchPlanner";
 import { readPeopleInNarration } from "./personNames";
-import { isStocked, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
+import { isStocked, isStockReady, releaseYoutubeShotStock, stockedRowsFirst, startYoutubeShotStock, stockSummary, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
 import {
   chooseMoments,
   sectionMoments,
@@ -10087,14 +10087,30 @@ export async function downloadYouTubeCCClip(
     const firstForVideo = youtubeFirstTransfers.get(videoId);
     /** This transfer's own answer, read by a second transfer waiting on it — see the map below. */
     const box: { status?: YoutubeDownloadStatus; reason?: string; transferStarted?: boolean } = outcome ?? {};
+    /** VIDEO 636 — this transfer's own promise, for a retry that takes a failed fragment over (below). */
+    let thisTransfer: Promise<boolean> | null = null;
     const done = (async () => {
       if (firstForVideo && (await firstTransferWroteVideoOff(videoId, firstForVideo))) {
         reportDownload("DOWNLOAD_FAILED", "refused_this_render:the first transfer of this video was refused for good");
         return false;
       }
-      if (youtubeFragmentsFetched.has(fragment) && (await copyYoutubeFragmentAlreadyFetched(fragment, outPath))) {
+      const hadEarlierFetch = youtubeFragmentsFetched.has(fragment);
+      if (hadEarlierFetch && (await copyYoutubeFragmentAlreadyFetched(fragment, outPath))) {
         reportDownload("DOWNLOAD_SUCCESS", "same_seconds_already_fetched");
         return true;
+      }
+      /**
+       * VIDEO 636 — the first fetch of these seconds failed, and three callers waiting on it all
+       * fetched `04AEWBdX_cs` again at once (three 63 s transfers of the same 1.6 MB). The first
+       * retry to get here takes the fragment over; any other waits for that one and copies it.
+       * Only after an earlier fetch — which was awaited above, so `done` exists by now.
+       */
+      if (hadEarlierFetch) {
+        if (youtubeFragmentsFetched.has(fragment) && (await copyYoutubeFragmentAlreadyFetched(fragment, outPath))) {
+          reportDownload("DOWNLOAD_SUCCESS", "same_seconds_already_fetched");
+          return true;
+        }
+        if (!youtubeFragmentsFetched.has(fragment) && thisTransfer) keepYoutubeFragmentWhenFetched(fragment, outPath, thisTransfer);
       }
       youtubeTransferReentry = outPath;
       return downloadYouTubeCCClip(
@@ -10102,6 +10118,7 @@ export async function downloadYouTubeCCClip(
         box, budgetMs, onlyRoute, archiveDelivered
       );
     })();
+    thisTransfer = done;
     youtubeTransfersByFile.set(outPath, { seconds, done });
     if (!firstForVideo) {
       const answer = done.then(
@@ -11333,7 +11350,19 @@ export async function fetchYouTubeCCClips(
                   `(more of their videos refused than delivered)`
               );
             }
-            return byChannel;
+            /** VIDEO 636 — the film's ready stock first: no download, judged in the beat's own turn. */
+            if (poolVideoId == null) return byChannel;
+            const readyInStock = (r: (typeof byChannel)[number]) => {
+              const id = r.item.id?.videoId;
+              return id != null && isStockReady(poolVideoId, id);
+            };
+            const ready = byChannel.filter(readyInStock).length;
+            if (ready > 0) {
+              console.log(
+                `[YouTubeStock] Scene ${sceneIndex}: ${ready} video(s) of the film's ready stock asked first — no download for those`
+              );
+            }
+            return stockedRowsFirst(byChannel, readyInStock);
           });
 
         /**
@@ -25441,8 +25470,14 @@ async function _runVideoPipelineInner(
           for (let at = 0; at < all.length; at += 4) {
             await Promise.all(
               all.slice(at, at + 4).map(async (clipPath) => {
+                /**
+                 * VIDEO 636 — measured through the memo the planner reads (`memoisedVideoStreamMeta`
+                 * in `toPlannerClip`). It read nothing for archive clips (`probed=0`), so the planner
+                 * took a 3.00 s file for a 7.65 s slot and the second piece ran past its end.
+                 */
                 const durationSec =
-                  memoisedVideoStreamMeta(clipPath)?.durationSec ?? (await probeVideoDurationSec(clipPath).catch(() => 0));
+                  (await probeVideoStreamMeta(clipPath).catch(() => null))?.durationSec ||
+                  (await probeVideoDurationSec(clipPath).catch(() => 0));
                 const looked = await clipLooksStill(clipPath, durationSec, grab);
                 if (looked === true || (looked === null && isStillPhotoClip(clipPath))) stillClips.add(clipPath);
               })
@@ -25453,9 +25488,11 @@ async function _runVideoPipelineInner(
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
           /**
-           * Subtitles are always planned and drawn in the made video; the editor can switch them off.
+           * Subtitles are always planned, so the editor can show them. OCTOBER 2026 — drawn only when
+           * the video asks for them (`enableSubtitles`, off unless the person switched it on).
            */
           includeSubtitles: true,
+          showSubtitles: enableSubtitles,
           /** VIDEO 634 (B1) — a sentence that names nothing gets a card of the film's subject, not a held shot. */
           filmSubject: visualDedup.mainSubject ?? null,
           /** The render's own id, so an adapter refusal names the run that produced it. */

@@ -153,6 +153,8 @@ export type CinematicPlanParams = {
    * because nothing handed the setting to the planner and the planner's default is on.
    */
   includeSubtitles: boolean;
+  /** OCTOBER 2026 — whether the planned subtitles are shown; see `CinematicPipelineParams.showSubtitles`. */
+  showSubtitles?: boolean;
   /** Injected so a test can run the whole route without a database. */
   persist: (params: {
     id: number;
@@ -326,6 +328,9 @@ export async function planAndStoreCinematicTimeline(
       words: params.words,
       format: params.format,
       includeSubtitles: params.includeSubtitles,
+      ...(params.showSubtitles !== undefined ? { showSubtitles: params.showSubtitles } : {}),
+      /** OCTOBER 2026 — the film's main subject, drawn big over its first picture. */
+      openingWord: params.filmSubject ?? null,
       /**
        * The film's emotional shape, so the score follows the story rather than the clock.
        *

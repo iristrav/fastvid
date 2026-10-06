@@ -69,6 +69,15 @@ export function isStockVideoClip(filePath: string): boolean {
   );
 }
 
+/**
+ * VIDEO 636 — a film from an open historical archive (Internet Archive, Wikimedia video). Counted
+ * as "stock" for the grade above, but it is not commercial stock, and the person-topic gate in
+ * `judgeCandidateMetadata` no longer treats it as such.
+ */
+export function isOpenArchiveVideoClip(filePath: string): boolean {
+  return /_archive_|_wikivid_/i.test(path.basename(filePath));
+}
+
 /** Classify a clip's origin from its temp filename for source-aware grading. */
 export function classifyDocGradeSourceKind(filePath: string): DocGradeSourceKind {
   if (isAIGeneratedClip(filePath)) return "ai_generated";

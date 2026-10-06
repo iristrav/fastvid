@@ -794,8 +794,8 @@ async function renderSegment(
    * shot twice. Read the file's real length; when the slot asks for more, play the clip that much
    * slower (down to `MIN_FIT_SPEED`) so the source runs once, in order. Below that, as before.
    */
-  const fitSpeed =
-    clip.kind === "video" ? speedThatFitsSource(clip, await probeDurationSec(localMedia), slot, Math.max(0, handleSec)) : null;
+  const fileSec = clip.kind === "video" ? await probeDurationSec(localMedia) : null;
+  const fitSpeed = clip.kind === "video" ? speedThatFitsSource(clip, fileSec, slot, Math.max(0, handleSec)) : null;
   if (fitSpeed != null) {
     console.log(
       `[ShotFit] clip=${clip.id} the file is shorter than the slot asks — played at ${fitSpeed}× instead of looping its start`
@@ -816,13 +816,22 @@ async function renderSegment(
   if (portraitSource) {
     console.log(`[PortraitFill] clip=${clip.id} the source stands — blurred fill instead of black bars`);
   }
-  const vf = buildVideoFilter(graded, fmt, dur, look, { portraitSource });
+  const built = buildVideoFilter(graded, fmt, dur, look, { portraitSource });
+  /**
+   * VIDEO 636 — A SHORT FILE HOLDS ITS LAST FRAME; IT IS NEVER PLAYED AGAIN FROM THE START.
+   *
+   * The input used to be opened with `-stream_loop -1`, so any read past the file's end started it
+   * again: a 3.00 s file under a 4.08 s second piece showed the first piece's cable a second time.
+   * The read is now bounded by the file, and `tpad` clones its last frame for whatever the slot
+   * still asks — the camera move after it keeps that frame alive. On a file long enough for its
+   * slot nothing is cloned: the input's own `-t` ends the read first and `-t` bounds the output.
+   */
+  const vf = clip.kind === "video" ? `tpad=stop_mode=clone:stop_duration=${dur.toFixed(3)},${built}` : built;
 
   const args: string[] = ["-y", "-hide_banner", "-loglevel", "error"];
   if (clip.kind === "image") {
     args.push("-loop", "1", "-t", dur.toFixed(3), "-i", localMedia);
   } else {
-    // -stream_loop -1 makes a short source fill its slot; -t bounds it to the slot exactly.
     /**
      * RONDE 147 §15 — an ABSENT trim means "nobody wrote it down", and the renderer says what it
      * does about that rather than pretending it was zero.
@@ -842,10 +851,18 @@ async function renderSegment(
     /** A sped-up clip reads `speed` seconds of source per second of slot (see `clipPlaybackSpeed`). */
     const speed = clipPlaybackSpeed(fitted);
     const sourceHandle = Math.max(0, handleSec) * speed;
-    const startAt = Math.max(0, inPoint - sourceHandle);
+    /** A start past the file's end would read nothing at all; it starts on the last frame instead. */
+    const lastFrameAt = fileSec != null && fileSec > 0.1 ? fileSec - 0.1 : null;
+    const startAt = Math.min(Math.max(0, inPoint - sourceHandle), lastFrameAt ?? Infinity);
     handleFromSource = handleSec <= 0 || inPoint >= sourceHandle;
-    args.push("-stream_loop", "-1", "-ss", startAt.toFixed(3),
-      "-t", (dur * speed).toFixed(3), "-i", localMedia);
+    const shortBy = fileSec != null ? startAt + dur * speed - fileSec : 0;
+    if (shortBy > 0.1) {
+      console.log(
+        `[ShotFreeze] clip=${clip.id} the file ends ${shortBy.toFixed(2)}s of source before the slot does — ` +
+          `its last frame holds instead of replaying its start`
+      );
+    }
+    args.push("-ss", startAt.toFixed(3), "-t", (dur * speed).toFixed(3), "-i", localMedia);
   }
   args.push(
     "-an",

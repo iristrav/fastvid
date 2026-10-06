@@ -41,7 +41,7 @@ import {
 import type { EDL, EditDecision } from "./cinematicEditingEngine/types";
 import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput } from "./aiDirector";
 import type { DirectorOutput } from "./aiDirector/types";
-import { blackByTimelineSpans, translateEdl, type EdlTranslationInput, type PrimaryGraphicInput } from "./edlToTimeline";
+import { blackByTimelineSpans, isGraphicBackdrop, translateEdl, type EdlTranslationInput, type PrimaryGraphicInput } from "./edlToTimeline";
 import { directOnScreenText, type TextDirection } from "./onScreenTextDirector";
 import { limitLongShots } from "./longShotLimit";
 import type { YoutubeSourceFacts } from "./youtubeShotLimit";
@@ -54,7 +54,8 @@ import {
   formatGraphicsLifecycle,
   graphicsLifecycle,
 } from "./graphicsLifecycle";
-import type { AssetSourceIdentity, ProjectTimeline, TimelineVideoClip } from "./projectTimeline";
+import type { AssetSourceIdentity, ProjectTimeline, TimelineText, TimelineVideoClip } from "./projectTimeline";
+import { captionTrack, DEFAULT_TEXT_STYLE } from "./projectTimeline";
 import { intensityAtFrom, typewriterSfxClips } from "./typewriterSound";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 import { planMusicCues, scoreCues, type CurvePoint, type MusicCatalogue, type ScoredCue } from "./musicDirector";
@@ -99,6 +100,54 @@ export type CinematicSceneInput = {
   sceneOffsetSec: number;
 };
 
+/** OCTOBER 2026 — the opening word: when it appears, how long it stays, how big it is drawn. */
+export const OPENING_WORD_START_SEC = 0.3;
+export const OPENING_WORD_END_SEC = 3.0;
+export const OPENING_WORD_FONT_PX = 150;
+
+/**
+ * OCTOBER 2026 — ONE WORD BIG IN THE FIRST SECONDS.
+ *
+ * The owner's rule: subtitles are off by default, and at the start of the video one word may stand
+ * big in the picture. The word is the film's main subject (`videoMainSubject`, read from the
+ * narration, never invented), at most two words and 20 characters, drawn centred over the first
+ * picture without a box, as a `title` — the text director's highest rank, so it is weighed against
+ * every other text like any planned one.
+ *
+ * Only over real footage: when the opening seconds are a sentence's card (a `primaryVisual`
+ * graphic) or show no picture at all, there is no word — a word on top of a card is two titles.
+ */
+export function openingWordText(timeline: ProjectTimeline, word: string | null | undefined): TimelineText | null {
+  const text = (word ?? "").replace(/\s+/g, " ").trim();
+  if (!text || text.length > 20 || text.split(" ").length > 2) return null;
+  const start = OPENING_WORD_START_SEC;
+  const end = Math.min(OPENING_WORD_END_SEC, timeline.durationSec > 0 ? timeline.durationSec : OPENING_WORD_END_SEC);
+  if (!(end - start >= 1.5)) return null;
+  const overlaps = (a: number, b: number) => a < end && b > start;
+  const footage = timeline.tracks.some(
+    (t) =>
+      t.kind === "VIDEO" &&
+      t.clips.some(
+        (c) =>
+          !c.disabled && !isGraphicBackdrop(c) && (c.transform?.opacity ?? 1) > 0 &&
+          c.timelineStart <= start && c.timelineEnd >= end
+      )
+  );
+  const card = timeline.tracks.some(
+    (t) => t.kind === "GRAPHICS" && t.graphics.some((g) => !g.disabled && g.data?.primaryVisual === true && overlaps(g.start, g.end))
+  );
+  if (!footage || card) return null;
+  return {
+    id: "txt_opening_word",
+    text: text.toUpperCase(),
+    start,
+    end,
+    style: { ...DEFAULT_TEXT_STYLE, fontSizePx: OPENING_WORD_FONT_PX, position: "center" },
+    animation: "scale",
+    role: "title",
+  };
+}
+
 export type CinematicPipelineParams = {
   videoId: number;
   scenes: CinematicSceneInput[];
@@ -121,6 +170,18 @@ export type CinematicPipelineParams = {
   look?: ProjectTimeline["look"];
   /** Emit a narration subtitle per beat. On by default — see the note at the generateEDL call. */
   includeSubtitles?: boolean;
+  /**
+   * OCTOBER 2026 — whether the planned subtitles are SHOWN in the made video. Absent = shown, as
+   * before. Production passes the video's own setting (`enableSubtitles`, off unless the person
+   * switched it on): the subtitles are still planned, switched off, so the editor's "Show
+   * subtitles" turns them on without a new render plan.
+   */
+  showSubtitles?: boolean;
+  /**
+   * OCTOBER 2026 — one word drawn big over the film's first picture (the film's main subject), or
+   * null/absent for none. See `openingWordText`.
+   */
+  openingWord?: string | null;
   /**
    * The film's emotional shape, from the Documentary Planning Engine.
    *
@@ -363,6 +424,19 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
    * RONDE 656 — the text director also decides what types: every year, and a line or two at the
    * film's most intense beats. The beat intensities come from the planning engine's curve.
    */
+  /** OCTOBER 2026 — subtitles off unless the video asks for them; switched off, never deleted. */
+  if (params.showSubtitles === false) {
+    for (const c of captionTrack(timeline)) {
+      c.disabled = true;
+      c.disabledReason = "subtitles_off";
+    }
+  }
+  /** OCTOBER 2026 — the opening word, before the text director so every text rule applies to it. */
+  const opening = openingWordText(timeline, params.openingWord);
+  if (opening) {
+    const textTrack = timeline.tracks.find((t) => t.kind === "TEXT");
+    if (textTrack?.kind === "TEXT") textTrack.texts.push(opening);
+  }
   const videoForIntensity = timeline.tracks.find((t) => t.kind === "VIDEO");
   const textDirection = directOnScreenText(timeline, {
     intensityAt:
@@ -376,7 +450,8 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
    * for the person to switch on. The subtitles are drawn.
    */
   console.log(
-    `[OnScreenText] video=${params.videoId} in the made video: subtitles, ${textDirection.kept} text/graphic(s) ` +
+    `[OnScreenText] video=${params.videoId} in the made video: subtitles ${params.showSubtitles === false ? "off" : "on"}, ` +
+      `opening word ${opening && !opening.disabled ? `"${opening.text}"` : "none"}, ${textDirection.kept} text/graphic(s) ` +
       `(typing=${textDirection.typewriter.length}); switched off by the director: ${textDirection.disabled.length}`
   );
   /** VIDEO 634 — after the director, so a picture it switched off would show here. Logged, never refused. */

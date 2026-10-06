@@ -43,7 +43,11 @@ export type YoutubeSourceFacts = {
   measured: boolean;
 };
 
-export type YoutubePiece = { inSec: number; durationSec: number };
+/** `speed` (below 1) when the piece is played slower so it need not repeat a window — VIDEO 636. */
+export type YoutubePiece = { inSec: number; durationSec: number; speed?: number };
+
+/** The slowest a piece is played rather than repeat a window: the renderer's `MIN_FIT_SPEED`. */
+export const YOUTUBE_MIN_PIECE_SPEED = 0.5;
 
 /** The source as a list of continuous shots `[start, end)`. */
 export function shotSegments(facts: YoutubeSourceFacts): Array<{ start: number; end: number }> {
@@ -87,6 +91,8 @@ export function planYoutubePieces(params: {
   durationSec: number;
   facts: YoutubeSourceFacts;
   maxSec?: number;
+  /** VIDEO 636 — play the pieces slower rather than repeat a window (when no neighbour can take the time). */
+  slowRatherThanRepeat?: boolean;
 }): { pieces: YoutubePiece[]; notes: string[]; refused?: string; distinct?: number } {
   const maxSec = params.maxSec ?? YOUTUBE_MAX_SHOT_SEC;
   const notes: string[] = [];
@@ -160,18 +166,40 @@ export function planYoutubePieces(params: {
       }
     }
   }
+  /**
+   * VIDEO 636 — and before a window repeats, the pieces are played slower: 7.06 s asked of a 4.00 s
+   * source showed the same 3.53 s twice. Two pieces of 3.53 s that each read 1.94 s, at 0.55×,
+   * show different footage, once, in order — down to the renderer's own floor (`MIN_FIT_SPEED`,
+   * 0.5). Each piece is still inside one shot and still at most `maxSec` on screen.
+   */
+  let speed = 1;
+  if (params.slowRatherThanRepeat && windows.length < count) {
+    for (let s = 0.95; s >= YOUTUBE_MIN_PIECE_SPEED - EPS; s = Number((s - 0.05).toFixed(2))) {
+      const w = windowsOf(len * s);
+      if (w.length >= count) {
+        notes.push(
+          `${count} piece(s) of ${len.toFixed(2)}s would repeat a picture — played at ${s}× instead, ` +
+            `each from different footage`
+        );
+        speed = s;
+        windows = w;
+        break;
+      }
+    }
+  }
   if (windows.length === 0) {
     return { pieces: [], notes, refused: `no shot in the source holds a ${len.toFixed(2)}s piece clear of its cuts` };
   }
+  const reads = len * speed;
 
   /** Start at the planner's moment: inside its own shot, moved just enough to fit. */
   const inSec = Math.max(0, params.inSec);
   const home = usable.find((seg) => inSec >= seg.start - EPS && inSec < seg.end - EPS);
   let first: number | null = null;
-  if (home && home.end - home.start >= len - EPS) {
-    first = Math.min(Math.max(inSec, home.start), home.end - len);
+  if (home && home.end - home.start >= reads - EPS) {
+    first = Math.min(Math.max(inSec, home.start), home.end - reads);
   }
-  const overlapsFirst = (w: number) => first != null && w < first + len - EPS && w + len > first + EPS;
+  const overlapsFirst = (w: number) => first != null && w < first + reads - EPS && w + reads > first + EPS;
   const rest = windows.filter((w) => !overlapsFirst(w));
   const anchor = first ?? inSec;
   const order: number[] = [
@@ -181,7 +209,9 @@ export function planYoutubePieces(params: {
   ];
 
   const pieces: YoutubePiece[] = [];
-  for (let i = 0; i < count; i++) pieces.push({ inSec: round(order[i % order.length]!), durationSec: round(len) });
+  for (let i = 0; i < count; i++) {
+    pieces.push({ inSec: round(order[i % order.length]!), durationSec: round(len), ...(speed < 1 ? { speed } : {}) });
+  }
   if (count > order.length) {
     notes.push(
       `the source holds ${order.length} distinct ${len.toFixed(2)}s window(s) for ${count} piece(s) — ` +
@@ -316,6 +346,25 @@ export function limitYoutubeShots(params: {
         next!.timelineStart = clip.timelineEnd;
         notes.push(`${clip.id}: no repeat — ${next!.id} starts ${give.toFixed(2)}s earlier instead`);
         plan.pieces = plan.pieces.slice(0, distinct);
+      } else {
+        /**
+         * VIDEO 636 — no shot beside it may take the time (in 636 both neighbours were the invisible
+         * ground under a card), so the pieces are played slower instead of repeating a window.
+         */
+        const slowed = planYoutubePieces({
+          inSec: clip.sourceIn ?? 0,
+          durationSec: dur(clip),
+          facts,
+          maxSec,
+          slowRatherThanRepeat: true,
+        });
+        if (!slowed.refused && slowed.pieces.length > 0 && (slowed.distinct ?? 0) >= slowed.pieces.length) {
+          notes.push(
+            `${clip.id}: no repeat — no shot beside it can take the time; ${slowed.pieces.length} piece(s) played at ` +
+              `${slowed.pieces[0]!.speed ?? 1}× from different footage`
+          );
+          plan.pieces = slowed.pieces;
+        }
       }
     }
     if (plan.pieces.length > 1 || Math.abs(plan.pieces[0]!.inSec - (clip.sourceIn ?? 0)) > EPS) {
@@ -336,9 +385,10 @@ export function limitYoutubeShots(params: {
         ...clip,
         id: plan.pieces.length === 1 ? clip.id : `${clip.id}_p${k + 1}`,
         sourceIn: p.inSec,
-        sourceOut: round(p.inSec + (end - at)),
+        sourceOut: round(p.inSec + (end - at) * (p.speed ?? 1)),
         timelineStart: round(at),
         timelineEnd: end,
+        ...(p.speed != null ? { speed: p.speed } : {}),
       };
       /** Only the first piece carries the planned transition in, only the last the one out. */
       if (k > 0) {

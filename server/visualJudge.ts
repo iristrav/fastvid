@@ -18,7 +18,7 @@ import path from "path";
 import { normalizeMediaTags } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 import type { CandidateMeta } from "./assetDirector";
-import { isAIGeneratedClip, isStockVideoClip } from "./documentaryStyle";
+import { isAIGeneratedClip, isOpenArchiveVideoClip, isStockVideoClip } from "./documentaryStyle";
 import { recordGateVerdict } from "./gateFiringStats";
 import {
   archiveClipBakedEditTextVerdict,
@@ -473,7 +473,14 @@ export function judgeCandidateMetadata(input: CandidateJudgeInput): VisualJudgeV
     if (isOffTopicVisualForPersonTopic(sourceQuery, p, input.primaryPerson, input.meta?.providerText?.title)) {
       return reject("metadata", "person_topic_off_topic_visual");
     }
-    if (isStockVideoClip(p)) {
+    /**
+     * VIDEO 636 — commercial stock only. An Internet Archive or Wikimedia film is historical
+     * footage, not "a businessman walking": 39 of them (24 distinct) were refused here unseen for
+     * a Tesla film because "Musk" was not in their file name. They now go to the picture editor,
+     * which judges them against the sentence like every other picture. A sentence that names a
+     * person still asks for evidence of that person (`entity_evidence` below).
+     */
+    if (isStockVideoClip(p) && !isOpenArchiveVideoClip(p)) {
       const hay = `${sourceQuery} ${path.basename(p)}`.toLowerCase();
       const personHit = textMentionsPersonName(hay, input.primaryPerson);
       const celebCue = /\b(interview|red carpet|talk show|celebrity|paparazzi)\b/.test(hay);

@@ -24,8 +24,8 @@
  * ordinary documentary grammar. A cut to black under narration is a mistake, and a film that stops
  * before the narrator does is not a deliverable at all.
  *
- * The renderer makes the hold safe: video inputs are opened with `-stream_loop -1` and bounded by
- * `-t`, so a clip asked to fill more time than its source holds simply fills it.
+ * The renderer makes the hold safe: a clip asked to fill more time than its source holds is played
+ * slower and, past that, holds its last frame (VIDEO 636 — never replayed from its start).
  */
 import { describe, expect, it } from "vitest";
 
