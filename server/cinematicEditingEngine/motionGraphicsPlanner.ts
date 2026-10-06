@@ -664,6 +664,35 @@ export type PictureGraphic = Omit<MotionGraphicInstruction, "graphicType"> & {
 export const CHAPTER_CARD_FALLBACK = "CHAPTER_CARD_FALLBACK";
 
 /**
+ * VIDEO 634 (B1) — the card for a sentence that names nothing of its own.
+ *
+ * `chapterCardFallbackFor` has no card for a sentence without a stated event, person or subject —
+ * "How did one mistake topple a seemingly unbreakable symbol?" — and the hole it left was closed by
+ * HOLDING the previous sentence's shot, which the picture editor never approved for this one (634:
+ * 4.43 s of s0b1's footage under s0b2). This card carries the film's main subject instead
+ * (`videoMainSubject`: read from the narration, never invented), so the sentence gets the same
+ * invisible ground and drawn card every other card-sentence gets — no borrowed picture, no black.
+ */
+export function filmSubjectChapterCard(
+  subject: string | null | undefined,
+  startSec: number,
+  durationSec: number
+): PictureGraphic | null {
+  const title = subject?.trim() ?? "";
+  if (!title || !(durationSec > 0)) return null;
+  const g: PictureGraphic = {
+    graphicType: "chapter_card",
+    data: { title, label: title },
+    startSec,
+    durationSec,
+    reason:
+      `${CHAPTER_CARD_FALLBACK}: no source had a picture for this sentence and it names no subject of its own — ` +
+      `Remotion draws a title card of the film's main subject ("${title}").`,
+  };
+  return plannedGraphicIsDrawable(g) ? g : null;
+}
+
+/**
  * CHAPTER_CARD_FALLBACK — a picture Remotion draws for a sentence no source could illustrate.
  *
  * Asked last: only for a sentence with no approved picture from YouTube, the archive, the open

@@ -351,7 +351,8 @@ describeHybrid("RONDE 150 §5 — FFmpeg picture + Remotion graphics → one MP4
   it("renders a transparent overlay that really carries an alpha channel", async () => {
     const t = timelineWith({
       graphics: [LOWER_THIRD],
-      captions: [A_CAPTION],
+      /** OCTOBER 2026 — subtitles carry no plate by default now; this crowding is the plated one (an editor setting). */
+      captions: [{ ...A_CAPTION, style: { ...DEFAULT_CAPTION_STYLE, backgroundOpacity: 0.45 } }],
       widthPx: 640,
       heightPx: 360,
     });

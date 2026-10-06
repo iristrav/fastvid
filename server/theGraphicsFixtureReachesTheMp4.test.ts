@@ -555,7 +555,8 @@ describe("GRAPHICS §20 — a caption that cannot be placed is REPORTED, not dra
     for (const track of t.tracks) {
       if (track.kind === "GRAPHICS") track.graphics.push(SLOTS[0]!.graphic as never);
       if (track.kind === "CAPTIONS") {
-        track.captions.push({ ...CAPTION, start: 0, end: 2 } as never);
+        /** OCTOBER 2026 — subtitles carry no plate by default now; this crowding is the plated one (an editor setting). */
+        track.captions.push({ ...CAPTION, style: { ...CAPTION.style, backgroundOpacity: 0.45 }, start: 0, end: 2 } as never);
       }
     }
     return timelineToRemotionProps({ timeline: t });

@@ -654,6 +654,8 @@ export type PrimaryGraphicInput = {
   startSec: number;
   endSec: number;
   graphic: Pick<MotionGraphicInstruction, "data" | "reason"> & { graphicType: string };
+  /** VIDEO 634 (B1) — a film-subject card: skipped when an approved filler can fill the window. */
+  onlyWithoutApprovedFiller?: boolean;
 };
 
 /** The id suffix of a graphic's dark ground on the VIDEO track. */
@@ -678,7 +680,9 @@ export function isGraphicBackdrop(c: { id: string }): boolean {
 export function placePrimaryGraphics(
   clips: TimelineVideoClip[],
   graphics: TimelineGraphic[],
-  slots: ReadonlyArray<PrimaryGraphicInput>
+  slots: ReadonlyArray<PrimaryGraphicInput>,
+  /** AUDIT RC1's filler verdict — see `holdPictureUnderVoice`. Asked only for a film-subject card. */
+  fillerFits?: (filler: TimelineVideoClip, startSec: number, endSec: number) => boolean
 ): Array<{ backdrop: TimelineVideoClip; graphic: TimelineGraphic }> {
   const placed: Array<{ backdrop: TimelineVideoClip; graphic: TimelineGraphic }> = [];
   const MIN_SEC = 1;
@@ -692,6 +696,17 @@ export function placePrimaryGraphics(
     if (end - start < MIN_SEC) continue;
     const ground = [...before].reverse().find((c) => !isGraphicBackdrop(c)) ?? after.find((c) => !isGraphicBackdrop(c));
     if (!ground) continue;
+    /**
+     * VIDEO 634 (B1) — a film-subject card yields to a shot the picture editor approved for this
+     * sentence: the hole is then filled by `holdPictureUnderVoice` with that approved filler.
+     */
+    if (
+      slot.onlyWithoutApprovedFiller &&
+      fillerFits &&
+      live.some((c) => !isGraphicBackdrop(c) && !isGeneratedImageClip(c) && fillerFits(c, start, end))
+    ) {
+      continue;
+    }
     const type = rendererGraphicType(slot.graphic.graphicType);
     const label = graphicLabel(type, slot.graphic.data);
     if (!graphicIsRenderable(type, slot.graphic.data, label ?? null)) continue;
@@ -745,6 +760,41 @@ export function placePrimaryGraphics(
   }
   clips.sort((a, b) => a.timelineStart - b.timelineStart);
   return placed;
+}
+
+/**
+ * VIDEO 634 — BLACK_BY_TIMELINE: the stretches of the film where the plan itself shows nothing.
+ *
+ * A moment is black by the timeline when no enabled VIDEO clip with any opacity covers it and no
+ * enabled graphic that is a sentence's picture (`primaryVisual`) is drawn there. Read from the
+ * plan, not from pixels, so it tells a hole in the edit from dark archive footage. Observability
+ * only: it is logged, and nothing is refused on it.
+ */
+export function blackByTimelineSpans(timeline: ProjectTimeline, minSec = 0.05): Array<{ startSec: number; endSec: number }> {
+  const visible: Array<[number, number]> = [];
+  for (const t of timeline.tracks) {
+    if (t.kind === "VIDEO") {
+      for (const c of t.clips) {
+        if (c.disabled || (c.transform?.opacity ?? 1) <= 0) continue;
+        visible.push([c.timelineStart, c.timelineEnd]);
+      }
+    } else if (t.kind === "GRAPHICS") {
+      for (const g of t.graphics) {
+        if (g.disabled || g.data?.primaryVisual !== true) continue;
+        visible.push([g.start, g.end]);
+      }
+    }
+  }
+  visible.sort((a, b) => a[0] - b[0]);
+  const spans: Array<{ startSec: number; endSec: number }> = [];
+  let at = 0;
+  const end = timeline.durationSec > 0 ? timeline.durationSec : Math.max(0, ...visible.map((v) => v[1]));
+  for (const [a, b] of visible) {
+    if (a - at >= minSec) spans.push({ startSec: Number(at.toFixed(3)), endSec: Number(a.toFixed(3)) });
+    at = Math.max(at, b);
+  }
+  if (end - at >= minSec) spans.push({ startSec: Number(at.toFixed(3)), endSec: Number(end.toFixed(3)) });
+  return spans;
 }
 
 export function translateEdl(params: {
@@ -1127,7 +1177,7 @@ export function translateEdl(params: {
 
   clips.sort((a, b) => a.timelineStart - b.timelineStart);
   /** GRAPHICS FIX — a sentence without a picture whose graphic is its picture: placed before the holds. */
-  const graphicVisuals = placePrimaryGraphics(clips, graphics, params.primaryGraphics ?? []);
+  const graphicVisuals = placePrimaryGraphics(clips, graphics, params.primaryGraphics ?? [], params.fillerFits);
   /**
    * Close the holes BEFORE the length is measured — see `holdPictureUnderVoice`.
    *

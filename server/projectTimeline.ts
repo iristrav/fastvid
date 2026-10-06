@@ -645,11 +645,18 @@ export type ProjectTimeline = {
 
 export const DEFAULT_FORMAT: TimelineFormat = { widthPx: 1920, heightPx: 1080, fps: 30 };
 
+/**
+ * OCTOBER 2026 — no plate: subtitles stand on the picture itself, legible by a thin dark outline
+ * and a soft shadow (the owner's rule: text only over the current picture, never on a box). The
+ * libass route draws the same un-boxed style with its own outline. A plate stays one editor setting away.
+ */
 export const DEFAULT_CAPTION_STYLE: TextStyle = {
   fontSizePx: 46,
   color: "white",
-  backgroundOpacity: 0.45,
+  backgroundOpacity: 0,
   backgroundColor: "black",
+  outlineWidthPx: 2,
+  outlineColor: "rgba(0,0,0,0.85)",
   position: "bottom",
   maxCharsPerLine: 42,
 };

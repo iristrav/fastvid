@@ -22,6 +22,17 @@ export const YOUTUBE_MAX_SHOT_SEC = 5;
 export const YOUTUBE_MIN_PIECE_SEC = 1;
 const EPS = 0.001;
 
+/**
+ * VIDEO 634 — the invisible ground under a sentence's card (`…_graphicN`, see `isGraphicBackdrop`
+ * in edlToTimeline.ts) is never a shot that may take a YouTube clip's time. It is drawn at
+ * opacity 0 and only its card covers it, so time handed to it is black on screen — the time of
+ * the clip's OWN, approved sentence. `_pN` is a piece of the same clip.
+ */
+const GRAPHIC_BACKDROP_RE = /_graphic\d+(_p\d+)?$/;
+function isCardBackdrop(c: { id: string }): boolean {
+  return GRAPHIC_BACKDROP_RE.test(c.id);
+}
+
 /** What the planner knows about one YouTube-derived source, in the rehydrated file's seconds. */
 export type YoutubeSourceFacts = {
   /** Length of the file the rehydrator returns — the archive asset, not the render's trim. */
@@ -202,6 +213,8 @@ export function limitYoutubeShots(params: {
   const adjustedIds: string[] = [];
   const clips = params.clips.map((c) => ({ ...c }));
   const isYoutube = (c: TimelineVideoClip) => params.youtube.has(c.id);
+  /** A shot beside a YouTube clip that may take its time: not YouTube, not off, not a card's invisible ground. */
+  const mayTakeTime = (c: TimelineVideoClip, id = c.id) => !params.youtube.has(id) && !c.disabled && !isCardBackdrop(c);
   const sameScene = (a: TimelineVideoClip, b: TimelineVideoClip) =>
     a.sceneIndex != null && a.sceneIndex === b.sceneIndex;
   const dur = (c: TimelineVideoClip) => c.timelineEnd - c.timelineStart;
@@ -213,7 +226,7 @@ export function limitYoutubeShots(params: {
     const next = clips[i + 1];
     const prev = clips[i - 1];
     const excess = dur(clip) - maxSec;
-    if (next && !isYoutube(next) && !next.disabled && sameScene(clip, next)) {
+    if (next && mayTakeTime(next) && sameScene(clip, next)) {
       const cut = round(clip.timelineStart + maxSec);
       notes.push(
         `${clip.id}: ${dur(clip).toFixed(2)}s of YouTube → ${maxSec}s; ${next.id} starts ` +
@@ -221,7 +234,7 @@ export function limitYoutubeShots(params: {
       );
       clip.timelineEnd = cut;
       next.timelineStart = cut;
-    } else if (prev && !isYoutube(prev) && !prev.disabled && sameScene(clip, prev)) {
+    } else if (prev && mayTakeTime(prev) && sameScene(clip, prev)) {
       const cut = round(clip.timelineEnd - maxSec);
       notes.push(
         `${clip.id}: ${dur(clip).toFixed(2)}s of YouTube → ${maxSec}s; ${prev.id} holds ` +
@@ -257,13 +270,13 @@ export function limitYoutubeShots(params: {
        */
       const prevOut = out[out.length - 1];
       const next = clips[i + 1];
-      if (prevOut && !params.youtube.has(prevOut.id.replace(/_p\d+$/, "")) && !prevOut.disabled && sameScene(clip, prevOut)) {
+      if (prevOut && mayTakeTime(prevOut, prevOut.id.replace(/_p\d+$/, "")) && sameScene(clip, prevOut)) {
         prevOut.timelineEnd = clip.timelineEnd;
         adjustedIds.push(clip.id);
         notes.push(`${clip.id}: REFUSED (${plan.refused}) — ${prevOut.id} holds ${dur(clip).toFixed(2)}s longer instead`);
         continue;
       }
-      if (next && !isYoutube(next) && !next.disabled && sameScene(clip, next)) {
+      if (next && mayTakeTime(next) && sameScene(clip, next)) {
         next.timelineStart = clip.timelineStart;
         adjustedIds.push(clip.id);
         notes.push(`${clip.id}: REFUSED (${plan.refused}) — ${next.id} starts ${dur(clip).toFixed(2)}s earlier instead`);
@@ -292,7 +305,7 @@ export function limitYoutubeShots(params: {
       const prevOut = out[out.length - 1];
       const next = clips[i + 1];
       const takesTime = (c: TimelineVideoClip | undefined, id?: string) =>
-        !!c && !params.youtube.has(id ?? c.id) && !c.disabled && sameScene(clip, c);
+        !!c && mayTakeTime(c, id ?? c.id) && sameScene(clip, c);
       if (takesTime(prevOut, prevOut?.id.replace(/_p\d+$/, ""))) {
         clip.timelineStart = round(clip.timelineStart + give);
         prevOut!.timelineEnd = clip.timelineStart;

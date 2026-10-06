@@ -60,6 +60,7 @@ import type { CinematicBeatInput, CinematicSceneInput } from "./cinematicPipelin
 import {
   CHAPTER_CARD_FALLBACK,
   chapterCardFallbackFor,
+  filmSubjectChapterCard,
   namesAMappablePlace,
   plausibleEventName,
   plausiblePersonName,
@@ -160,6 +161,11 @@ export type PrimaryGraphicSlot = {
   startSec: number;
   endSec: number;
   graphic: PictureGraphic;
+  /**
+   * VIDEO 634 (B1) — a film-subject card: placed only when no shot the picture editor approved for
+   * this sentence can fill its window (see `placePrimaryGraphics`).
+   */
+  onlyWithoutApprovedFiller?: boolean;
 };
 
 /** The shortest window a graphic is put up as a sentence's picture: long enough to read. */
@@ -982,6 +988,8 @@ export function buildCinematicSceneInputs(params: {
   sceneOffsetsSec?: number[];
   /** See `CinematicBeatOutcome`. Never throws into the planner: the caller wraps its own writer. */
   onBeatOutcome?: (outcome: CinematicBeatOutcome) => void;
+  /** VIDEO 634 (B1) — the film's main subject (`videoMainSubject`), for a sentence that names none. */
+  filmSubject?: string | null;
 }): CinematicInputsResult {
   const extractors = params.extractors ?? {};
   const dropped: string[] = [];
@@ -1107,18 +1115,28 @@ export function buildCinematicSceneInputs(params: {
             `reason=NO_ADOPTED_CLIP`
         );
         /** GRAPHICS FIX — no picture: a graphic may be the sentence's picture, when its form asks for one. */
-        const standIn = primaryGraphicForBeat(
+        let standIn = primaryGraphicForBeat(
           intentFrom(beat, scene.index, beatIndex, null, extractors),
           scene,
           sceneOffsetSec + start,
           sceneOffsetSec + end
         );
+        /**
+         * VIDEO 634 (B1) — only where the card above is null: the film's main subject, so the hole is
+         * not closed by holding another sentence's shot. Placed only without an approved filler.
+         */
+        const filmSubjectCard =
+          !standIn && end - start >= MIN_PRIMARY_GRAPHIC_SEC
+            ? filmSubjectChapterCard(params.filmSubject, sceneOffsetSec + start, end - start)
+            : null;
+        standIn = standIn ?? filmSubjectCard;
         if (standIn) {
           primaryGraphics.push({
             beatId, sceneIndex: scene.index, beatIndex,
             startSec: Number((sceneOffsetSec + start).toFixed(3)),
             endSec: Number((sceneOffsetSec + end).toFixed(3)),
             graphic: standIn,
+            ...(filmSubjectCard ? { onlyWithoutApprovedFiller: true } : {}),
           });
           console.log(
             standIn.reason.startsWith(CHAPTER_CARD_FALLBACK)

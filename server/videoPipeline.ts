@@ -2382,6 +2382,26 @@ export function archiveHitIsRefused(
   return Boolean(found && found.evaluated && !found.reprieved && found.verdict === "does_not_fit");
 }
 
+/**
+ * VIDEO 634 (#8) — an archive_first FIT is an approval like any other.
+ *
+ * The archive hit is returned straight after its verdict, without passing `adoptClip`, so the
+ * approval was never registered: a FIT arriving after its sentence's cap came back to the scene as
+ * "without the picture editor's approval — not placed". Registering it lets the existing late route
+ * place it. Only a real look that said "fits" counts; unknown or refused verdicts do not.
+ */
+export function noteArchiveFirstFit(
+  dedup: object,
+  found: { verdict: string; evaluated: boolean; reprieved?: boolean } | null,
+  contentKey: string,
+  sceneIndex: number,
+  beatIndex: number
+): boolean {
+  if (!found || !found.evaluated || found.verdict !== "fits") return false;
+  noteApprovedPickForBeat(dedup, sceneIndex, beatIndex, contentKey);
+  return true;
+}
+
 async function archiveHitRefusedByPictureEditor(
   dedup: VisualDedupState,
   clipPath: string,
@@ -2477,6 +2497,23 @@ export async function fetchBeatArchivalThenPexels(
     /** P1 (video 630) — the hit is a candidate: the picture editor is asked before it ends the beat. */
     archiveHitRefused = await archiveHitRefusedByPictureEditor(dedup, ownArchiveClip, sceneIndex, beat.index);
     if (!archiveHitRefused) {
+      /** VIDEO 634 (#8) — a FIT here is registered as the sentence's approval. */
+      if (dedup.beatRelevance) {
+        const contentKey = clipContentKey(ownArchiveClip);
+        noteArchiveFirstFit(
+          dedup,
+          relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
+            localPath: ownArchiveClip,
+            currentFilename: path.basename(ownArchiveClip),
+            contentKey,
+            sceneIndex,
+            beatIndex: beat.index,
+          }),
+          contentKey,
+          sceneIndex,
+          beat.index
+        );
+      }
       console.log(`[ArchiveFirst] s${sceneIndex}b${beat.index} ARCHIVE_HIT — no supplier asked`);
       return ownArchiveClip;
     }
@@ -20244,7 +20281,13 @@ async function resolveBeatClipForBeat(
       /** Nothing approved at the cap: a look already under way may still finish. The sentence does not wait for it. */
       late = capped.late;
     }
-    if (c && !(await technicalMediaRefusal(c, MEDIA_PROBES))) return c;
+    if (!c) return null;
+    const refusal = await technicalMediaRefusal(c, MEDIA_PROBES);
+    if (!refusal) return c;
+    /** VIDEO 634 — an approved picture refused here used to vanish without a word. */
+    if (pictureApprovedForBeat(dedup, sceneIndex, beat.index, clipContentKey(c))) {
+      noteApprovedNotPlaced(dedup, sceneIndex, beat.index, `technical check refused the approved picture: ${refusal}`);
+    }
     return null;
   })();
   /**
@@ -20255,9 +20298,20 @@ async function resolveBeatClipForBeat(
     async (c) => {
       if (c || !late) return c;
       const v = await late.catch(() => null);
-      return v && !(await technicalMediaRefusal(v, MEDIA_PROBES)) ? v : null;
+      if (!v) return null;
+      const refusal = await technicalMediaRefusal(v, MEDIA_PROBES);
+      if (!refusal) return v;
+      if (pictureApprovedForBeat(dedup, sceneIndex, beat.index, clipContentKey(v))) {
+        noteApprovedNotPlaced(dedup, sceneIndex, beat.index, `technical check refused the approved picture: ${refusal}`);
+      }
+      return null;
     },
-    () => null
+    (err) => {
+      if (approvedPicksForBeat(dedup, sceneIndex, beat.index) > approvedBefore) {
+        noteApprovedNotPlaced(dedup, sceneIndex, beat.index, `the sentence's ladder failed: ${(err as Error)?.message ?? String(err)}`);
+      }
+      return null;
+    }
   );
   noteLadderForBeat(dedup, sceneIndex, beat.index, approvedBefore, forScene);
   return answer;
@@ -20984,7 +21038,49 @@ const approvedPicksByRender = new WeakMap<object, Map<string, number>>();
 /** Which pictures, by content key, were approved for which sentence — see `takeLateApprovedPicks`. */
 const approvedKeysByRender = new WeakMap<object, Map<string, Set<string>>>();
 
+/**
+ * VIDEO 634 — AN APPROVED PICTURE NEVER DISAPPEARS WITHOUT A NAMED REASON.
+ *
+ * Render 634's s0b0 press photo was approved, transformed and ADOPTED, and never reached the
+ * timeline with no line saying why; s0b2's YouTube shot was approved 62 s after scene 0 had closed.
+ * Every such loss is now named once per sentence: `[APPROVED_NOT_PLACED] s<S>b<B> reason=<reason>`.
+ * Nothing here places, waits, looks or searches — it only says what happened.
+ */
+const approvedNotPlacedByRender = new WeakMap<object, Set<string>>();
+const closedScenesByRender = new WeakMap<object, Set<number>>();
+
+export const APPROVED_NOT_PLACED = "APPROVED_NOT_PLACED";
+
+/** Log, once per sentence, that a picture approved for it will not be on the timeline — and why. */
+export function noteApprovedNotPlaced(dedup: object, sceneIndex: number, beatIndex: number, reason: string): void {
+  const set = approvedNotPlacedByRender.get(dedup) ?? new Set<string>();
+  approvedNotPlacedByRender.set(dedup, set);
+  const key = `${sceneIndex}:${beatIndex}`;
+  if (set.has(key)) return;
+  set.add(key);
+  console.warn(`[${APPROVED_NOT_PLACED}] s${sceneIndex}b${beatIndex} reason=${reason}`);
+}
+
+export function approvedNotPlacedNoted(dedup: object, sceneIndex: number, beatIndex: number): boolean {
+  return Boolean(approvedNotPlacedByRender.get(dedup)?.has(`${sceneIndex}:${beatIndex}`));
+}
+
+/** The scene's loop is over: nothing approved for it from now on can be placed. */
+export function markSceneClosed(dedup: object, sceneIndex: number): void {
+  const set = closedScenesByRender.get(dedup) ?? new Set<number>();
+  closedScenesByRender.set(dedup, set);
+  set.add(sceneIndex);
+}
+
+export function sceneIsClosed(dedup: object, sceneIndex: number): boolean {
+  return Boolean(closedScenesByRender.get(dedup)?.has(sceneIndex));
+}
+
 export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey?: string): void {
+  /** VIDEO 634 s0b2 — approved 62 s after its scene closed: not placed, and said so (no timing change). */
+  if (sceneIsClosed(dedup, sceneIndex)) {
+    noteApprovedNotPlaced(dedup, sceneIndex, beatIndex, "approved after scene closed — not placed");
+  }
   const byBeat = approvedPicksByRender.get(dedup) ?? new Map<string, number>();
   approvedPicksByRender.set(dedup, byBeat);
   const key = `${sceneIndex}:${beatIndex}`;
@@ -21000,6 +21096,16 @@ export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatI
 
 export function approvedPicksForBeat(dedup: object, sceneIndex: number, beatIndex: number): number {
   return approvedPicksByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`) ?? 0;
+}
+
+/** VIDEO 634 (#9) — the sentences of one scene that have at least one approved picture. */
+export function approvedBeatsInScene(dedup: object, sceneIndex: number): number[] {
+  const out: number[] = [];
+  for (const [key, n] of approvedPicksByRender.get(dedup) ?? []) {
+    const [s, b] = key.split(":").map(Number);
+    if (s === sceneIndex && n > 0 && Number.isFinite(b)) out.push(b!);
+  }
+  return out.sort((a, b) => a - b);
 }
 
 /** Was THIS picture (by content key) approved for THIS sentence? */
@@ -21057,6 +21163,13 @@ export function noteOfferedToScene(dedup: object, sceneIndex: number, beatIndex:
   set.add(`${sceneIndex}:${beatIndex}:${clipPath}`);
 }
 
+/** Was ANY clip handed to the push for this sentence? Then the push decided, and `[PushTrace]` says why. */
+export function offeredToBeat(dedup: object, sceneIndex: number, beatIndex: number): boolean {
+  const prefix = `${sceneIndex}:${beatIndex}:`;
+  for (const k of offeredToSceneByRender.get(dedup) ?? []) if (k.startsWith(prefix)) return true;
+  return false;
+}
+
 export type LateLadderAnswer = { beatIndex: number; clip: string; approved: boolean };
 
 /**
@@ -21105,6 +21218,13 @@ export async function takeLateApprovedPicks(
     }
     list.splice(list.indexOf(e), 1);
     const clip = e.settled.value;
+    if (!clip && approvedPicksForBeat(dedup, e.sceneIndex, e.beatIndex) > e.approvedBefore && !offeredToBeat(dedup, e.sceneIndex, e.beatIndex)) {
+      /** VIDEO 634 — approved, yet the ladder handed the scene nothing: say so instead of dropping it. */
+      noteApprovedNotPlaced(
+        dedup, e.sceneIndex, e.beatIndex,
+        "approved picture never reached the scene — the sentence's ladder settled without a clip"
+      );
+    }
     if (!clip || offered?.has(`${e.sceneIndex}:${e.beatIndex}:${clip}`)) continue;
     out.push({
       beatIndex: e.beatIndex,
@@ -22229,9 +22349,27 @@ async function fetchSceneVisualsInner(
   }
     await placeLateApprovedPicks(true);
     await fillBeatWithMoreClips();
+    /**
+     * VIDEO 634 — the scene's last word on its approved pictures: a sentence with an approval and no
+     * clip on the scene is named, never dropped in silence. A push that refused it said why in
+     * `[PushTrace]`; anything else is the picture that never reached the scene.
+     */
+    for (const b of beats) {
+      if (clipBeatIndices.includes(b.index)) continue;
+      if (approvedPicksForBeat(dedup, scene.index, b.index) === 0) continue;
+      if (approvedNotPlacedNoted(dedup, scene.index, b.index)) continue;
+      noteApprovedNotPlaced(
+        dedup, scene.index, b.index,
+        offeredToBeat(dedup, scene.index, b.index)
+          ? "refused at the push (reason logged by [PushTrace])"
+          : "approved picture never reached the scene before it closed (not handed to the push)"
+      );
+    }
   } finally {
     /** The last beat's ladder, and any beat the loop left through a throw. */
     closeBeatLadder?.();
+    /** VIDEO 634 — from here on, a picture approved for this scene is named as not placed. */
+    markSceneClosed(dedup, scene.index);
   }
 
   
@@ -23418,6 +23556,13 @@ async function _runVideoPipelineInner(
             `[Pipeline] Scene ${scene.index} visuals failed — the scene has no picture:`,
             (sceneErr as Error).message
           );
+          /** VIDEO 634 (#9) — every approved picture of this scene is lost with it: named, one line each. */
+          for (const b of approvedBeatsInScene(visualDedup, scene.index)) {
+            noteApprovedNotPlaced(
+              visualDedup, scene.index, b,
+              `scene visuals failed — the scene has no picture: ${String((sceneErr as Error)?.message ?? sceneErr).slice(0, 160)}`
+            );
+          }
           visualDedup.lock = Promise.resolve();
           result = { clips: [], beatDurations: [] };
         }
@@ -25311,6 +25456,8 @@ async function _runVideoPipelineInner(
            * Subtitles are always planned and drawn in the made video; the editor can switch them off.
            */
           includeSubtitles: true,
+          /** VIDEO 634 (B1) — a sentence that names nothing gets a card of the film's subject, not a held shot. */
+          filmSubject: visualDedup.mainSubject ?? null,
           /** The render's own id, so an adapter refusal names the run that produced it. */
           renderId: lineage.renderId,
           /**

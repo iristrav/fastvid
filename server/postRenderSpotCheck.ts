@@ -29,6 +29,9 @@ export type PostRenderSpotCheckResult = {
   freezeSegments: number;
   silentSegments: number;
   warnings: string[];
+  /** VIDEO 634 — where the black is and how long, from blackdetect's own lines. Observability only. */
+  blackSpans?: Array<{ startSec: number; endSec: number }>;
+  blackTotalSec?: number;
 };
 
 function ffmpegBin(): string {
@@ -138,6 +141,22 @@ function countBlackStarts(stderr: string): number {
   return (stderr.match(/lavfi\.blackdetect\.black_start/gi) ?? []).length;
 }
 
+/**
+ * VIDEO 634 — blackdetect's "black_start:5.78 black_end:11.96 black_duration:6.18" lines, read.
+ * The count alone said "3 segments"; ten seconds of black in a 65 s film read the same as three
+ * dark frames of night footage.
+ */
+export function parseBlackSpans(stderr: string): Array<{ startSec: number; endSec: number }> {
+  const spans: Array<{ startSec: number; endSec: number }> = [];
+  const re = /black_start:\s*([\d.]+)\s+black_end:\s*([\d.]+)/g;
+  for (let m = re.exec(stderr); m; m = re.exec(stderr)) {
+    const startSec = Number(m[1]);
+    const endSec = Number(m[2]);
+    if (Number.isFinite(startSec) && Number.isFinite(endSec) && endSec > startSec) spans.push({ startSec, endSec });
+  }
+  return spans;
+}
+
 function countSilentStarts(stderr: string): number {
   return (stderr.match(/silence_start:/gi) ?? []).length;
 }
@@ -235,14 +254,21 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
   let blackSegments = 0;
   let freezeSegments = 0;
   let silentSegments = 0;
+  let blackSpans: Array<{ startSec: number; endSec: number }> = [];
   if (envFlagIsNotOff("ENABLE_POST_RENDER_FFMPEG_DETECT")) {
     const det = await runFfmpegQualityFilters(filePath, durationSec);
     blackSegments = det.blackSegments;
     freezeSegments = det.freezeSegments;
     silentSegments = det.silentSegments;
+    blackSpans = parseBlackSpans(det.stderr);
     if (blackSegments > 0) {
+      /** VIDEO 634 — where and how long; still informational, the render is never refused on it. */
+      const total = blackSpans.reduce((sum, b) => sum + (b.endSec - b.startSec), 0);
+      const where = blackSpans.length
+        ? ` (total ${total.toFixed(2)}s: ${blackSpans.map((b) => `${b.startSec.toFixed(2)}–${b.endSec.toFixed(2)}`).join(", ")})`
+        : "";
       warnings.push(
-        `blackdetect: ${blackSegments} dark/black segment(s) in final video (expected for dark archive scenes)`
+        `blackdetect: ${blackSegments} dark/black segment(s)${where} in final video (expected for dark archive scenes)`
       );
     }
     if (freezeSegments > 0) {
@@ -267,6 +293,8 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
     freezeSegments,
     silentSegments,
     warnings,
+    blackSpans,
+    blackTotalSec: Number(blackSpans.reduce((sum, b) => sum + (b.endSec - b.startSec), 0).toFixed(3)),
   };
 }
 

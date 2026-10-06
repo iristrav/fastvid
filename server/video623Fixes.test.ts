@@ -111,7 +111,7 @@ describe("Video 623 — a sentence longer than its clip gets another clip", () =
     expect(SRC).toContain("fillFor = { beat, clipsBefore: beatDurations.length, deadlineMs: beatDeadlineMs };");
     expect(SRC).toContain('withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, rest, f.beat.index))');
     expect(SRC).toContain("!(remainingScopeMs() > BEAT_FILL_MIN_SCOPE_MS)");
-    const loopEnd = SRC.indexOf("    await fillBeatWithMoreClips();\n  } finally {");
+    const loopEnd = SRC.indexOf("    await placeLateApprovedPicks(true);\n    await fillBeatWithMoreClips();\n");
     expect(loopEnd, "the last sentence is filled too").toBeGreaterThan(-1);
   });
 });

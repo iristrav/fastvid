@@ -176,15 +176,20 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
      */
     if (readGeoPoint(g.data ?? {})) continue;
     const place = typeof g.data?.locationName === "string" ? g.data.locationName : g.label ?? "";
+    /** VIDEO 634 (Z1) — a sentence's picture with no place to stand in for it stays: off would be black. */
+    if (g.data?.primaryVisual === true && !place.trim()) continue;
     g.disabled = true;
     g.disabledReason = "map_without_geography";
     out.disabled.push({ id: g.id, reason: "map_without_geography", label: place || g.graphicType });
     if (!place.trim()) continue;
+    /** VIDEO 634 (Z1) — standing in for a sentence's picture, it stays that picture: centred, on its ground. */
+    const primary = g.data?.primaryVisual === true;
     graphics.push({
       id: `${g.id}_loc`,
       graphicType: "location_card",
       /** `standsInFor`: added by this director, not planned — so no count mistakes it for a plan. */
-      data: { locationName: place, label: place, standsInFor: g.id },
+      data: { locationName: place, label: place, standsInFor: g.id, ...(primary ? { primaryVisual: true } : {}) },
+      ...(primary && g.style ? { style: g.style } : {}),
       start: g.start,
       end: g.end,
       label: place,
@@ -218,8 +223,15 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
       a.el.id.localeCompare(b.el.id)
   );
 
-  /** A text or card the user edited is theirs: kept exactly as it is and never switched off. */
-  const userEdited = (e: Element): boolean => (e.el as { editedByUser?: boolean }).editedByUser === true;
+  /**
+   * A text or card the user edited is theirs: kept exactly as it is and never switched off.
+   *
+   * VIDEO 634 (Z1) — and so is a graphic that IS a sentence's picture (`primaryVisual`): its ground
+   * on the VIDEO track is invisible by design, so switching the graphic off would leave black.
+   */
+  const userEdited = (e: Element): boolean =>
+    (e.el as { editedByUser?: boolean }).editedByUser === true ||
+    (e.track === "graphic" && (e.el as TimelineGraphic).data?.primaryVisual === true);
 
   /* Rule 1 — key-word pop-ups. */
   for (const e of elements) {

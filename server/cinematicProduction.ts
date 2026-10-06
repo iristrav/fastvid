@@ -184,6 +184,8 @@ export type CinematicPlanParams = {
    * sentence the piece would run under; absent, fillers are chosen as before.
    */
   fillerApprovedFor?: (filler: TimelineVideoClip, sceneIndex: number, beatIndex: number) => boolean;
+  /** VIDEO 634 (B1) — the film's main subject, for the card of a sentence that names none. */
+  filmSubject?: string | null;
 };
 
 /**
@@ -227,6 +229,7 @@ export async function planAndStoreCinematicTimeline(
       extractors: params.extractors,
       sceneOffsetsSec: params.sceneOffsetsSec,
       onBeatOutcome: params.onBeatOutcome,
+      filmSubject: params.filmSubject ?? null,
     });
     log.push(formatCinematicInputs(built));
     /**

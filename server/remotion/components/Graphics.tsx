@@ -131,16 +131,15 @@ const LocationCard: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, primar
 /**
  * A lower third: a name and, when present, a role.
  *
- * RONDE 651: no black slab. The name sits on a translucent band that fades out to the right, with
- * a thin gold rule at its left edge — the broadcast lower third — and the role in tracked small
- * capitals under it. Padding and sizes are exactly the ones `graphicBoxSize` measures.
+ * RONDE 651: no black slab. OCTOBER 2026: no band either — the name stands on the picture itself,
+ * legible by its halo, with a thin gold rule at its left edge and the role in tracked small capitals
+ * under it. Padding and sizes are exactly the ones `graphicBoxSize` measures.
  */
 const LowerThird: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, primary }) => {
   const role = readAny(g, "role", "subtitle", "description", "title");
   return (
     <div
       style={{
-        background: "linear-gradient(90deg, rgba(8,8,10,0.62) 0%, rgba(8,8,10,0.45) 70%, rgba(8,8,10,0) 100%)",
         padding: "0.5em 0.9em",
         borderLeft: `3px solid ${ACCENT}`,
       }}

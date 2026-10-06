@@ -41,7 +41,7 @@ import {
 import type { EDL, EditDecision } from "./cinematicEditingEngine/types";
 import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput } from "./aiDirector";
 import type { DirectorOutput } from "./aiDirector/types";
-import { translateEdl, type EdlTranslationInput, type PrimaryGraphicInput } from "./edlToTimeline";
+import { blackByTimelineSpans, translateEdl, type EdlTranslationInput, type PrimaryGraphicInput } from "./edlToTimeline";
 import { directOnScreenText, type TextDirection } from "./onScreenTextDirector";
 import { limitLongShots } from "./longShotLimit";
 import type { YoutubeSourceFacts } from "./youtubeShotLimit";
@@ -379,6 +379,13 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     `[OnScreenText] video=${params.videoId} in the made video: subtitles, ${textDirection.kept} text/graphic(s) ` +
       `(typing=${textDirection.typewriter.length}); switched off by the director: ${textDirection.disabled.length}`
   );
+  /** VIDEO 634 — after the director, so a picture it switched off would show here. Logged, never refused. */
+  for (const b of blackByTimelineSpans(timeline)) {
+    console.warn(
+      `[BLACK_BY_TIMELINE] video=${params.videoId} ${b.startSec.toFixed(2)}-${b.endSec.toFixed(2)} ` +
+        `(${(b.endSec - b.startSec).toFixed(2)}s) — no visible clip and no picture graphic on the plan here`
+    );
+  }
   /**
    * RONDE 656 — the keys are heard under text that types: the typewriter recording on the SFX track,
    * only for a typing element that is actually drawn. A key sound under text nobody sees is noise.

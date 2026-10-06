@@ -174,9 +174,20 @@ export async function probeOverlayInk(
       framesSampled: 0,
       maxAlpha: 0,
       durationMs: Date.now() - started,
-      reason: `probe failed: ${(err as Error).message.slice(0, 160)}`,
+      /**
+       * VIDEO 634 (Z3) — the message's first 160 characters are the command line itself; ffmpeg's
+       * own words are on stderr. Its last lines say why, so they are kept.
+       */
+      reason: `probe failed: ${probeFailureText(err)}`,
     };
   }
+}
+
+/** Why a probe failed, in ffmpeg's words when it left any: the last lines of stderr, else the message. */
+export function probeFailureText(err: unknown): string {
+  const stderr = String((err as { stderr?: unknown })?.stderr ?? "").trim();
+  if (stderr) return stderr.split("\n").slice(-3).map((l) => l.trim()).filter(Boolean).join(" | ").slice(0, 300);
+  return String((err as Error)?.message ?? err).slice(0, 160);
 }
 
 /** One line, in the existing `[Graphics]` style. Never a path — the file name is enough. */

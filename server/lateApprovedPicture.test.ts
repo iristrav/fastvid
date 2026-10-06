@@ -122,7 +122,7 @@ describe("E — nothing unapproved or technically unusable is placed", () => {
   });
 
   it("E2. a late answer is checked for technical faults before the scene may see it", () => {
-    expect(PIPE).toContain("return v && !(await technicalMediaRefusal(v, MEDIA_PROBES)) ? v : null;");
+    expect(PIPE).toContain("const refusal = await technicalMediaRefusal(v, MEDIA_PROBES);\n      if (!refusal) return v;");
   });
 
   it("E3. no new look at placement: a late picture is pushed with the verdict already given (cached FIT, see 631 test 3b)", () => {
