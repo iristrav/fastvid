@@ -148,9 +148,11 @@ describe("§3 — a second transfer fits the scope that exists", () => {
 describe("§4 — what makes a second candidate safe", () => {
   /** The guards are per ITEM, so the second download is re-checked, not assumed. */
   const loopBody = () => {
-    const at = SRC.indexOf("for (const row of ordered.slice(0, 5)) {");
+    /** W2 (video 636) — the loop reads `tried`: the serving ready stock, then the top five of the rest. */
+    const at = SRC.indexOf("for (const row of tried) {");
     expect(at, "the download loop moved").toBeGreaterThan(-1);
-    return SRC.slice(at, at + 600);
+    expect(SRC.slice(SRC.lastIndexOf("const tried = ", at), at)).toContain(".slice(0, 5)");
+    return SRC.slice(at, at + 900);
   };
 
   it("EVERY CANDIDATE IS RE-CHECKED AGAINST THE CLOCK", () => {
@@ -169,7 +171,7 @@ describe("§4 — what makes a second candidate safe", () => {
   it("CANDIDATE TWO IS THE SECOND-BEST ROW, not the next one the API returned", () => {
     /** RONDE 602 ranks before any download slot is spent; it reorders and never refuses. */
     const at = SRC.indexOf("const ordered = await youtubeRowsRankedByThumbnail(");
-    const loopAt = SRC.indexOf("for (const row of ordered.slice(0, 5)) {");
+    const loopAt = SRC.indexOf("for (const row of tried) {");
     expect(at).toBeGreaterThan(-1);
     expect(at, "the ranking must happen before the loop that spends slots").toBeLessThan(loopAt);
   });

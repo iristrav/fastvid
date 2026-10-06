@@ -34,8 +34,15 @@ import { chooseMoments } from "./youtubeMoments";
 
 /** Seconds taken from each YouTube video: enough for several shots, small enough to arrive quickly. */
 export const STOCK_SECTION_SEC = 40;
-/** At most this many videos are stocked for one film. */
+/** At most this many videos are stocked for one film — W3: this many READY, not this many tried. */
 export const MAX_STOCK_VIDEOS = 6;
+/**
+ * W3 (video 636) — the most downloads the stock starts for one film. 636 stocked six, three failed
+ * (502, 502, no video stream) and nothing took their place while eight usable videos of the same
+ * search waited. A failed download now hands its place to the next usable candidate, up to this
+ * many attempts in all: three replacements, from the results the search already brought back.
+ */
+export const MAX_STOCK_ATTEMPTS = MAX_STOCK_VIDEOS + 3;
 /** Downloads running at the same time. */
 export const STOCK_CONCURRENCY = 3;
 
@@ -45,6 +52,8 @@ export type StockCandidate = {
   durationSec: number;
   /** How many of the script's sentences this video was judged to serve — the most useful first. */
   serves: number;
+  /** W6 — a recent same-subject video already showed this source: it is stocked after the fresh ones. */
+  shownRecently?: boolean;
 };
 
 export type StockShot = {
@@ -67,6 +76,8 @@ export type StockDeps = {
   /** Where in a video of this length the section starts. */
   startFor: (durationSec: number, takeSec: number, videoId: string) => number;
   log?: (line: string) => void;
+  /** W3 — asked before a replacement starts: a video the render has meanwhile written off is passed over. */
+  skip?: (videoId: string) => boolean;
 };
 
 type Entry = { status: "pending" | "ready" | "failed"; done: Promise<void>; shots: StockShot[]; reason?: string };
@@ -74,11 +85,14 @@ type Entry = { status: "pending" | "ready" | "failed"; done: Promise<void>; shot
 /** Per film (render video id): YouTube video id → its stock. */
 const stocks = new Map<number, Map<string, Entry>>();
 
-/** The order a pool's usable videos are stocked in: the most sentences served first, then the list order. */
+/**
+ * The order a pool's usable videos are stocked in: fresh sources before ones a recent same-subject
+ * video showed (W6), then the most sentences served, then the list order.
+ */
 export function stockOrder(candidates: readonly StockCandidate[], max = MAX_STOCK_VIDEOS): StockCandidate[] {
   return candidates
     .map((c, i) => ({ c, i }))
-    .sort((a, b) => b.c.serves - a.c.serves || a.i - b.i)
+    .sort((a, b) => Number(Boolean(a.c.shownRecently)) - Number(Boolean(b.c.shownRecently)) || b.c.serves - a.c.serves || a.i - b.i)
     .slice(0, max)
     .map((x) => x.c);
 }
@@ -91,23 +105,47 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
   const say = deps.log ?? ((l: string) => console.log(l));
   const film = stocks.get(filmId) ?? new Map<string, Entry>();
   stocks.set(filmId, film);
-  const todo = stockOrder(candidates).filter((c) => !film.has(c.videoId));
+  const queue = stockOrder(candidates, candidates.length).filter((c) => !film.has(c.videoId));
+  const todo = queue.slice(0, MAX_STOCK_VIDEOS);
+  /** W3 — the rest of the search's usable videos, in the same order: replacements for failures. */
+  const spare = queue.slice(MAX_STOCK_VIDEOS);
   if (!todo.length) return;
   say(`[YouTubeStock] film=${filmId} stocking ${todo.length} video(s) before the beats need them`);
 
-  let next = 0;
-  const releases: Array<() => void> = [];
-  for (const c of todo) {
+  const releases = new Map<string, () => void>();
+  const register = (c: StockCandidate): void => {
     let release!: () => void;
     const done = new Promise<void>((r) => (release = r));
     film.set(c.videoId, { status: "pending", done, shots: [] });
-    releases.push(release);
-  }
+    releases.set(c.videoId, release);
+  };
+  for (const c of todo) register(c);
+  let attempts = 0;
+  let inFlight = 0;
+  const readyNow = () => [...film.values()].filter((e) => e.status === "ready").length;
+  /**
+   * The next video to fetch: the planned ones first; then a replacement, only while fewer than
+   * MAX_STOCK_VIDEOS are ready or on their way and the attempts allow it. A replacement enters the
+   * film's stock only when it starts, so until then a beat may still fetch that video itself.
+   */
+  const nextCandidate = (): StockCandidate | null => {
+    const planned = todo.shift();
+    if (planned) return planned;
+    while (spare.length > 0 && attempts < MAX_STOCK_ATTEMPTS && readyNow() + inFlight < MAX_STOCK_VIDEOS) {
+      const c = spare.shift()!;
+      if (film.has(c.videoId) || deps.skip?.(c.videoId)) continue;
+      register(c);
+      say(`[YouTubeStock] film=${filmId} video=${c.videoId} replaces a failed download (${readyNow()} ready so far)`);
+      return c;
+    }
+    return null;
+  };
   const worker = async () => {
     for (;;) {
-      const i = next++;
-      if (i >= todo.length) return;
-      const c = todo[i]!;
+      const c = nextCandidate();
+      if (!c) return;
+      attempts++;
+      inFlight++;
       const entry = film.get(c.videoId)!;
       const take = c.durationSec > 0 ? Math.min(STOCK_SECTION_SEC, c.durationSec) : STOCK_SECTION_SEC;
       const startSec = c.durationSec > 0 ? deps.startFor(c.durationSec, take, c.videoId) : 0;
@@ -138,11 +176,12 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
         entry.status = "failed";
         entry.reason = (err as Error)?.message?.slice(0, 120) ?? "threw";
       }
+      inFlight--;
       say(
         `[YouTubeStock] film=${filmId} video=${c.videoId} ${entry.status} in ${Math.round((Date.now() - t0) / 1000)}s` +
           (entry.status === "ready" ? ` — ${entry.shots.length} shot(s)` : ` — ${entry.reason}`)
       );
-      releases[i]!();
+      releases.get(c.videoId)?.();
     }
   };
   for (let k = 0; k < Math.min(STOCK_CONCURRENCY, todo.length); k++) void worker();
@@ -169,6 +208,38 @@ export function isStockReady(filmId: number, videoId: string): boolean {
  */
 export function stockedRowsFirst<T>(rows: readonly T[], ready: (row: T) => boolean): T[] {
   return [...rows.filter((r) => ready(r)), ...rows.filter((r) => !ready(r))];
+}
+
+/**
+ * W2 (video 636) — THE ORDER A BEAT'S YOUTUBE ROWS ARE TRIED IN.
+ *
+ * 636's mr9kK0_7x08 was cut and ready with five shots and was never offered: the thumbnail ranker
+ * re-sorted every beat's rows and the top-five slice let it fall. The ranker's order is kept inside
+ * each group; the groups say what is already known about a row:
+ *
+ *   first  ready in the film's stock AND judged by the pool to serve this sentence — offered
+ *          whatever its thumbnail rank (no download, the Judge still judges every moment)
+ *   rest   other ready stock, then rows still to download that serve the sentence, then the other
+ *          downloads, then — W6 — sources a recent same-subject video already showed
+ *
+ * `first` only ever holds stock (at most the film's few stocked videos), so it cannot grow the
+ * number of downloads; the caller applies its usual limits to `rest`.
+ */
+export function beatRowsInStockOrder<T>(
+  rows: readonly T[],
+  is: { ready: (row: T) => boolean; serves: (row: T) => boolean; shownRecently: (row: T) => boolean }
+): { first: T[]; rest: T[] } {
+  const first: T[] = [];
+  const otherReady: T[] = [];
+  const servingDownload: T[] = [];
+  const otherDownload: T[] = [];
+  const shown: T[] = [];
+  for (const r of rows) {
+    if (is.shownRecently(r)) shown.push(r);
+    else if (is.ready(r)) (is.serves(r) ? first : otherReady).push(r);
+    else (is.serves(r) ? servingDownload : otherDownload).push(r);
+  }
+  return { first, rest: [...otherReady, ...servingDownload, ...otherDownload, ...shown] };
 }
 
 export type StockTake =

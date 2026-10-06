@@ -304,7 +304,8 @@ describe("§6 — wired where it claims to be", () => {
 
   it("THE RENDER WRITES THE LIST DOWN BEFORE THE DOWNLOAD LOOP DECIDES ANYTHING", () => {
     const enqueue = PIPE.indexOf("enqueueYoutubePrefetch(\n");
-    const loop = PIPE.indexOf("for (const row of ordered.slice(0, 5)) {");
+    /** W2 (video 636) — the loop reads `tried`, built from the ranked rows. */
+    const loop = PIPE.indexOf("for (const row of tried) {");
     expect(enqueue).toBeGreaterThan(-1);
     expect(loop).toBeGreaterThan(enqueue);
   });

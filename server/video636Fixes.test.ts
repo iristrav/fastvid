@@ -239,7 +239,9 @@ describe("6 — the film's ready YouTube stock is offered before anything that n
   });
 
   it("the beat's YouTube loop reads the rows in that order, within its five", () => {
-    expect(PIPE).toContain("return stockedRowsFirst(byChannel, readyInStock);");
+    /** W2 (round after 7572ab2) — ready stock first, now with the sentence's serving videos exempt from the five. */
+    expect(PIPE).toContain("const order = beatRowsInStockOrder(byChannel, {");
+    expect(PIPE).toContain("return [...order.first, ...order.rest];");
   });
 });
 

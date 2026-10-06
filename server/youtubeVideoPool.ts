@@ -566,6 +566,11 @@ export type PoolRow = {
   durationSec: number;
   /** YouTube's own licence for the video, as the pool recorded it; absent when not reported. */
   license?: string;
+  /**
+   * W2 (video 636) — the pool's look judged this video to serve THIS sentence. Kept on the row, so
+   * the order it gives survives the thumbnail ranker that re-sorts the rows afterwards.
+   */
+  servesBeat?: boolean;
 };
 
 /**
@@ -607,6 +612,7 @@ export function poolRowsForBeat(
       ...(c.license ? { license: c.license } : {}),
     });
   }
+  for (const r of rows) if (servesMine.has(r.item.id.videoId)) r.servesBeat = true;
   const serving = (r: PoolRow) => (servesMine.has(r.item.id.videoId) ? 1 : 0);
   return rows.sort((a, b) => serving(b) - serving(a) || b.rel - a.rel);
 }

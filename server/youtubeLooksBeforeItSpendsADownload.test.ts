@@ -87,12 +87,14 @@ describe("§1 — the download loop reads the ranked order, not the search order
     expect(PIPELINE, "the loop still walks the raw search order").not.toContain(
       "for (const row of items.slice(0, 5)) {"
     );
-    expect(PIPELINE).toContain("for (const row of ordered.slice(0, 5)) {");
+    /** W2 (video 636) — the loop reads `tried`: the ranked rows, serving ready stock first, then the top five. */
+    expect(PIPELINE).toContain("const tried = [...servingFirst, ...ordered.filter((r) => !servingReadyRows.has(r)).slice(0, 5)];");
+    expect(PIPELINE).toContain("for (const row of tried) {");
   });
 
   it("and the look is taken BEFORE the loop, not inside it", () => {
     const call = PIPELINE.indexOf("const ordered = await youtubeRowsRankedByThumbnail(");
-    const loop = PIPELINE.indexOf("for (const row of ordered.slice(0, 5)) {");
+    const loop = PIPELINE.indexOf("for (const row of tried) {");
     expect(call, "the ranking call is gone").toBeGreaterThan(-1);
     expect(loop).toBeGreaterThan(-1);
     expect(call, "a look taken inside the loop is a look taken after the first download").toBeLessThan(loop);

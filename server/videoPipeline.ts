@@ -109,7 +109,7 @@ import {
 import { createPipelineProfiler } from "./pipelineProfiler";
 import { resetOverlayBudget } from "./archiveClipFilter";
 import { externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, maxBeatCapForVisualCadence, visualStageWallClockMin, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, type YoutubeLicenseMode, downloadStallTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeBeatBudgetMs, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_FALLBACK_MIN_MS, YOUTUBE_FIRST_PARALLEL_BEATS, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
-import { noteFootageOnScreen, preferLessFilledFootage, recentUsageCounts, recordArchiveVideoUsage } from "./usageDiversity";
+import { FOOTAGE_SHARE_TIERS, footageKeyOf, footageShareSoFar, noteFootageOnScreen, preferLessFilledFootage, recentUsageCounts, recentYoutubeUsage, recordArchiveVideoUsage, recordYoutubeVideoUsage, setRecentYoutubeUsageForFilm, youtubeSecondsShownRecently, youtubeSourceUsedRecently, type YoutubeUse } from "./usageDiversity";
 import { fetchCuratedArchiveBeatClip, isCuratedPreparedStillClip, curatedClipPathAssetId, curatedAssetContentKey, buildGeoStockSearchQueries, type CuratedCandidatePick, type ArchiveAssetRow, setCuratedClipPreparedHook, setCuratedAssetRefusedHook } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
 import { queryIntentHints, type BeatVisualIntent, createBeatVisualIntentState, ensureBeatVisualIntent, formatIntentSummary, formatVisualIntent, intentMatchScore, type BeatVisualIntentState } from "./beatVisualIntent";
@@ -229,7 +229,7 @@ import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner"
 import { videoMainSubject } from "./mainSubject";
 import { sentencesOf } from "./youtubeVideoSearchPlanner";
 import { readPeopleInNarration } from "./personNames";
-import { isStocked, isStockReady, releaseYoutubeShotStock, stockedRowsFirst, startYoutubeShotStock, stockSummary, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
+import { beatRowsInStockOrder, isStocked, isStockReady, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
 import {
   chooseMoments,
   sectionMoments,
@@ -300,7 +300,7 @@ import { dbRenderLockStore, dbYoutubeSearchBudgetStore } from "./db";
 import { newRenderId } from "./renderCorrelation";
 import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, type BeatImageGateState } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
-import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, pictureJudgedOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
+import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, pictureJudgedOnBeat, youtubeForLastLook, giveLastLookTo, isYoutubeContentKey, pictureLookedAtOnBeat, youtubeLookedAtOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
 import {
   coverageOfAdoptEntry,
   formatBeatVisualProblems,
@@ -9775,10 +9775,19 @@ function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: strin
     if (!usable.length) return pool;
     startYoutubeShotStock(
       filmId,
-      usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: c.durationSec, serves: c.serves.length })),
+      usable.map((c) => ({
+        videoId: c.videoId,
+        title: c.title,
+        durationSec: c.durationSec,
+        serves: c.serves.length,
+        /** W6 — fresh sources are stocked before ones a recent same-subject video showed. */
+        shownRecently: youtubeSourceUsedRecently(filmId, providerAssetKey("youtube_cc", c.videoId)),
+      })),
       {
         workDir,
         startFor: pickLongVideoStartSec,
+        /** W3 — a replacement the render has meanwhile written off (failure memory) is passed over. */
+        skip: (ytId) => youtubeDownloadRefusal(ytId) != null || youtubeVideoUnusable(ytId) != null,
         download: async (ytId, startSec, durationSec, outPath, title) => {
           const dl: { status?: YoutubeDownloadStatus; reason?: string; transferStarted?: boolean } = {};
           const ok = await downloadYouTubeCCClip(
@@ -10874,6 +10883,8 @@ export type YoutubeSearchRow = {
   title: string;
   desc: string;
   thumb?: string;
+  /** W2 (video 636) — the pool judged this video to serve the beat asking (`poolRowsForBeat`). */
+  servesBeat?: boolean;
   rel: number;
   /** VIDEO 616 — the length the video's pool already measured (`videos.list`), when it came from there. */
   durationSec?: number;
@@ -11265,6 +11276,8 @@ export async function fetchYouTubeCCClips(
    */
   const poolVideoId = getActiveVideoId();
   let poolRows: ReturnType<typeof poolRowsForBeat> = [];
+  /** W2 — this beat's ready stock rows that the pool judged to serve it (set when the rows are ordered). */
+  let servingReadyRows: Set<YoutubeSearchRow> = new Set();
   if (poolVideoId == null || !hasVideoYoutubePool(poolVideoId)) {
     console.log(`[YouTubeSearchPlan] video=${poolVideoId ?? "none"} scene=${sceneIndex} no video pool — no YouTube for this beat`);
   } else {
@@ -11350,19 +11363,26 @@ export async function fetchYouTubeCCClips(
                   `(more of their videos refused than delivered)`
               );
             }
-            /** VIDEO 636 — the film's ready stock first: no download, judged in the beat's own turn. */
-            if (poolVideoId == null) return byChannel;
-            const readyInStock = (r: (typeof byChannel)[number]) => {
-              const id = r.item.id?.videoId;
-              return id != null && isStockReady(poolVideoId, id);
-            };
-            const ready = byChannel.filter(readyInStock).length;
-            if (ready > 0) {
+            /**
+             * VIDEO 636 — the film's ready stock first: no download, judged in the beat's own turn.
+             * W2 — and the ready videos the pool judged to serve THIS sentence are offered whatever
+             * their thumbnail rank (`beatRowsInStockOrder`); W6 — sources a recent same-subject video
+             * showed go last.
+             */
+            const idOf = (r: (typeof byChannel)[number]) => r.item.id?.videoId;
+            const order = beatRowsInStockOrder(byChannel, {
+              ready: (r) => poolVideoId != null && idOf(r) != null && isStockReady(poolVideoId, idOf(r)!),
+              serves: (r) => r.servesBeat === true,
+              shownRecently: (r) => idOf(r) != null && youtubeSourceUsedRecently(poolVideoId, providerAssetKey("youtube_cc", idOf(r)!)),
+            });
+            servingReadyRows = new Set(order.first);
+            if (order.first.length > 0) {
               console.log(
-                `[YouTubeStock] Scene ${sceneIndex}: ${ready} video(s) of the film's ready stock asked first — no download for those`
+                `[YouTubeStock] Scene ${sceneIndex}: ${order.first.length} ready video(s) that serve this sentence ` +
+                  `offered whatever their thumbnail rank — no download for those`
               );
             }
-            return stockedRowsFirst(byChannel, readyInStock);
+            return [...order.first, ...order.rest];
           });
 
         /**
@@ -11389,16 +11409,21 @@ export async function fetchYouTubeCCClips(
           { renderKey: sourcingCache, sourceVideoId: sourcingCache?.lineage?.videoId }
         );
 
-        for (const row of ordered.slice(0, 5)) {
-          if (fetched >= count) break;
-          if (attemptsSpent()) break;
+        /** W2 — the serving ready stock is not cut by the top five; the usual limits hold for the rest. */
+        const servingFirst = ordered.filter((r) => servingReadyRows.has(r));
+        const tried = [...servingFirst, ...ordered.filter((r) => !servingReadyRows.has(r)).slice(0, 5)];
+        for (const row of tried) {
           if (Date.now() > ytDeadline) break;
-          if (downloadsSoFar() >= maxDownloadAttempts) {
-            console.log(
-              `[Pipeline] Scene ${sceneIndex}: YouTube download ceiling reached for this RENDER ` +
-                `(${downloadsSoFar()}/${maxDownloadAttempts} downloads, ${fetched} accepted here)`
-            );
-            break;
+          if (!servingReadyRows.has(row)) {
+            if (fetched >= count) break;
+            if (attemptsSpent()) break;
+            if (downloadsSoFar() >= maxDownloadAttempts) {
+              console.log(
+                `[Pipeline] Scene ${sceneIndex}: YouTube download ceiling reached for this RENDER ` +
+                  `(${downloadsSoFar()}/${maxDownloadAttempts} downloads, ${fetched} accepted here)`
+              );
+              break;
+            }
           }
           const item = row.item;
           const videoId = item.id?.videoId;
@@ -11503,7 +11528,9 @@ export async function fetchYouTubeCCClips(
                 (s) =>
                   youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, momentDur(s))) != null ||
                   /** VIDEO 620 — another shot of this video may join the film; these seconds may not again. */
-                  youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, momentDur(s)),
+                  youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, momentDur(s)) ||
+                  /** W6 — nor the seconds a recent same-subject video already showed. */
+                  youtubeSecondsShownRecently(poolVideoId, providerAssetKey("youtube_cc", videoId), s.sourceStartSec, momentDur(s)),
                 youtubeMomentsPerVideo()
               );
               if (took.shots.length) {
@@ -11630,6 +11657,34 @@ export async function fetchYouTubeCCClips(
                 console.log(
                   `[Pipeline] Scene ${sceneIndex}: skipping YouTube ${videoId} @${clipStart}s — these seconds are ` +
                     `already in the film, no download slot spent`
+                );
+                continue;
+              }
+            }
+            /**
+             * W6 — a single window (no moments are cut from it, see `momentsMode` below) that a recent
+             * same-subject video already showed: the video's other window, once, or the next candidate.
+             * A section's moments are checked one by one where they are cut.
+             */
+            const singleWindow = startIsExact || youtubeMomentsPerVideo() <= 1 || sourceDurationSec < clipDur * 2;
+            if (singleWindow && youtubeSecondsShownRecently(poolVideoId, providerAssetKey("youtube_cc", videoId), clipStart, clipDur)) {
+              const altStart = alternativeYoutubeStartSec(videoId, sourceDurationSec, clipDur, clipStart);
+              if (
+                altStart != null &&
+                !youtubeSecondsShownRecently(poolVideoId, providerAssetKey("youtube_cc", videoId), altStart, clipDur) &&
+                !youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, altStart, clipDur) &&
+                !youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, altStart, clipDur))
+              ) {
+                console.log(
+                  `[YouTubeVariety] Scene ${sceneIndex}: YouTube ${videoId} @${clipStart}s was shown in a recent ` +
+                    `same-subject video — taking its other window @${altStart}s`
+                );
+                clipStart = altStart;
+                startIsExact = false;
+              } else {
+                console.log(
+                  `[YouTubeVariety] Scene ${sceneIndex}: skipping YouTube ${videoId} @${clipStart}s — these seconds were ` +
+                    `shown in a recent same-subject video, no download slot spent`
                 );
                 continue;
               }
@@ -11931,7 +11986,9 @@ export async function fetchYouTubeCCClips(
               const open = shots.filter(
                 (s) =>
                   !youtubeFragmentRefusal(youtubeFragmentKeyFor(videoId, s.sourceStartSec, momentDur(s))) &&
-                  !youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, momentDur(s))
+                  !youtubeSecondsAlreadyUsed(usedProviderKeys, videoId, s.sourceStartSec, momentDur(s)) &&
+                  /** W6 — nor the seconds a recent same-subject video already showed. */
+                  !youtubeSecondsShownRecently(poolVideoId, providerAssetKey("youtube_cc", videoId), s.sourceStartSec, momentDur(s))
               );
               const offered = await offerMoments(
                 videoId,
@@ -17285,6 +17342,36 @@ export function alternativeYoutubeStartSec(
   return Number.isFinite(alt) ? Math.round(alt * 10) / 10 : null;
 }
 
+/**
+ * W6 (video 636) — the YouTube sources the delivered film showed, with the seconds of each moment
+ * (the source trim filed on the moment's record or the nearest record it was derived from). Only
+ * rows that reached FINAL_VIDEO: a refused or dropped video is never written down as used.
+ */
+export function youtubeUsesInFinalVideo(
+  rows: ReadonlyArray<{ lineageId: string; providerAssetId?: string; finalVideo: boolean }>,
+  records: ReadonlyArray<{ lineageId: string; parentLineageId?: string; sourceInSec?: number; sourceOutSec?: number }>
+): YoutubeUse[] {
+  const byId = new Map(records.map((r) => [r.lineageId, r]));
+  const uses: YoutubeUse[] = [];
+  for (const row of rows) {
+    const id = row.providerAssetId?.trim();
+    if (!row.finalVideo || !id) continue;
+    let r = byId.get(row.lineageId);
+    const seen = new Set<string>();
+    while (r && r.sourceInSec == null && r.parentLineageId && !seen.has(r.lineageId)) {
+      seen.add(r.lineageId);
+      r = byId.get(r.parentLineageId);
+    }
+    const footage = footageKeyOf(providerAssetKey("youtube_cc", id));
+    if (!footage) continue;
+    uses.push({
+      footage,
+      ...(r?.sourceInSec != null && r.sourceOutSec != null ? { inSec: r.sourceInSec, outSec: r.sourceOutSec } : {}),
+    });
+  }
+  return uses;
+}
+
 /** The same key read back from a file `fetchYouTubeCCClips` named, or null for any other file. */
 export function youtubeFragmentKey(clipPath: string): string | null {
   const base = path.basename(clipPath).replace(/_transformed(?=\.mp4)/, "");
@@ -19142,6 +19229,8 @@ async function adoptClip(
       contentRefusedOnAnotherBeat(dedup.beatRelevance, clipContentKey(q), sceneIndex, beatIndex);
     const visitedInLoop = new Set<string>();
     const postponedBehindFresher = new Set<string>();
+    /** W1 — candidates that gave this sentence's last look to a YouTube candidate (once each). */
+    const gaveLastLookToYoutube = new Set<string>();
     let cursor = -1;
     for (const p of finalPaths) {
       cursor++;
@@ -19189,6 +19278,48 @@ async function adoptClip(
             `sentence, and this sentence's last look is kept for a picture nobody has seen yet`
         );
         continue;
+      }
+      /**
+       * W1 (video 636) — see `youtubeForLastLook`. The YouTube candidate moves to the next place and
+       * this one waits directly behind it: when the YouTube candidate is stopped by a gate before any
+       * look is spent, this candidate gets the look it gave way, ahead of everything ranked below it.
+       */
+      {
+        const youtubePick = youtubeForLastLook({
+          looksLeft: looksLeftOnBeat(dedup.beatRelevance, sceneIndex, beatIndex),
+          finalRound: Boolean(dedup.beatJudgeTextOverride?.has(`${sceneIndex}:${beatIndex}`)),
+          currentIsYoutube: isYoutubeContentKey(clipContentKey(p)),
+          currentJudgedOnThisBeat: pictureLookedAtOnBeat(dedup.beatRelevance, p, clipContentKey(p), sceneIndex, beatIndex),
+          currentAlreadyGaveWay: gaveLastLookToYoutube.has(p),
+          youtubeJudgedOnThisBeat: youtubeLookedAtOnBeat(dedup.beatRelevance, sceneIndex, beatIndex),
+          later: finalPaths.slice(cursor + 1),
+          isYoutube: (q) => isYoutubeContentKey(clipContentKey(q)),
+          eligible: (q) => {
+            const key = clipContentKey(q);
+            if (visitedInLoop.has(q) || postponedBehindFresher.has(q)) return false;
+            if (pictureLookedAtOnBeat(dedup.beatRelevance, q, key, sceneIndex, beatIndex)) return false;
+            if (refusedForAnotherSentence(q)) return false;
+            /** The footage share preferLessFilledFootage holds back is not brought forward again. */
+            if (footageShareSoFar(dedup, key) >= FOOTAGE_SHARE_TIERS[0]) return false;
+            if (dedup.refusedAssetsThisRender?.has(key)) return false;
+            const fragment = youtubeFragmentKey(q);
+            if (fragment && youtubeFragmentRefusal(fragment) != null) return false;
+            if (assetUsedInVideo(dedup, { path: q, contentKey: key })) return false;
+            return fs.existsSync(q);
+          },
+          /** W6 — a fresh source first; one a recent same-subject video showed only when no fresh one is eligible. */
+          preferred: (q) => !youtubeSourceUsedRecently(getActiveVideoId(), clipContentKey(q)),
+        });
+        if (youtubePick) {
+          giveLastLookTo(finalPaths, cursor, youtubePick);
+          gaveLastLookToYoutube.add(p);
+          console.log(
+            `[FairSource] s${sceneIndex}b${beatIndex}: last look for ${clipContentKey(youtubePick)} ` +
+              `(rank ${cheapRankOf.get(youtubePick) ?? "?"}) — no YouTube candidate looked at on this sentence yet; ` +
+              `${path.basename(p)} (rank ${cheapRankOf.get(p) ?? "?"}) waits directly behind it`
+          );
+          continue;
+        }
       }
       visitedInLoop.add(p);
       /**
@@ -19480,6 +19611,22 @@ async function adoptClip(
         continue;
       }
       pendingEvidence.delete(p);
+      /**
+       * W1b (video 636) — A CANDIDATE NOBODY LOOKED AT IS A CANDIDATE, NOT A PICTURE.
+       *
+       * s0b3's YouTube moment came round again still UNREVIEWED — the sentence's looks were spent —
+       * and was adopted here, then refused by the planner (no approval), so the sentence held a
+       * "picture" that could never be shown and stopped looking: it became a card. No look is spent
+       * here; the candidate is simply not adopted, not marked used, and the beat goes on to its
+       * other routes exactly as when nothing was found.
+       */
+      if (beatEvidence === "UNREVIEWED") {
+        console.log(
+          `[VisionSelection] s${sceneIndex}b${beatIndex} not adopting ${path.basename(p)} ` +
+            `(rank ${cheapRankOf.get(p) ?? "?"}) — UNREVIEWED: no verdict on this sentence, so it stays a candidate`
+        );
+        continue;
+      }
       if (requeuedAfterRefusal.has(p)) {
         // RONDE 103 phase 15: recorded as an override, not relabelled as a pass. The verdict on
         // the ledger stays `does_not_fit` so the render can be asked how many of its shots were
@@ -22729,6 +22876,7 @@ export async function runVideoPipeline(
       );
     }
     releaseYoutubeShotStock(videoId);
+    setRecentYoutubeUsageForFilm(videoId, null);
   }
 }
 
@@ -22905,6 +23053,22 @@ async function _runVideoPipelineInner(
       if (personLocked && primaryPerson) sanitizeSceneForPersonTopic(scene, primaryPerson);
     }
     console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
+
+    /**
+     * W6 (video 636) — the YouTube footage recent same-subject videos showed, read before the pool
+     * and its stock exist, so both can put fresh sources first. Same switch and cooldown as the
+     * archive's cross-video variety.
+     */
+    if (archiveCrossVideoVarietyEnabled(videoLength)) {
+      const recentYoutube = recentYoutubeUsage(topicContext, videoId);
+      setRecentYoutubeUsageForFilm(videoId, recentYoutube);
+      if (recentYoutube.size > 0) {
+        console.log(
+          `[YouTubeVariety] video=${videoId} ${recentYoutube.size} YouTube source(s) shown in recent same-subject videos ` +
+            `go behind fresh sources; the seconds already shown are not offered again`
+        );
+      }
+    }
 
     /**
      * RONDE 658 — ONE YOUTUBE POOL FOR THE WHOLE VIDEO, built while the voice-over is made.
@@ -26618,6 +26782,8 @@ async function _runVideoPipelineInner(
      * It blocks only when a deployment sets REQUIRE_YOUTUBE_MIN_SECONDS.
      */
     let youtubeFootageVerdict: ReturnType<typeof judgeYoutubeRequirement> = { ok: true };
+    /** W6 — the same lifecycle rows, kept for the cross-video record written once the film is delivered. */
+    let youtubeLifecycleForUsage: ReturnType<typeof traceYoutubeLifecycle> = [];
     try {
       let footage = unmeasuredFootage();
       /**
@@ -26688,6 +26854,7 @@ async function _runVideoPipelineInner(
        * carry. It files no event, keeps no state and refuses nothing.
        */
       const youtubeLifecycle = lineage ? traceYoutubeLifecycle(lineage, visualDedup.beatRelevance) : [];
+      youtubeLifecycleForUsage = youtubeLifecycle;
       for (const line of formatYoutubeLifecycle(youtubeLifecycle)) {
         console.log(pipelineReport.add("sourcing", line));
       }
@@ -26865,6 +27032,11 @@ async function _runVideoPipelineInner(
      * `curated_a56104` and so on — so the condition suppressed a fact the render had regardless.
      */
     if (archiveCrossVideoVarietyEnabled(videoLength)) {
+      /** W6 — the YouTube footage that reached the delivered film, written before the archive's line. */
+      const lineageForUsage = visualDedup.sourcingCache?.lineage;
+      if (lineageForUsage && youtubeLifecycleForUsage.length > 0) {
+        recordYoutubeVideoUsage(videoId, youtubeUsesInFinalVideo(youtubeLifecycleForUsage, lineageForUsage.allRecords()), topicContext);
+      }
       recordArchiveVideoUsage(videoId, visualDedup.usedCuratedAssetIds, topicContext);
     }
 

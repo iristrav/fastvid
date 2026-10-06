@@ -116,7 +116,10 @@ describe("B1 — a sentence that names nothing gets the film's subject card, not
       filmSubject: "Berlin Wall",
     });
     const slot = built.primaryGraphics?.find((p) => p.beatId === "s0b0");
-    expect(slot?.onlyWithoutApprovedFiller).toBeUndefined();
+    expect(slot?.graphic.graphicType).toBe("chapter_card");
+    expect(slot?.graphic.data.title).not.toBe("Berlin Wall");
+    /** W4 (video 636) — the sentence's own drawn card now yields to an approved real shot as well. */
+    expect(slot?.onlyWithoutApprovedFiller).toBe(true);
   });
 });
 

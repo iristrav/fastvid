@@ -167,7 +167,8 @@ describe("Video 619 — wiring", () => {
   it("the rows are reordered after the thumbnail ranking, so the ranking cannot undo it", () => {
     const at = PIPE.indexOf("const ordered = await youtubeRowsRankedByThumbnail(");
     const byChannel = PIPE.indexOf("const { rows: byChannel, movedBack } = unreliableChannelsLast(", at);
-    const loop = PIPE.indexOf("for (const row of ordered.slice(0, 5)) {", at);
+    /** W2 (video 636) — the loop reads `tried`, built from the same ordered rows. */
+    const loop = PIPE.indexOf("for (const row of tried) {", at);
     expect(at).toBeGreaterThan(-1);
     expect(byChannel).toBeGreaterThan(at);
     expect(byChannel).toBeLessThan(loop);

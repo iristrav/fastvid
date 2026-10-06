@@ -20,7 +20,15 @@ type UsageEntry = {
   topicKey: string;
   assetIds: number[];
   at: number;
+  /**
+   * W6 (video 636) — the YouTube footage this video put on screen: the source (`youtube_cc:<id>`,
+   * see `footageKeyOf`) and, when known, the seconds of it that were shown. Absent in entries
+   * written before it existed, which read as "no YouTube recorded".
+   */
+  youtube?: YoutubeUse[];
 };
+
+export type YoutubeUse = { footage: string; inSec?: number; outSec?: number };
 
 const STORE_PATH = path.join(LOCAL_UPLOADS_DIR, ".archive-recent-usage.json");
 const MAX_ENTRIES = 40;
@@ -89,12 +97,15 @@ export function recordArchiveVideoUsage(
   loadStore();
   const ids = [...new Set(assetIds)].filter((id) => id > 0);
   if (!ids.length) return;
+  /** W6 — the same video's YouTube record, written by `recordYoutubeVideoUsage`, is kept. */
+  const youtube = entries.find((e) => e.videoId === videoId)?.youtube;
   entries = entries.filter((e) => e.videoId !== videoId);
   entries.push({
     videoId,
     topicKey: normalizeArchiveTopicKey(topic),
     assetIds: ids,
     at: Date.now(),
+    ...(youtube?.length ? { youtube } : {}),
   });
   if (entries.length > MAX_ENTRIES) entries = entries.slice(-MAX_ENTRIES);
   persistStore();
@@ -124,6 +135,102 @@ export function recentUsageCounts(
     for (const id of new Set(e.assetIds)) counts.set(id, (counts.get(id) ?? 0) + 1);
   }
   return counts;
+}
+
+/* ═══════════════ W6 (video 636) — YouTube footage across same-subject videos ═══════════════ */
+
+/**
+ * Dedup and the fragment memory guard ONE render. Footage a FastVid video used reaches the next one
+ * either as an archive asset — which `recentUsageCounts` above already orders — or as a fresh
+ * `youtube_cc:` moment, because the next video's search finds the same YouTube video again. That
+ * second road had no memory, so it is written here, in the same store and under the same topic
+ * rule and cooldown: what a video actually put on screen, per source and per stretch of seconds.
+ *
+ * Only what reached the delivered film is recorded. A video that was merely refused is never
+ * written, so a refusal cannot turn into a ban. What reads it only REORDERS a source (fresh ones
+ * first) and keeps the exact seconds already shown off the next film; the Judge still decides.
+ */
+export function recordYoutubeVideoUsage(videoId: number, uses: Iterable<YoutubeUse>, topic: string): void {
+  loadStore();
+  const list: YoutubeUse[] = [];
+  for (const u of uses) {
+    if (!u.footage?.startsWith("youtube_cc:")) continue;
+    const window = u.inSec != null && u.outSec != null && u.outSec > u.inSec ? { inSec: u.inSec, outSec: u.outSec } : {};
+    list.push({ footage: u.footage, ...window });
+  }
+  if (!list.length) return;
+  const prev = entries.find((e) => e.videoId === videoId);
+  entries = entries.filter((e) => e.videoId !== videoId);
+  entries.push({
+    videoId,
+    topicKey: prev?.topicKey ?? normalizeArchiveTopicKey(topic),
+    assetIds: prev?.assetIds ?? [],
+    at: Date.now(),
+    youtube: list,
+  });
+  if (entries.length > MAX_ENTRIES) entries = entries.slice(-MAX_ENTRIES);
+  persistStore();
+  console.log(
+    `[YouTubeVariety] Recorded ${new Set(list.map((u) => u.footage)).size} YouTube source(s) for video ${videoId} ` +
+      `topic="${normalizeArchiveTopicKey(topic)}"`
+  );
+}
+
+/** The YouTube footage the last N same-subject videos (this one excluded) put on screen: source → shown windows. */
+export function recentYoutubeUsage(
+  topic: string,
+  currentVideoId: number,
+  lastVideos = archiveCrossVideoCooldownVideos()
+): Map<string, Array<{ inSec: number; outSec: number }>> {
+  loadStore();
+  const key = normalizeArchiveTopicKey(topic);
+  const out = new Map<string, Array<{ inSec: number; outSec: number }>>();
+  let matchedVideos = 0;
+  for (let i = entries.length - 1; i >= 0 && matchedVideos < lastVideos; i--) {
+    const e = entries[i]!;
+    if (e.videoId === currentVideoId) continue;
+    if (!archiveTopicsShareSubject(e.topicKey, key)) continue;
+    matchedVideos++;
+    for (const u of e.youtube ?? []) {
+      const windows = out.get(u.footage) ?? [];
+      if (u.inSec != null && u.outSec != null) windows.push({ inSec: u.inSec, outSec: u.outSec });
+      out.set(u.footage, windows);
+    }
+  }
+  return out;
+}
+
+/** Per film (render video id), read once when the render starts. */
+const recentYoutubeByFilm = new Map<number, Map<string, Array<{ inSec: number; outSec: number }>>>();
+
+export function setRecentYoutubeUsageForFilm(
+  filmId: number,
+  usage: Map<string, Array<{ inSec: number; outSec: number }>> | null
+): void {
+  if (usage && usage.size > 0) recentYoutubeByFilm.set(filmId, usage);
+  else recentYoutubeByFilm.delete(filmId);
+}
+
+/** Whether a recent same-subject video already showed this YouTube source (any clip key of it). */
+export function youtubeSourceUsedRecently(filmId: number | null | undefined, contentKey: string | null | undefined): boolean {
+  if (filmId == null) return false;
+  const footage = footageKeyOf(contentKey);
+  return Boolean(footage?.startsWith("youtube_cc:") && recentYoutubeByFilm.get(filmId)?.has(footage));
+}
+
+/** Whether these seconds of this source overlap seconds a recent same-subject video already showed. */
+export function youtubeSecondsShownRecently(
+  filmId: number | null | undefined,
+  contentKey: string | null | undefined,
+  startSec: number,
+  durationSec: number
+): boolean {
+  if (filmId == null) return false;
+  const footage = footageKeyOf(contentKey);
+  const windows = footage ? recentYoutubeByFilm.get(filmId)?.get(footage) : undefined;
+  if (!windows?.length) return false;
+  const end = startSec + durationSec;
+  return windows.some((w) => startSec < w.outSec - 0.05 && end > w.inSec + 0.05);
 }
 
 /* ═══════════════════ OCTOBER 2026 — one footage must not fill the film ═══════════════════ */

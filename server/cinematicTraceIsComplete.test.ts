@@ -120,7 +120,8 @@ describe("every adopted clip gets a cinematic ending", () => {
   /** Selected must be emitted after the drops, or a dropped beat would also report as selected. */
   it("reports selected only past every drop", () => {
     const fn = INPUTS.indexOf("const adopted = sceneFacts.clips[beatIndex]");
-    const body = INPUTS.slice(fn, fn + 7000);
+    /** W4 (video 636) — the fallback card's yield flag moved [CinematicSelected] to 7147 chars: measured. */
+    const body = INPUTS.slice(fn, fn + 8000);
     expect(body.lastIndexOf("[CinematicDrop]")).toBeLessThan(body.indexOf("[CinematicSelected]"));
   });
 });

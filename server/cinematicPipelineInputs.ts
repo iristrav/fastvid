@@ -1131,12 +1131,14 @@ export function buildCinematicSceneInputs(params: {
             : null;
         standIn = standIn ?? filmSubjectCard;
         if (standIn) {
+          /** W4 — a drawn fallback card yields to an approved real shot (as B1's); a data graphic or map stays. */
+          const fallbackCard = Boolean(filmSubjectCard) || standIn.reason.startsWith(CHAPTER_CARD_FALLBACK);
           primaryGraphics.push({
             beatId, sceneIndex: scene.index, beatIndex,
             startSec: Number((sceneOffsetSec + start).toFixed(3)),
             endSec: Number((sceneOffsetSec + end).toFixed(3)),
             graphic: standIn,
-            ...(filmSubjectCard ? { onlyWithoutApprovedFiller: true } : {}),
+            ...(fallbackCard ? { onlyWithoutApprovedFiller: true } : {}),
           });
           console.log(
             standIn.reason.startsWith(CHAPTER_CARD_FALLBACK)

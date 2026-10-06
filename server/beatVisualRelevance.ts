@@ -450,6 +450,102 @@ export function repeatWouldTakeLastLook(input: {
   return input.refusedElsewhere && !input.judgedOnThisBeat && !input.finalRound && input.looksLeft <= 1;
 }
 
+/**
+ * W1 (VIDEO 636) — A SENTENCE'S LAST LOOK GOES TO A YOUTUBE CANDIDATE WHEN NONE HAS BEEN LOOKED AT.
+ *
+ * Render 636's s0b3 spent all five looks on archive pictures — one archive-first, four Internet
+ * Archive — and every one was `does_not_fit`. Its YouTube moment 04AEWBdX_cs sat at rank 6 and was
+ * never seen; the sentence became a card. Same idea as `repeatWouldTakeLastLook`, one step on: the
+ * last look is kept for a source this sentence has not seen yet.
+ *
+ * Only the ORDER changes. The ranking decides every look before the last, so a higher-ranked picture
+ * from any source is looked at first and the first FIT wins as before. No look is added, nothing is
+ * approved: the YouTube candidate passes the same gates and the same Judge, and only a FIT is used.
+ *
+ * Returns the YouTube candidate that takes the look, or null to leave the order alone. `later` is the
+ * queue after the current candidate, in its ranked order; `eligible` is the caller's safety filter
+ * (refused elsewhere, footage share, fragment memory, already used). The first eligible YouTube
+ * candidate in that order is chosen — the existing ranking, not a thumbnail score or arrival order.
+ */
+export function youtubeForLastLook(input: {
+  looksLeft: number;
+  /** The rescue round — the same exception as `repeatWouldTakeLastLook`: nothing is kept back. */
+  finalRound: boolean;
+  currentIsYoutube: boolean;
+  /** The current candidate already has a verdict here, so its look is free. */
+  currentJudgedOnThisBeat: boolean;
+  /** The current candidate already gave its look away once on this sentence. */
+  currentAlreadyGaveWay: boolean;
+  youtubeJudgedOnThisBeat: boolean;
+  later: readonly string[];
+  isYoutube: (clipPath: string) => boolean;
+  eligible: (clipPath: string) => boolean;
+  /**
+   * W6 — among the eligible ones, these go first (a fresh source before one a recent same-subject
+   * video showed); a non-preferred one is chosen only when no preferred one is eligible.
+   */
+  preferred?: (clipPath: string) => boolean;
+}): string | null {
+  if (input.looksLeft !== 1 || input.finalRound) return null;
+  if (input.currentIsYoutube || input.currentJudgedOnThisBeat || input.currentAlreadyGaveWay) return null;
+  if (input.youtubeJudgedOnThisBeat) return null;
+  const candidates = input.later.filter((q) => Boolean(q) && input.isYoutube(q) && input.eligible(q));
+  return (input.preferred ? candidates.find(input.preferred) : undefined) ?? candidates[0] ?? null;
+}
+
+/**
+ * W1 — the reorder itself, in place: `pick` (found later in `queue`) moves to the place right after
+ * `at`, and the candidate at `at` waits directly behind it. Nothing is dropped and nothing added
+ * besides that one second visit of the candidate that gave way.
+ */
+export function giveLastLookTo(queue: string[], at: number, pick: string): void {
+  const from = queue.indexOf(pick, at + 1);
+  if (from < 0) return;
+  queue.splice(from, 1);
+  queue.splice(at + 1, 0, pick, queue[at]!);
+}
+
+/** A content key from the YouTube provider (`youtube_cc:<id>…`). */
+export function isYoutubeContentKey(contentKey: string | null | undefined): boolean {
+  return Boolean(contentKey?.startsWith("youtube_cc:"));
+}
+
+/**
+ * Whether a model actually LOOKED at this picture for this sentence. Unlike `pictureJudgedOnBeat`,
+ * a decline (`evaluated: false` — ceiling, turn over, no frames) does not count: nobody saw it.
+ */
+export function pictureLookedAtOnBeat(
+  ledger: Pick<BeatRelevanceLedger, "byBeat"> | undefined,
+  clipPath: string,
+  contentKey: string | null | undefined,
+  sceneIndex: number,
+  beatIndex: number
+): boolean {
+  if (!ledger) return false;
+  const looked = (key: string) => {
+    const e = ledger.byBeat.get(key);
+    return Boolean(e && e.decision.evaluated !== false);
+  };
+  return (
+    looked(beatRelevanceBeatKey(sceneIndex, beatIndex, "path", clipPath)) ||
+    (isCanonicalAssetKey(contentKey) && looked(beatRelevanceBeatKey(sceneIndex, beatIndex, "content", contentKey!)))
+  );
+}
+
+/** Whether a model already looked at any YouTube candidate for this sentence, on any route. */
+export function youtubeLookedAtOnBeat(
+  ledger: Pick<BeatRelevanceLedger, "byBeat"> | undefined,
+  sceneIndex: number,
+  beatIndex: number
+): boolean {
+  if (!ledger) return false;
+  const prefix = `s${sceneIndex}b${beatIndex}\u0000content:youtube_cc:`;
+  for (const [key, entry] of ledger.byBeat) {
+    if (key.startsWith(prefix) && entry.decision.evaluated !== false) return true;
+  }
+  return false;
+}
+
 /** Looks this sentence may still spend under the per-sentence ceiling (`maxRelevanceLooksPerBeat`). */
 export function looksLeftOnBeat(
   ledger: Pick<BeatRelevanceLedger, "spendByBeat"> | undefined,
