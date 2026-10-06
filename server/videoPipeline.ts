@@ -362,7 +362,7 @@ import { createMismatchTally, formatMismatchSummary, mismatchFaultSplit, type Mi
 
 import { formatVisualSourcingAudit, findUnproductiveProviders, summarizeProviderOutcomes } from "./visualSourcingAudit";
 import { createExtendHoldState, resetExtendHold, type ExtendHoldState } from "./extendHoldBudget";
-import { enqueueYoutubePrefetch } from "./youtubePrefetch";
+import { enqueueYoutubePrefetch, noteYoutubeVideoDeliveredToArchive, resetYoutubeVideosDeliveredToArchive } from "./youtubePrefetch";
 import { validateAcquiredFile } from "./youtubeAcquisitionValidation";
 import { formatYoutubeFootage, unmeasuredFootage, youtubeFootageInTimeline, footageSourceForArchiveAssets, type ArchiveOrigin } from "./youtubeFootageInFilm";
 import {
@@ -3036,7 +3036,7 @@ async function fetchBeatAuthenticStillsInner(
   const pool: string[] = [];
   const beatFocus = classifyBeatFocus(beat.text, historicalDoc ? undefined : personName, videoTitle);
   const providerTextFor = (p: string) =>
-    dedup.clipAnnotationMeta.get(p)?.providerText ?? dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
+    dedup.clipAnnotationMeta.get(p)?.providerText ?? dedup.sourcingCache.assets.get(providerTextCacheKey(p))?.providerText;
   const strongEnoughToStopPooling = (p: string): boolean => {
     const pt = providerTextFor(p);
     if (!pt) return false;
@@ -9728,6 +9728,8 @@ function archiveYoutubeDownloadInBackground(
   } catch {
     return;
   }
+  /** VIDEO 637 — so this render does not put the same video on the background-fetch list. */
+  noteYoutubeVideoDeliveredToArchive(info.videoId);
   /** VIDEO 621 — archive work, not the render's: see `runAsBackgroundLlmWork`. */
   void runAsBackgroundLlmWork(async () => {
     try {
@@ -17381,6 +17383,18 @@ export function youtubeFragmentKey(clipPath: string): string | null {
   return `${tag[1]}:${tag[2]}@${fragment[1]}`;
 }
 
+/**
+ * VIDEO 637 — the key a clip's PROVIDER TEXT was cached under. A YouTube moment is known by its
+ * seconds (`youtube_cc:<hash>@t…`, see `clipContentKey`), but its title and description belong to
+ * the video and were filed under the video's key (`putCachedProviderAsset`). Read with the moment's
+ * key they were never found, and `entity_evidence` refused every YouTube moment of a sentence that
+ * names a person — the TED video titled "Elon Musk: …" included. Any other clip: its own key.
+ */
+export function providerTextCacheKey(clipPath: string): string {
+  const key = clipContentKey(clipPath);
+  return youtubeFragmentKey(clipPath) === key ? key.slice(0, key.lastIndexOf("@")) : key;
+}
+
 /** Remember a refused YouTube fragment for this render, and tell the video's pool. */
 function rememberRefusedYoutubeFragment(dedup: VisualDedupState, clipPath: string, reason: string): void {
   const key = youtubeFragmentKey(clipPath);
@@ -18631,7 +18645,7 @@ async function adoptClip(
   for (const p of paths) {
     const existing = dedup.clipAnnotationMeta.get(p);
     if (existing?.providerText) continue;
-    const cachedText = dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
+    const cachedText = dedup.sourcingCache.assets.get(providerTextCacheKey(p))?.providerText;
     if (cachedText) {
       dedup.clipAnnotationMeta.set(p, { ...existing, providerText: cachedText });
     }
@@ -20058,7 +20072,7 @@ async function gatherHistoricalBeatVideoPoolInner(
   const pool: string[] = [];
   const beatFocus = classifyBeatFocus(beat.text, intent.primaryPerson || undefined, adoptOpts.videoTitle);
   const providerTextFor = (p: string) =>
-    dedup.clipAnnotationMeta.get(p)?.providerText ?? dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
+    dedup.clipAnnotationMeta.get(p)?.providerText ?? dedup.sourcingCache.assets.get(providerTextCacheKey(p))?.providerText;
   const strongEnoughToStopPooling = (p: string): boolean => {
     const pt = providerTextFor(p);
     if (!pt) return false;
@@ -22927,6 +22941,8 @@ async function _runVideoPipelineInner(
   resetYoutubeFragmentsFetched();
   /** The cloud route's egress latch is render-scoped too — see noteCloudEgressBlocked. */
   resetCloudEgressBlocked();
+  /** VIDEO 637 — and which videos it handed to the archive. */
+  resetYoutubeVideosDeliveredToArchive();
   /** VIDEO 623 — the last render's reading of its narration is not this one's. */
   renderPeopleReading = null;
   /** RONDE 261: the sources it points at live in a work directory this render is about to make. */

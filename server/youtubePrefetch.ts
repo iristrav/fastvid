@@ -211,6 +211,24 @@ const clip = (s: string | null | undefined, n: number): string | null => {
 };
 
 /**
+ * VIDEO 637 — THE VIDEOS THIS RENDER ALREADY DOWNLOADED, AND HANDED TO THE ARCHIVE.
+ *
+ * Every YouTube file a render downloads goes into the archive as it arrives (VIDEO 619,
+ * `archiveYoutubeDownloadInBackground`), the film's stock included. Render 637 then put the same
+ * three videos on this list, and another worker fetched them a second time minutes later — three
+ * of those fetches refused with http 502. A video this render already delivered to the archive is
+ * not written down to be fetched again. Render-scoped: cleared when a render starts, by its YouTube
+ * video id (the same 11-character id the list is keyed on).
+ */
+const deliveredToArchiveThisRender = new Set<string>();
+export function noteYoutubeVideoDeliveredToArchive(videoId: string): void {
+  if (videoId) deliveredToArchiveThisRender.add(videoId);
+}
+export function resetYoutubeVideosDeliveredToArchive(): void {
+  deliveredToArchiveThisRender.clear();
+}
+
+/**
  * Write down what a render found. Fire-and-forget: returns at once, never throws, never waits.
  *
  * INSERT IGNORE on the unique video id, so a video found again — by this render or any other —
@@ -222,7 +240,10 @@ export function enqueueYoutubePrefetch(
 ): void {
   if (!youtubePrefetchEnabled() || candidates.length === 0) return;
   /** VIDEO 618 — a video written off for good is not put on the list to fetch later either. */
-  const take = takeEnqueueSlots(opts.renderKey, withoutUnusableYoutubeVideos(candidates, (c) => c.videoId));
+  /** VIDEO 637 — and not what this render already handed to the archive (see `deliveredToArchiveThisRender`). */
+  const take = takeEnqueueSlots(opts.renderKey, withoutUnusableYoutubeVideos(candidates, (c) => c.videoId)).filter(
+    (c) => !deliveredToArchiveThisRender.has(c.videoId)
+  );
   if (take.length === 0) return;
   void (async () => {
     try {
@@ -729,12 +750,36 @@ export async function prefetchDisabledReason(): Promise<string | null> {
   return null;
 }
 
+/**
+ * VIDEO 637 — nothing renders on ANY worker. The worker runs as several replicas, and
+ * `workerIsIdle` sees only its own process: during render 637 the two idle replicas fetched while
+ * the third rendered. A video a pipeline is generating, or a render job queued or running, anywhere,
+ * means not now — read from the same `videos` and `render_jobs` rows the queues claim from.
+ */
+export function nothingRendersAnywhere(counts: { processingVideos: number; activeRenderJobs: number }): boolean {
+  return counts.processingVideos === 0 && counts.activeRenderJobs === 0;
+}
+
+/** The database's answer to `nothingRendersAnywhere`; a count that cannot be read means busy. */
+export async function workerIsGloballyIdle(): Promise<boolean> {
+  try {
+    const { countRenderingVideos, countActiveRenderJobs } = await import("./db");
+    return nothingRendersAnywhere({
+      processingVideos: await countRenderingVideos(),
+      activeRenderJobs: await countActiveRenderJobs(),
+    });
+  } catch {
+    return false;
+  }
+}
+
 let batchInFlight = false;
 
 /** One quiet batch: up to `prefetchVideosPerBatch` videos, stopping the moment a render starts. */
 export async function runYoutubePrefetchBatch(): Promise<{ videos: number; archived: number }> {
   if (batchInFlight) return { videos: 0, archived: 0 };
   if (!(await workerIsIdle())) return { videos: 0, archived: 0 };
+  if (!(await workerIsGloballyIdle())) return { videos: 0, archived: 0 };
   batchInFlight = true;
   let videos = 0;
   let archived = 0;
@@ -751,6 +796,7 @@ export async function runYoutubePrefetchBatch(): Promise<{ videos: number; archi
     await loadUnusableYoutubeVideos();
     for (let i = 0; i < prefetchVideosPerBatch(); i++) {
       if (!deps.isIdle()) break;
+      if (!(await workerIsGloballyIdle())) break;
       const row = await claimNextYoutubePrefetch();
       if (!row) break;
       videos++;

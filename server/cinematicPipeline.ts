@@ -55,7 +55,8 @@ import {
   graphicsLifecycle,
 } from "./graphicsLifecycle";
 import type { AssetSourceIdentity, ProjectTimeline, TimelineText, TimelineVideoClip } from "./projectTimeline";
-import { captionTrack, DEFAULT_TEXT_STYLE } from "./projectTimeline";
+import { captionTrack, DEFAULT_TEXT_STYLE, graphicsTrack } from "./projectTimeline";
+import { graphicOnScreenWindow, timelineWordTiming } from "./remotionProps";
 import { intensityAtFrom, typewriterSfxClips } from "./typewriterSound";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 import { planMusicCues, scoreCues, type CurvePoint, type MusicCatalogue, type ScoredCue } from "./musicDirector";
@@ -476,6 +477,16 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
   );
   const sfxForTyping = timeline.tracks.find((t) => t.kind === "SFX");
   if (sfxForTyping?.kind === "SFX") {
+    /**
+     * VIDEO 637 — a year card types when the voice says the year (see `graphicOnScreenWindow`); its
+     * keys are heard then too, not at the sentence's start.
+     */
+    const words = timelineWordTiming(timeline);
+    const graphicById = new Map(graphicsTrack(timeline).map((g) => [g.id, g] as const));
+    for (const e of textDirection.typewriter) {
+      const g = graphicById.get(e.id);
+      if (g) e.start = graphicOnScreenWindow(timeline, g, words).startSec;
+    }
     sfxForTyping.clips.push(...typewriterSfxClips(textDirection.typewriter.filter((e) => drawnTexts.has(e.id))));
   }
 

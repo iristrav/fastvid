@@ -36,6 +36,7 @@ import {
   captionTrack,
   graphicsTrack,
   textTrackOf,
+  videoTrack,
   type ProjectTimeline,
   type TextStyle,
 } from "./projectTimeline";
@@ -284,6 +285,65 @@ export function graphicStartOnWord(
 }
 
 /**
+ * VIDEO 637 — A WORD SAID LATE IN ITS SENTENCE STILL GETS ITS GRAPHIC ON TIME.
+ *
+ * `graphicStartOnWord` only moves a start inside the graphic's own window, minus the time it must
+ * stay on screen. A year card is three seconds, so "2008" had to be said in the sentence's first
+ * 1.5 s; "Tesla teetered on bankruptcy during the 2008 financial crisis" says it later, and the card
+ * stood on screen two seconds before the word.
+ *
+ * Said early: exactly the existing rule, end unchanged. Said later: the whole graphic moves — it
+ * starts on the word and keeps its planned length, cut at the end of its own sentence (`beatEndSec`).
+ * Never before the planned start, never past the sentence, and never shorter than
+ * `MIN_GRAPHIC_ON_WORD_SEC`: a word too close to the sentence's end, no sentence end, no word or no
+ * timing all keep the existing answer.
+ */
+export function graphicWindowOnWord(
+  startSec: number,
+  endSec: number,
+  anchorWord: unknown,
+  words: ReadonlyArray<{ word: string; startSec: number; endSec: number }>,
+  beatEndSec: number | null
+): { startSec: number; endSec: number } {
+  const early = graphicStartOnWord(startSec, endSec, anchorWord, words);
+  if (early !== startSec || beatEndSec == null || typeof anchorWord !== "string") return { startSec: early, endSec };
+  const key = wordKey(anchorWord);
+  const latest = beatEndSec - MIN_GRAPHIC_ON_WORD_SEC;
+  if (!key || latest <= startSec) return { startSec, endSec };
+  const hit = words.find((w) => w.startSec >= startSec - 0.05 && w.startSec <= latest && wordKey(w.word).startsWith(key));
+  if (!hit || hit.startSec <= startSec) return { startSec, endSec };
+  return { startSec: hit.startSec, endSec: Math.min(beatEndSec, hit.startSec + (endSec - startSec)) };
+}
+
+/**
+ * The end of the sentence whose picture is on screen at `sec`: the last picture of that beat
+ * (`sceneIndex` + `beatIndex`, which every timeline clip carries). Null when nothing is on screen.
+ */
+export function beatEndAt(timeline: ProjectTimeline, sec: number): number | null {
+  const clips = videoTrack(timeline).filter((c) => !c.disabled);
+  const at = clips.find((c) => sec >= c.timelineStart - 0.05 && sec < c.timelineEnd);
+  if (!at) return null;
+  if (at.sceneIndex == null || at.beatIndex == null) return at.timelineEnd;
+  return Math.max(...clips.filter((c) => c.sceneIndex === at.sceneIndex && c.beatIndex === at.beatIndex).map((c) => c.timelineEnd));
+}
+
+/** The video's measured word timing as the timeline carries it: every caption's words, switched off or not. */
+export function timelineWordTiming(timeline: ProjectTimeline): RemotionWordTiming[] {
+  return uniqueWords(captionTrack(timeline).flatMap((c) => c.words ?? []));
+}
+
+/** Where a timeline graphic is drawn: on its anchor word when it has one (see `graphicWindowOnWord`). */
+export function graphicOnScreenWindow(
+  timeline: ProjectTimeline,
+  g: { start: number; end: number; data?: Record<string, unknown> | null },
+  words: ReadonlyArray<{ word: string; startSec: number; endSec: number }>
+): { startSec: number; endSec: number } {
+  const anchor = g.data?.anchorWord;
+  if (typeof anchor !== "string") return { startSec: g.start, endSec: g.end };
+  return graphicWindowOnWord(g.start, g.end, anchor, words, beatEndAt(timeline, g.start));
+}
+
+/**
  * Build the graphics props for one timeline.
  *
  * There is no `resolveMedia` parameter and no injected downloader, because this layer needs no
@@ -334,18 +394,29 @@ export function timelineToRemotionProps(params: {
    */
   const graphicMoves = new Map<string, { box: { x: number; y: number; width: number; height: number } }>();
   const placedGraphics: Obstacle[] = [];
+  /** The measured word timing — see `words` below. From EVERY caption: subtitles off hides a caption, not its timing. */
+  const measuredWords: RemotionWordTiming[] = params.words ?? timelineWordTiming(timeline);
+  /**
+   * VIDEO 637 — where each graphic is actually ON SCREEN (on its anchor word, see
+   * `graphicWindowOnWord`), so it is laid out against the others at the time it is drawn. A graphic
+   * with no anchor word keeps its planned span exactly.
+   */
+  const onScreen = new Map(
+    graphicsTrack(timeline).map((g) => [g.id, graphicOnScreenWindow(timeline, g, measuredWords)] as const)
+  );
   for (const g of graphicsTrack(timeline)
     .filter((x) => !x.disabled)
     .slice()
     .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))) {
     const style = g.style ?? graphicDefaultStyle(g.graphicType);
     const size = graphicBoxSize(g.graphicType, g.label, style, frame, g.data ?? {});
+    const span = onScreen.get(g.id)!;
     const placed = layoutCaption({
       /** Its own words when it has them — the box comes from `size`, which is already correct. */
       text: g.label?.trim() || g.graphicType,
       style,
-      startSec: g.start,
-      endSec: g.end,
+      startSec: span.startSec,
+      endSec: span.endSec,
       frame,
       obstacles: placedGraphics,
       measuredSize: size,
@@ -354,8 +425,8 @@ export function timelineToRemotionProps(params: {
       id: g.id,
       kind: "graphic",
       box: placed.box,
-      startSec: g.start,
-      endSec: g.end,
+      startSec: span.startSec,
+      endSec: span.endSec,
     });
     if (placed.unresolved) {
       unresolvedCollisions.push(
@@ -443,15 +514,6 @@ export function timelineToRemotionProps(params: {
     };
   };
 
-  /** The measured word timing — see `words` below; read here too so a graphic can start on its word. */
-  const measuredWords: RemotionWordTiming[] =
-    params.words ??
-    uniqueWords(
-      captionTrack(timeline)
-        .filter((c) => !c.disabled)
-        .flatMap((c) => c.words ?? [])
-    );
-
   return {
     fps,
     width: timeline.format.widthPx,
@@ -482,15 +544,18 @@ export function timelineToRemotionProps(params: {
          * produced before this round.
          */
         const move = graphicMoves.get(g.id);
-        /** OCTOBER 2026 — on the word it is about, when the planner named one and the voice said it. */
-        const start = graphicStartOnWord(g.start, g.end, g.data?.anchorWord, measuredWords);
+        /**
+         * OCTOBER 2026 — on the word it is about, when the planner named one and the voice said it.
+         * VIDEO 637 — also when it is said late in the sentence: see `graphicWindowOnWord`.
+         */
+        const { startSec: start, endSec: end } = onScreen.get(g.id)!;
         return {
           id: g.id,
           graphicType: g.graphicType,
           data: g.data ?? {},
           label: g.label ?? null,
           fromFrame: toFrames(start, fps),
-          durationInFrames: Math.max(1, toFrames(Math.max(0, g.end - start), fps)),
+          durationInFrames: Math.max(1, toFrames(Math.max(0, end - start), fps)),
           style: g.style ?? null,
           /** The renderer's existing default when a planner expressed no preference. Named, not silent. */
           animation: g.animation ?? "fade_rise",

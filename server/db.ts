@@ -1555,6 +1555,33 @@ export async function claimQueuedRenderJob(jobId: number): Promise<RenderJob | n
   return job && job.status === "running" ? job : null;
 }
 
+/**
+ * VIDEO 637 — videos a pipeline is working on right now, on any worker (see `workerIsGloballyIdle`).
+ * `countGlobalProcessingVideos` minus `pending`: no code creates a video in that status any more
+ * (both creation paths write `queued`), so a row still in it is a leftover, not a render — and one
+ * leftover would hold the background fetch off for good.
+ */
+export async function countRenderingVideos(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(videos)
+    .where(inArray(videos.status, PROCESSING_STATUS_LIST.filter((s) => s !== "pending")));
+  return Number(row?.count ?? 0);
+}
+
+/** VIDEO 637 — render jobs queued or running on any worker (see `workerIsGloballyIdle`). */
+export async function countActiveRenderJobs(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(renderJobs)
+    .where(inArray(renderJobs.status, ["queued", "running"]));
+  return Number(row?.count ?? 0);
+}
+
 export async function listQueuedRenderJobs(limit = 20): Promise<RenderJob[]> {
   const db = await getDb();
   if (!db) return [];

@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { parseNumericStat, planMotionGraphics, yearSeriesFromText } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import { WORLD_LOCATIONS } from "./cinematicMotion/locationMap";
 import { graphicIsRenderable, readDecimals, readGeoPoint } from "./graphicsVocabulary";
-import { MIN_GRAPHIC_ON_WORD_SEC, graphicStartOnWord } from "./remotionProps";
+import { MIN_GRAPHIC_ON_WORD_SEC, graphicStartOnWord, graphicWindowOnWord } from "./remotionProps";
 import { lineCountFor, maxCharsPerLine, wrapWordsBalanced } from "./captionLayout";
 import { DEFAULT_CAPTION_STYLE } from "./projectTimeline";
 import { plateColour } from "./remotion/components/Text";
@@ -151,6 +151,38 @@ describe("a graphic appears on its word", () => {
     expect(graphicStartOnWord(10, 14, undefined, words)).toBe(10);
     expect(graphicStartOnWord(10, 14, "Berlin", words)).toBe(10);
     expect(graphicStartOnWord(10, 14, "3.5", [])).toBe(10);
+  });
+});
+
+/** VIDEO 637 — a word said after the card's first part moves the whole card, inside its sentence. */
+describe("a graphic whose word is said late in its sentence", () => {
+  const words = [
+    { word: "Tesla", startSec: 4.0, endSec: 4.3 },
+    { word: "teetered", startSec: 4.35, endSec: 4.65 },
+    { word: "during", startSec: 5.4, endSec: 5.7 },
+    { word: "the", startSec: 5.75, endSec: 6.05 },
+    { word: "2008", startSec: 6.1, endSec: 6.4 },
+    { word: "crisis.", startSec: 6.8, endSec: 7.1 },
+  ];
+
+  it("early word: exactly the existing rule, end unchanged", () => {
+    expect(graphicWindowOnWord(4, 7, "teetered", words, 8)).toEqual({ startSec: 4.35, endSec: 7 });
+  });
+
+  it("late word: starts on the word, keeps its length, cut at the sentence's end", () => {
+    expect(graphicWindowOnWord(4, 7, "2008", words, 8)).toEqual({ startSec: 6.1, endSec: 8 });
+    expect(graphicWindowOnWord(4, 7, "2008", words, 12)).toEqual({ startSec: 6.1, endSec: 9.1 });
+  });
+
+  it("never so close to the sentence's end that it cannot be read: the planned window", () => {
+    expect(graphicWindowOnWord(4, 7, "crisis", words, 6.8 + MIN_GRAPHIC_ON_WORD_SEC - 0.1)).toEqual({ startSec: 4, endSec: 7 });
+  });
+
+  it("no sentence end, no word, no timing, no match: the existing answer", () => {
+    expect(graphicWindowOnWord(4, 7, "2008", words, null)).toEqual({ startSec: 4, endSec: 7 });
+    expect(graphicWindowOnWord(4, 7, undefined, words, 8)).toEqual({ startSec: 4, endSec: 7 });
+    expect(graphicWindowOnWord(4, 7, "2008", [], 8)).toEqual({ startSec: 4, endSec: 7 });
+    expect(graphicWindowOnWord(4, 7, "1999", words, 8)).toEqual({ startSec: 4, endSec: 7 });
   });
 });
 

@@ -12,7 +12,8 @@ import path from "path";
 
 import { buildCinematicSceneInputs, type ProductionBeat, type SceneFacts } from "./cinematicPipelineInputs";
 import { OPENING_WORD_FONT_PX, openingWordText, runCinematicPipeline } from "./cinematicPipeline";
-import { captionTrack, emptyTimeline, type ProjectTimeline, type TimelineGraphic, type TimelineVideoClip } from "./projectTimeline";
+import { captionTrack, emptyTimeline, graphicsTrack, type ProjectTimeline, type TimelineGraphic, type TimelineVideoClip } from "./projectTimeline";
+import { timelineToRemotionProps } from "./remotionProps";
 
 const TEXTS = [
   "Tesla began as a small company with a bold plan for electric cars.",
@@ -107,5 +108,96 @@ describe("2 — one word big at the start", () => {
       }
     }
     expect(openingWordText(carded, "Tesla")).toBeNull();
+  });
+});
+
+/**
+ * VIDEO 637 — subtitles off hides the subtitles, not WHEN the voice says its words. The render
+ * worker builds the props from the stored timeline alone, and the year card waits for its word
+ * from the captions' measured timing; with every caption switched off it read words=0 and "2008"
+ * stood on screen 2 s before it was said.
+ */
+describe("3 — subtitles off, the year still waits for its spoken word", () => {
+  /** "2008" is the 5th word: said 1.4 s into its sentence — inside the card's first 1.5 s. */
+  const EARLY = "Tesla nearly collapsed in 2008 during the financial crisis.";
+  /** VIDEO 637's own sentence: "2008" is the 7th word, said 2.1 s in — after the first 1.5 s. */
+  const LATE = "Tesla teetered on bankruptcy during the 2008 financial crisis.";
+  function yearPlan(yearSentence: string, opts: { showSubtitles?: boolean; anchor?: string } = {}) {
+    const texts = ["Tesla was founded as a small company with a bold plan.", yearSentence];
+    const beats = texts.map((t, i) => beat(i, t));
+    const f = facts();
+    const built = buildCinematicSceneInputs({ scenes: [{ ...f, scene: { ...f.scene, text: texts.join(" ") }, beats }] });
+    /** Measured TTS timing: one word every 0.35 s from its sentence's start (sentences at 0 s and 4 s). */
+    const words = texts.flatMap((t, i) =>
+      t.split(" ").map((word, j) => ({ word, startSec: i * 4 + j * 0.35, endSec: i * 4 + j * 0.35 + 0.3 }))
+    );
+    const timeline = runCinematicPipeline({
+      videoId: 9002,
+      scenes: built.scenes,
+      includeSubtitles: true,
+      showSubtitles: opts.showSubtitles ?? false,
+      words,
+    }).timeline as ProjectTimeline;
+    const card = graphicsTrack(timeline).find((g) => g.graphicType === "date_card" && !g.disabled)!;
+    if (opts.anchor !== undefined) card.data = { ...card.data, anchorWord: opts.anchor };
+    const props = timelineToRemotionProps({ timeline });
+    const drawn = props.graphics.find((g) => g.id === card.id)!;
+    return {
+      timeline,
+      props,
+      card,
+      spoken2008: words.find((w) => w.word === "2008")!,
+      drawnStart: drawn.fromFrame / props.fps,
+      drawnEnd: (drawn.fromFrame + drawn.durationInFrames) / props.fps,
+      /** The second sentence's picture ends at 8 s: the card may not outlast it. */
+      beatEnd: 8,
+    };
+  }
+
+  it("1 — subtitles off: none drawn, yet Remotion receives the timing of 2008", () => {
+    const { timeline, props, spoken2008 } = yearPlan(LATE);
+    const caps = captionTrack(timeline);
+    expect(caps.length).toBeGreaterThan(0);
+    expect(caps.every((c) => c.disabled === true && c.disabledReason === "subtitles_off")).toBe(true);
+    expect(props.captions).toEqual([]);
+    expect(props.words.length).toBeGreaterThan(0);
+    expect(props.words.some((w) => w.word === "2008" && w.startSec === spoken2008.startSec)).toBe(true);
+  });
+
+  it("2 — early word: the card starts on 2008 and keeps its planned end (the existing rule)", () => {
+    const { card, spoken2008, drawnStart, drawnEnd } = yearPlan(EARLY);
+    expect(card.data?.anchorWord).toBe("2008");
+    expect(card.start).toBeLessThan(spoken2008.startSec - 1);
+    expect(drawnStart).toBeCloseTo(spoken2008.startSec, 1);
+    expect(drawnEnd).toBeCloseTo(card.end, 1);
+  });
+
+  it("3 — late word (video 637's sentence): the card starts on 2008, not at the sentence's start", () => {
+    const { card, spoken2008, drawnStart, drawnEnd, beatEnd } = yearPlan(LATE);
+    /** The planned window is too short for the existing rule: the word falls after end − 1.5 s. */
+    expect(spoken2008.startSec).toBeGreaterThan(card.end - 1.5);
+    expect(drawnStart).toBeCloseTo(spoken2008.startSec, 1);
+    expect(drawnEnd).toBeLessThanOrEqual(beatEnd + 1e-6);
+    expect(drawnEnd - drawnStart).toBeGreaterThanOrEqual(1.5 - 1e-6);
+  });
+
+  it("3b — its typing sound starts with it, not at the sentence's start", () => {
+    const { timeline, card, drawnStart } = yearPlan(LATE);
+    const typing = timeline.tracks.flatMap((t) => (t.kind === "SFX" ? t.clips : [])).find((c) => c.id === `sfx_type_${card.id}`);
+    expect(typing).toBeDefined();
+    expect(typing!.start).toBeGreaterThanOrEqual(drawnStart);
+    expect(typing!.start).toBeLessThan(drawnStart + 0.5);
+  });
+
+  it("4 — an anchor word the voice never says: no crash, the planned window", () => {
+    const { card, drawnStart, drawnEnd } = yearPlan(LATE, { anchor: "1999" });
+    expect(drawnStart).toBeCloseTo(card.start, 1);
+    expect(drawnEnd).toBeCloseTo(card.end, 1);
+  });
+
+  it("5 — moving the card never turns the subtitles on; switched on they are drawn as before", () => {
+    expect(yearPlan(LATE).props.captions).toEqual([]);
+    const on = yearPlan(LATE, { showSubtitles: true });
+    expect(on.props.captions.length).toBe(captionTrack(on.timeline).length);
   });
 });
