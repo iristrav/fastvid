@@ -40,6 +40,7 @@ import {
   type AssetSourceIdentity,
   type MotionKind,
   type ProjectTimeline,
+  type TextAnimation,
   type TextStyle,
   type TimelineAudioClip,
   type ClipCamera,
@@ -59,7 +60,7 @@ import type {
   MotionGraphicType,
   TransitionType,
 } from "./cinematicEditingEngine/types";
-import { graphicIsRenderable } from "./graphicsVocabulary";
+import { graphicAnimationFor, graphicIsRenderable } from "./graphicsVocabulary";
 import { resolveSoundEffect } from "./audioAssetSource";
 import { isBackgroundSound } from "./cinematicEditingEngine/soundPlanner";
 import { ambienceGainDb, gainFromDb } from "./cinematicAmbient";
@@ -94,19 +95,24 @@ export const TRANSITION_MAP: Readonly<Record<TransitionType, TransitionKind | nu
   dip_to_black: "dip_to_black",
   dip_to_white: "dip_to_white",
   /**
+   * The same transition under the renderer's own name — both are timeline kinds AND real xfade
+   * modes (`XFADE_TRANSITIONS`: blur → hblur, slide_left → slideleft). They used to be mapped to
+   * null like the rest, so a planned blur or slide was rendered as a cut.
+   */
+  blur: "blur",
+  slide: "slide_left",
+  /**
    * Present in the engine's vocabulary and not in the renderer's.
    *
    * Mapped to null rather than to the nearest thing, so `translateEdl` can REPORT the downgrade.
    * Quietly turning a film burn into a dissolve would make the render differ from the plan with
    * nothing anywhere saying so — and the planner recorded a reason for choosing it.
    */
-  blur: null,
   motion_blur: null,
   flash: null,
   light_leak: null,
   film_burn: null,
   whip: null,
-  slide: null,
   push: null,
   match_cut: "hard_cut",
 };
@@ -326,6 +332,27 @@ function positionFor(caption: CaptionInstruction): TextStyle["position"] {
  * lower third, a statistic — is an editorial overlay and goes to TEXT. They are different tracks
  * because a user switching captions off must not lose the date cards with them.
  */
+/**
+ * The planner's caption animation in the renderer's own words. Every target is one Remotion's
+ * `animationAt` already draws; anything else (e.g. `blur`) is a fade. The libass fallback draws any
+ * of them as a fade, exactly as before. It used to be "none" or "fade" only, so a planned slide,
+ * scale or typewriter reached Remotion as a fade.
+ */
+export function textAnimationForCaption(animation: string | undefined): TextAnimation {
+  switch (animation) {
+    case "none":
+      return "none";
+    case "slide":
+      return "slide_up";
+    case "scale":
+      return "scale";
+    case "typewriter":
+      return "typewriter";
+    default:
+      return "fade";
+  }
+}
+
 export function trackForCaption(caption: CaptionInstruction): "CAPTIONS" | "TEXT" {
   return caption.captionType === "subtitle" ? "CAPTIONS" : "TEXT";
 }
@@ -704,6 +731,7 @@ export function placePrimaryGraphics(
       start: backdrop.timelineStart,
       end: backdrop.timelineEnd,
       label,
+      animation: graphicAnimationFor(type),
       /** The whole picture: in the middle of the frame, not at its foot. */
       style: { ...DEFAULT_TEXT_STYLE, position: "center" as const },
       reason:
@@ -939,7 +967,7 @@ export function translateEdl(params: {
       else
         texts.push({
           ...el,
-          animation: caption.animation === "none" ? "none" : "fade",
+          animation: textAnimationForCaption(caption.animation),
           /** RONDE 651 — the planner's own word for it, so the text director can read it. */
           role: caption.captionType,
         });
@@ -1028,6 +1056,7 @@ export function translateEdl(params: {
         start: Number((sceneOffsetSec + graphic.startSec).toFixed(3)),
         end: Number((sceneOffsetSec + graphic.startSec + graphic.durationSec).toFixed(3)),
         label,
+        animation: graphicAnimationFor(rendererType),
         reason:
           rendererType === graphic.graphicType
             ? graphic.reason

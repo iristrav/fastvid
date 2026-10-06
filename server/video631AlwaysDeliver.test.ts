@@ -67,7 +67,12 @@ describe("FIX 1 — a picture approved before the cap is placed; nothing new is 
     expect(inTime).toEqual({ value: "in_time.mp4" });
   }, 120_000);
 
-  it("3. after the cap no new Judge look starts: the aborted scope says the turn is over, and the gate declines", async () => {
+  /**
+   * VIDEO 631 RE-RUN — the turn-over guard is no longer wired in production: 42 of 51 usable
+   * candidates were declined `beat_turn_over` and never judged. The mechanism below still works when
+   * a caller sets the hook; the production state does not (see the wiring test).
+   */
+  it("3. the turn-over mechanism: an aborted scope says the turn is over, and a gate given the hook declines", async () => {
     const { sceneTurnIsOver, withSceneFetchTimeout } = await import("./videoPipeline");
     let seenAfterCap: boolean | null = null;
     let seenBefore: boolean | null = null;
@@ -126,11 +131,12 @@ describe("FIX 1 — a picture approved before the cap is placed; nothing new is 
     expect(rejectionStageForReason("mostly_black")).toBe("technical");
   }, 120_000);
 
-  it("wiring: the pipeline's ladder uses the cap helper, FIT acceptances are counted, the gate gets the hook", () => {
+  it("wiring: the pipeline's ladder uses the cap helper, FIT acceptances are counted, the gate does NOT get the turn-over hook", () => {
     expect(PIPE).toContain("const capped = await ladderWithinCap<string>(dedup, sceneIndex, beat.index, (track) =>");
     expect(PIPE).toContain("() => track(beatPrimaryFetch(");
     expect(PIPE).toContain('if (beatEvidence === "FIT" && !requeuedAfterRefusal.has(p)) noteApprovedPickForBeat(dedup, sceneIndex, beatIndex, contentKey);');
-    expect(PIPE).toContain("state.beatImageGate.turnOver = sceneTurnIsOver;");
+    expect(PIPE).not.toContain("state.beatImageGate.turnOver = sceneTurnIsOver;");
+    expect(createBeatImageGateState().turnOver, "a fresh gate has no turn-over hook").toBeUndefined();
   });
 });
 

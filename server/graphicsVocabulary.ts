@@ -408,6 +408,51 @@ export function readRegion(data: Record<string, unknown>): GraphicRegion | null 
 }
 
 /**
+ * HOW A GRAPHIC ENTERS — one fixed answer per graphic type, from Remotion's existing vocabulary
+ * (`remotion/components/animation.ts`). The planners never named one, so every graphic entered with
+ * the renderer's default `fade_rise`. Only whole-frame entrances are used: both `GraphicBody` and the
+ * fullscreen `PrimaryStage` draw opacity, translate and scale, while the progressive reveals
+ * (typewriter, word_reveal) belong to the text component. Same type, same animation, every time.
+ */
+export const DEFAULT_GRAPHIC_ANIMATION = "fade_rise";
+
+const GRAPHIC_ANIMATION: Readonly<Record<string, string>> = {
+  /** A figure lands. */
+  counter: "pop",
+  statistic: "pop",
+  stat: "pop",
+  /** A chart or map grows into place; the chart draws its own bars and lines. */
+  bar_chart: "fade_scale",
+  horizontal_bar: "fade_scale",
+  line_chart: "fade_scale",
+  pie_chart: "fade_scale",
+  donut_chart: "fade_scale",
+  percentage_ring: "fade_scale",
+  progress: "fade_scale",
+  map_point: "fade_scale",
+  route: "fade_scale",
+  multi_point: "fade_scale",
+  /** A card of words rises into the frame. */
+  quote: "slide_up",
+  location_card: "slide_up",
+  date_card: "slide_up",
+  timeline_event: "slide_up",
+  /** A name band comes in from the edge it sits on. */
+  lower_third: "slide_right",
+  name: "slide_right",
+  /** A chapter card settles in the middle. */
+  chapter_card: "fade_scale",
+  chapter_title: "fade_scale",
+  shape: "scale",
+  icon: "scale",
+};
+
+/** The entrance for a graphic type; anything not listed keeps `fade_rise`. */
+export function graphicAnimationFor(graphicType: string): string {
+  return GRAPHIC_ANIMATION[graphicType] ?? DEFAULT_GRAPHIC_ANIMATION;
+}
+
+/**
  * Can this specific graphic be drawn, payload and all?
  *
  * The single answer. The component asks it to decide whether to render, the Remotion renderer asks

@@ -33,7 +33,7 @@
  * can switch it back on — the renderer and the Remotion props already skip a disabled element.
  */
 import type { ProjectTimeline, TimelineGraphic, TimelineText } from "./projectTimeline";
-import { readGeoPoint } from "./graphicsVocabulary";
+import { graphicAnimationFor, readGeoPoint } from "./graphicsVocabulary";
 
 export const MIN_TEXT_ON_SCREEN_SEC = 2;
 export const MAX_TEXTS_AT_ONCE = 2;
@@ -188,6 +188,7 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
       start: g.start,
       end: g.end,
       label: place,
+      animation: graphicAnimationFor("location_card"),
       reason: `RONDE 651 — stands in for ${g.id}, a map drawn without geography`,
     });
     out.converted.push(`${g.id} map_point → location_card (${place})`);

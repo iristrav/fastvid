@@ -125,8 +125,10 @@ describe("E — nothing unapproved or technically unusable is placed", () => {
     expect(PIPE).toContain("return v && !(await technicalMediaRefusal(v, MEDIA_PROBES)) ? v : null;");
   });
 
-  it("E3. no new look: a late picture is pushed only with the verdict already given (the turn-over guard is unchanged)", () => {
+  it("E3. no new look at placement: a late picture is pushed with the verdict already given (cached FIT, see 631 test 3b)", () => {
     const rel = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
+    /** The cached verdict is read before any turn or ceiling question is asked. */
+    expect(rel.indexOf("alreadyKnown")).toBeGreaterThan(-1);
     expect(rel).toContain('if (!alreadyKnown && state.turnOver?.()) {');
   });
 });

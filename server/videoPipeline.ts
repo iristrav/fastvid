@@ -15462,8 +15462,14 @@ export function createVisualDedupState(
   };
   /** VIDEO 630 — the identity rule reads who is a person from the render's own reading (`personAsRead`). */
   state.beatImageGate.personAsRead = personAsRead;
-  /** VIDEO 631 — no new look once the sentence's turn is over; see `sceneTurnIsOver`. */
-  state.beatImageGate.turnOver = sceneTurnIsOver;
+  /**
+   * VIDEO 631 RE-RUN — `turnOver` is deliberately NOT wired. It stopped every look once a sentence's
+   * cap had passed, and render 631 (360046e) paid for it: 51 usable candidates, 9 looked at, 42
+   * declined `beat_turn_over` — downloads that land after the cap were never judged at all. Since
+   * a late FIT is placed by the scene (`takeLateApprovedPicks`), a look after the cap is no longer
+   * wasted, so a late candidate is judged within the unchanged ceilings (5 per sentence, 120 per
+   * render). The sentence itself still never waits for it.
+   */
   // RONDE 86: every recordClipAdopt call in this file hands over `dedup.clipAdoptAudit`, so
   // binding the ledger to that array once here wires lineage into all of them at once — and
   // makes it impossible for a future adoption route to record an audit entry without one.
