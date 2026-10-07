@@ -2385,6 +2385,22 @@ export function archiveHitIsRefused(
 }
 
 /**
+ * VIDEO 638 (FIX C, R1) — AN ARCHIVE FIT DOES NOT BEAT YOUTUBE THAT BECAME READY WHILE IT WAS JUDGED.
+ *
+ * The sentence asks for ready YouTube before the archive lookup and again before the archive hit's
+ * own look. A moment that lands during that look (seconds) was never seen: the archive's FIT ended
+ * the sentence. Right before the FIT is accepted, `readyYoutube` takes whatever is NOW ready for
+ * this sentence — files on disk only, through the one `adoptClip` — and a YouTube FIT wins. A
+ * refused or absent YouTube moment leaves the archive's FIT exactly as it was. Never waits.
+ */
+export async function archiveFitUnlessReadyYoutube(
+  archiveClip: string,
+  readyYoutube: () => Promise<string | null>
+): Promise<string> {
+  return (await readyYoutube()) ?? archiveClip;
+}
+
+/**
  * VIDEO 634 (#8) — an archive_first FIT is an approval like any other.
  *
  * The archive hit is returned straight after its verdict, without passing `adoptClip`, so the
@@ -2527,6 +2543,9 @@ export async function fetchBeatArchivalThenPexels(
     /** P1 (video 630) — the hit is a candidate: the picture editor is asked before it ends the beat. */
     archiveHitRefused = await archiveHitRefusedByPictureEditor(dedup, ownArchiveClip, sceneIndex, beat.index);
     if (!archiveHitRefused) {
+      /** VIDEO 638 (FIX C) — the archive's FIT is accepted only after one last look at ready YouTube. */
+      const accepted = await archiveFitUnlessReadyYoutube(ownArchiveClip, () => readyYoutubeFirst("before_archive_accept"));
+      if (accepted !== ownArchiveClip) return accepted;
       /** VIDEO 634 (#8) — a FIT here is registered as the sentence's approval. */
       if (dedup.beatRelevance) {
         const contentKey = clipContentKey(ownArchiveClip);
@@ -21554,6 +21573,46 @@ export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatI
   }
 }
 
+/**
+ * VIDEO 638 (FIX B, R2/R3) — THE LAST LOOK AT READY YOUTUBE BEFORE A SENTENCE GETS A GRAPHIC.
+ *
+ * A moment prepared for a sentence after its turn ended (R3), or offered LATE to "the next sentence
+ * that takes a YouTube turn" when no sentence took one (R2), sat on disk unseen while the sentence
+ * got a card. Called once per sentence that still has no picture, before the final F2 pass and
+ * before `generateMissingBeatImages`: files already on disk only — no search, no download, no wait —
+ * judged by `look` (the one `adoptClip`, its ceilings and gates). A FIT is handed to the final F2
+ * pass as a settled ladder, so it is placed (or its loss named) exactly like any late approval.
+ */
+export async function finalReadyYoutubeLook(
+  dedup: Pick<VisualDedupState, "lateYoutubeCandidates">,
+  sceneIndex: number,
+  beatIndex: number,
+  look: (readyPaths: string[]) => Promise<string | null>
+): Promise<string | null> {
+  const own = takeReadyLookaheadCandidates(dedup, youtubeTurnKey(sceneIndex, beatIndex));
+  const late = (dedup.lateYoutubeCandidates ?? []).filter((p) => fs.existsSync(p));
+  const ready = [...new Set([...own, ...late])].filter((p) => isYoutubeMomentPath(p));
+  if (ready.length === 0) return null;
+  console.log(
+    `[FinalReadyYouTube] s${sceneIndex}b${beatIndex} clips=${ready.length} (own=${own.length} late=${late.length}) — ` +
+      `ready on disk and never placed; one look before this sentence gets a graphic (no search, no download)`
+  );
+  const approvedBefore = approvedPicksForBeat(dedup, sceneIndex, beatIndex);
+  const clip = await look(ready);
+  if (!clip) return null;
+  const ladders = afterCloseLaddersByRender.get(dedup) ?? [];
+  afterCloseLaddersByRender.set(dedup, ladders);
+  ladders.push({ sceneIndex, beatIndex, approvedBefore, promise: Promise.resolve(clip), settled: { value: clip } });
+  return clip;
+}
+
+/** A sentence with an approval still on its way to the final pass needs no last look. */
+export function lateApprovalPendingFor(dedup: object, sceneIndex: number, beatIndex: number): boolean {
+  return (afterCloseLaddersByRender.get(dedup) ?? []).some(
+    (e) => e.sceneIndex === sceneIndex && e.beatIndex === beatIndex && approvedPicksForBeat(dedup, sceneIndex, beatIndex) > e.approvedBefore
+  );
+}
+
 export function approvedPicksForBeat(dedup: object, sceneIndex: number, beatIndex: number): number {
   return approvedPicksByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`) ?? 0;
 }
@@ -24315,6 +24374,26 @@ async function _runVideoPipelineInner(
      * was assembled is placed now, before a generated image could take its sentence. After this,
      * an approval is named as not placed (`noteApprovedPickForBeat`).
      */
+    /**
+     * VIDEO 638 (FIX B) — before the last pass and before any generated image or card: every sentence
+     * still without a picture gets one look at YouTube already on disk for it (or offered late and
+     * never taken). A FIT is placed by the pass below.
+     */
+    for (let si = 0; si < scenes.length; si++) {
+      const vr = sceneVisualResults[si];
+      const sceneIndex = scenes[si]!.index;
+      for (const beat of vr?.beats ?? []) {
+        if ((vr?.clipBeatIndices ?? []).includes(beat.index)) continue;
+        if (lateApprovalPendingFor(visualDedup, sceneIndex, beat.index)) continue;
+        try {
+          await finalReadyYoutubeLook(visualDedup, sceneIndex, beat.index, (ready) =>
+            adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, visualDedup, { videoTitle: asVideoTitleString(videoTitle) })
+          );
+        } catch (err) {
+          console.warn(`[FinalReadyYouTube] s${sceneIndex}b${beat.index} look failed:`, (err as Error)?.message?.slice(0, 120));
+        }
+      }
+    }
     for (let si = 0; si < scenes.length; si++) await placeLate(si, true);
 
     /** GENERATED_IMAGE_FALLBACK — after every source and the main-subject rescue: see `generateMissingBeatImages`. */

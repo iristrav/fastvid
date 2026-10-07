@@ -65,6 +65,20 @@ export type TextDirectionOptions = {
   intensityAt?: (sec: number) => number | null;
 };
 
+/**
+ * VIDEO 638 (FIX A) — at most this many visible text/graphic MOMENTS per started minute.
+ *
+ * MAX_GRAPHICS_PER_MINUTE (directorQualityRules) only warned at 12; a names-, years- and
+ * figures-rich minute could carry 8–16 elements. Elements that appear together (start within
+ * `SAME_MOMENT_SEC` and on screen at the same time) are ONE moment — a name and its year, a
+ * locator. A sentence's full-frame card (its only picture), the opening word and anything a user
+ * edited are never switched off by the budget, but they use it up first.
+ */
+export const GRAPHIC_MOMENTS_PER_MINUTE = 3;
+export const SAME_MOMENT_SEC = 0.75;
+export const GRAPHIC_BUDGET_EXCEEDED = "graphic_budget_exceeded";
+const DATA_GRAPHICS = new Set(["counter", "progress", "line_chart", "chart", "bar_chart", "statistic", "pie_chart"]);
+
 /** RONDE 656 — a reveal line only where the film is at its most intense. */
 export const REVEAL_MIN_INTENSITY = 70;
 export const MAX_REVEALS = 2;
@@ -358,6 +372,9 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
     }
     accepted.push(e);
   }
+  /* Rule 8 (VIDEO 638, FIX A) — a hard budget of moments per started minute. */
+  const budgetDropped = applyGraphicBudget(accepted, graphics, out);
+  for (const e of budgetDropped) accepted.splice(accepted.indexOf(e), 1);
   out.kept = accepted.length;
 
   /*
@@ -378,6 +395,74 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
 }
 
 /** One line for the render log. */
+type BudgetItem = { el: TimelineText | TimelineGraphic; element: Element | null; rank: number; fixed: boolean; label: string };
+
+/** 0 = never switched off by the budget; then data, a first name, a year, a place, a quote, the rest. */
+function budgetRank(track: "text" | "graphic", el: TimelineText | TimelineGraphic, kind: Kind): { rank: number; fixed: boolean } {
+  const g = track === "graphic" ? (el as TimelineGraphic) : null;
+  if ((el as { editedByUser?: boolean }).editedByUser === true || g?.data?.primaryVisual === true || el.id === "txt_opening_word") {
+    return { rank: 0, fixed: true };
+  }
+  if (g && DATA_GRAPHICS.has(g.graphicType)) return { rank: 1, fixed: false };
+  if (kind === "name") return { rank: 2, fixed: false };
+  if (kind === "date") return { rank: 3, fixed: false };
+  if (kind === "place") return { rank: 4, fixed: false };
+  if (kind === "title") return { rank: 5, fixed: false };
+  return { rank: 6, fixed: false };
+}
+
+/**
+ * VIDEO 638 (FIX A) — keep at most `GRAPHIC_MOMENTS_PER_MINUTE` moments per started minute. Fixed
+ * moments (a sentence's full-frame card, the opening word, a user's own edit) always stay and are
+ * counted first; the rest are kept by rank, then by time. Everything else is switched off (never
+ * deleted) with `graphic_budget_exceeded`. Video clips are never touched. Returns the switched-off
+ * elements the director had accepted.
+ */
+function applyGraphicBudget(accepted: Element[], graphics: TimelineGraphic[], out: TextDirection): Element[] {
+  const items: BudgetItem[] = accepted.map((e) => ({ el: e.el, element: e, ...budgetRank(e.track, e.el, e.kind), label: e.label }));
+  const seen = new Set(items.map((i) => i.el.id));
+  /** A drawn graphic without words is still a moment on screen. */
+  for (const g of graphics) {
+    if (g.disabled || seen.has(g.id)) continue;
+    items.push({ el: g, element: null, ...budgetRank("graphic", g, graphicKind(g)), label: g.label ?? g.graphicType });
+  }
+  items.sort((a, b) => a.el.start - b.el.start || a.el.id.localeCompare(b.el.id));
+  const moments: BudgetItem[][] = [];
+  for (const it of items) {
+    const cur = moments[moments.length - 1];
+    const first = cur?.[0];
+    if (first && it.el.start - first.el.start < SAME_MOMENT_SEC && overlaps(first.el, it.el)) cur!.push(it);
+    else moments.push([it]);
+  }
+  const byMinute = new Map<number, BudgetItem[][]>();
+  for (const m of moments) {
+    const minute = Math.floor(Math.max(0, m[0]!.el.start) / 60);
+    byMinute.set(minute, [...(byMinute.get(minute) ?? []), m]);
+  }
+  const dropped: Element[] = [];
+  for (const [minute, list] of byMinute) {
+    const fixed = list.filter((m) => m.some((i) => i.fixed));
+    const free = list
+      .filter((m) => !m.some((i) => i.fixed))
+      .sort((a, b) => Math.min(...a.map((i) => i.rank)) - Math.min(...b.map((i) => i.rank)) || a[0]!.el.start - b[0]!.el.start);
+    const room = Math.max(0, GRAPHIC_MOMENTS_PER_MINUTE - fixed.length);
+    for (const m of free.slice(room)) {
+      for (const i of m) {
+        i.el.disabled = true;
+        i.el.disabledReason = GRAPHIC_BUDGET_EXCEEDED;
+        out.disabled.push({ id: i.el.id, reason: GRAPHIC_BUDGET_EXCEEDED, label: i.label });
+        if (i.element) dropped.push(i.element);
+      }
+      console.log(
+        `[GRAPHIC_BUDGET_EXCEEDED] minute=${minute + 1} at=${m[0]!.el.start.toFixed(2)}s ` +
+          `off=${m.map((i) => `"${i.label}"`).join("+")} — ${GRAPHIC_MOMENTS_PER_MINUTE} moment(s) per minute ` +
+          `(${fixed.length} fixed: a sentence's card, the opening word or a user's edit)`
+      );
+    }
+  }
+  return dropped;
+}
+
 export function formatTextDirection(videoId: number, d: TextDirection): string {
   const reasons = new Map<string, number>();
   for (const x of d.disabled) reasons.set(x.reason, (reasons.get(x.reason) ?? 0) + 1);
