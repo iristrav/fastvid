@@ -400,7 +400,8 @@ describe("safety — nothing was loosened", () => {
     for (const check of ["refusedForAnotherSentence(q)", "dedup.refusedAssetsThisRender?.has(key)", "youtubeFragmentRefusal(fragment)", "assetUsedInVideo(dedup", "footageShareSoFar(dedup, key)"]) {
       expect(w1, check).toContain(check);
     }
-    expect(PIPE).toContain("const lessFilled = preferLessFilledFootage(tasteResult.rankedPaths, (p) => clipContentKey(p), dedup);");
+    // VIDEO 638 (G4) — YouTube first in the pool, then the same footage-share rule.
+    expect(PIPE).toContain("const lessFilled = preferLessFilledFootage(youtubeCandidatesFirst(tasteResult.rankedPaths), (p) => clipContentKey(p), dedup);");
   });
 });
 

@@ -467,14 +467,30 @@ export type CandidateJudgeInput = {
 };
 
 /**
+ * VIDEO 638 (G1) — the narration is not something written about the clip.
+ *
+ * The pool routes hand the sentence itself over as `sourceQuery` (`adoptClip(…, beat.text, …,
+ * beat.text, …)`), and the stock lists tested it as if it described the file: "its iconic face"
+ * refused all six YouTube candidates of 638 s1b0, and "a pop culture icon", "like science
+ * fiction", "a toy company", "Pixar animation", "replicate" refuse every candidate of any
+ * sentence that says them. Only text about the candidate goes to those lists now — its file name,
+ * and a real search query when one was asked. The lists themselves are unchanged.
+ */
+export function clipOwnQuery(sourceQuery: string, beatText: string | undefined): string {
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  return beatText && norm(sourceQuery) === norm(beatText) ? "" : sourceQuery;
+}
+
+/**
  * A downloaded candidate, judged on what is written about it — before anyone pays to look at its
  * frames. The rules and their order are the ones `adoptClip` applied inline; each refusal now
  * names itself (the person-topic rule used to drop a candidate without a word).
  */
 export function judgeCandidateMetadata(input: CandidateJudgeInput): VisualJudgeVerdict {
   const { path: p, sourceQuery, beatText } = input;
+  const clipQuery = clipOwnQuery(sourceQuery, beatText);
   if (isAIGeneratedClip(p)) return reject("metadata", "ai_generated");
-  if (isRejectedStockClip(p, sourceQuery)) return reject("metadata", "rejected_stock");
+  if (isRejectedStockClip(p, clipQuery)) return reject("metadata", "rejected_stock");
   if (!input.scriptImageFallback && input.personTopic && input.primaryPerson) {
     if (isOffTopicVisualForPersonTopic(sourceQuery, p, input.primaryPerson, input.meta?.providerText?.title)) {
       return reject("metadata", "person_topic_off_topic_visual");
@@ -493,7 +509,7 @@ export function judgeCandidateMetadata(input: CandidateJudgeInput): VisualJudgeV
       if (!personHit && !celebCue) return reject("metadata", "stock_without_person");
     }
   }
-  const category = stockVisualCategory(sourceQuery, p);
+  const category = stockVisualCategory(clipQuery, p);
   if (categoryIsBlockedContent(category)) return reject("metadata", `blocked_category:${category}`);
   // Applies to every route, the script-image route included: it was once exempt, which let an
   // unrelated image-search hit reach adoption with no topical scrutiny at all.

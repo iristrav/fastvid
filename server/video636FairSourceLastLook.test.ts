@@ -415,7 +415,8 @@ describe("wiring — W1a sits beside the existing last-look rule and keeps every
   });
 
   it("the existing rules are untouched", () => {
-    expect(PIPE).toContain("const lessFilled = preferLessFilledFootage(tasteResult.rankedPaths, (p) => clipContentKey(p), dedup);");
+    // VIDEO 638 (G4) — YouTube first in the pool, then the same footage-share rule.
+    expect(PIPE).toContain("const lessFilled = preferLessFilledFootage(youtubeCandidatesFirst(tasteResult.rankedPaths), (p) => clipContentKey(p), dedup);");
     expect(PIPE).toContain("const refusedElsewhere = putRefusedElsewhereLast(finalPaths, (p) =>");
     expect(repeatWouldTakeLastLook({ refusedElsewhere: true, judgedOnThisBeat: false, looksLeft: 1, finalRound: false })).toBe(true);
   });

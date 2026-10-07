@@ -53,6 +53,7 @@ import { BUDGETS, chargeAmbientBudget, createRetrievalBudgetState, formatRetriev
 import { SENTENCE_OPENERS, atSentenceStart, isSentenceOpener, withoutSentenceOpener } from "./sentenceOpeners";
 import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteRepeatedYoutubeRefusal, noteArchiveAccessRefusal, YOUTUBE_REFUSALS_BEFORE_WRITE_OFF_THIS_RENDER, YOUTUBE_PERMANENT_DOWNLOAD_STATUSES, isDurableYoutubeServiceRefusal, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, youtubeDownloadRefusal, youtubeServiceRefusalReason } from "./providerFailureClass";
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
+import { belowArchiveMinimumDuration } from "./archiveIngestion";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry } from "./youtubeLookahead";
 import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyQueries, sentenceOnlyYoutubeQueries, subjectWordOverlap, subjectWords, visualIntentSearchQuery, youtubeResultIsShort } from "./youtubeNonFootage";
@@ -2487,6 +2488,30 @@ export async function fetchBeatArchivalThenPexels(
       return null;
     });
 
+  /**
+   * VIDEO 638 (G3) — YOUTUBE THAT IS ALREADY ON DISK IS LOOKED AT BEFORE THE OWN ARCHIVE.
+   *
+   * s0b0's moments were ready at 08:15:22; its own-archive lookup ran until 08:15:53, and the
+   * sentence's YouTube turn that followed had 4 s left. s0b1, s0b2, s1b1 and s2b1 took an archive
+   * hit and never looked at the 6–9 YouTube moments prepared for them. Here only files the scene's
+   * lookahead already prepared FOR THIS SENTENCE are taken — no search, no download — and they go
+   * through the one `adoptClip` (duration, dedup, metadata, the picture editor, the ceilings). When
+   * none is adopted, the archive goes on exactly as before. Asked twice: before the archive lookup,
+   * and again before the archive hit's own look, since moments keep arriving while it runs.
+   */
+  const readyYoutubeFirst = async (when: string): Promise<string | null> => {
+    const ready = takeReadyLookaheadCandidates(dedup, youtubeTurnKey(sceneIndex, beat.index));
+    if (ready.length === 0) return null;
+    console.log(
+      `[ReadyYouTubeFirst] s${sceneIndex}b${beat.index} ${when} clips=${ready.length} — already prepared for this ` +
+        `sentence; looked at before the own archive (no search, no download)`
+    );
+    const clip = await settle(adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, dedup, loose), "ready YouTube");
+    return clip && isAuthenticVideoClip(clip) ? clip : null;
+  };
+  const youtubeBeforeArchive = await readyYoutubeFirst("before_archive");
+  if (youtubeBeforeArchive) return youtubeBeforeArchive;
+
   const ownArchiveClip = await settle(
     ownArchiveBeatClip(beat, scene, workDir, sceneIndex, dedup, videoTitle),
     "own archive"
@@ -2494,6 +2519,10 @@ export async function fetchBeatArchivalThenPexels(
   /** The own archive holds photographs too; one of those waits until no source had a video. */
   const ownArchiveStill = ownArchiveClip !== null && isCuratedPreparedStillClip(ownArchiveClip);
   let archiveHitRefused = false;
+  if (ownArchiveClip !== null) {
+    const youtubeBeforeArchiveHit = await readyYoutubeFirst("before_archive_hit");
+    if (youtubeBeforeArchiveHit) return youtubeBeforeArchiveHit;
+  }
   if (ownArchiveClip !== null && !ownArchiveStill) {
     /** P1 (video 630) — the hit is a candidate: the picture editor is asked before it ends the beat. */
     archiveHitRefused = await archiveHitRefusedByPictureEditor(dedup, ownArchiveClip, sceneIndex, beat.index);
@@ -4064,12 +4093,33 @@ export function noteLookaheadCandidateReady(dedup: object, turnKey: string, clip
   byTurn.set(turnKey, list);
 }
 
+/** What was already handed to its own sentence — never offered again as LATE to the next one. */
+const handedLookaheadByRender = new WeakMap<object, Set<string>>();
+
 /** The candidates already prepared for this sentence, still on disk; each is handed out once. */
 export function takeReadyLookaheadCandidates(dedup: object, turnKey: string): string[] {
   const byTurn = readyLookaheadByRender.get(dedup);
   const list = byTurn?.get(turnKey) ?? [];
   byTurn?.delete(turnKey);
+  const handed = handedLookaheadByRender.get(dedup) ?? new Set<string>();
+  handedLookaheadByRender.set(dedup, handed);
+  for (const p of list) handed.add(p);
   return list.filter((p) => fs.existsSync(p));
+}
+
+export function lookaheadCandidateWasHanded(dedup: object, clipPath: string): boolean {
+  return handedLookaheadByRender.get(dedup)?.has(clipPath) ?? false;
+}
+
+/**
+ * VIDEO 638 (G4) — within one review pool, YouTube candidates are looked at before every other
+ * source. A stable partition: the existing ranking decides the order INSIDE each group, nothing is
+ * scored, added or removed. 638 s1b3 held four YouTube moments unseen at ranks 9–13 while its five
+ * looks went to an Internet Archive podcast, a news channel and archive clips.
+ */
+export function youtubeCandidatesFirst(paths: readonly string[]): string[] {
+  const yt = paths.filter((p) => isYoutubeMomentPath(p));
+  return yt.length === 0 ? [...paths] : [...yt, ...paths.filter((p) => !isYoutubeMomentPath(p))];
 }
 
 /** VIDEO 623 — keep what a lookahead delivered too late for its own sentence. */
@@ -4220,7 +4270,7 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
         }
         void ahead.result.then(
           (late) => {
-            const rest = late.paths.filter((p) => !ready.includes(p));
+            const rest = late.paths.filter((p) => !ready.includes(p) && !lookaheadCandidateWasHanded(dedup, p));
             if (rest.length > 0) offerLateYoutubeCandidates(dedup, rest, `s${sceneIndex}b${beat.index}`);
           },
           () => undefined
@@ -17916,7 +17966,15 @@ export function pathsNotRefusedEarlier(
 export const STILL_FRIENDLY_FORMS: ReadonlySet<string> = new Set(["DATA_VISUALIZATION", "MAP", "DOCUMENT", "PHOTO", "GRAPHIC"]);
 
 export function refusalHoldsForEverySentence(reason: string): boolean {
-  return /^(not_a_valid_video|pipeline_fallback|mostly_black|below_size_floor|baked_edit_text)/.test(reason);
+  return /^(not_a_valid_video|pipeline_fallback|mostly_black|below_size_floor|baked_edit_text|invalid_duration_before_review)/.test(reason);
+}
+
+/** VIDEO 638 (G2) — the one reason a too-short YouTube moment leaves the review pool with. */
+export const INVALID_DURATION_BEFORE_REVIEW = "invalid_duration_before_review";
+
+/** A YouTube moment or fragment, by the provider tag every YouTube file name carries. */
+export function isYoutubeMomentPath(p: string): boolean {
+  return path.basename(p).includes("__pid_youtube_cc-");
 }
 
 export function compareBeatCandidates(
@@ -19143,7 +19201,7 @@ async function adoptClip(
    * so the editor looks at an alternative first (usageDiversity.preferLessFilledFootage). Nothing
    * is refused here; the delivery gate stays the last check.
    */
-  const lessFilled = preferLessFilledFootage(tasteResult.rankedPaths, (p) => clipContentKey(p), dedup);
+  const lessFilled = preferLessFilledFootage(youtubeCandidatesFirst(tasteResult.rankedPaths), (p) => clipContentKey(p), dedup);
   if (lessFilled.moved.length) {
     console.log(
       `[FootageShare] s${sceneIndex}b${beatIndex}: ${lessFilled.moved.length} candidate(s) moved back — their footage ` +
@@ -19431,6 +19489,17 @@ async function adoptClip(
       }
       const mediaRefusal = await technicalMediaRefusal(p, MEDIA_PROBES);
       if (mediaRefusal && refuse(mediaRefusal)) continue;
+      /**
+       * VIDEO 638 (G2) — a YouTube moment the archive refuses at the push (shorter than its
+       * unchanged 3 s minimum) is not shown to the picture editor first. 638 s1b2's 2.09 s FIT
+       * spent a look and was then refused "2.09s < 3s"; all five WIRED factory moments were
+       * 2.0–2.3 s. Same constant and comparison as the ingestion: nothing is rounded, slowed or
+       * stretched, and a moment of 3.0 s or more goes on exactly as before.
+       */
+      if (isYoutubeMomentPath(p) && belowArchiveMinimumDuration(await probeVideoDurationSec(p))) {
+        refuse(INVALID_DURATION_BEFORE_REVIEW);
+        continue;
+      }
       const beatMatch = scoreBeatNarrationMatch(beatText, sourceQuery, p);
       const queryWords = sourceQuery.split(/\s+/).filter((w) => w.length >= 3);
       const providerTitle = dedup.clipAnnotationMeta.get(p)?.providerText?.title;

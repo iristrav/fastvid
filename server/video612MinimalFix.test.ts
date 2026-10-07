@@ -298,7 +298,8 @@ describe("E. the stock filter does not refuse a clip for the words FastVid added
   it("the adoption loop still asks the same filter with the clip's own query", () => {
     /** ONE ROUTE: the VisualJudge asks it, with the clip's own query, for every adopted candidate. */
     const VJ = fs.readFileSync(path.join(__dirname, "visualJudge.ts"), "utf8");
-    expect(VJ).toContain('if (isRejectedStockClip(p, sourceQuery)) return reject("metadata", "rejected_stock");');
+    // VIDEO 638 (G1) — the same test, on the clip's own query (the narration is not clip text).
+    expect(VJ).toContain('if (isRejectedStockClip(p, clipQuery)) return reject("metadata", "rejected_stock");');
     expect(PIPE).toContain("const judgedOnMetadata = judgeCandidateMetadata({");
   });
 });

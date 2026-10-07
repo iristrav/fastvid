@@ -179,7 +179,15 @@ function hashSourceUrl(sourceUrl: string): string {
 /** Minimum file size in bytes — reject placeholder / broken downloads. */
 const MIN_FILE_BYTES = 50_000; // 50 KB
 /** Minimum video duration to admit (seconds). */
-const MIN_VIDEO_DURATION_SEC = 3;
+export const MIN_VIDEO_DURATION_SEC = 3;
+
+/**
+ * VIDEO 638 (G2) — the ingestion's own "too short" comparison, for a caller that must know BEFORE
+ * the picture editor looks. Same constant, same comparison (an unmeasured 0 is never "too short").
+ */
+export function belowArchiveMinimumDuration(durationSec: number): boolean {
+  return durationSec > 0 && durationSec < MIN_VIDEO_DURATION_SEC;
+}
 /** Maximum video duration — very long clips waste storage and encode time. */
 const MAX_VIDEO_DURATION_SEC = 120;
 

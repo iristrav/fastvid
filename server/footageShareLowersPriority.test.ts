@@ -98,7 +98,8 @@ describe("wired at the two places that know", () => {
   });
 
   it("applied to the ranked list the picture editor walks, before it walks it", () => {
-    const reorder = PIPE.indexOf("preferLessFilledFootage(tasteResult.rankedPaths, (p) => clipContentKey(p), dedup)");
+    // VIDEO 638 (G4) — the same reorder, over the pool with YouTube first.
+    const reorder = PIPE.indexOf("preferLessFilledFootage(youtubeCandidatesFirst(tasteResult.rankedPaths), (p) => clipContentKey(p), dedup)");
     const walk = PIPE.indexOf("const finalPaths = [...lessFilled.paths];");
     expect(reorder).toBeGreaterThan(0);
     expect(walk).toBeGreaterThan(reorder);

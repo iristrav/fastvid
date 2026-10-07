@@ -61,7 +61,8 @@ describe("1 — the moments a lookahead already prepared are this sentence's, ev
     const branch = PIPE.slice(at, PIPE.indexOf("return found;", at) + 20);
     expect(branch).toContain("const ready = takeReadyLookaheadCandidates(dedup, youtubeTurnKey(sceneIndex, beat.index));");
     expect(branch).toContain("found = found.concat(ready);");
-    expect(branch).toContain("const rest = late.paths.filter((p) => !ready.includes(p));");
+    // VIDEO 638 (G3) — and nothing the sentence already took earlier, before its archive.
+    expect(branch).toContain("const rest = late.paths.filter((p) => !ready.includes(p) && !lookaheadCandidateWasHanded(dedup, p));");
     expect(branch.indexOf("takeReadyLookaheadCandidates")).toBeLessThan(branch.indexOf("return found;"));
   });
 

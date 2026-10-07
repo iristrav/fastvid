@@ -54,7 +54,7 @@ describe("archive first — suppliers only on a gap", () => {
     expect(at("youtubeFirstBeatSlice(")).toBeLessThan(firstWait);
     expect(at("gatherHistoricalBeatVideoPool(")).toBeLessThan(firstWait);
     expect(at("await youtube;")).toBeLessThan(at("await archivePool;"));
-    expect(at("await archivePool;")).toBeLessThan(at("adoptHistoricalBeatVideoPool("));
+    expect(at("await archivePool;")).toBeLessThan(at("adoptHistoricalBeatVideoPool(candidates,"));
   });
 
   it("the cascade never asks YouTube — the YouTube turn is the only YouTube door", () => {
@@ -82,7 +82,7 @@ describe("archive first — suppliers only on a gap", () => {
 
 describe("Video 619 — video always before a picture", () => {
   it("still images are asked only after every video source", () => {
-    const lastVideo = at("adoptHistoricalBeatVideoPool(");
+    const lastVideo = at("adoptHistoricalBeatVideoPool(candidates,");
     expect(at("fetchBeatInternetStillsFirst(")).toBeGreaterThan(lastVideo);
     expect(at("fetchBeatAuthenticStills(")).toBeGreaterThan(lastVideo);
     expect(at("fetchBeatStockFallback(")).toBeGreaterThan(at("fetchBeatAuthenticStills("));
@@ -92,7 +92,7 @@ describe("Video 619 — video always before a picture", () => {
     expect(ROUTE).toContain("isCuratedPreparedStillClip(ownArchiveClip)");
     expect(ROUTE).toContain("if (ownArchiveClip !== null && !ownArchiveStill) {");
     const stillReturn = at("if (ownArchiveStill) {");
-    expect(stillReturn).toBeGreaterThan(at("adoptHistoricalBeatVideoPool("));
+    expect(stillReturn).toBeGreaterThan(at("adoptHistoricalBeatVideoPool(candidates,"));
     expect(stillReturn).toBeLessThan(at("fetchBeatInternetStillsFirst("));
   });
 
@@ -111,7 +111,7 @@ describe("Video 619 — gathering adopts nothing", () => {
 
   it("every supplier's candidates go into ONE adoption — gather first, then choose", () => {
     expect(at("const candidates = [...(ytCandidates ?? []), ...(pool ?? []), ...(personPool ?? [])];")).toBeLessThan(
-      at("adoptHistoricalBeatVideoPool(")
+      at("adoptHistoricalBeatVideoPool(candidates,")
     );
   });
 });
