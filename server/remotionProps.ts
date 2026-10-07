@@ -552,7 +552,8 @@ export function timelineToRemotionProps(params: {
         return {
           id: g.id,
           graphicType: g.graphicType,
-          data: g.data ?? {},
+          /** VIDEO 640 — a card the user edited always shows its words, whatever the budget once decided. */
+          data: (g as { editedByUser?: boolean }).editedByUser === true && g.data?.titleHidden === true ? { ...g.data, titleHidden: false } : g.data ?? {},
           label: g.label ?? null,
           fromFrame: toFrames(start, fps),
           durationInFrames: Math.max(1, toFrames(Math.max(0, end - start), fps)),

@@ -710,6 +710,25 @@ export function placePrimaryGraphics(
     const type = rendererGraphicType(slot.graphic.graphicType);
     const label = graphicLabel(type, slot.graphic.data);
     if (!graphicIsRenderable(type, slot.graphic.data, label ?? null)) continue;
+    /**
+     * VIDEO 640 — the same card for the next sentence is the SAME moment, not a new one. s1b2 and
+     * s1b3 each got the film-subject card "Kardashians"; placed as two graphics, the title came in
+     * again at 30.05 s on top of itself. A chapter card with the same title that starts where the
+     * previous one ends is that card running on: its ground and its card are extended, nothing new
+     * is drawn. A different title, a gap, or any other graphic type is placed exactly as before.
+     */
+    const prev = placed[placed.length - 1];
+    if (
+      prev &&
+      type === "chapter_card" &&
+      prev.graphic.graphicType === type &&
+      prev.graphic.label === label &&
+      Math.abs(prev.backdrop.timelineEnd - start) < 0.05
+    ) {
+      prev.backdrop.timelineEnd = Number(end.toFixed(3));
+      prev.graphic.end = prev.backdrop.timelineEnd;
+      continue;
+    }
     n++;
     const backdrop: TimelineVideoClip = {
       ...ground,

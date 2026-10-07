@@ -55,6 +55,8 @@ export type TextDirection = {
    * key sound under each from this list.
    */
   typewriter: Array<{ id: string; start: number; text: string; why: "year" | "reveal" }>;
+  /** VIDEO 640 — sentence cards that keep their ground and lose their title (budget or repeat). */
+  titleHidden: Array<{ id: string; label: string }>;
 };
 
 export type TextDirectionOptions = {
@@ -76,6 +78,12 @@ export type TextDirectionOptions = {
  */
 export const GRAPHIC_MOMENTS_PER_MINUTE = 3;
 export const SAME_MOMENT_SEC = 0.75;
+/**
+ * VIDEO 640 — a sentence card repeating a title drawn less than one budget minute ago is not a new
+ * moment: it keeps its ground and draws no words. Later in the film, after other pictures, the same
+ * subject may be titled again.
+ */
+export const SAME_TITLE_WINDOW_SEC = 60;
 export const GRAPHIC_BUDGET_EXCEEDED = "graphic_budget_exceeded";
 const DATA_GRAPHICS = new Set(["counter", "progress", "line_chart", "chart", "bar_chart", "statistic", "pie_chart"]);
 
@@ -167,7 +175,7 @@ function switchOff(e: Element, reason: string, out: TextDirection): void {
  * same result, ordered by start time and then id.
  */
 export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectionOptions = {}): TextDirection {
-  const out: TextDirection = { kept: 0, disabled: [], converted: [], extended: 0, typewriter: [] };
+  const out: TextDirection = { kept: 0, disabled: [], converted: [], extended: 0, typewriter: [], titleHidden: [] };
   const textTrack = timeline.tracks.find((t) => t.kind === "TEXT");
   const graphicTrack = timeline.tracks.find((t) => t.kind === "GRAPHICS");
   const texts = textTrack && textTrack.kind === "TEXT" ? textTrack.texts : [];
@@ -440,8 +448,46 @@ function applyGraphicBudget(accepted: Element[], graphics: TimelineGraphic[], ou
     byMinute.set(minute, [...(byMinute.get(minute) ?? []), m]);
   }
   const dropped: Element[] = [];
+  /**
+   * VIDEO 640 — A SENTENCE'S CARD IS PROTECTED AS A PICTURE, NOT AS TEXT.
+   *
+   * 640 had seven fixed moments in one minute (a counter and six chapter cards, five of them
+   * "Kardashians"), so the budget of 3 had no room and the cards themselves were never counted
+   * down. A chapter card's moving ground is what keeps its sentence from going black; its title is
+   * not. So a card keeps its ground and loses its title (`titleHidden`) when the same title was drawn
+   * less than `SAME_TITLE_WINDOW_SEC` before, or when the minute's visible moments are used up. Cards
+   * a user edited, the opening word and data graphics are untouched.
+   */
+  /** When each card title was last drawn; within one budget minute of that, the same title is a repeat. */
+  const shownTitles = new Map<string, number>();
+  const isCard = (i: BudgetItem) =>
+    i.fixed &&
+    (i.el as TimelineGraphic).graphicType === "chapter_card" &&
+    (i.el as TimelineGraphic).data?.primaryVisual === true &&
+    (i.el as { editedByUser?: boolean }).editedByUser !== true;
   for (const [minute, list] of byMinute) {
-    const fixed = list.filter((m) => m.some((i) => i.fixed));
+    const fixedAll = list.filter((m) => m.some((i) => i.fixed));
+    const fixed = fixedAll.filter((m) => !m.every(isCard));
+    for (const m of fixedAll.filter((m) => m.every(isCard)).sort((a, b) => a[0]!.el.start - b[0]!.el.start)) {
+      const card = m[0]!.el as TimelineGraphic;
+      const title = String(card.label ?? card.data?.title ?? "").trim().toLowerCase();
+      const lastShown = title ? shownTitles.get(title) : undefined;
+      const repeated = lastShown != null && card.start - lastShown < SAME_TITLE_WINDOW_SEC;
+      if (!repeated && fixed.length < GRAPHIC_MOMENTS_PER_MINUTE) {
+        fixed.push(m);
+        if (title) shownTitles.set(title, card.start);
+        /** A second pass over the same timeline gives the title back when it now has room. */
+        if (card.data?.titleHidden === true) card.data = { ...card.data, titleHidden: false };
+        continue;
+      }
+      card.data = { ...(card.data ?? {}), titleHidden: true };
+      out.titleHidden.push({ id: card.id, label: card.label ?? "" });
+      console.log(
+        `[GRAPHIC_BUDGET_EXCEEDED] minute=${minute + 1} at=${card.start.toFixed(2)}s title off "${card.label ?? ""}" — ` +
+          `${repeated ? `the same title was on screen ${(card.start - lastShown!).toFixed(1)}s ago` : `${GRAPHIC_MOMENTS_PER_MINUTE} moment(s) per minute`}; ` +
+          `the card's ground stays as the sentence's picture`
+      );
+    }
     const free = list
       .filter((m) => !m.some((i) => i.fixed))
       .sort((a, b) => Math.min(...a.map((i) => i.rank)) - Math.min(...b.map((i) => i.rank)) || a[0]!.el.start - b[0]!.el.start);
@@ -472,6 +518,7 @@ export function formatTextDirection(videoId: number, d: TextDirection): string {
     (why ? ` (${why})` : "") +
     ` converted=${d.converted.length} extended=${d.extended}` +
     ` typewriter=${d.typewriter?.length ?? 0}` +
+    (d.titleHidden?.length ? ` cardTitlesOff=${d.titleHidden.length}` : "") +
     (d.typewriter?.length ? ` (${d.typewriter.map((t) => `${t.why}:"${t.text}"@${t.start.toFixed(1)}s`).join(", ")})` : "")
   );
 }

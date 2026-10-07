@@ -374,7 +374,11 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
       break;
     case "chapter_card":
     case "chapter_title":
-      body = (
+      /**
+       * VIDEO 640 — a sentence card past the graphic budget, or repeating a title already shown,
+       * keeps its moving ground (the sentence's picture) and draws no words (`titleHidden`).
+       */
+      body = g.data?.titleHidden === true ? null : (
         <div style={{ textAlign: "center" }}>
           <div style={{ fontFamily: SERIF_FONT, fontSize: "1.2em", fontWeight: 600, color: "white", letterSpacing: "0.08em", textShadow: HALO }}>
             {words.toUpperCase()}

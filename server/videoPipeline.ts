@@ -19585,7 +19585,7 @@ async function adoptClip(
        * 2.0–2.3 s. Same constant and comparison as the ingestion: nothing is rounded, slowed or
        * stretched, and a moment of 3.0 s or more goes on exactly as before.
        */
-      if (isYoutubeMomentPath(p) && belowArchiveMinimumDuration(await probeVideoDurationSec(p))) {
+      if (isYoutubeMomentPath(p) && belowArchiveMinimumDuration(await probeDurationForMinimumRule(p))) {
         refuse(INVALID_DURATION_BEFORE_REVIEW);
         continue;
       }
@@ -21674,7 +21674,7 @@ export async function finalReadyYoutubeLook(
   beatIndex: number,
   look: (readyPaths: string[]) => Promise<string | null>,
   /** How long a prepared clip plays; the 3 s minimum is the archive's own (`belowArchiveMinimumDuration`). */
-  measure: (clip: string) => Promise<number> = probeVideoDurationSec
+  measure: (clip: string) => Promise<number> = probeDurationForMinimumRule
 ): Promise<string | null> {
   const at = `[FinalReadyYouTube] s${sceneIndex}b${beatIndex}`;
   const own = takeReadyLookaheadCandidates(dedup, youtubeTurnKey(sceneIndex, beatIndex));
@@ -21820,6 +21820,54 @@ export async function finalLooksWithin(
     noteReviewTimeoutBeforeFinalize(dedup, l.sceneIndex, l.beatIndex);
     console.warn(`[FinalReadyYouTube] s${l.sceneIndex}b${l.beatIndex} review still running after ${ms}ms — film goes on (${REVIEW_TIMEOUT_BEFORE_FINALIZE})`);
   });
+}
+
+/**
+ * VIDEO 640 — THE SENTENCES OF A SCENE COME FROM THE RENDER'S OWN RECORD, NOT FROM THE CLIP LIST.
+ *
+ * FIX B/D/E/F read `sceneVisualResults[si].beats`, and `fetchSceneVisuals` never returns `beats`
+ * (only `clips`, `beatDurations`, `clipBeatIndices`): every scene had zero sentences, so in 639 and
+ * 640 the last look never ran once. `sceneBeatsBySceneIndex` is written where the render settles a
+ * scene's beats (`applyVoiceAlignmentToBeats`) — the same source the cinematic planner reads.
+ */
+export function sentencesOfScene(
+  dedup: Pick<VisualDedupState, "sceneBeatsBySceneIndex">,
+  sceneIndex: number,
+  result: Pick<SceneVisualsResult, "beats"> | undefined
+): SceneBeat[] {
+  return dedup.sceneBeatsBySceneIndex.get(sceneIndex) ?? result?.beats ?? [];
+}
+
+/**
+ * VIDEO 639/640 — the last YouTube stage before generated images and graphics, as the pipeline runs
+ * it: FIX D (work already running gets its window), then FIX B/E/F (the last looks, side by side).
+ * Only sentences still without a picture; a sentence with an approval on its way needs no look.
+ */
+export async function runFinalReadyYoutubeStage(
+  dedup: VisualDedupState,
+  scenes: ReadonlyArray<{ index: number }>,
+  results: ReadonlyArray<Pick<SceneVisualsResult, "beats" | "clipBeatIndices"> | undefined>,
+  look: (beat: SceneBeat, sceneIndex: number, ready: string[]) => Promise<string | null>,
+  limits: { windowMs?: number; looksMs?: number } = {}
+): Promise<void> {
+  const withoutPicture = scenes.flatMap((scene, si) =>
+    sentencesOfScene(dedup, scene.index, results[si])
+      .filter((b) => !(results[si]?.clipBeatIndices ?? []).includes(b.index))
+      .map((beat) => ({ sceneIndex: scene.index, beatIndex: beat.index, beat }))
+  );
+  await awaitFinalReviewWindow(dedup, withoutPicture, limits.windowMs ?? FINAL_REVIEW_WINDOW_MS);
+  const finalLooks: Array<{ sceneIndex: number; beatIndex: number; run: Promise<unknown> }> = [];
+  for (const { sceneIndex, beatIndex, beat } of withoutPicture) {
+    if (lateApprovalPendingFor(dedup, sceneIndex, beatIndex)) continue;
+    finalLooks.push({ sceneIndex, beatIndex, run: (async () => {
+      try {
+        await finalReadyYoutubeLook(dedup, sceneIndex, beatIndex, (ready) => look(beat, sceneIndex, ready));
+      } catch (err) {
+        console.warn(`[FinalReadyYouTube] s${sceneIndex}b${beatIndex} look failed:`, (err as Error)?.message?.slice(0, 120));
+      }
+    })() });
+  }
+  await finalLooksWithin(dedup, finalLooks, limits.looksMs ?? FINAL_LOOK_TURN_MS);
 }
 
 /** A sentence with an approval still on its way to the final pass needs no last look. */
@@ -23196,6 +23244,20 @@ export async function probeVideoDurationSec(filePath: string): Promise<number> {
   return 0;
 }
 
+/**
+ * VIDEO 640 — THE 3 s GATE MEASURES EVEN WHEN THE SCENE'S CLOCK HAS RUN OUT.
+ *
+ * `probeVideoDurationSec` runs inside the scene's fetch scope, and a scope that opens after its
+ * deadline starts nothing: s0b0's moment ("SCOPE_EXPIRED label=probeVideoDurationSec …t1379d23…")
+ * came back 0, `belowArchiveMinimumDuration(0)` is false, and a 2.29 s file was reviewed, approved
+ * and only refused at the push — while the same file was refused before review for s2b0. A local
+ * ffprobe of a file already on disk is no search and no download: it keeps its own 30 s limit and
+ * is not cancelled by the scene's clock. The rule and its threshold are unchanged.
+ */
+export function probeDurationForMinimumRule(filePath: string): Promise<number> {
+  return sceneFetchScopeStorage.exit(() => probeVideoDurationSec(filePath));
+}
+
 /** Trim leading/trailing silence so scenes concatenate without dead air. */
 async function trimVoiceoverSilence(audioPath: string): Promise<number> {
   if (!fs.existsSync(audioPath)) return 0;
@@ -24533,7 +24595,8 @@ async function _runVideoPipelineInner(
               vr.clips,
               vr.beatDurations,
               vr.clipBeatIndices,
-              vr.beats
+              /** VIDEO 640 — the scene's sentences from the render's record; the result has no `beats`. */
+              sentencesOfScene(visualDedup, scene.index, vr)
             );
             const prevSceneVisual_11 = sceneVisualResults[i];
             sceneVisualResults[i] = {
@@ -24556,7 +24619,8 @@ async function _runVideoPipelineInner(
       for (let i = chunk.start; i < chunk.end; i++) {
         const vr = sceneVisualResults[i];
         if (!vr || vr.clips.length < 2) continue;
-        const sso = optimizeShotSequence(scenes[i].index, vr.clips, vr.beatDurations, vr.clipBeatIndices, vr.beats);
+        /** VIDEO 640 — the sentences come from the render's record; the result carries no `beats`. */
+        const sso = optimizeShotSequence(scenes[i].index, vr.clips, vr.beatDurations, vr.clipBeatIndices, sentencesOfScene(visualDedup, scenes[i].index, vr));
         if (sso.changes > 0) {
           const prevSceneVisual_12 = sceneVisualResults[i];
           sceneVisualResults[i] = { ...vr, clips: sso.clips, beatDurations: sso.beatDurations, clipBeatIndices: sso.clipBeatIndices };
@@ -24600,31 +24664,9 @@ async function _runVideoPipelineInner(
      * their turn (at most `FINAL_REVIEW_WINDOW_MS`); (FIX E/F) then the last looks, side by side,
      * at most `FINAL_LOOK_TURN_MS`. Whatever is still running after that is named, never silent.
      */
-    const withoutPicture = scenes.flatMap((scene, si) =>
-      (sceneVisualResults[si]?.beats ?? [])
-        .filter((b) => !(sceneVisualResults[si]?.clipBeatIndices ?? []).includes(b.index))
-        .map((b) => ({ sceneIndex: scene.index, beatIndex: b.index }))
+    await runFinalReadyYoutubeStage(visualDedup, scenes, sceneVisualResults, (beat, sceneIndex, ready) =>
+      adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, visualDedup, { videoTitle: asVideoTitleString(videoTitle) })
     );
-    await awaitFinalReviewWindow(visualDedup, withoutPicture);
-    const finalLooks: Array<{ sceneIndex: number; beatIndex: number; run: Promise<unknown> }> = [];
-    for (let si = 0; si < scenes.length; si++) {
-      const vr = sceneVisualResults[si];
-      const sceneIndex = scenes[si]!.index;
-      for (const beat of vr?.beats ?? []) {
-        if ((vr?.clipBeatIndices ?? []).includes(beat.index)) continue;
-        if (lateApprovalPendingFor(visualDedup, sceneIndex, beat.index)) continue;
-        finalLooks.push({ sceneIndex, beatIndex: beat.index, run: (async () => {
-          try {
-            await finalReadyYoutubeLook(visualDedup, sceneIndex, beat.index, (ready) =>
-              adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, visualDedup, { videoTitle: asVideoTitleString(videoTitle) })
-            );
-          } catch (err) {
-            console.warn(`[FinalReadyYouTube] s${sceneIndex}b${beat.index} look failed:`, (err as Error)?.message?.slice(0, 120));
-          }
-        })() });
-      }
-    }
-    await finalLooksWithin(visualDedup, finalLooks);
     for (let si = 0; si < scenes.length; si++) await placeLate(si, true);
 
     /** GENERATED_IMAGE_FALLBACK — after every source and the main-subject rescue: see `generateMissingBeatImages`. */
@@ -25043,7 +25085,8 @@ async function _runVideoPipelineInner(
         const planned: Array<{ sceneIndex: number; beatIndex: number }> = [];
         sceneVisualResults.forEach((svr, si) => {
           const sceneIndex = scenes[si]?.index ?? si;
-          for (const b of svr?.beats ?? []) planned.push({ sceneIndex, beatIndex: b.index });
+          /** VIDEO 640 — every planned sentence, from the render's record (the result has no `beats`). */
+          for (const b of sentencesOfScene(visualDedup, sceneIndex, svr)) planned.push({ sceneIndex, beatIndex: b.index });
         });
         for (const line of renderBeatFunnelReport(
           visualDedup.beatOutcomeAudit,

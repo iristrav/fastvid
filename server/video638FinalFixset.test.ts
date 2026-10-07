@@ -335,17 +335,23 @@ describe("FIX B — before a sentence gets a graphic, YouTube already on disk fo
   });
 
   it("wired: after sourcing, before the final F2 pass and before generated images; only sentences without a picture", () => {
-    const loop = PIPE.indexOf("await finalReadyYoutubeLook(visualDedup, sceneIndex, beat.index, (ready) =>");
+    /**
+     * VIDEO 640 — this pin used to read the inline loop over `sceneVisualResults[si].beats`, a field
+     * `fetchSceneVisuals` never returns: the text was there, the loop ran over nothing. The stage is
+     * now one function (`runFinalReadyYoutubeStage`), exercised for real in
+     * video640FinalStageAndCards.test.ts; this pin only holds its place in the pipeline.
+     */
+    const stage = PIPE.indexOf("await runFinalReadyYoutubeStage(visualDedup, scenes, sceneVisualResults, (beat, sceneIndex, ready) =>");
     const finalPass = PIPE.indexOf("for (let si = 0; si < scenes.length; si++) await placeLate(si, true);");
     const generated = PIPE.indexOf("await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);");
-    expect(loop).toBeGreaterThan(0);
-    expect(loop).toBeLessThan(finalPass);
+    expect(stage).toBeGreaterThan(0);
+    expect(stage).toBeLessThan(finalPass);
     expect(finalPass).toBeLessThan(generated);
-    const block = PIPE.slice(loop - 700, loop);
-    expect(block).toContain("if ((vr?.clipBeatIndices ?? []).includes(beat.index)) continue;");
-    expect(block).toContain("if (lateApprovalPendingFor(visualDedup, sceneIndex, beat.index)) continue;");
+    const body = PIPE.slice(PIPE.indexOf("export async function runFinalReadyYoutubeStage("), PIPE.indexOf("\n}\n", PIPE.indexOf("export async function runFinalReadyYoutubeStage(")));
+    expect(body).toContain(".filter((b) => !(results[si]?.clipBeatIndices ?? []).includes(b.index))");
+    expect(body).toContain("if (lateApprovalPendingFor(dedup, sceneIndex, beatIndex)) continue;");
     /** The one adoption: adoptClip with its gates, the 3 s rule and the per-sentence ceiling. */
-    expect(PIPE.slice(loop, loop + 300)).toContain("adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, visualDedup,");
+    expect(PIPE.slice(stage, stage + 300)).toContain("adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, visualDedup,");
   });
 
   it("the look ceiling is exactly what it was (5 per sentence) and nothing here raises it", () => {
@@ -374,7 +380,8 @@ describe("unchanged: source order, search limit, 3 s rule, gates", () => {
     const { MIN_VIDEO_DURATION_SEC, belowArchiveMinimumDuration } = await import("./archiveIngestion");
     expect(MIN_VIDEO_DURATION_SEC).toBe(3);
     expect([2.99, 3.0, 3.01].map(belowArchiveMinimumDuration)).toEqual([true, false, false]);
-    expect(PIPE).toContain("if (isYoutubeMomentPath(p) && belowArchiveMinimumDuration(await probeVideoDurationSec(p))) {");
+    /** VIDEO 640 — same rule and threshold; the measurement no longer stops when the scene clock does. */
+    expect(PIPE).toContain("if (isYoutubeMomentPath(p) && belowArchiveMinimumDuration(await probeDurationForMinimumRule(p))) {");
   });
 
   it("the stock filter reads only the clip's own text (G1)", () => {

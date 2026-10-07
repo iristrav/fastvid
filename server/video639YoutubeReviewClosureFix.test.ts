@@ -170,15 +170,16 @@ describe("TEST A — FIX D: a review already running when the scene closes finis
   });
 
   it("wired before the last looks, the final F2 pass and generated images; for sentences without a picture", () => {
-    const window = PIPE.indexOf("await awaitFinalReviewWindow(visualDedup, withoutPicture);");
-    const looks = PIPE.indexOf("await finalLooksWithin(visualDedup, finalLooks);");
+    /** VIDEO 640 — the wiring is one function now; run for real in video640FinalStageAndCards.test.ts. */
+    const stage = bodyOf("export async function runFinalReadyYoutubeStage(");
+    expect(stage.indexOf("await awaitFinalReviewWindow(dedup, withoutPicture,")).toBeGreaterThan(0);
+    expect(stage.indexOf("await awaitFinalReviewWindow(dedup, withoutPicture,")).toBeLessThan(stage.indexOf("await finalLooksWithin(dedup, finalLooks,"));
+    const call = PIPE.indexOf("await runFinalReadyYoutubeStage(visualDedup, scenes, sceneVisualResults,");
     const finalPass = PIPE.indexOf("for (let si = 0; si < scenes.length; si++) await placeLate(si, true);");
     const generated = PIPE.indexOf("await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);");
-    expect(window).toBeGreaterThan(0);
-    expect(window).toBeLessThan(looks);
-    expect(looks).toBeLessThan(finalPass);
+    expect(call).toBeGreaterThan(0);
+    expect(call).toBeLessThan(finalPass);
     expect(finalPass).toBeLessThan(generated);
-    expect(PIPE.slice(window - 500, window)).toContain(".filter((b) => !(sceneVisualResults[si]?.clipBeatIndices ?? []).includes(b.index))");
   });
 });
 
@@ -263,8 +264,10 @@ describe("TEST D/E — a verdict already given is never asked again", () => {
   });
 
   it("already PLACED: the sentence has its picture, so the wiring never asks", () => {
-    const loop = PIPE.indexOf("await finalReadyYoutubeLook(visualDedup, sceneIndex, beat.index, (ready) =>");
-    expect(PIPE.slice(loop - 700, loop)).toContain("if ((vr?.clipBeatIndices ?? []).includes(beat.index)) continue;");
+    /** VIDEO 640 — behaviour, not text: see video640FinalStageAndCards.test.ts ("a sentence with a clip"). */
+    expect(bodyOf("export async function runFinalReadyYoutubeStage(")).toContain(
+      ".filter((b) => !(results[si]?.clipBeatIndices ?? []).includes(b.index))"
+    );
   });
 });
 

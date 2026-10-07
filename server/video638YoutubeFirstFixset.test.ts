@@ -123,7 +123,8 @@ describe("G2 — the archive's 3 s minimum, applied before review instead of aft
   });
 
   it("sits in the pool after the file, identity and black-frame checks and before any scoring or look", () => {
-    const at = PIPE.indexOf("if (isYoutubeMomentPath(p) && belowArchiveMinimumDuration(await probeVideoDurationSec(p))) {");
+    /** VIDEO 640 — same gate, same place; its probe is `probeDurationForMinimumRule` (not cut off by the scene clock). */
+    const at = PIPE.indexOf("if (isYoutubeMomentPath(p) && belowArchiveMinimumDuration(await probeDurationForMinimumRule(p))) {");
     expect(at).toBeGreaterThan(0);
     expect(PIPE.lastIndexOf("const mediaRefusal = await technicalMediaRefusal(p, MEDIA_PROBES);", at)).toBeGreaterThan(at - 1200);
     const after = PIPE.slice(at, at + 400);

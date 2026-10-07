@@ -1043,13 +1043,38 @@ export function buildCinematicSceneInputs(params: {
      * beats that failed to find footage — a later beat still begins where the voice has reached.
      */
     let beatCursorSec = 0;
+    /**
+     * VIDEO 640 — LAID-OUT BEATS COVER THEIR SCENE'S NARRATION, NOT A FRACTION OF IT.
+     *
+     * A laid-out beat runs `holdSec`, a per-shot budget. Scene 1 of 640 ran 29.24 s of narration and
+     * its four budgets added up to 17.50 s, so the last 11.74 s belonged to no sentence: no filler
+     * may stand there (`fillerFitsFor`: a span no sentence covers has nobody to approve it), and the
+     * hold stretched the last element — s1b3's chapter card — to 15.24 s. When every beat of a scene
+     * is laid out and their holds fall short of the scene, each hold is spread by the same factor, in
+     * order: every second of narration belongs to a sentence again. Overshoot is clamped below, as
+     * before; a scene with any measured beat is left exactly as it was.
+     */
+    const laidOutTotalSec = sceneFacts.beats.reduce((t, b) => t + (b.holdSec ?? 0), 0);
+    const spread =
+      sceneLengthSec > 0 &&
+      laidOutTotalSec > 0 &&
+      laidOutTotalSec < sceneLengthSec - 0.001 &&
+      sceneFacts.beats.every((b) => b.voiceStartSec == null && b.voiceEndSec == null)
+        ? sceneLengthSec / laidOutTotalSec
+        : 1;
+    if (spread !== 1) {
+      console.log(
+        `[CinematicInputs] scene=${scene.index} laid-out beats spread over the narration: ` +
+          `holds ${laidOutTotalSec.toFixed(2)}s → scene ${sceneLengthSec.toFixed(2)}s (×${spread.toFixed(3)})`
+      );
+    }
     sceneFacts.beats.forEach((beat, beatIndex) => {
       stats.beats++;
       const beatId = beatIdFor(scene.index, beatIndex);
 
       const measured = beat.voiceStartSec != null;
       const start = beat.voiceStartSec ?? beatCursorSec;
-      const rawEnd = beat.voiceEndSec ?? start + (beat.holdSec ?? 0);
+      const rawEnd = beat.voiceEndSec ?? start + (beat.holdSec ?? 0) * spread;
       if (!measured) stats.laidOut++;
       /**
        * RENDER 574 — A SHOT MAY NOT CLAIM TIME THE NEXT SCENE HAS ALREADY BEEN GIVEN.
