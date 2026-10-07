@@ -300,7 +300,7 @@ import {
 } from "./renderLock";
 import { dbRenderLockStore, dbYoutubeSearchBudgetStore } from "./db";
 import { newRenderId } from "./renderCorrelation";
-import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, type BeatImageGateState } from "./beatImageRelevanceGate";
+import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, maxBeatImageJudgementsPerRender, type BeatImageGateState } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
 import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, pictureJudgedOnBeat, youtubeForLastLook, giveLastLookTo, isYoutubeContentKey, pictureLookedAtOnBeat, youtubeLookedAtOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
 import {
@@ -4123,6 +4123,7 @@ export function takeReadyLookaheadCandidates(dedup: object, turnKey: string): st
   const handed = handedLookaheadByRender.get(dedup) ?? new Set<string>();
   handedLookaheadByRender.set(dedup, handed);
   for (const p of list) handed.add(p);
+  noteYoutubeAssigned(dedup, turnKey, list);
   return list.filter((p) => fs.existsSync(p));
 }
 
@@ -4158,6 +4159,71 @@ export function takeLateYoutubeCandidates(dedup: Pick<VisualDedupState, "lateYou
   const onDisk = list.filter((p) => fs.existsSync(p));
   if (onDisk.length > 0) console.log(`[YouTubeLookahead] ${to} TAKES_LATE clips=${onDisk.length}`);
   return onDisk;
+}
+
+/**
+ * VIDEO 639 (FIX E) — WHICH YOUTUBE MOMENTS WERE HANDED TO WHICH SENTENCE.
+ *
+ * A moment taken off the ready list belonged to nobody's list afterwards: s1b4's six moments were
+ * taken at 14:39:32, its scene closed 7 s later, its review ran on and the last look before the
+ * graphics (FIX B) found own=0 late=0. Kept here per sentence, so the moments a sentence was given
+ * and never got a verdict on can be found again for THAT sentence (`pendingYoutubeForBeat`).
+ */
+const assignedYoutubeByRender = new WeakMap<object, Map<string, string[]>>();
+
+export function noteYoutubeAssigned(dedup: object, turnKey: string, paths: readonly string[]): void {
+  const moments = paths.filter((p) => isYoutubeMomentPath(p));
+  if (moments.length === 0) return;
+  const byTurn = assignedYoutubeByRender.get(dedup) ?? new Map<string, string[]>();
+  assignedYoutubeByRender.set(dedup, byTurn);
+  const list = byTurn.get(turnKey) ?? [];
+  for (const p of moments) if (!list.includes(p)) list.push(p);
+  byTurn.set(turnKey, list);
+}
+
+/** VIDEO 639 (FIX D) — reviews of a sentence's moments still running (`adoptHistoricalBeatVideoPool`). */
+const reviewsInFlightByRender = new WeakMap<object, Map<string, Set<Promise<unknown>>>>();
+
+export function noteReviewInFlight(dedup: object, turnKey: string, review: Promise<unknown>): void {
+  const byTurn = reviewsInFlightByRender.get(dedup) ?? new Map<string, Set<Promise<unknown>>>();
+  reviewsInFlightByRender.set(dedup, byTurn);
+  const set = byTurn.get(turnKey) ?? new Set<Promise<unknown>>();
+  byTurn.set(turnKey, set);
+  set.add(review);
+  const done = () => {
+    set.delete(review);
+    if (set.size === 0) byTurn.delete(turnKey);
+  };
+  review.then(done, done);
+}
+
+export function reviewsInFlightFor(dedup: object, turnKey: string): Promise<unknown>[] {
+  return [...(reviewsInFlightByRender.get(dedup)?.get(turnKey) ?? [])];
+}
+
+/**
+ * VIDEO 639 (FIX E) — THE MOMENTS A SENTENCE WAS GIVEN AND NEVER GOT A VERDICT ON.
+ *
+ * Only this sentence's own handed moments, still on disk, that no model looked at FOR THIS SENTENCE
+ * (`pictureLookedAtOnBeat`: an approval or a rejection already given is never asked again), that a
+ * gate did not already refuse before the picture editor, and that the render has not used.
+ */
+export function pendingYoutubeForBeat(
+  dedup: Partial<Pick<VisualDedupState, "beatRelevance" | "visionReviewPool" | "usedContentKeys">>,
+  sceneIndex: number,
+  beatIndex: number
+): string[] {
+  const assigned = assignedYoutubeByRender.get(dedup)?.get(youtubeTurnKey(sceneIndex, beatIndex)) ?? [];
+  const refused = dedup.visionReviewPool?.beats.get(`${sceneIndex}:${beatIndex}`)?.refusedBeforeEditor;
+  return assigned.filter((p) => {
+    const key = clipContentKey(p);
+    return (
+      fs.existsSync(p) &&
+      !pictureLookedAtOnBeat(dedup.beatRelevance, p, key, sceneIndex, beatIndex) &&
+      !refused?.has(key) &&
+      !dedup.usedContentKeys?.has(key)
+    );
+  });
 }
 
 /**
@@ -4334,6 +4400,8 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
       timeoutMs,
       `${label} s${sceneIndex} b${beat.index}`
     );
+    /** VIDEO 639 (FIX E) — the sentence's own turn: what it was handed stays findable for it. */
+    if (!req.lookahead) noteYoutubeAssigned(dedup, youtubeTurnKey(sceneIndex, beat.index), paths);
     return {
       clip: null,
       candidates: paths.length,
@@ -4354,6 +4422,8 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: ${label} skipped:`,
       message
     );
+    /** VIDEO 639 (FIX E) — a turn cut short drops what it had; the sentence can still find it. */
+    if (!req.lookahead) noteYoutubeAssigned(dedup, youtubeTurnKey(sceneIndex, beat.index), found);
     return {
       clip: null,
       candidates: found.length,
@@ -20113,7 +20183,10 @@ export async function adoptHistoricalBeatVideoPool(
   // is the one description that's true for the whole pool regardless of which query/tier found
   // which candidate, so it's the only safe choice here — unlike the single-query case elsewhere
   // in this file, where sourceQuery and beatText intentionally differ.
-  const clip = await adoptClip(boundedPool, dedup, sceneIndex, beat.index, beat.text, workDir, beat.text, loose);
+  /** VIDEO 639 (FIX D) — known as running, so the last look before the graphics can give it its turn. */
+  let reviewDone!: () => void;
+  noteReviewInFlight(dedup, youtubeTurnKey(sceneIndex, beat.index), new Promise<void>((r) => (reviewDone = r)));
+  const clip = await adoptClip(boundedPool, dedup, sceneIndex, beat.index, beat.text, workDir, beat.text, loose).finally(reviewDone);
   if (isRealVideoClip(clip)) {
     console.log(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical video from pool of ${boundedPool.length} (${HISTORICAL_SOURCE_TIER_ORDER.join("/")})`
@@ -21420,6 +21493,8 @@ export function graphicOnlyReasonFor(
     return "APPROVED_NOT_PLACED";
   }
   if (approvedPicksForBeat(dedup, sceneIndex, beatIndex) > 0) return "APPROVED_NOT_PLACED";
+  /** VIDEO 639 (FIX D/E) — its review was still running when the film was filled: named, never silent. */
+  if (reviewTimedOutBeforeFinalize(dedup, sceneIndex, beatIndex)) return REVIEW_TIMEOUT_BEFORE_FINALIZE;
   if (beatRejectCount(dedup.rejections, sceneIndex, beatIndex) > 0) return `ALL_REJECTED (${top})`;
   const unjudged = neverJudged.get(`${sceneIndex}:${beatIndex}`) ?? 0;
   if (unjudged > 0) return `CANDIDATES_NOT_REVIEWED (${unjudged})`;
@@ -21582,28 +21657,169 @@ export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatI
  * before `generateMissingBeatImages`: files already on disk only — no search, no download, no wait —
  * judged by `look` (the one `adoptClip`, its ceilings and gates). A FIT is handed to the final F2
  * pass as a settled ladder, so it is placed (or its loss named) exactly like any late approval.
+ *
+ * VIDEO 639 (FIX E) — plus the moments this sentence was HANDED and never got a verdict on
+ * (`pendingYoutubeForBeat`): 639's s1b4, s1b5, s2b3 and s0b0 were found here with own=0 late=0.
+ * Within the unchanged ceilings: never more fresh moments than the sentence has looks left (5 per
+ * sentence, one held back per review of it still running) or the render has left (120).
+ *
+ * VIDEO 639 (FIX F) — an approved moment whose prepared clip falls under the 3 s minimum
+ * (`belowArchiveMinimumDuration`, the archive's own rule) cannot be pushed: s1b1's FIT became 2.44 s
+ * and its three other moments were never looked at. The next moment of THIS sentence is tried.
  */
 export async function finalReadyYoutubeLook(
-  dedup: Pick<VisualDedupState, "lateYoutubeCandidates">,
+  dedup: Pick<VisualDedupState, "lateYoutubeCandidates"> &
+    Partial<Pick<VisualDedupState, "beatRelevance" | "visionReviewPool" | "usedContentKeys" | "beatImageGate">>,
   sceneIndex: number,
   beatIndex: number,
-  look: (readyPaths: string[]) => Promise<string | null>
+  look: (readyPaths: string[]) => Promise<string | null>,
+  /** How long a prepared clip plays; the 3 s minimum is the archive's own (`belowArchiveMinimumDuration`). */
+  measure: (clip: string) => Promise<number> = probeVideoDurationSec
 ): Promise<string | null> {
+  const at = `[FinalReadyYouTube] s${sceneIndex}b${beatIndex}`;
   const own = takeReadyLookaheadCandidates(dedup, youtubeTurnKey(sceneIndex, beatIndex));
   const late = (dedup.lateYoutubeCandidates ?? []).filter((p) => fs.existsSync(p));
-  const ready = [...new Set([...own, ...late])].filter((p) => isYoutubeMomentPath(p));
+  const pending = pendingYoutubeForBeat(dedup, sceneIndex, beatIndex);
+  let ready = [...new Set([...own, ...late, ...pending])].filter((p) => isYoutubeMomentPath(p));
   if (ready.length === 0) return null;
+  const inFlight = reviewsInFlightFor(dedup, youtubeTurnKey(sceneIndex, beatIndex)).length;
+  const looksLeft = () =>
+    Math.min(
+      looksLeftOnBeat(dedup.beatRelevance, sceneIndex, beatIndex) - inFlight,
+      maxBeatImageJudgementsPerRender() - (dedup.beatImageGate?.judgementAttempts ?? 0)
+    );
   console.log(
-    `[FinalReadyYouTube] s${sceneIndex}b${beatIndex} clips=${ready.length} (own=${own.length} late=${late.length}) — ` +
+    `${at} clips=${ready.length} (own=${own.length} late=${late.length} pending=${pending.length}) — ` +
       `ready on disk and never placed; one look before this sentence gets a graphic (no search, no download)`
   );
   const approvedBefore = approvedPicksForBeat(dedup, sceneIndex, beatIndex);
-  const clip = await look(ready);
-  if (!clip) return null;
-  const ladders = afterCloseLaddersByRender.get(dedup) ?? [];
-  afterCloseLaddersByRender.set(dedup, ladders);
-  ladders.push({ sceneIndex, beatIndex, approvedBefore, promise: Promise.resolve(clip), settled: { value: clip } });
-  return clip;
+  const tried = new Set<string>();
+  while (ready.length > 0) {
+    /** A moment already judged for this sentence costs no look; every other one costs exactly one. */
+    const judged = ready.filter((p) => pictureLookedAtOnBeat(dedup.beatRelevance, p, clipContentKey(p), sceneIndex, beatIndex));
+    const fresh = ready.filter((p) => !judged.includes(p)).slice(0, Math.max(0, looksLeft()));
+    if (fresh.length === 0 && judged.length === 0) {
+      const ceiling = looksLeftOnBeat(dedup.beatRelevance, sceneIndex, beatIndex) - inFlight <= 0 ? "BEAT_LOOK_CEILING" : "FILM_LOOK_CEILING";
+      console.log(`${at} not looked at — reason=${ceiling} (${ready.length} moment(s) left unjudged, ceilings unchanged)`);
+      return null;
+    }
+    const offered = [...judged, ...fresh];
+    console.log(`${at} review started clips=${offered.length} (fresh=${fresh.length} already judged=${judged.length})`);
+    const clip = await look(offered);
+    if (!clip) {
+      console.log(`${at} review completed — no fit`);
+      return null;
+    }
+    if (assembledScenesByRender.get(dedup)?.has(sceneIndex)) {
+      console.warn(`${at} ${path.basename(clip)} approved after the film was assembled — not placed (${REVIEW_TIMEOUT_BEFORE_FINALIZE})`);
+      noteReviewTimeoutBeforeFinalize(dedup, sceneIndex, beatIndex);
+      return null;
+    }
+    const seconds = await measure(clip).catch(() => 0);
+    if (belowArchiveMinimumDuration(seconds)) {
+      /** FIX F — refused by the existing 3 s rule; never stretched, never looped: the next moment is tried. */
+      tried.add(clipContentKey(clip));
+      console.log(
+        `${at} placement attempted ${path.basename(clip)} — refused: ${seconds.toFixed(2)}s < 3s after preparing; ` +
+          `trying the next moment already found for this sentence`
+      );
+      const next = offered.filter((p) => !tried.has(clipContentKey(p)) && !pictureLookedAtOnBeat(dedup.beatRelevance, p, clipContentKey(p), sceneIndex, beatIndex));
+      if (next.length >= offered.length) break;
+      ready = next;
+      continue;
+    }
+    console.log(`${at} review completed — approved ${path.basename(clip)}; handed to the final placement pass`);
+    const ladders = afterCloseLaddersByRender.get(dedup) ?? [];
+    afterCloseLaddersByRender.set(dedup, ladders);
+    ladders.push({ sceneIndex, beatIndex, approvedBefore, promise: Promise.resolve(clip), settled: { value: clip } });
+    return clip;
+  }
+  console.log(`${at} review completed — no moment left after the 3 s rule`);
+  return null;
+}
+
+/**
+ * VIDEO 639 (FIX D) — A REVIEW ALREADY RUNNING GETS ITS TURN BEFORE THE FILM IS FILLED WITH GRAPHICS.
+ *
+ * 639's s0b2 was approved before the final pass; its clip was still being prepared and settled 10 s
+ * after the pass had dropped it. Here, for sentences still without a picture, only work ALREADY
+ * running is awaited — a sentence's own ladder that has not settled, and its reviews of handed
+ * moments (`noteReviewInFlight`). Nothing is searched, downloaded or started. Hard bound:
+ * `FINAL_REVIEW_WINDOW_MS`. Returns the sentences whose work was still running when it ended.
+ */
+export const REVIEW_TIMEOUT_BEFORE_FINALIZE = "REVIEW_TIMEOUT_BEFORE_FINALIZE";
+/** The existing minimum to judge what is already on disk (`ARCHIVE_JUDGE_MIN_MS`, 10 s): no new limit. */
+export const FINAL_REVIEW_WINDOW_MS = ARCHIVE_JUDGE_MIN_MS;
+/** The reviews of the last look itself: the existing time one sentence needs to be judged (`JUDGED_BEAT_TURN_MS`). */
+export const FINAL_LOOK_TURN_MS = JUDGED_BEAT_TURN_MS;
+
+const reviewTimeoutByRender = new WeakMap<object, Set<string>>();
+
+export function noteReviewTimeoutBeforeFinalize(dedup: object, sceneIndex: number, beatIndex: number): void {
+  const set = reviewTimeoutByRender.get(dedup) ?? new Set<string>();
+  reviewTimeoutByRender.set(dedup, set);
+  set.add(`${sceneIndex}:${beatIndex}`);
+}
+
+export function reviewTimedOutBeforeFinalize(dedup: object, sceneIndex: number, beatIndex: number): boolean {
+  return Boolean(reviewTimeoutByRender.get(dedup)?.has(`${sceneIndex}:${beatIndex}`));
+}
+
+/** Waits for `work` at most `ms`; true when everything finished inside it. */
+async function settledWithin(work: Promise<unknown>[], ms: number): Promise<boolean> {
+  if (work.length === 0) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const all = Promise.allSettled(work).then(() => true);
+  const done = await Promise.race([all, new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); })]);
+  if (timer) clearTimeout(timer);
+  /** `then` handlers registered before ours (ladder `settled`, in-flight removal) run first. */
+  await Promise.resolve();
+  return done;
+}
+
+export async function awaitFinalReviewWindow(
+  dedup: object,
+  sentences: ReadonlyArray<{ sceneIndex: number; beatIndex: number }>,
+  windowMs: number = FINAL_REVIEW_WINDOW_MS
+): Promise<Array<{ sceneIndex: number; beatIndex: number }>> {
+  const mine = (e: { sceneIndex: number; beatIndex: number }) =>
+    sentences.some((s) => s.sceneIndex === e.sceneIndex && s.beatIndex === e.beatIndex);
+  const ladders = (afterCloseLaddersByRender.get(dedup) ?? []).filter((e) => !e.settled && mine(e));
+  const reviews = sentences.flatMap((s) => reviewsInFlightFor(dedup, youtubeTurnKey(s.sceneIndex, s.beatIndex)));
+  if (ladders.length + reviews.length === 0) return [];
+  const t0 = Date.now();
+  console.log(
+    `[FinalReviewWindow] started ladders=${ladders.length} reviews=${reviews.length} max=${windowMs}ms — ` +
+      `only work already running (no search, no download)`
+  );
+  await settledWithin([...ladders.map((e) => e.promise), ...reviews], windowMs);
+  const still = sentences.filter(
+    (s) =>
+      ladders.some((e) => !e.settled && e.sceneIndex === s.sceneIndex && e.beatIndex === s.beatIndex) ||
+      reviewsInFlightFor(dedup, youtubeTurnKey(s.sceneIndex, s.beatIndex)).length > 0
+  );
+  for (const s of still) {
+    noteReviewTimeoutBeforeFinalize(dedup, s.sceneIndex, s.beatIndex);
+    console.warn(`[FinalReviewWindow] s${s.sceneIndex}b${s.beatIndex} review interrupted — still running after ${windowMs}ms (${REVIEW_TIMEOUT_BEFORE_FINALIZE})`);
+  }
+  console.log(`[FinalReviewWindow] ended after ${Date.now() - t0}ms stillRunning=${still.length}`);
+  return still;
+}
+
+/** The last looks run side by side, bounded by `FINAL_LOOK_TURN_MS`; one still running is named, never silent. */
+export async function finalLooksWithin(
+  dedup: object,
+  looks: ReadonlyArray<{ sceneIndex: number; beatIndex: number; run: Promise<unknown> }>,
+  ms: number = FINAL_LOOK_TURN_MS
+): Promise<void> {
+  const done = new Set<number>();
+  looks.forEach((l, i) => l.run.then(() => done.add(i), () => done.add(i)));
+  await settledWithin(looks.map((l) => l.run), ms);
+  looks.forEach((l, i) => {
+    if (done.has(i)) return;
+    noteReviewTimeoutBeforeFinalize(dedup, l.sceneIndex, l.beatIndex);
+    console.warn(`[FinalReadyYouTube] s${l.sceneIndex}b${l.beatIndex} review still running after ${ms}ms — film goes on (${REVIEW_TIMEOUT_BEFORE_FINALIZE})`);
+  });
 }
 
 /** A sentence with an approval still on its way to the final pass needs no last look. */
@@ -24379,21 +24595,36 @@ async function _runVideoPipelineInner(
      * still without a picture gets one look at YouTube already on disk for it (or offered late and
      * never taken). A FIT is placed by the pass below.
      */
+    /**
+     * VIDEO 639 (FIX D) — first, reviews and preparations ALREADY running for those sentences get
+     * their turn (at most `FINAL_REVIEW_WINDOW_MS`); (FIX E/F) then the last looks, side by side,
+     * at most `FINAL_LOOK_TURN_MS`. Whatever is still running after that is named, never silent.
+     */
+    const withoutPicture = scenes.flatMap((scene, si) =>
+      (sceneVisualResults[si]?.beats ?? [])
+        .filter((b) => !(sceneVisualResults[si]?.clipBeatIndices ?? []).includes(b.index))
+        .map((b) => ({ sceneIndex: scene.index, beatIndex: b.index }))
+    );
+    await awaitFinalReviewWindow(visualDedup, withoutPicture);
+    const finalLooks: Array<{ sceneIndex: number; beatIndex: number; run: Promise<unknown> }> = [];
     for (let si = 0; si < scenes.length; si++) {
       const vr = sceneVisualResults[si];
       const sceneIndex = scenes[si]!.index;
       for (const beat of vr?.beats ?? []) {
         if ((vr?.clipBeatIndices ?? []).includes(beat.index)) continue;
         if (lateApprovalPendingFor(visualDedup, sceneIndex, beat.index)) continue;
-        try {
-          await finalReadyYoutubeLook(visualDedup, sceneIndex, beat.index, (ready) =>
-            adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, visualDedup, { videoTitle: asVideoTitleString(videoTitle) })
-          );
-        } catch (err) {
-          console.warn(`[FinalReadyYouTube] s${sceneIndex}b${beat.index} look failed:`, (err as Error)?.message?.slice(0, 120));
-        }
+        finalLooks.push({ sceneIndex, beatIndex: beat.index, run: (async () => {
+          try {
+            await finalReadyYoutubeLook(visualDedup, sceneIndex, beat.index, (ready) =>
+              adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, visualDedup, { videoTitle: asVideoTitleString(videoTitle) })
+            );
+          } catch (err) {
+            console.warn(`[FinalReadyYouTube] s${sceneIndex}b${beat.index} look failed:`, (err as Error)?.message?.slice(0, 120));
+          }
+        })() });
       }
     }
+    await finalLooksWithin(visualDedup, finalLooks);
     for (let si = 0; si < scenes.length; si++) await placeLate(si, true);
 
     /** GENERATED_IMAGE_FALLBACK — after every source and the main-subject rescue: see `generateMissingBeatImages`. */
