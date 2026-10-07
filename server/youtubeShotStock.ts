@@ -54,6 +54,12 @@ export type StockCandidate = {
   serves: number;
   /** W6 — a recent same-subject video already showed this source: it is stocked after the fresh ones. */
   shownRecently?: boolean;
+  /**
+   * VIDEO 640 — found by search #2 for a subject no other pool video shows. Stocked first: no beat
+   * downloads outside the stock any more (637–640: `downloads=0`), so a rescue candidate that is not
+   * stocked never reaches its sentence. The caller marks at most two.
+   */
+  rescue?: boolean;
 };
 
 export type StockShot = {
@@ -86,13 +92,20 @@ type Entry = { status: "pending" | "ready" | "failed"; done: Promise<void>; shot
 const stocks = new Map<number, Map<string, Entry>>();
 
 /**
- * The order a pool's usable videos are stocked in: fresh sources before ones a recent same-subject
- * video showed (W6), then the most sentences served, then the list order.
+ * The order a pool's usable videos are stocked in: a search #2 rescue candidate first (VIDEO 640),
+ * then fresh sources before ones a recent same-subject video showed (W6), then the most sentences
+ * served, then the list order.
  */
 export function stockOrder(candidates: readonly StockCandidate[], max = MAX_STOCK_VIDEOS): StockCandidate[] {
   return candidates
     .map((c, i) => ({ c, i }))
-    .sort((a, b) => Number(Boolean(a.c.shownRecently)) - Number(Boolean(b.c.shownRecently)) || b.c.serves - a.c.serves || a.i - b.i)
+    .sort(
+      (a, b) =>
+        Number(Boolean(b.c.rescue)) - Number(Boolean(a.c.rescue)) ||
+        Number(Boolean(a.c.shownRecently)) - Number(Boolean(b.c.shownRecently)) ||
+        b.c.serves - a.c.serves ||
+        a.i - b.i
+    )
     .slice(0, max)
     .map((x) => x.c);
 }

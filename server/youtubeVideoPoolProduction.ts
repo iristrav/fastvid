@@ -243,6 +243,15 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
     triage,
     archive,
     inCooldown: pipeline.isYoutubeInCooldown,
+    /** VIDEO 640 — the people, companies and brands a sentence names, by the render's own extractors. */
+    namedSubjects: (sentence) => {
+      const entities = pipeline.beatNamedEntitiesByKind(sentence);
+      return [
+        ...pipeline.extractPersonNamesFromText(sentence).map((name) => ({ name, kind: "name" as const })),
+        ...entities.companies.map((name) => ({ name, kind: "company" as const })),
+        ...entities.brands.map((name) => ({ name, kind: "brand" as const })),
+      ];
+    },
     log: (l) => console.log(l),
   };
 }

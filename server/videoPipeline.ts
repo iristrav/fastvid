@@ -229,7 +229,7 @@ import { awaitVideoYoutubePool, buildVideoYoutubePool, emptyVideoYoutubePool, ha
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import { videoMainSubject } from "./mainSubject";
-import { sentencesOf } from "./youtubeVideoSearchPlanner";
+import { queryNames, sentencesOf } from "./youtubeVideoSearchPlanner";
 import { readPeopleInNarration } from "./personNames";
 import { beatRowsInStockOrder, isStocked, isStockReady, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
 import {
@@ -9949,6 +9949,27 @@ function archiveYoutubeDownloadInBackground(
  */
 const YOUTUBE_STOCK_DOWNLOAD_MS = 150_000;
 
+/**
+ * VIDEO 640 — the search #2 videos that show the subject search #2 was aimed at (their title or
+ * description names it, or the pool's look assigned them one of its sentences): at most two, the
+ * ones serving the most sentences first. Empty when search #2 was not aimed at a named subject.
+ */
+export const MAX_RESCUE_STOCK_VIDEOS = 2;
+export function youtubeRescueCandidates(
+  pool: Pick<VideoYoutubePool, "search2Need">,
+  usable: ReadonlyArray<Pick<VideoYoutubePool["candidates"][number], "videoId" | "title" | "description" | "from" | "serves">>
+): Set<string> {
+  const need = pool.search2Need;
+  if (!need) return new Set();
+  return new Set(
+    usable
+      .filter((c) => c.from === 2 && (queryNames(`${c.title} ${c.description}`, need.name) || c.serves.some((b) => need.beats.includes(b))))
+      .sort((a, b) => b.serves.length - a.serves.length)
+      .slice(0, MAX_RESCUE_STOCK_VIDEOS)
+      .map((c) => c.videoId)
+  );
+}
+
 function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: string): VideoYoutubePool {
   try {
     const usable = withoutUnusableYoutubeVideos(
@@ -9956,6 +9977,7 @@ function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: strin
       (c) => c.videoId
     );
     if (!usable.length) return pool;
+    const rescue = youtubeRescueCandidates(pool, usable);
     startYoutubeShotStock(
       filmId,
       usable.map((c) => ({
@@ -9965,6 +9987,8 @@ function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: strin
         serves: c.serves.length,
         /** W6 — fresh sources are stocked before ones a recent same-subject video showed. */
         shownRecently: youtubeSourceUsedRecently(filmId, providerAssetKey("youtube_cc", c.videoId)),
+        /** VIDEO 640 — search #2's answer for the subject nobody else shows is stocked first. */
+        ...(rescue.has(c.videoId) ? { rescue: true } : {}),
       })),
       {
         workDir,

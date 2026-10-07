@@ -608,29 +608,44 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
   return null;
 }
 
+/** Does the query (as the gate would send it) name every word of `name`? */
+export function queryNames(query: string, name: string): boolean {
+  const q = contentWords(query);
+  const n = contentWords(name.replace(/['’]s\b/gi, ""));
+  return n.length > 0 && n.every((w) => q.includes(w));
+}
+
 /** SEARCH #2: the biggest gap search #1 left — never the same question again. */
 export async function planGapQuery(
   deps: PlannerDeps,
   input: PlannerInput,
   analysis: VideoAnalysis,
-  gap: { query1: string; uncovered: number[] }
+  /**
+   * VIDEO 640 — `mustName`: the subject the narration names that no usable pool video names
+   * (`missingNamedSubject`). Search #1 searched the video's main subject ("Kim Kardashian footage");
+   * the sentences about Kris Jenner had no candidate that could show her. Search #2 is then aimed at
+   * those sentences and must name her — the main-subject rule of search #1 does not apply here.
+   */
+  gap: { query1: string; uncovered: number[]; mustName?: string }
 ): Promise<PlannedQuery | null> {
   const log = deps.log ?? (() => {});
   const gate = once(deps.gate);
   const uncovered = gap.uncovered.filter((i) => i >= 0 && i < analysis.sentences.length);
   if (!uncovered.length) return null;
+  const must = gap.mustName?.trim() || "";
   const task =
     `Search #1 was: "${gap.query1}". These beats are still WITHOUT usable footage:\n` +
     uncovered.map((i) => `  [${i}] ${analysis.sentences[i]}`).join("\n") +
     "\nPlan search #2: ONE query aimed at the biggest filmable subject these uncovered beats share. It must ask for " +
-    "something search #1 did not.";
-  const res = await ask(
-    deps,
-    task,
-    describe(analysis, input),
-    (q) => refuseQuery(q, { analysis, mustDifferFrom: gap.query1, gate, allowSingleScene: true }),
-    analysis.historical
-  );
+    "something search #1 did not." +
+    (must ? ` The query MUST name "${must}": no usable video found so far shows them.` : "");
+  const check = (q: string): string | null => {
+    const why = refuseQuery(q, { analysis, mustDifferFrom: gap.query1, gate, allowSingleScene: true });
+    if (why) return why;
+    if (must && !queryNames(gate(q).sentAs?.trim() || q, must)) return `the missing subject "${must}" is not in the query`;
+    return null;
+  };
+  const res = await ask(deps, task, describe(analysis, input), (q) => check(q), analysis.historical);
   if (res.query) {
     const sent = gateText(gate, res.query, asksForArchiveFilm(input));
     log(`[YouTubeSearchPlanner] #2 query="${sent}" attempts=${res.attempts} refused=${JSON.stringify(res.refused)}`);
@@ -646,9 +661,10 @@ export async function planGapQuery(
     }
   }
   const terms = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
-  for (const n of [2, 1]) {
-    const q = terms.slice(0, n).join(" ").trim();
-    if (!refuseQuery(q, { analysis, mustDifferFrom: gap.query1, gate, allowSingleScene: true })) {
+  /** The missing subject itself first: "Kris Jenner" (the production word is added by `gateText`). */
+  const tries = must ? [must, ...terms.filter((t) => t !== must).map((t) => `${must} ${t}`)].slice(0, 3) : [2, 1].map((n) => terms.slice(0, n).join(" ").trim());
+  for (const q of tries) {
+    if (!check(q)) {
       const sent = gateText(gate, q, asksForArchiveFilm(input));
       log(`[YouTubeSearchPlanner] #2 query="${sent}" source=fallback refused=${JSON.stringify(res.refused)}`);
       return { query: sent, mainSubject: "", source: "fallback", attempts: res.attempts, refused: res.refused };
