@@ -193,6 +193,11 @@ export type BeatReviewPool = {
   reviewed: ReviewedCandidate[];
   /** The content key this beat ended up using, once it is known. */
   adopted?: string;
+  /**
+   * VIDEO 637 — declared candidates a gate refused BEFORE the editor, with the gate's reason
+   * (metadata, file, dedup). Their fate is known, so they are not "never reached".
+   */
+  refusedBeforeEditor?: Map<string, string>;
 };
 
 /**
@@ -376,7 +381,30 @@ export function noteVisionAdopted(
 export function neverReachedEditor(pool: BeatReviewPool): string[] {
   if (pool.declared.length === 0) return [];
   const answered = new Set(pool.reviewed.map((c) => c.contentKey));
-  return pool.declared.filter((k) => !answered.has(k));
+  return pool.declared.filter((k) => !answered.has(k) && !pool.refusedBeforeEditor?.has(k));
+}
+
+/**
+ * VIDEO 637 — a declared candidate a gate refused before the picture editor, and why.
+ *
+ * Render 637's s2b0 declared six YouTube moments; `entity_evidence` refused all six on their
+ * metadata, and the log called them "declared for review and no verdict was ever filed" and the
+ * beat a POOL_DECLARED_NOTHING_REVIEWED violation — "the beat chose what to ask about and never
+ * asked". It had asked; the metadata gate answered first. Recorded only for a DECLARED candidate:
+ * the gates themselves are unchanged, this only says which of them ended the candidate.
+ */
+export function noteRefusedBeforeEditor(
+  state: VisionReviewPoolState | undefined,
+  sceneIndex: number,
+  beatIndex: number,
+  contentKey: string,
+  reason: string
+): void {
+  if (!state) return;
+  const pool = state.beats.get(poolKey(sceneIndex, beatIndex));
+  if (!pool || !pool.declared.includes(contentKey)) return;
+  if (pool.reviewed.some((c) => c.contentKey === contentKey)) return;
+  (pool.refusedBeforeEditor ??= new Map()).set(contentKey, reason);
 }
 
 export function evidenceCounts(pool: BeatReviewPool): Record<VisionEvidence, number> {
@@ -400,7 +428,7 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
   );
   const lines: string[] = [];
   const total = {
-    declared: 0, reviewed: 0, unusable: 0, neverReached: 0,
+    declared: 0, reviewed: 0, unusable: 0, neverReached: 0, refusedBeforeEditor: 0,
     FIT: 0, UNREVIEWED: 0, UNCLEAR: 0, MISMATCH: 0,
   };
   for (const pool of beats) {
@@ -416,6 +444,10 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
     total.reviewed += pool.reviewed.length;
     total.unusable += unusable.length;
     total.neverReached += unasked.length;
+    const refused = [...(pool.refusedBeforeEditor ?? new Map<string, string>())].filter(
+      ([k]) => !pool.reviewed.some((c) => c.contentKey === k)
+    );
+    total.refusedBeforeEditor += refused.length;
     for (const e of VISION_EVIDENCE_ORDER) total[e] += counts[e];
     const best = bestByVisionEvidence(pool.reviewed);
     lines.push(
@@ -423,7 +455,7 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
         `reviewPool=${pool.declared.length} reviewed=${pool.reviewed.length} ` +
         `FIT=${counts.FIT} UNREVIEWED=${counts.UNREVIEWED} UNCLEAR=${counts.UNCLEAR} ` +
         `MISMATCH=${counts.MISMATCH} unusable=${unusable.length} ` +
-        `neverReached=${unasked.length} finalShortlisted=${
+        `neverReached=${unasked.length} refusedBeforeEditor=${refused.length} finalShortlisted=${
           pool.reviewed.filter(isAvailableCandidate).length
         } best=${best ? `${best.evidence}@rank${best.cheapRank}` : "none"} ` +
         `adopted=${pool.adopted ?? "none"}`
@@ -445,12 +477,18 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
           `— declared for review and no verdict was ever filed`
       );
     }
+    for (const [contentKey, reason] of refused) {
+      lines.push(
+        `[VisionSelection] s${pool.sceneIndex}b${pool.beatIndex} refusedBeforeEditor ${contentKey} ` +
+          `— refused by ${reason} before the picture editor`
+      );
+    }
   }
   lines.push(
     `[VisionSelection] TOTAL beats=${beats.length} reviewPool=${total.declared} ` +
       `reviewed=${total.reviewed} FIT=${total.FIT} UNREVIEWED=${total.UNREVIEWED} ` +
       `UNCLEAR=${total.UNCLEAR} MISMATCH=${total.MISMATCH} unusable=${total.unusable} ` +
-      `neverReached=${total.neverReached}`
+      `neverReached=${total.neverReached} refusedBeforeEditor=${total.refusedBeforeEditor}`
   );
   return lines;
 }
@@ -491,7 +529,8 @@ export function visionSelectionViolations(state: VisionReviewPoolState | undefin
      * the backfill approval rule now depends on these verdicts existing — a render that files none
      * will refuse its own last-resort pictures and hold frames instead.
      */
-    if (pool.declared.length > 0 && pool.reviewed.length === 0) {
+    /** VIDEO 637 — a pool whose every candidate a gate refused first DID ask; see noteRefusedBeforeEditor. */
+    if (pool.declared.length > 0 && pool.reviewed.length === 0 && neverReachedEditor(pool).length > 0) {
       out.push(
         `[VisionSelectionInvariant] ${at} POOL_DECLARED_NOTHING_REVIEWED ` +
           `declared=${pool.declared.length} reviewed=0 — the beat chose what to ask about and ` +

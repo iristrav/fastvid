@@ -768,8 +768,16 @@ export function formatCinematicGraphics(result: CinematicPipelineResult): string
  */
 export function formatCinematicGraphicsLifecycle(result: CinematicPipelineResult): string[] {
   const track = result.timeline.tracks.find((t) => t.kind === "GRAPHICS");
+  /**
+   * VIDEO 637 — one sentence, one dressing. A sentence with several clips reaches the EDL as several
+   * decisions with one beat id, and `translateEdl` draws the graphics of the FIRST only; counting the
+   * others as planned reported them as DROPPED_NOT_TRANSLATED ("statistic_counter" on s0b0) while the
+   * sentence's own counter was on screen.
+   */
+  const dressed = new Set<string>();
+  const dressingDecisions = result.edl.decisions.filter((d) => !dressed.has(d.beatId) && dressed.add(d.beatId));
   const lifecycle = graphicsLifecycle({
-    planned: result.edl.decisions.flatMap((d) =>
+    planned: dressingDecisions.flatMap((d) =>
       d.motionGraphics.map((g) => ({
         beatId: d.beatId,
         graphicType: g.graphicType,

@@ -77,6 +77,14 @@ export type CinematicEditingInput = {
   beatVoiceStartSec: number;
   /** This beat's voice-over duration, seconds. */
   beatVoiceDurationSec: number;
+  /**
+   * VIDEO 637 — the whole SENTENCE's voice window, when this input is one of several clips that
+   * share it. The picture is timed by the clip's own share (above); the sentence's text, graphics
+   * and sounds are planned over the whole sentence, because they belong to it and are drawn once
+   * (see `translateEdl`'s dressed-once rule). Absent: the beat window is the sentence window.
+   */
+  sentenceVoiceStartSec?: number;
+  sentenceVoiceDurationSec?: number;
   /** This beat's position within its scene (0-based) — needed to look up the matching entry
    *  in directorGuidance.shotOrder, which is 1-based per ShotOrderItem's own convention. */
   beatIndexInScene?: number;

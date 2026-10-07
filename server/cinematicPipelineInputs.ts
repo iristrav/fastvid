@@ -1266,6 +1266,8 @@ export function buildCinematicSceneInputs(params: {
             bestCandidate: candidateFrom(partAdopted.facts, partAdopted.adoption, beat, scene.index, beatIndex),
             beatVoiceStartSec: Number(partStart.toFixed(3)),
             beatVoiceDurationSec: share,
+            /** VIDEO 637 — the sentence is dressed over its whole window, not this clip's share. */
+            ...(shares.length > 1 ? { sentenceVoiceStartSec: start, sentenceVoiceDurationSec: durationSec } : {}),
           },
           identity: part.identity,
           ...(partAdopted.facts.still ? { still: true } : {}),

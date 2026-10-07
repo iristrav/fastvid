@@ -137,6 +137,7 @@ import {
 import {
   createVisionReviewPoolState,
   declareVisionReviewPool,
+  noteRefusedBeforeEditor,
   evidenceFromVerdict,
   evidenceTier,
   formatVisionSelection,
@@ -19347,6 +19348,8 @@ async function adoptClip(
        */
       const refuse = (reason: string): true => {
         registerRejection(dedup.rejections, sceneIndex, beatIndex, p, reason, sourceQuery);
+        /** VIDEO 637 — a declared candidate refused here is not "never reached": the gate answered. */
+        noteRefusedBeforeEditor(dedup.visionReviewPool, sceneIndex, beatIndex, clipContentKey(p), reason);
         if (refusalHoldsForEverySentence(reason)) {
           (dedup.refusedAssetsThisRender ??= new Map()).set(clipContentKey(p), reason);
         }
@@ -26034,7 +26037,12 @@ async function _runVideoPipelineInner(
              */
             cinematicProgress.captionsOnTimeline = captionTrack(t).filter((c) => !c.disabled).length;
             cinematicProgress.graphicsOnTimeline = graphicsTrack(t).filter((g) => !g.disabled).length;
-            cinematicProgress.graphicsPlanned = graphicsTrack(t).length;
+            /**
+             * VIDEO 637 — a graphic switched off on purpose (the text director's rules, the editor)
+             * is a decision, not a loss: 637 read "7 graphics were planned and 6 reached a render"
+             * for a lower third that was switched off, while every graphic meant to play was drawn.
+             */
+            cinematicProgress.graphicsPlanned = graphicsTrack(t).filter((g) => !g.disabled).length;
             cinematicProgress.ambientClipsOnTimeline = audioTrackOf(t, "AMBIENT").length;
             cinematicProgress.sfxClipsOnTimeline = audioTrackOf(t, "SFX").length;
             cinematicProgress.musicClipsOnTimeline = audioTrackOf(t, "MUSIC").length;

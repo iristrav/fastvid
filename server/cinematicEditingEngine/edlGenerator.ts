@@ -88,16 +88,19 @@ export function generateEDL(inputs: CinematicEditingInput[], options: EdlOptions
     );
     const clip = clips[0]!;
 
-    const captions = planCaptions(input.intent, input.beatVoiceStartSec, input.beatVoiceDurationSec, {
+    /** VIDEO 637 — text, graphics and sound belong to the sentence: see `sentenceVoiceStartSec`. */
+    const dressStartSec = input.sentenceVoiceStartSec ?? input.beatVoiceStartSec;
+    const dressDurationSec = input.sentenceVoiceDurationSec ?? input.beatVoiceDurationSec;
+    const captions = planCaptions(input.intent, dressStartSec, dressDurationSec, {
       scene: input.scene,
       isFirstBeatOfScene: i === 0,
       continuity,
       includeSubtitle: options.includeSubtitles === true,
       wordTimings: input.wordTimings,
     });
-    const motionGraphics = planMotionGraphics(input.intent, input.scene, input.beatVoiceStartSec, input.beatVoiceDurationSec);
+    const motionGraphics = planMotionGraphics(input.intent, input.scene, dressStartSec, dressDurationSec);
     const effects = planVisualEffects(shot, input.bestCandidate, pacing);
-    const sounds = planSoundEffects(input.intent, pacing, input.beatVoiceStartSec, input.beatVoiceDurationSec, transitionIn.type);
+    const sounds = planSoundEffects(input.intent, pacing, dressStartSec, dressDurationSec, transitionIn.type);
 
     decisions.push({
       beatId: input.intent.beatId,

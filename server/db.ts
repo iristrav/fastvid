@@ -962,6 +962,30 @@ export async function recoverVideoCompletionState(video: Video): Promise<Video> 
   return video;
 }
 
+/**
+ * VIDEO 637 — WHETHER A RUN FOUND AT BOOT IS REALLY ORPHANED.
+ *
+ * Boot recovery was written for one process: "no worker survives a restart", so everything mid-
+ * pipeline was put back in the queue. The web service and three worker replicas now boot
+ * separately, and render 637's first attempt was claimed at 16:50:18, put back by the web boot a
+ * few seconds later, claimed again by another replica (a new generation attempt), and the first run
+ * read itself as superseded and was cancelled — both runs lost.
+ *
+ * A run is orphaned when nothing has written its progress for as long as the stall check calls
+ * dead (`pipelineStallThresholdMs`, the one definition this codebase has). A fresher run belongs to
+ * a living worker: a worker that is shutting down hands its own video back (`requeueInterruptedVideo`),
+ * and one that dies without doing so is taken back by `failAllStalledPipelines` once its progress
+ * goes stale — so a crashed render still restarts, only no sooner than it is known to be dead.
+ */
+export function orphanedAtBoot(
+  video: { status: string | null; updatedAt: Date | string | null; videoLength?: string | null },
+  now = Date.now()
+): boolean {
+  const updatedAt = video.updatedAt ? new Date(video.updatedAt).getTime() : NaN;
+  if (!Number.isFinite(updatedAt)) return true;
+  return now - updatedAt >= pipelineStallThresholdMs(video.videoLength, video.status);
+}
+
 /** On server startup: recover finished uploads, then fail orphaned in-progress pipelines. */
 export async function recoverAllStuckVideos(onRequeued?: () => void): Promise<{ completed: number; failed: number }> {
   const db = await getDb();
@@ -990,6 +1014,14 @@ export async function recoverAllStuckVideos(onRequeued?: () => void): Promise<{ 
   for (const v of stuck) {
     const rv = refreshedMap.get(v.id);
     if (!rv || rv.status === "completed" || rv.status === "failed") continue;
+    /** VIDEO 637 — a run another process is still working on is not this boot's to take back. */
+    if (!orphanedAtBoot(rv)) {
+      console.log(
+        `[PipelineRecovery] video=${rv.id} status=${rv.status} left running — its progress is fresh, ` +
+          `so another worker is still on it; the stall check takes it back if that worker is gone`
+      );
+      continue;
+    }
     await updateVideoStatus(rv.id, "queued", {
       errorMessage: "",
       progressStep: "Waiting in queue…",
