@@ -225,7 +225,7 @@ import {
 } from "./visualLineageSnapshot";
 import { formatGlobalBudget, withGlobalMediaFetch } from "./globalResourceBudget";
 import { buildBeatSearchLadder, buildPrioritisedQueries, checkPersonName, formatSearchGateReport, type VerifiedSearchQuery, emptyQueryContext, getQueryScope, getRenderTopic, getSearchProvenance, searchGateDecision, withRenderTopic, withSearchProvenance, withQueryScope, isFunctionWord, isPronounToken, provenToken, type VerifiedQueryContext } from "./searchQueryContract";
-import { awaitVideoYoutubePool, buildVideoYoutubePool, emptyVideoYoutubePool, hasVideoYoutubePool, videoPoolMayOfferYoutube, poolGaveNoYoutube, poolRowsForBeat, registerVideoYoutubePool, releaseVideoYoutubePool, noteVideoYoutubePoolRefusal, type VideoYoutubePool } from "./youtubeVideoPool";
+import { awaitVideoYoutubePool, buildVideoYoutubePool, candidateShows, emptyVideoYoutubePool, formatMultiPersonOutcome, hasVideoYoutubePool, videoPoolMayOfferYoutube, poolGaveNoYoutube, poolRowsForBeat, registerVideoYoutubePool, releaseVideoYoutubePool, noteVideoYoutubePoolRefusal, type VideoYoutubePool } from "./youtubeVideoPool";
 import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import { videoMainSubject } from "./mainSubject";
@@ -9950,24 +9950,39 @@ function archiveYoutubeDownloadInBackground(
 const YOUTUBE_STOCK_DOWNLOAD_MS = 150_000;
 
 /**
- * VIDEO 640 — the search #2 videos that show the subject search #2 was aimed at (their title or
- * description names it, or the pool's look assigned them one of its sentences): at most two, the
- * ones serving the most sentences first. Empty when search #2 was not aimed at a named subject.
+ * VIDEO 640 / MULTI-PERSON SEARCH — the videos a targeted search found for its subject (their title
+ * or description names it, or the pool's look assigned them one of its sentences), stocked first:
+ * no beat downloads outside the stock (637–640: `downloads=0`), so a targeted answer that serves only
+ * one or two sentences would otherwise fall behind the main subject's videos and never be fetched.
+ *
+ * One per subject in turn, the most important subject first, at most two for one subject and at
+ * most three in all — half of the six stock slots stay with the main subject. Empty when no search
+ * was aimed at a named subject.
  */
-export const MAX_RESCUE_STOCK_VIDEOS = 2;
+export const MAX_RESCUE_STOCK_VIDEOS = 3;
+export const MAX_RESCUE_STOCK_PER_SUBJECT = 2;
 export function youtubeRescueCandidates(
-  pool: Pick<VideoYoutubePool, "search2Need">,
-  usable: ReadonlyArray<Pick<VideoYoutubePool["candidates"][number], "videoId" | "title" | "description" | "from" | "serves">>
+  pool: Pick<VideoYoutubePool, "entityTargets">,
+  usable: ReadonlyArray<Pick<VideoYoutubePool["candidates"][number], "videoId" | "title" | "description" | "from" | "serves" | "shows" | "depicts">>
 ): Set<string> {
-  const need = pool.search2Need;
-  if (!need) return new Set();
-  return new Set(
+  const targets = pool.entityTargets ?? [];
+  if (!targets.length) return new Set();
+  /** A targeted answer the look says shows the subject, or one it assigned the subject's sentences. */
+  const perTarget = targets.map((t) =>
     usable
-      .filter((c) => c.from === 2 && (queryNames(`${c.title} ${c.description}`, need.name) || c.serves.some((b) => need.beats.includes(b))))
+      .filter((c) => c.from === t.n && (candidateShows(c, t.name) || c.serves.some((b) => t.beats.includes(b))))
       .sort((a, b) => b.serves.length - a.serves.length)
-      .slice(0, MAX_RESCUE_STOCK_VIDEOS)
-      .map((c) => c.videoId)
+      .slice(0, MAX_RESCUE_STOCK_PER_SUBJECT)
   );
+  const out = new Set<string>();
+  for (let round = 0; round < MAX_RESCUE_STOCK_PER_SUBJECT; round++) {
+    for (const list of perTarget) {
+      if (out.size >= MAX_RESCUE_STOCK_VIDEOS) return out;
+      const c = list[round];
+      if (c) out.add(c.videoId);
+    }
+  }
+  return out;
 }
 
 function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: string): VideoYoutubePool {
@@ -9987,7 +10002,7 @@ function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: strin
         serves: c.serves.length,
         /** W6 — fresh sources are stocked before ones a recent same-subject video showed. */
         shownRecently: youtubeSourceUsedRecently(filmId, providerAssetKey("youtube_cc", c.videoId)),
-        /** VIDEO 640 — search #2's answer for the subject nobody else shows is stocked first. */
+        /** VIDEO 640 — MULTI-PERSON — the targeted searches' answers for subjects nobody else shows are stocked first. */
         ...(rescue.has(c.videoId) ? { rescue: true } : {}),
       })),
       {
@@ -27632,6 +27647,11 @@ async function _runVideoPipelineInner(
         )
       );
       void dbYoutubeSearchBudgetStore.record(videoId, outcome).catch(() => {});
+      /** MULTI-PERSON SEARCH — what each targeted search became in this film. */
+      const searchedPool = await awaitVideoYoutubePool(videoId, 1_000).catch(() => null);
+      if (searchedPool) {
+        for (const l of formatMultiPersonOutcome(videoId, searchedPool, youtubeLifecycle)) console.log(pipelineReport.add("summary", l));
+      }
     } catch (err) {
       console.warn(`[YouTubeInFilm] video=${videoId} not measured: ${(err as Error).message}`);
       youtubeFootageVerdict = judgeYoutubeRequirement(unmeasuredFootage(), requiredYoutubeSeconds());

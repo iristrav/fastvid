@@ -1042,8 +1042,10 @@ export const workerOnceClaims = mysqlTable("worker_once_claims", {
  *
  * "1 search normaal, 2 searches maximaal, 3 searches nooit" — over retries, replicas, workers,
  * requeues, deploys, render retries, stall recovery and a user trying again. A process cannot keep
- * that promise; a row can. `searchCount` only ever moves 0 → 1 → 2, each step a conditional UPDATE
- * that exactly one caller wins (see `dbYoutubeSearchBudgetStore.claim`).
+ * that promise; a row can. `searchCount` only ever moves one step at a time, 0 → 1 → … → the
+ * maximum (MULTI-PERSON SEARCH: 4, `MAX_YOUTUBE_SEARCHES_PER_VIDEO`), each step a conditional UPDATE
+ * that exactly one caller wins (see `dbYoutubeSearchBudgetStore.claim`). Searches #3 and #4 have no
+ * columns of their own: their queries and answers live in `poolJson` (`entityTargets`, `gapSearch`).
  *
  * The rest of the row is the record the operator asked for: which query, how many candidates, how
  * many usable, what coverage, whether search #2 was needed and why, and what the film finally used.

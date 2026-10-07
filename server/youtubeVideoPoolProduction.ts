@@ -34,6 +34,21 @@ const TRIAGE_SCHEMA = {
   },
 };
 
+/** VISUAL NEEDS — the same look, asked as well which of the script's subjects the video shows. */
+const TRIAGE_WITH_SUBJECTS_SCHEMA = {
+  type: "json_schema" as const,
+  json_schema: {
+    name: "youtube_thumbnail_triage_subjects",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: { ...TRIAGE_SCHEMA.json_schema.schema.properties, shows: { type: "array", items: { type: "integer" } } },
+      required: ["footageType", "servesBeats", "depicts", "shows"],
+      additionalProperties: false,
+    },
+  },
+};
+
 /**
  * VIDEO 616 — WHAT THE VIDEO SHOWS, NOT WHAT IT IS ABOUT.
  *
@@ -49,7 +64,12 @@ const TRIAGE_SCHEMA = {
 export function youtubeTriagePrompt(
   item: Pick<SearchItem, "title" | "channel" | "description">,
   title: string,
-  sentences: string[]
+  sentences: string[],
+  /**
+   * VISUAL NEEDS — the script's subjects (people, places, events, products …). The look says which of
+   * them the video really shows: that, not a word in a title, is what counts as "the pool has it".
+   */
+  subjects: readonly string[] = []
 ): string {
   return (
     `Video being made: "${title}".\nYouTube result: "${item.title}" (channel: ${item.channel}).\n` +
@@ -72,7 +92,14 @@ export function youtubeTriagePrompt(
     "big text, arrows, circles or a collage. When the video is more likely commentary than footage, say so.\n" +
     "servesBeats: the numbers of the beats below that real footage from this video could honestly be shown under " +
     "(empty if none). Be strict: the subject must match, not just the theme.\n\nBeats:\n" +
-    sentences.map((s, i) => `[${i}] ${s}`).join("\n")
+    sentences.map((s, i) => `[${i}] ${s}`).join("\n") +
+    (subjects.length
+      ? "\n\nshows: the numbers of the subjects below that this video itself shows on screen. Be strict: the subject " +
+        "itself — that person, that place, that event, that product or vehicle — not a relative, a rival, the same " +
+        "family or company, or the general theme (one family member is not another; a street in the same country is " +
+        "not the landmark; another model of the same make is not that model). Empty if none.\n\nSubjects:\n" +
+        subjects.map((s, i) => `[${i}] ${s}`).join("\n")
+      : "")
   );
 }
 
@@ -188,8 +215,8 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
   };
 
   /** VIDEO 618 — the same look, now shared with the per-beat search: see `triageYoutubeThumbnail`. */
-  const triage = (item: SearchItem, title: string, sentences: string[]): Promise<Triage | null> =>
-    triageYoutubeThumbnail(item, title, sentences, llm, clipFilter);
+  const triage = (item: SearchItem, title: string, sentences: string[], subjects?: readonly string[]): Promise<Triage | null> =>
+    triageYoutubeThumbnail(item, title, sentences, llm, clipFilter, subjects);
 
   /**
    * The archive's own YouTube material. The dry run found that the archive answers ~140 assets for
@@ -243,7 +270,10 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
     triage,
     archive,
     inCooldown: pipeline.isYoutubeInCooldown,
-    /** VIDEO 640 — the people, companies and brands a sentence names, by the render's own extractors. */
+    /**
+     * VIDEO 640 — the people, companies and brands a sentence names, by the render's own extractors.
+     * VISUAL NEEDS — beside the planner's reading of the whole script (`PlannedQuery.visualNeeds`).
+     */
     namedSubjects: (sentence) => {
       const entities = pipeline.beatNamedEntitiesByKind(sentence);
       return [
@@ -269,7 +299,8 @@ export async function triageYoutubeThumbnail(
   title: string,
   sentences: string[],
   llm?: (p: unknown) => Promise<unknown>,
-  clipFilter?: typeof import("./archiveClipFilter")
+  clipFilter?: typeof import("./archiveClipFilter"),
+  subjects: readonly string[] = []
 ): Promise<Triage | null> {
   llm ??= (await import("./_core/llm")).invokeLLM as unknown as (p: unknown) => Promise<unknown>;
   clipFilter ??= await import("./archiveClipFilter");
@@ -287,7 +318,7 @@ export async function triageYoutubeThumbnail(
           content: [
             {
               type: "text",
-              text: youtubeTriagePrompt(item, title, sentences),
+              text: youtubeTriagePrompt(item, title, sentences, subjects),
             },
             {
               type: "image_url",
@@ -296,14 +327,19 @@ export async function triageYoutubeThumbnail(
           ],
         },
       ],
-      response_format: TRIAGE_SCHEMA,
-      maxTokens: 250,
+      response_format: subjects.length ? TRIAGE_WITH_SUBJECTS_SCHEMA : TRIAGE_SCHEMA,
+      maxTokens: subjects.length ? 320 : 250,
     }),
     new Promise<never>((_, rej) => setTimeout(() => rej(new Error("triage timeout")), 25_000)),
   ]);
   try {
     const v = JSON.parse(llmText(resp)) as Triage;
-    return { footageType: v.footageType, servesBeats: Array.isArray(v.servesBeats) ? v.servesBeats : [], depicts: v.depicts ?? "" };
+    return {
+      footageType: v.footageType,
+      servesBeats: Array.isArray(v.servesBeats) ? v.servesBeats : [],
+      depicts: v.depicts ?? "",
+      ...(subjects.length ? { shows: Array.isArray(v.shows) ? v.shows : [] } : {}),
+    };
   } catch {
     return null;
   }

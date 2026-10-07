@@ -374,9 +374,10 @@ describe("unchanged: source order, search limit, 3 s rule, gates", () => {
     expect(body.indexOf("const stock = await fetchBeatStockFallback(")).toBeGreaterThan(body.indexOf("adoptHistoricalBeatVideoPool(candidates,"));
   });
 
-  it("2 YouTube searches per video; the 3 s minimum and its early filter (G2) unchanged", async () => {
+  it("the agreed YouTube searches per video; the 3 s minimum and its early filter (G2) unchanged", async () => {
     const { MAX_YOUTUBE_SEARCHES_PER_VIDEO } = await import("./youtubeSearchBudget");
-    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(2);
+    /** MULTI-PERSON SEARCH raised the per-video limit from 2 to 4 on purpose (why: `MAX_YOUTUBE_SEARCHES_PER_VIDEO`); this round left it as it found it. */
+    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(4);
     const { MIN_VIDEO_DURATION_SEC, belowArchiveMinimumDuration } = await import("./archiveIngestion");
     expect(MIN_VIDEO_DURATION_SEC).toBe(3);
     expect([2.99, 3.0, 3.01].map(belowArchiveMinimumDuration)).toEqual([true, false, false]);

@@ -93,7 +93,8 @@ describe("Fix 1. the thumbnail triage separates footage OF the subject from vide
     expect(prompt).toContain("Description: the untold story");
     expect(prompt).toContain("[1] Kim Kardashian built a skincare fortune.");
     const PROD = fs.readFileSync(path.join(__dirname, "youtubeVideoPoolProduction.ts"), "utf8");
-    expect(PROD).toContain("text: youtubeTriagePrompt(item, title, sentences),");
+    /** VISUAL NEEDS — the same prompt, now also given the script's subjects (empty: the prompt is unchanged). */
+    expect(PROD).toContain("text: youtubeTriagePrompt(item, title, sentences, subjects),");
     /** Same six categories, same schema. */
     expect(PROD).toContain('enum: ["real_footage", "archival_footage", "talking_head", "text_or_graphic", "animation_or_game", "other"]');
   });

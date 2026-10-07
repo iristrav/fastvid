@@ -49,7 +49,17 @@ export type PlannedQuery = {
   source: "llm" | "fallback";
   attempts: number;
   refused: string[];
+  /** VISUAL NEEDS — search #1 only: what the script must SHOW, as the planner read it (`validVisualNeeds`). */
+  visualNeeds?: VisualNeed[];
 };
+
+/**
+ * VISUAL NEEDS — one concrete thing the film must SHOW, and the sentences it must be seen under: a
+ * person, place, building, event, war, company, product, vehicle, technology, animal, object, team
+ * or match — "Tesla Model 3", "Berlin Wall", "Apollo 11 launch". Not a word: a subject, read by the
+ * planner from the whole script in the same call that plans search #1 (no extra model call).
+ */
+export type VisualNeed = { subject: string; beats: number[] };
 
 export type PlannerDeps = {
   /** The model, asked for JSON. */
@@ -301,11 +311,13 @@ export function refuseQuery(
     gate: (q: string) => GateVerdict;
     /** Search #2 aims at one gap on purpose, so it may rest on one scene. Search #1 never may. */
     allowSingleScene?: boolean;
+    /** VISUAL NEEDS — a targeted search for one proper name ("SpaceX") may be that one word. */
+    minWords?: 1 | 2;
   }
 ): string | null {
   const local = (q: string): string | null => {
     const cw = contentWords(q);
-    if (cw.length < 2) return "fewer than 2 meaningful words";
+    if (cw.length < (ctx.minWords ?? 2)) return "fewer than 2 meaningful words";
     if (cw.length > 8) return `${cw.length} meaningful words (at most 8)`;
     if (!ctx.analysis.historical && /\b(archival|archive|newsreel)\b/i.test(q)) {
       return "'archival' on a modern subject — ask for footage of the subject itself";
@@ -428,6 +440,71 @@ const PLAN_SCHEMA = {
   },
 };
 
+/** Search #1's plan, with the script's visual needs beside the query (same call, same rules). */
+const PLAN_WITH_NEEDS_SCHEMA = {
+  type: "json_schema" as const,
+  json_schema: {
+    name: "youtube_video_search_plan_with_needs",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        ...PLAN_SCHEMA.json_schema.schema.properties,
+        visualNeeds: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { subject: { type: "string" }, beats: { type: "array", items: { type: "integer" } } },
+            required: ["subject", "beats"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["mainSubject", "recurringSubjects", "query", "visualNeeds"],
+      additionalProperties: false,
+    },
+  },
+};
+
+/**
+ * What the planner is asked about the script's visual needs. A subject, not its words ("Tesla Model 3
+ * launch", never "Tesla", "Model", "3"); concrete and filmable; the beats it must be SEEN under; no
+ * abstract ideas ("strategy", "wealth") — those stay with footage of the subject, graphics and cards.
+ */
+const NEEDS_TASK =
+  "\nAlso list visualNeeds: the concrete things a viewer must SEE for this film to show what the narration says — " +
+  "people, places, buildings, cities, regions, historical events, wars, companies, brands, products, vehicles, " +
+  "technology, animals, objects, organisations, teams and sports events, specific actions or moments. For each: " +
+  "subject = how the narration names it (1 to 5 words, the narration's own words; a whole subject such as " +
+  "a product with its model name, or an event with what happened, never a single word cut from it), and beats = the beat numbers " +
+  "it must be seen under. At most 10, most important first. Leave out abstract ideas (strategy, wealth, success, " +
+  "fear) and generic scenery that any footage would do.";
+
+/**
+ * VISUAL NEEDS — the planner's list, kept only where the script proves it: every meaningful word is in
+ * the narration or the prompt (the gate's own evidence), at most 5 of them, beats that exist, and a
+ * one-word subject only when the narration writes it as a name ("SpaceX", "Hollywood" — not "crowd").
+ */
+export function validVisualNeeds(raw: unknown, analysis: VideoAnalysis, input: PlannerInput): VisualNeed[] {
+  if (!Array.isArray(raw)) return [];
+  const hay = `${input.prompt} ${input.title} ${analysis.sentences.join(" ")}`;
+  const names = new Set(analysis.recurring.map((r) => r.term.toLowerCase()));
+  const out: VisualNeed[] = [];
+  for (const n of raw.slice(0, 10)) {
+    const subject = withoutProductionWords(String((n as VisualNeed)?.subject ?? "")).replace(/['’]s\b/g, "").trim();
+    const cw = contentWords(subject);
+    if (!cw.length || cw.length > 5 || !cw.every((w) => containsWord(hay, w))) continue;
+    if (cw.length === 1 && !names.has(subject.toLowerCase())) continue;
+    const beats = [...new Set(((n as VisualNeed)?.beats ?? []).filter((b) => Number.isInteger(b) && b >= 0 && b < analysis.sentences.length))];
+    if (!beats.length) continue;
+    const key = cw.join(" ");
+    const same = out.find((o) => contentWords(o.subject).join(" ") === key);
+    if (same) same.beats = [...new Set([...same.beats, ...beats])];
+    else out.push({ subject, beats });
+  }
+  return out;
+}
+
 function llmText(resp: unknown): string {
   const c = (resp as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content;
   if (typeof c === "string") return c;
@@ -471,11 +548,13 @@ async function ask(
   task: string,
   body: string,
   check: (q: string, main: string) => string | null,
-  historical: boolean
-): Promise<{ query: string | null; mainSubject: string; attempts: number; refused: string[] }> {
+  historical: boolean,
+  schema: typeof PLAN_SCHEMA | typeof PLAN_WITH_NEEDS_SCHEMA = PLAN_SCHEMA
+): Promise<{ query: string | null; mainSubject: string; attempts: number; refused: string[]; needs?: unknown }> {
   const refused: string[] = [];
   let feedback = "";
   let mainSubject = "";
+  let needs: unknown;
   for (let attempt = 1; attempt <= 3; attempt++) {
     let resp: unknown;
     try {
@@ -484,14 +563,15 @@ async function ask(
           { role: "system", content: "You plan YouTube searches for a documentary editor. Return JSON only." },
           { role: "user", content: `${task}\n\n${RULES}${feedback}\n\n${body}` },
         ],
-        response_format: PLAN_SCHEMA,
-        maxTokens: 300,
+        response_format: schema,
+        maxTokens: schema === PLAN_SCHEMA ? 300 : 900,
       });
     } catch (err) {
       refused.push(`llm error: ${(err as Error).message?.slice(0, 80)}`);
       break;
     }
-    const plan = parse<{ mainSubject: string; recurringSubjects: string[]; query: string }>(llmText(resp));
+    const plan = parse<{ mainSubject: string; recurringSubjects: string[]; query: string; visualNeeds?: unknown }>(llmText(resp));
+    if (plan?.visualNeeds !== undefined) needs = plan.visualNeeds;
     if (!plan?.query) {
       refused.push("no JSON");
       feedback = "\nYour previous answer was not valid JSON.";
@@ -500,11 +580,11 @@ async function ask(
     mainSubject = plan.mainSubject?.trim() ?? "";
     const query = withoutProductionWords(plan.query);
     const why = check(query, mainSubject);
-    if (!why) return { query, mainSubject, attempts: attempt, refused };
+    if (!why) return { query, mainSubject, attempts: attempt, refused, needs };
     refused.push(`"${query}" — ${why}`);
     feedback = `\nYour previous query "${query}" was refused: ${why}. Fix exactly that and keep every other rule.`;
   }
-  return { query: null, mainSubject, attempts: 3, refused };
+  return { query: null, mainSubject, attempts: 3, refused, needs };
 }
 
 /** The main subject may only be words the user or the narration used. */
@@ -523,18 +603,21 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
   const task =
     "Plan ONE YouTube search that must supply real footage for the WHOLE video below. First decide the main subject of " +
     "the whole video (from the user prompt). Then pick the 2–3 concrete subjects that recur most across the scenes. " +
-    "Combine them into the query with the best chance of real, usable footage. Never build the query on one scene.";
+    "Combine them into the query with the best chance of real, usable footage. Never build the query on one scene." +
+    NEEDS_TASK;
   const res = await ask(
     deps,
     task,
     describe(analysis, input),
     (q, main) => refuseQuery(q, { analysis, mainSubject: subjectOf(main), gate }),
-    analysis.historical
+    analysis.historical,
+    PLAN_WITH_NEEDS_SCHEMA
   );
+  const visualNeeds = validVisualNeeds(res.needs, analysis, input);
   if (res.query) {
     const sent = gateText(gate, res.query, asksForArchiveFilm(input));
     log(`[YouTubeSearchPlanner] #1 query="${sent}" main="${res.mainSubject}" attempts=${res.attempts} refused=${JSON.stringify(res.refused)}`);
-    return { query: sent, mainSubject: res.mainSubject, source: "llm", attempts: res.attempts, refused: res.refused };
+    return { query: sent, mainSubject: res.mainSubject, source: "llm", attempts: res.attempts, refused: res.refused, visualNeeds };
   }
   /** Deterministic fallback: the recurring terms that pass every rule, with the right production word. */
   const multi = analysis.recurring.filter((r) => r.scenes >= 2 || r.beats >= 2).map((r) => r.term);
@@ -551,7 +634,7 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
     if (!why) {
       const sent = gateText(gate, q, asksForArchiveFilm(input));
       log(`[YouTubeSearchPlanner] #1 query="${sent}" source=fallback refused=${JSON.stringify(res.refused)}`);
-      return { query: sent, mainSubject: multi[0] ?? "", source: "fallback", attempts: res.attempts, refused: res.refused };
+      return { query: sent, mainSubject: multi[0] ?? "", source: "fallback", attempts: res.attempts, refused: res.refused, visualNeeds };
     }
   }
   /**
@@ -576,7 +659,7 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
     if (!why) {
       const sent = gateText(gate, narrowed, asksForArchiveFilm(input));
       log(`[YouTubeSearchPlanner] #1 query="${sent}" source=fallback_gate_subject refused=${JSON.stringify(res.refused)}`);
-      return { query: sent, mainSubject: narrowed, source: "fallback", attempts: res.attempts, refused: res.refused };
+      return { query: sent, mainSubject: narrowed, source: "fallback", attempts: res.attempts, refused: res.refused, visualNeeds };
     }
   }
   /**
@@ -601,18 +684,11 @@ export async function planVideoQuery(deps: PlannerDeps, input: PlannerInput, ana
       if (refuseQuery(q, { analysis, mainSubject: main, gate })) continue;
       const sent = gateText(gate, q, asksForArchiveFilm(input));
       log(`[YouTubeSearchPlanner] #1 query="${sent}" source=fallback_main_subject main="${main}" refused=${JSON.stringify(res.refused)}`);
-      return { query: sent, mainSubject: main, source: "fallback", attempts: res.attempts, refused: res.refused };
+      return { query: sent, mainSubject: main, source: "fallback", attempts: res.attempts, refused: res.refused, visualNeeds };
     }
   }
   log(`[YouTubeSearchPlanner] #1 NO_QUERY — nothing passed the rules; YouTube is skipped for this video refused=${JSON.stringify(res.refused)}`);
   return null;
-}
-
-/** Does the query (as the gate would send it) name every word of `name`? */
-export function queryNames(query: string, name: string): boolean {
-  const q = contentWords(query);
-  const n = contentWords(name.replace(/['’]s\b/gi, ""));
-  return n.length > 0 && n.every((w) => q.includes(w));
 }
 
 /** SEARCH #2: the biggest gap search #1 left — never the same question again. */
@@ -620,32 +696,24 @@ export async function planGapQuery(
   deps: PlannerDeps,
   input: PlannerInput,
   analysis: VideoAnalysis,
-  /**
-   * VIDEO 640 — `mustName`: the subject the narration names that no usable pool video names
-   * (`missingNamedSubject`). Search #1 searched the video's main subject ("Kim Kardashian footage");
-   * the sentences about Kris Jenner had no candidate that could show her. Search #2 is then aimed at
-   * those sentences and must name her — the main-subject rule of search #1 does not apply here.
-   */
-  gap: { query1: string; uncovered: number[]; mustName?: string }
+  gap: { query1: string; uncovered: number[] }
 ): Promise<PlannedQuery | null> {
   const log = deps.log ?? (() => {});
   const gate = once(deps.gate);
   const uncovered = gap.uncovered.filter((i) => i >= 0 && i < analysis.sentences.length);
   if (!uncovered.length) return null;
-  const must = gap.mustName?.trim() || "";
   const task =
     `Search #1 was: "${gap.query1}". These beats are still WITHOUT usable footage:\n` +
     uncovered.map((i) => `  [${i}] ${analysis.sentences[i]}`).join("\n") +
     "\nPlan search #2: ONE query aimed at the biggest filmable subject these uncovered beats share. It must ask for " +
-    "something search #1 did not." +
-    (must ? ` The query MUST name "${must}": no usable video found so far shows them.` : "");
-  const check = (q: string): string | null => {
-    const why = refuseQuery(q, { analysis, mustDifferFrom: gap.query1, gate, allowSingleScene: true });
-    if (why) return why;
-    if (must && !queryNames(gate(q).sentAs?.trim() || q, must)) return `the missing subject "${must}" is not in the query`;
-    return null;
-  };
-  const res = await ask(deps, task, describe(analysis, input), (q) => check(q), analysis.historical);
+    "something search #1 did not.";
+  const res = await ask(
+    deps,
+    task,
+    describe(analysis, input),
+    (q) => refuseQuery(q, { analysis, mustDifferFrom: gap.query1, gate, allowSingleScene: true }),
+    analysis.historical
+  );
   if (res.query) {
     const sent = gateText(gate, res.query, asksForArchiveFilm(input));
     log(`[YouTubeSearchPlanner] #2 query="${sent}" attempts=${res.attempts} refused=${JSON.stringify(res.refused)}`);
@@ -661,10 +729,9 @@ export async function planGapQuery(
     }
   }
   const terms = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
-  /** The missing subject itself first: "Kris Jenner" (the production word is added by `gateText`). */
-  const tries = must ? [must, ...terms.filter((t) => t !== must).map((t) => `${must} ${t}`)].slice(0, 3) : [2, 1].map((n) => terms.slice(0, n).join(" ").trim());
-  for (const q of tries) {
-    if (!check(q)) {
+  for (const n of [2, 1]) {
+    const q = terms.slice(0, n).join(" ").trim();
+    if (!refuseQuery(q, { analysis, mustDifferFrom: gap.query1, gate, allowSingleScene: true })) {
       const sent = gateText(gate, q, asksForArchiveFilm(input));
       log(`[YouTubeSearchPlanner] #2 query="${sent}" source=fallback refused=${JSON.stringify(res.refused)}`);
       return { query: sent, mainSubject: "", source: "fallback", attempts: res.attempts, refused: res.refused };
@@ -672,4 +739,45 @@ export async function planGapQuery(
   }
   log(`[YouTubeSearchPlanner] #2 NO_QUERY — no different query passed the rules refused=${JSON.stringify(res.refused)}`);
   return null;
+}
+
+/** Does the query (as the gate would send it) name every word of `name`? */
+export function queryNames(query: string, name: string): boolean {
+  const q = contentWords(query);
+  const n = contentWords(name.replace(/['’]s\b/gi, ""));
+  return n.length > 0 && n.every((w) => q.includes(w));
+}
+
+/**
+ * MULTI-PERSON / VISUAL NEEDS — a search aimed at ONE subject the pool cannot show: a person, place,
+ * event, company, product … (`VisualNeed`, or a name the narration states).
+ *
+ * Video 640: "Kim Kardashian footage" filled the pool; the sentences about Kris Jenner had no
+ * candidate that showed her. The question for a named subject is the name itself, as footage of it:
+ * "Kris Jenner footage" — not "media strategy", not "Kardashian business". Deterministic: no model
+ * is asked, the same rules and the same gate as every other query decide, and the production word
+ * is the planner's own ("footage", or "archival footage" for a historical request). Null when the
+ * rules or the gate refuse the name — that entity is then not searched.
+ */
+export function planEntityQuery(
+  deps: Pick<PlannerDeps, "gate" | "log">,
+  input: PlannerInput,
+  analysis: VideoAnalysis,
+  target: { name: string; asked: readonly string[] }
+): PlannedQuery | null {
+  const log = deps.log ?? (() => {});
+  const gate = once(deps.gate);
+  const name = target.name.replace(/['’]s\b/gi, "").trim();
+  /** One word only when the narration writes it as a name: "SpaceX footage", never "crowd footage". */
+  const properName = analysis.recurring.some((r) => r.term.toLowerCase() === name.toLowerCase());
+  const why =
+    refuseQuery(name, { analysis, mustDifferFrom: target.asked.join(" "), gate, allowSingleScene: true, minWords: properName ? 1 : 2 }) ??
+    (queryNames(gate(name).sentAs?.trim() || name, name) ? null : `the search gate drops "${name}"`);
+  if (why) {
+    log(`[YouTubeSearchPlanner] entity "${name}" NO_QUERY — ${why}`);
+    return null;
+  }
+  const sent = gateText(gate, name, asksForArchiveFilm(input));
+  log(`[YouTubeSearchPlanner] entity "${name}" query="${sent}"`);
+  return { query: sent, mainSubject: name, source: "fallback", attempts: 0, refused: [] };
 }

@@ -1,7 +1,8 @@
 /**
  * RONDE 658 — THE YOUTUBE SEARCH BUDGET OF ONE VIDEO.
  *
- * "1 search normaal. 2 searches maximaal. 3 searches nooit." The budget belongs to the video, not
+ * Was "1 search normaal. 2 searches maximaal. 3 searches nooit." — now 1 normally, at most
+ * MAX_YOUTUBE_SEARCHES_PER_VIDEO (see there for why 4). The budget belongs to the video, not
  * to a process, a render attempt or a worker: a retry, a requeue after a deploy, a stall recovery
  * and a user pressing "try again" all find the same row and the same count.
  *
@@ -9,12 +10,24 @@
  * count from n-1 to n and succeeds for exactly one caller; anything else — the count already moved,
  * the database unreachable — is a refusal. Refusing when the store cannot answer is deliberate:
  * a video without YouTube falls through to the archive, open sources and stock, which is a worse
- * film; a video that searches a third time is a broken promise.
+ * film; a video that searches past its maximum is a broken promise.
  */
 
-export const MAX_YOUTUBE_SEARCHES_PER_VIDEO = 2;
+/**
+ * MULTI-PERSON SEARCH (after video 640) — 1 search for the video's main subject, then at most 3
+ * more, each aimed at a gap: the existing coverage gap, or a named person or entity the pool cannot
+ * show (`youtubeVideoPool.ts`). Why 4 and not more:
+ *   - quota: the project has 100 `search.list` calls a day for everything — 4 per video is still
+ *     25 videos a day in the worst case, and a video only spends what its gaps ask for;
+ *   - stock: a film stocks 6 YouTube videos (3 downloads at a time, the pictures wait at most
+ *     180 s, 5 of 9 downloads arrived in 639/640). A targeted answer gets one of those slots, at
+ *     most 3 in all (`MAX_RESCUE_STOCK_VIDEOS`) — a fifth search would find videos no slot is left
+ *     for, and no beat downloads outside the stock (637–640: `downloads=0`);
+ *   - time: each search is judged on its thumbnails (~10–12 s for 50 results) before the stock starts.
+ */
+export const MAX_YOUTUBE_SEARCHES_PER_VIDEO = 4;
 
-export type SearchNumber = 1 | 2;
+export type SearchNumber = number;
 
 /** What is recorded per video. Every field optional: each step writes what it knows. */
 export type YoutubeSearchRecord = {
@@ -51,8 +64,8 @@ export type YoutubeSearchBudgetStore = {
 };
 
 /**
- * The one door. A number outside 1..2 is refused before the store is asked, so no caller can
- * spell a third search into existence.
+ * The one door. A number outside 1..MAX_YOUTUBE_SEARCHES_PER_VIDEO is refused before the store is
+ * asked, so no caller can spell a search past the maximum into existence.
  */
 export async function claimYoutubeSearch(
   store: YoutubeSearchBudgetStore,
@@ -64,7 +77,7 @@ export async function claimYoutubeSearch(
     log(`[YouTubeSearchBudget] REFUSED video=${videoId} search=#${n} reason=no_video`);
     return false;
   }
-  if (n !== 1 && n !== 2) {
+  if (!Number.isInteger(n) || n < 1 || n > MAX_YOUTUBE_SEARCHES_PER_VIDEO) {
     log(`[YouTubeSearchBudget] REFUSED video=${videoId} search=#${n} reason=over_maximum max=${MAX_YOUTUBE_SEARCHES_PER_VIDEO}`);
     return false;
   }

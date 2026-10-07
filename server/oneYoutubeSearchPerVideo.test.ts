@@ -20,10 +20,15 @@ import { buildVideoYoutubePool, poolRowsForBeat, search2Reasons, type PoolDeps, 
 const silent = () => {};
 
 describe("the budget belongs to the video, and it holds two searches", () => {
-  it("a third search cannot even be asked for", async () => {
+  /**
+   * MULTI-PERSON SEARCH — the maximum is now 4 (1 main subject + at most 3 aimed at a gap or a named
+   * person the pool cannot show; why 4: `MAX_YOUTUBE_SEARCHES_PER_VIDEO`). The rule is the same: a
+   * number past the maximum is refused before the store is asked.
+   */
+  it("a search past the maximum cannot even be asked for", async () => {
     const store = memoryYoutubeSearchBudgetStore();
-    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(2);
-    expect(await claimYoutubeSearch(store, 7, 3, silent)).toBe(false);
+    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(4);
+    expect(await claimYoutubeSearch(store, 7, MAX_YOUTUBE_SEARCHES_PER_VIDEO + 1, silent)).toBe(false);
     expect(await claimYoutubeSearch(store, 7, 0, silent)).toBe(false);
     expect(await claimYoutubeSearch(store, 0, 1, silent)).toBe(false);
   });

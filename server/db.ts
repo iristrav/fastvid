@@ -2493,7 +2493,7 @@ export const dbYoutubeSearchBudgetStore: import("./youtubeSearchBudget").Youtube
     const now = new Date();
     const result = await db
       .update(youtubeVideoSearches)
-      .set(n === 1 ? { searchCount: 1, search1StartedAt: now } : { searchCount: 2, search2StartedAt: now })
+      .set(n === 1 ? { searchCount: 1, search1StartedAt: now } : n === 2 ? { searchCount: 2, search2StartedAt: now } : { searchCount: n })
       .where(and(eq(youtubeVideoSearches.videoId, videoId), eq(youtubeVideoSearches.searchCount, n - 1)));
     return affectedOne(result);
   },

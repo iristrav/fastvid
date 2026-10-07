@@ -319,8 +319,9 @@ describe("G3 — ready YouTube for the sentence is looked at before the own arch
 /* ═══════════ untouched ═══════════ */
 
 describe("untouched: search limit, per-beat search, W1–W6, F2", () => {
-  it("the YouTube search limit is still 2 per video", async () => {
+  it("the YouTube search limit is still the agreed one per video", async () => {
     const { MAX_YOUTUBE_SEARCHES_PER_VIDEO } = await import("./youtubeSearchBudget");
-    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(2);
+    /** MULTI-PERSON SEARCH raised the per-video limit from 2 to 4 on purpose (why: `MAX_YOUTUBE_SEARCHES_PER_VIDEO`); this round left it as it found it. */
+    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(4);
   });
 });

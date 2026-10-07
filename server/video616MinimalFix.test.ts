@@ -32,7 +32,7 @@ import {
   type Triage,
   type VideoYoutubePool,
 } from "./youtubeVideoPool";
-import { claimYoutubeSearch, memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
+import { claimYoutubeSearch, MAX_YOUTUBE_SEARCHES_PER_VIDEO, memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
 import type { GateVerdict } from "./youtubeVideoSearchPlanner";
 import { planScriptGuidedClip } from "./scriptGuidedClipFinder";
 import { _resetYoutubeVideoContextCache } from "./youtubeVideoContext";
@@ -132,7 +132,13 @@ describe("C/G. refusals on screen can ask for the existing search #2 — never a
     const third = await buildVideoYoutubePool(d, kardashians, { refusedVideoIds: ids.slice(0, 10) });
     expect(d.searches).toHaveLength(2);
     expect(third.searches).toBe(2);
-    expect(await claimYoutubeSearch(d.store, kardashians.videoId, 3, silent)).toBe(false);
+    /**
+     * MULTI-PERSON SEARCH — the budget is now 4, so the store would grant a #3; what keeps refusals
+     * from spending it is that the coverage gap is searched once (`gapSearch`), and a top-up never
+     * starts the named-subject searches. Past the maximum nothing can be claimed at all.
+     */
+    expect(third.gapSearch).toBe(2);
+    expect(await claimYoutubeSearch(d.store, kardashians.videoId, MAX_YOUTUBE_SEARCHES_PER_VIDEO + 1, silent)).toBe(false);
   });
 });
 

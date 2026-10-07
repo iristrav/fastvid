@@ -345,9 +345,10 @@ describe("TEST H/J — finding a lost moment again never searches or downloads",
     for (const call of look.mock.calls) for (const p of call[0]) expect([a, b2]).toContain(p);
   });
 
-  it("the search limit is still 2 per video", async () => {
+  it("the search limit is still the agreed one per video", async () => {
     const { MAX_YOUTUBE_SEARCHES_PER_VIDEO } = await import("./youtubeSearchBudget");
-    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(2);
+    /** MULTI-PERSON SEARCH raised the per-video limit from 2 to 4 on purpose (why: `MAX_YOUTUBE_SEARCHES_PER_VIDEO`); this round left it as it found it. */
+    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(4);
   });
 });
 

@@ -117,26 +117,35 @@ function deps(over: Partial<PoolDeps> & { secondLlm?: string } = {}): PoolDeps &
 const input = { videoId: 640, ...KARDASHIANS };
 
 describe("search #2 for the named subject no usable pool video shows (the Kris Jenner case of 640)", () => {
-  it("search #1 is the main subject; search #2 names Kris Jenner, says why, and is the last search", async () => {
+  /**
+   * MULTI-PERSON SEARCH — the targeted search is now planned without the model: the missing name
+   * plus "footage" (`planEntityQuery`), so the model can no longer answer without her first. The
+   * reason is logged per subject (`[MULTI_PERSON_*]`) and kept on the pool as `entityTargets`
+   * (was `search2Need`); `search2Reason` is again only the coverage-gap rules. The cap is 4, and
+   * 640 spends 2: one subject was missing.
+   */
+  it("search #1 is the main subject; search #2 names Kris Jenner, says why, and no further search runs", async () => {
     const d = deps();
     const pool = await buildVideoYoutubePool(d, input);
     expect(d.searches).toEqual(["Kim Kardashian footage", "Kris Jenner footage"]);
     expect(pool.searches).toBe(2);
-    expect(pool.search2Need).toMatchObject({ name: "Kris Jenner", reason: "missing_named_subject", beats: [3, 4] });
-    expect(pool.search2Reason).toContain('missing_named_subject: "Kris Jenner" named in beat(s) 3,4');
-    expect(d.lines.some((l) => l.includes('SEARCH2_REASON=missing_named_subject need="Kris Jenner" beats=[3,4]'))).toBe(true);
-    /** The model's first answer did not name her: refused for that, and the planner named her itself. */
-    expect(d.lines.some((l) => l.includes('the missing subject \\"Kris Jenner\\" is not in the query'))).toBe(true);
-    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(2);
+    expect(pool.entityTargets).toEqual([
+      expect.objectContaining({ name: "Kris Jenner", reason: "missing_named_subject", beats: [3, 4], n: 2, query: "Kris Jenner footage" }),
+    ]);
+    expect(d.lines.some((l) => l.includes('[MULTI_PERSON_COVERAGE] video=640 covered=none missing=Kris Jenner'))).toBe(true);
+    expect(d.lines.some((l) => l.includes('[MULTI_PERSON_SEARCH] video=640 search=#2 entity="Kris Jenner" reason=missing_named_subject query="Kris Jenner footage"'))).toBe(true);
+    expect(d.lines.some((l) => l.includes("[MULTI_PERSON_SUMMARY] video=640 searches=2 budget=4 targeted_searches=1"))).toBe(true);
+    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(4);
     const again = await buildVideoYoutubePool(d, input);
     expect(d.searches).toHaveLength(2);
     expect(again.searches).toBe(2);
   });
 
-  it("when the model's search #2 names her, its own query is used", async () => {
+  /** Was "the model's own query is used": the targeted query no longer depends on the model at all. */
+  it("whatever the model would answer, the targeted query is the name itself", async () => {
     const d = deps({ secondLlm: "Kris Jenner perfume bottle" });
     await buildVideoYoutubePool(d, input);
-    expect(d.searches[1]).toBe("Kris Jenner perfume bottle footage");
+    expect(d.searches[1]).toBe("Kris Jenner footage");
   });
 
   it("search #2's videos go through the same look: a commentary title stays unusable", async () => {
@@ -205,15 +214,21 @@ describe("search #2 is spent only when it is needed", () => {
     const d = deps({ namedSubjects: undefined });
     const pool = await buildVideoYoutubePool(d, input);
     expect(d.searches).toHaveLength(1);
-    expect(pool.search2Need).toBeUndefined();
+    expect(pool.entityTargets).toBeUndefined();
   });
 
-  it("a coverage gap keeps the existing search #2 (aimed at the uncovered sentences, no name forced)", async () => {
+  /**
+   * MULTI-PERSON SEARCH — the coverage gap keeps its own search (#2, planned by the model for the
+   * uncovered sentences, no name forced); the missing named subject now gets a search of its own
+   * (#3) instead of competing for the same one.
+   */
+  it("a coverage gap keeps the existing search #2 (no name forced); the missing name gets #3", async () => {
     const d = deps({ triage: async () => ({ footageType: "talking_head", servesBeats: [], depicts: "" }) });
     const pool = await buildVideoYoutubePool(d, input);
-    expect(d.searches).toHaveLength(2);
+    expect(d.searches).toEqual(["Kim Kardashian footage", "Kardashian mansion deals footage", "Kris Jenner footage"]);
     expect(pool.search2Reason).toContain("usable candidates 0");
-    expect(pool.search2Need).toBeUndefined();
+    expect(pool.gapSearch).toBe(2);
+    expect(pool.entityTargets?.map((t) => [t.name, t.n])).toEqual([["Kris Jenner", 3]]);
   });
 
   it("names search #1 already asked for, and one-word names, never trigger search #2", () => {

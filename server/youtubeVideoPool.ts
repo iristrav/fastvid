@@ -17,16 +17,18 @@
  */
 import { youtubeResultIsShort } from "./youtubeNonFootage";
 import { judgeFootageTitle, judgeFootageType } from "./visualJudge";
-import { claimYoutubeSearch, type YoutubeSearchBudgetStore } from "./youtubeSearchBudget";
+import { claimYoutubeSearch, MAX_YOUTUBE_SEARCHES_PER_VIDEO, type YoutubeSearchBudgetStore } from "./youtubeSearchBudget";
 import {
   analyzeVideo,
   contentWords,
+  planEntityQuery,
   planGapQuery,
   planVideoQuery,
   queryNames,
   type PlannerDeps,
   type PlannerInput,
   type VideoAnalysis,
+  type VisualNeed,
 } from "./youtubeVideoSearchPlanner";
 
 export type SearchItem = { videoId: string; title: string; description: string; channel: string; thumb: string };
@@ -42,7 +44,13 @@ export type ItemDetails = {
   license?: string;
 };
 export type FootageType = "real_footage" | "archival_footage" | "talking_head" | "text_or_graphic" | "animation_or_game" | "other";
-export type Triage = { footageType: FootageType; servesBeats: number[]; depicts: string };
+export type Triage = {
+  footageType: FootageType;
+  servesBeats: number[];
+  depicts: string;
+  /** VISUAL NEEDS — which of the subjects it was shown the video really shows on screen (their numbers). */
+  shows?: number[];
+};
 
 export type PoolCandidate = {
   videoId: string;
@@ -53,14 +61,22 @@ export type PoolCandidate = {
   footageType: FootageType | "unjudged";
   /** Sentence indices of the whole script this video's footage can honestly be shown under. */
   serves: number[];
-  /** 1 or 2: which search found it; 0: the archive already held it. */
-  from: 0 | 1 | 2;
+  /** 1..MAX_YOUTUBE_SEARCHES_PER_VIDEO: which search found it; 0: the archive already held it. */
+  from: number;
   usable: boolean;
   why: string;
   /** VIDEO 619 — the channel YouTube's search named; absent in pools stored before it was kept. */
   channel?: string;
   /** YouTube's own licence for the video, from `videos.list`; absent when it was not reported. */
   license?: string;
+  /**
+   * VISUAL NEEDS — the script's subjects the look says this video really shows (the subject itself, not
+   * a relative or the theme). Absent when the look was not asked (older pools): then its title,
+   * description and `depicts` decide, as before.
+   */
+  shows?: string[];
+  /** What the look saw on the thumbnail, in its own words. */
+  depicts?: string;
 };
 
 export type VideoYoutubePool = {
@@ -76,20 +92,31 @@ export type VideoYoutubePool = {
   search2Reason: string;
   finalCoverage: number;
   decided: boolean;
-  /** VIDEO 640 — the named subject search #2 was aimed at (`missingNamedSubject`); absent in older pools. */
-  search2Need?: MissingSubject | null;
+  /** MULTI-PERSON SEARCH — the named subjects a search was aimed at, with that search's number. */
+  entityTargets?: EntityTarget[];
+  /** The number of the search aimed at the coverage gap, when one ran (absent in older pools). */
+  gapSearch?: number;
+  /** VISUAL NEEDS — what the script must show, as the planner read it with search #1. */
+  visualNeeds?: VisualNeed[];
 };
+
+/** One targeted search: which subject, why, which search number, what it asked. */
+export type EntityTarget = MissingSubject & { n: number; query: string; score: number };
 
 /**
  * "name": a run of capitalised words the pipeline's name extractor reads as a name — a person
  * ("Kris Jenner"), but also a place, group or brand ("Tesla Fremont", "East Berliners", "Kylie
  * Cosmetics"). It is not called a person here because the extractor cannot tell; every one of them
- * is a concrete, searchable subject. "company"/"brand": the real-entity rules.
+ * is a concrete, searchable subject. "company"/"brand": the real-entity rules. "subject": a VISUAL NEED
+ * the planner read from the script (`VisualNeed`) — a place, building, event, war, product, vehicle,
+ * technology, animal, object, team or match, named as a whole ("Tesla Model 3", "Berlin Wall").
  */
-export type NamedSubjectKind = "name" | "company" | "brand";
+export type NamedSubjectKind = "name" | "company" | "brand" | "subject";
 export type NamedSubject = { name: string; kind: NamedSubjectKind };
-/** A subject the narration names that no usable pool video names: what search #2 is for. */
+/** A subject the narration names that no usable pool video names: what a targeted search is for. */
 export type MissingSubject = { name: string; kind: NamedSubjectKind; beats: number[]; reason: string };
+/** A named subject of the script, its sentences, its weight, and whether a usable pool video names it. */
+export type NamedSubjectCoverage = MissingSubject & { score: number; covered: boolean };
 
 export type PoolDeps = PlannerDeps & {
   store: YoutubeSearchBudgetStore;
@@ -97,8 +124,11 @@ export type PoolDeps = PlannerDeps & {
   search: (query: string) => Promise<{ status: number; items: SearchItem[] }>;
   /** One videos.list call (1 quota unit, up to 50 ids). */
   details: (ids: string[]) => Promise<Map<string, ItemDetails>>;
-  /** Look at one thumbnail against the whole script. */
-  triage: (item: SearchItem, title: string, sentences: string[]) => Promise<Triage | null>;
+  /**
+   * Look at one thumbnail against the whole script — and, VISUAL NEEDS, against the script's subjects:
+   * which of them the video really shows (`Triage.shows`).
+   */
+  triage: (item: SearchItem, title: string, sentences: string[], subjects?: readonly string[]) => Promise<Triage | null>;
   /** The archive's own YouTube-origin assets that clear its floor, as items with a thumbnail. */
   archive: (sentences: string[]) => Promise<SearchItem[]>;
   /** When the official API is in its quota cooldown, a search is not spent on a refusal. */
@@ -159,9 +189,10 @@ async function judge(
   deps: PoolDeps,
   items: SearchItem[],
   details: Map<string, ItemDetails> | null,
-  from: 0 | 1 | 2,
+  from: number,
   title: string,
-  sentences: string[]
+  sentences: string[],
+  subjects: readonly string[] = []
 ): Promise<PoolCandidate[]> {
   return mapLimit(items, deps.concurrency ?? 8, async (item) => {
     const d = details?.get(item.videoId) ?? null;
@@ -178,7 +209,7 @@ async function judge(
     else if (d && d.durationSec > 0 && d.durationSec < MIN_SOURCE_SEC) why = `too short ${d.durationSec}s`;
     else if (d && d.durationSec > MAX_SOURCE_SEC) why = `too long ${Math.round(d.durationSec / 60)}min (download ceiling)`;
     else if (d && !d.embeddable) why = "not embeddable";
-    const t = why === "ok" ? await deps.triage(it, title, sentences).catch(() => null) : null;
+    const t = why === "ok" ? await deps.triage(it, title, sentences, subjects).catch(() => null) : null;
     if (why === "ok") {
       if (!t) why = "not judged";
       else if (judgeFootageType(t.footageType).decision === "REJECT") why = judgeFootageType(t.footageType).reason;
@@ -202,6 +233,11 @@ async function judge(
       why,
       ...(it.channel ? { channel: it.channel } : {}),
       ...(d?.license ? { license: d.license } : {}),
+      /** VISUAL NEEDS — only when the look was asked about the subjects and answered. */
+      ...(usable && subjects.length && Array.isArray(t!.shows)
+        ? { shows: [...new Set(t!.shows.filter((k) => Number.isInteger(k) && k >= 0 && k < subjects.length).map((k) => subjects[k]!))] }
+        : {}),
+      ...(usable && t!.depicts ? { depicts: t!.depicts } : {}),
     };
   });
 }
@@ -242,42 +278,121 @@ export function search2Reasons(
  * for that same sentence. One search of the two allowed went unused while a named person had no
  * candidate at all.
  *
- * Deterministic, from data the render already has: the names each sentence carries (names first,
- * then companies and brands), minus the ones search #1 already asked for, and only when no usable
- * pool video names the subject in its title or description. The subject named in the most sentences
- * wins. Null when nothing is missing — then search #2 is decided exactly as before.
+ * From data the render already has: the subjects the planner read from the whole script with search
+ * #1 (`VisualNeed` — people, places, events, products, vehicles …) and the names each sentence carries,
+ * minus the ones a search already asked for, and only when no usable pool video SHOWS the subject —
+ * the look's own answer, not a word in a title (`candidateShows`). Each missing subject, most
+ * important first, gets one targeted search while the budget lasts.
  */
-const SUBJECT_PRIORITY: Record<NamedSubjectKind, number> = { name: 0, company: 1, brand: 1 };
-const SUBJECT_REASON: Record<NamedSubjectKind, string> = { name: "missing_named_subject", company: "missing_company", brand: "missing_product" };
+const SUBJECT_PRIORITY: Record<NamedSubjectKind, number> = { name: 0, subject: 0, company: 1, brand: 1 };
+const SUBJECT_REASON: Record<NamedSubjectKind, string> = {
+  name: "missing_named_subject",
+  subject: "missing_visual_subject",
+  company: "missing_company",
+  brand: "missing_product",
+};
 
-export function missingNamedSubject(
-  pool: Pick<VideoYoutubePool, "candidates" | "sentences" | "query1">,
-  namedSubjects: (sentence: string) => NamedSubject[]
-): MissingSubject | null {
-  const asked = new Set(contentWords(pool.query1 ?? ""));
-  const shown = pool.candidates
-    .filter((c) => c.usable)
-    .map((c) => `${c.title} ${c.description}`)
-    .join(" \n ");
-  const byName = new Map<string, { name: string; kind: NamedSubjectKind; beats: number[] }>();
+/** The same subject: the same meaningful words ("Kris Jenner's" is "Kris Jenner"). */
+function subjectKey(name: string): string {
+  return contentWords(name.replace(/['’]s\b/gi, "")).join(" ");
+}
+
+/**
+ * Does this usable candidate SHOW the subject? The look's own answer when it was asked (`shows`): a
+ * video can show the Berlin Wall without "Berlin Wall" in its title, and a Kim Kardashian red carpet
+ * does not show Kris Jenner however much of the family's name its title carries. Without that answer
+ * (pools judged before it existed) its title, description and what the look saw (`depicts`) decide.
+ */
+export function candidateShows(c: Pick<PoolCandidate, "title" | "description" | "shows" | "depicts">, name: string): boolean {
+  if (c.shows) return c.shows.some((s) => subjectKey(s) === subjectKey(name));
+  return queryNames(`${c.title} ${c.description} ${c.depicts ?? ""}`, name);
+}
+
+/**
+ * VISUAL NEEDS — every subject the script must show, from the two readers the render already has:
+ * the planner's reading of the whole script (`pool.visualNeeds`: places, events, products, vehicles …
+ * whole subjects, with their sentences) and the narration's own names per sentence (`namedSubjects`).
+ * One subject once: when the planner's subject holds every word of a name ("Berlin Wall 1989" and
+ * "Berlin Wall"), the name's sentences join the planner's subject. One-word names stay out ("Hollywood");
+ * the planner may keep a one-word subject only when the narration writes it as a name ("SpaceX").
+ */
+export function scriptVisualNeeds(
+  pool: Pick<VideoYoutubePool, "sentences" | "visualNeeds">,
+  namedSubjects?: (sentence: string) => NamedSubject[]
+): Array<{ name: string; kind: NamedSubjectKind; beats: number[]; listed: boolean }> {
+  const out: Array<{ name: string; kind: NamedSubjectKind; beats: number[]; listed: boolean }> = [];
+  for (const n of pool.visualNeeds ?? []) {
+    const beats = n.beats.filter((b) => b >= 0 && b < pool.sentences.length);
+    if (!subjectKey(n.subject) || !beats.length) continue;
+    const same = out.find((o) => subjectKey(o.name) === subjectKey(n.subject));
+    if (same) same.beats = [...new Set([...same.beats, ...beats])];
+    else out.push({ name: n.subject.replace(/['’]s\b/gi, "").trim(), kind: "subject", beats, listed: true });
+  }
   pool.sentences.forEach((sentence, i) => {
-    for (const s of namedSubjects(sentence)) {
+    for (const s of namedSubjects?.(sentence) ?? []) {
       const name = s.name.replace(/['’]s\b/gi, "").trim();
       const words = contentWords(name);
-      /** A one-word name ("Hollywood") is no searchable subject of its own; a company or brand may be. */
-      if (!words.length || (s.kind === "name" && words.length < 2) || words.every((w) => asked.has(w))) continue;
-      const key = words.join(" ");
-      const entry = byName.get(key) ?? { name, kind: s.kind, beats: [] };
-      if (SUBJECT_PRIORITY[s.kind] < SUBJECT_PRIORITY[entry.kind]) entry.kind = s.kind;
-      if (!entry.beats.includes(i)) entry.beats.push(i);
-      byName.set(key, entry);
+      if (!words.length || (s.kind === "name" && words.length < 2)) continue;
+      const holder =
+        out.find((o) => subjectKey(o.name) === words.join(" ")) ??
+        out.find((o) => o.listed && words.every((w) => contentWords(o.name).includes(w)));
+      if (holder) {
+        if (!holder.beats.includes(i)) holder.beats.push(i);
+        /** The planner named it too: it keeps the narration's kind (a person stays a person). */
+        if (holder.kind === "subject" && subjectKey(holder.name) === words.join(" ")) holder.kind = s.kind;
+        else if (SUBJECT_PRIORITY[s.kind] < SUBJECT_PRIORITY[holder.kind]) holder.kind = s.kind;
+        continue;
+      }
+      out.push({ name, kind: s.kind, beats: [i], listed: false });
     }
   });
-  const missing = [...byName.values()]
-    .filter((e) => !queryNames(shown, e.name))
-    .sort((a, b) => SUBJECT_PRIORITY[a.kind] - SUBJECT_PRIORITY[b.kind] || b.beats.length - a.beats.length || a.beats[0]! - b.beats[0]!);
-  const top = missing[0];
-  return top ? { ...top, reason: SUBJECT_REASON[top.kind] } : null;
+  return out;
+}
+
+/**
+ * MULTI-PERSON / VISUAL NEEDS — every subject the script must show, weighed, and whether the pool shows it.
+ *
+ * The weight is what the script itself says about importance: the number of sentences that need the
+ * subject, one more when the user's prompt or the title names it, and one more when the planner, reading
+ * the whole script, listed it as something the viewer must see. A subject five sentences need comes
+ * before one named in passing. Subjects a search already asked for are left out (they are the subject
+ * of that search). "Covered" means a usable pool video SHOWS it (`candidateShows`): a search for it
+ * would buy nothing.
+ */
+export function namedSubjectCoverage(
+  pool: Pick<VideoYoutubePool, "candidates" | "sentences" | "query1" | "visualNeeds">,
+  namedSubjects?: (sentence: string) => NamedSubject[],
+  opts: { asked?: readonly string[]; important?: string } = {}
+): NamedSubjectCoverage[] {
+  const asked = new Set([pool.query1 ?? "", ...(opts.asked ?? [])].flatMap((q) => contentWords(q)));
+  const usable = pool.candidates.filter((c) => c.usable);
+  return scriptVisualNeeds(pool, namedSubjects)
+    .filter((e) => !contentWords(e.name).every((w) => asked.has(w)))
+    .map((e) => ({
+      name: e.name,
+      kind: e.kind,
+      beats: [...e.beats].sort((a, b) => a - b),
+      reason: SUBJECT_REASON[e.kind],
+      score: e.beats.length + (opts.important && queryNames(opts.important, e.name) ? 1 : 0) + (e.listed ? 1 : 0),
+      covered: usable.some((c) => candidateShows(c, e.name)),
+    }))
+    .sort(
+      (a, b) =>
+        Number(a.covered) - Number(b.covered) ||
+        b.score - a.score ||
+        SUBJECT_PRIORITY[a.kind] - SUBJECT_PRIORITY[b.kind] ||
+        a.beats[0]! - b.beats[0]!
+    );
+}
+
+/** The most important subject the pool cannot show (VIDEO 640's Kris Jenner), or null. */
+export function missingNamedSubject(
+  pool: Pick<VideoYoutubePool, "candidates" | "sentences" | "query1" | "visualNeeds">,
+  namedSubjects?: (sentence: string) => NamedSubject[],
+  opts: { asked?: readonly string[]; important?: string } = {}
+): MissingSubject | null {
+  const top = namedSubjectCoverage(pool, namedSubjects, opts).find((e) => !e.covered);
+  return top ? { name: top.name, kind: top.kind, beats: top.beats, reason: top.reason } : null;
 }
 
 export function coverageOf(candidates: PoolCandidate[]): number {
@@ -321,7 +436,10 @@ function mergeCandidates(a: PoolCandidate[], b: PoolCandidate[]): PoolCandidate[
     const prev = byId.get(c.videoId);
     if (!prev) byId.set(c.videoId, c);
     else if (!prev.usable && c.usable) byId.set(c.videoId, c);
-    else if (prev.usable && c.usable) byId.set(c.videoId, { ...prev, serves: [...new Set([...prev.serves, ...c.serves])] });
+    else if (prev.usable && c.usable) {
+      const shows = prev.shows || c.shows ? { shows: [...new Set([...(prev.shows ?? []), ...(c.shows ?? [])])] } : {};
+      byId.set(c.videoId, { ...prev, serves: [...new Set([...prev.serves, ...c.serves])], ...shows });
+    }
   }
   return [...byId.values()];
 }
@@ -391,13 +509,15 @@ export async function buildVideoYoutubePool(
     }
   }
   pool.searches = Math.max(pool.searches, row?.searchCount ?? 0);
+  /** VISUAL NEEDS — the subjects every look is asked about: the planner's reading plus the narration's names. */
+  const subjectsToLookFor = (): string[] => scriptVisualNeeds(pool, deps.namedSubjects).map((e) => e.name);
   const persist = async (patch: Parameters<YoutubeSearchBudgetStore["record"]>[1]) =>
     deps.store.record(input.videoId, { ...patch, poolJson: JSON.stringify(pool) }).catch((err: Error) =>
       log(`[YouTubeSearchPlan] video=${input.videoId} not recorded: ${err.message?.slice(0, 120)}`)
     );
 
   /** A later attempt of the same video: its searches are spent, its candidates are reused. */
-  if (pool.searches >= 2 || (pool.decided && refused.size === 0)) {
+  if (pool.searches >= MAX_YOUTUBE_SEARCHES_PER_VIDEO || (pool.decided && refused.size === 0)) {
     log(`[YouTubeSearchPlan] video=${input.videoId} REUSED searches=${pool.searches} candidates=${pool.candidates.length} — no new search`);
     return pool;
   }
@@ -416,9 +536,14 @@ export async function buildVideoYoutubePool(
     }
     pool.searches = 1;
     pool.query1 = plan.query;
+    if (plan.visualNeeds?.length) pool.visualNeeds = plan.visualNeeds;
+    log(
+      `[VISUAL_NEEDS] video=${input.videoId} planner=${JSON.stringify((plan.visualNeeds ?? []).map((n) => `${n.subject} [${n.beats.join(",")}]`))} ` +
+        `looked_for=${JSON.stringify(subjectsToLookFor())}`
+    );
     const got = await deps.search(plan.query).catch(() => ({ status: 0, items: [] as SearchItem[] }));
     const details = got.items.length ? await deps.details(got.items.map((i) => i.videoId)).catch(() => null) : null;
-    pool.candidates = mergeCandidates(pool.candidates, await judge(deps, got.items, details, 1, input.title, analysis.sentences));
+    pool.candidates = mergeCandidates(pool.candidates, await judge(deps, got.items, details, 1, input.title, analysis.sentences, subjectsToLookFor()));
     pool.coverage1 = coverageOf(pool.candidates);
     await persist({
       beatsTotal: analysis.sentences.length,
@@ -441,67 +566,140 @@ export async function buildVideoYoutubePool(
    * call, the same 1 unit as the search's own.
    */
   const archiveDetails = archiveNew.length ? await deps.details(archiveNew.map((i) => i.videoId)).catch(() => null) : null;
-  const archiveJudged = await judge(deps, archiveNew, archiveDetails ?? new Map(), 0, input.title, analysis.sentences);
+  const archiveJudged = await judge(deps, archiveNew, archiveDetails ?? new Map(), 0, input.title, analysis.sentences, subjectsToLookFor());
   pool.candidates = mergeCandidates(pool.candidates, archiveJudged);
   if (!pool.decided) pool.archiveUsable = archiveJudged.filter((c) => c.usable).length;
 
   /* ── enough? ── */
   const reasons = search2Reasons(pool, refused);
-  /**
-   * VIDEO 640 — search #2 is also for a named subject no usable pool video shows, when the coverage
-   * rules alone would have left it unspent. Same budget (at most 2), same gate, same planner.
-   */
-  const need =
-    !reasons.length && pool.searches === 1 && !pool.decided && deps.namedSubjects
-      ? missingNamedSubject(pool, deps.namedSubjects)
-      : null;
-  if (need) {
-    reasons.push(`${need.reason}: "${need.name}" named in beat(s) ${need.beats.join(",")} — no usable pool video names it`);
-    pool.search2Need = need;
-    log(
-      `[YouTubeSearchPlan] video=${input.videoId} SEARCH2_REASON=${need.reason} need="${need.name}" beats=[${need.beats.join(",")}] ` +
-        `sentences=${JSON.stringify(need.beats.map((b) => analysis.sentences[b]?.slice(0, 90)))}`
-    );
-  }
   pool.search2Needed = reasons.length > 0;
   pool.search2Reason = reasons.join("; ");
   await persist({ archiveUsable: pool.archiveUsable, search2Needed: pool.search2Needed ? 1 : 0, search2Reason: pool.search2Reason });
 
-  /* ── search #2: only for a real gap, only a different question, and the last one ── */
-  if (pool.search2Needed && pool.searches === 1 && !deps.inCooldown?.()) {
-    const plan = await planGapQuery(
-      deps,
-      input,
-      analysis,
-      need
-        ? { query1: pool.query1 ?? "", uncovered: need.beats, mustName: need.name }
-        : { query1: pool.query1 ?? "", uncovered: gapOf(pool, refused) }
-    );
-    if (plan && (await claimYoutubeSearch(deps.store, input.videoId, 2, log))) {
-      pool.searches = 2;
-      pool.query2 = plan.query;
-      const got = await deps.search(plan.query).catch(() => ({ status: 0, items: [] as SearchItem[] }));
-      const fresh = got.items.filter((i) => !pool.candidates.some((c) => c.videoId === i.videoId));
-      const details = fresh.length ? await deps.details(fresh.map((i) => i.videoId)).catch(() => null) : null;
-      pool.candidates = mergeCandidates(pool.candidates, await judge(deps, fresh, details, 2, input.title, analysis.sentences));
+  /** One search, claimed, sent, judged; its candidates carry its number. Null when not granted. */
+  const runSearch = async (query: string): Promise<{ n: number; found: number; usable: number } | null> => {
+    const n = pool.searches + 1;
+    if (!(await claimYoutubeSearch(deps.store, input.videoId, n, log))) return null;
+    pool.searches = n;
+    if (n === 2) pool.query2 = query;
+    const got = await deps.search(query).catch(() => ({ status: 0, items: [] as SearchItem[] }));
+    const fresh = got.items.filter((i) => !pool.candidates.some((c) => c.videoId === i.videoId));
+    const details = fresh.length ? await deps.details(fresh.map((i) => i.videoId)).catch(() => null) : null;
+    pool.candidates = mergeCandidates(pool.candidates, await judge(deps, fresh, details, n, input.title, analysis.sentences, subjectsToLookFor()));
+    const usable = pool.candidates.filter((c) => c.from === n && c.usable).length;
+    if (n === 2) {
       await persist({
         search2CompletedAt: new Date(),
-        search2Query: plan.query,
+        search2Query: query,
         search2Status: got.status === 200 ? "ok" : `http_${got.status}`,
         search2Candidates: got.items.length,
-        search2Usable: pool.candidates.filter((c) => c.from === 2 && c.usable).length,
+        search2Usable: usable,
       });
+    } else {
+      await persist({});
     }
+    return { n, found: got.items.length, usable };
+  };
+
+  /* ── the coverage gap: only for a real gap, only a different question, once ── */
+  const gapAlreadySearched = pool.gapSearch != null || (pool.gapSearch === undefined && pool.searches >= 2 && !pool.entityTargets?.length);
+  if (pool.search2Needed && pool.searches >= 1 && pool.searches < MAX_YOUTUBE_SEARCHES_PER_VIDEO && !gapAlreadySearched && !deps.inCooldown?.()) {
+    const plan = await planGapQuery(deps, input, analysis, { query1: pool.query1 ?? "", uncovered: gapOf(pool, refused) });
+    const ran = plan ? await runSearch(plan.query) : null;
+    if (ran) pool.gapSearch = ran.n;
+  }
+
+  /**
+   * MULTI-PERSON SEARCH — the named people and entities the pool cannot show, most important first,
+   * one targeted search each while the budget lasts. Coverage is measured again after every search:
+   * a video that shows two of them answers both. Only when the pool is first built; a top-up after
+   * on-screen refusals keeps to the coverage gap above.
+   */
+  if (!pool.decided && pool.searches >= 1 && (deps.namedSubjects || pool.visualNeeds?.length)) {
+    const important = `${input.prompt} ${input.title}`;
+    const asked = () => [pool.query1 ?? "", ...(pool.entityTargets ?? []).map((t) => t.query), pool.query2 ?? ""].filter(Boolean);
+    const first = namedSubjectCoverage(pool, deps.namedSubjects, { asked: asked(), important });
+    const covered = first.filter((e) => e.covered);
+    const missing = first.filter((e) => !e.covered);
+    log(`[MULTI_PERSON_SEARCH] video=${input.videoId} entities=${first.length} ${JSON.stringify(first.map((e) => e.name))}`);
+    log(
+      `[MULTI_PERSON_COVERAGE] video=${input.videoId} covered=${covered.map((e) => e.name).join(",") || "none"} ` +
+        `missing=${missing.map((e) => e.name).join(",") || "none"}`
+    );
+    if (missing.length) {
+      log(
+        `[MULTI_PERSON_PRIORITY] video=${input.videoId} ` +
+          missing.map((e, i) => `${i + 1}=${e.name}(score=${e.score},beats=[${e.beats.join(",")}])`).join(" ")
+      );
+    }
+    const tried = new Set<string>();
+    while (pool.searches < MAX_YOUTUBE_SEARCHES_PER_VIDEO && !deps.inCooldown?.()) {
+      const next = namedSubjectCoverage(pool, deps.namedSubjects, { asked: asked(), important }).find(
+        (e) => !e.covered && !tried.has(e.name)
+      );
+      if (!next) break;
+      tried.add(next.name);
+      const plan = planEntityQuery(deps, input, analysis, { name: next.name, asked: asked() });
+      if (!plan) continue;
+      const ran = await runSearch(plan.query);
+      if (!ran) break;
+      (pool.entityTargets ??= []).push({ name: next.name, kind: next.kind, beats: next.beats, reason: next.reason, n: ran.n, query: plan.query, score: next.score });
+      log(
+        `[MULTI_PERSON_SEARCH] video=${input.videoId} search=#${ran.n} entity="${next.name}" reason=${next.reason} ` +
+          `query="${plan.query}" candidates=${ran.found} usable=${ran.usable} ` +
+          `sentences=${JSON.stringify(next.beats.map((b) => analysis.sentences[b]?.slice(0, 90)))}`
+      );
+    }
+    const targeted = pool.entityTargets ?? [];
+    log(
+      `[MULTI_PERSON_SUMMARY] video=${input.videoId} searches=${pool.searches} budget=${MAX_YOUTUBE_SEARCHES_PER_VIDEO} ` +
+        `targeted_searches=${targeted.length} ` +
+        `targeted_candidates=${pool.candidates.filter((c) => targeted.some((t) => t.n === c.from)).length} ` +
+        `targeted_usable=${pool.candidates.filter((c) => c.usable && targeted.some((t) => t.n === c.from)).length}`
+    );
   }
 
   pool.finalCoverage = coverageOf(pool.candidates);
   pool.decided = true;
   await persist({ finalCoverage: pool.finalCoverage });
   log(formatSearchPlan(pool));
-  if (pool.searches >= 2 || !pool.search2Needed) {
-    log(`[YouTubeSearchPlan] video=${input.videoId} YouTube search DONE for this video — the rest goes to archive, open sources, stock, AI`);
-  }
+  log(`[YouTubeSearchPlan] video=${input.videoId} YouTube search DONE for this video — the rest goes to archive, open sources, stock, AI`);
   return pool;
+}
+
+/**
+ * MULTI-PERSON SEARCH — what each targeted search finally became, read at the end of the render
+ * from the YouTube lifecycle rows (one per moment): downloaded, adopted (every adoption had the
+ * picture editor's FIT for its own sentence), and in the final video. One line per subject, then
+ * the totals — the line that says whether the right person reached the right sentence.
+ */
+export function formatMultiPersonOutcome(
+  videoId: number,
+  pool: Pick<VideoYoutubePool, "entityTargets" | "candidates" | "searches">,
+  rows: ReadonlyArray<{ providerAssetId?: string; sceneIndex: number; beatIndex: number; downloaded: boolean; adopted: boolean; finalVideo: boolean }>
+): string[] {
+  const targets = pool.entityTargets ?? [];
+  if (!targets.length) return [];
+  const lines: string[] = [];
+  const total = { downloaded: 0, adopted: 0, final: 0 };
+  for (const t of targets) {
+    const ids = new Set(pool.candidates.filter((c) => c.from === t.n).map((c) => c.videoId));
+    const mine = rows.filter((r) => r.providerAssetId != null && ids.has(r.providerAssetId));
+    const n = { downloaded: mine.filter((r) => r.downloaded).length, adopted: mine.filter((r) => r.adopted).length, final: mine.filter((r) => r.finalVideo).length };
+    total.downloaded += n.downloaded;
+    total.adopted += n.adopted;
+    total.final += n.final;
+    const finals = mine.filter((r) => r.finalVideo).map((r) => `s${r.sceneIndex}b${r.beatIndex}`);
+    lines.push(
+      `[MULTI_PERSON_OUTCOME] video=${videoId} entity="${t.name}" search=#${t.n} downloaded=${n.downloaded} adopted=${n.adopted} ` +
+        `final=${n.final}${finals.length ? ` finalBeats=${finals.join(",")}` : ""} entityBeats=[${t.beats.join(",")}]`
+    );
+  }
+  lines.push(
+    `[MULTI_PERSON_SUMMARY] video=${videoId} searches=${pool.searches} targeted_searches=${targets.length} ` +
+      `targeted_downloaded=${total.downloaded} targeted_adopted=${total.adopted} targeted_final=${total.final}`
+  );
+  return lines;
 }
 
 /* ═══════════════════════ the render's pool, and a beat's share of it ═══════════════════════ */
@@ -540,7 +738,7 @@ const poolsWithoutYoutube = new Set<number>();
  * The archive's own items (`from` 0) are not a YouTube search result and do not count.
  */
 export function poolGaveNoYoutube(pool: Pick<VideoYoutubePool, "candidates">): boolean {
-  return !pool.candidates.some((c) => c.usable && (c.from === 1 || c.from === 2));
+  return !pool.candidates.some((c) => c.usable && c.from >= 1);
 }
 
 /**

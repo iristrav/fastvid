@@ -385,7 +385,8 @@ describe("safety — nothing was loosened", () => {
   });
 
   it("21. search limits unchanged, and no new search call anywhere in this round's code", () => {
-    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(2);
+    /** MULTI-PERSON SEARCH raised the per-video limit from 2 to 4 on purpose (why: `MAX_YOUTUBE_SEARCHES_PER_VIDEO`); this round left it as it found it. */
+    expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(4);
     expect(youtubeSearchPassesPerQuery()).toBe(1);
     expect(youtubeMaxDownloadsPerRender()).toBe(60);
     const w2 = PIPE.slice(PIPE.indexOf("const order = beatRowsInStockOrder("), PIPE.indexOf("const poolDurationSec = row.durationSec"));
