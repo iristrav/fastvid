@@ -990,6 +990,8 @@ export function buildCinematicSceneInputs(params: {
   onBeatOutcome?: (outcome: CinematicBeatOutcome) => void;
   /** VIDEO 634 (B1) — the film's main subject (`videoMainSubject`), for a sentence that names none. */
   filmSubject?: string | null;
+  /** VIDEO 638 — why the sentence has no picture of its own; see `graphicOnlyReasonFor`. */
+  graphicOnlyReason?: (sceneIndex: number, beatIndex: number) => string;
 }): CinematicInputsResult {
   const extractors = params.extractors ?? {};
   const dropped: string[] = [];
@@ -1148,6 +1150,14 @@ export function buildCinematicSceneInputs(params: {
                   `origin=${filmSubjectCard ? "film_subject" : "sentence"} title="${String(standIn.data?.title ?? "")}"`
               : `[CinematicGraphicVisual] scene=${scene.index} beat=${beatIndex} graphic=${standIn.graphicType} ` +
                   `${(end - start).toFixed(2)}s — the sentence's picture is a graphic`
+          );
+          /**
+           * VIDEO 638 — a graphic is the whole picture only for a sentence with no clip of its own,
+           * and never without saying why (a sentence WITH a clip keeps it, its graphics drawn over it).
+           */
+          console.log(
+            `[GRAPHIC_ONLY_REASON] s${scene.index}b${beatIndex} ${(end - start).toFixed(2)}s graphic=${standIn.graphicType} ` +
+              `reason=${params.graphicOnlyReason?.(scene.index, beatIndex) ?? "NO_ADOPTED_CLIP"}`
           );
         }
         return;

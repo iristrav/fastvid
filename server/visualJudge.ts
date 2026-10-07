@@ -85,8 +85,14 @@ export function textMentionsPersonName(haystack: string, personName: string): bo
  * The list also refused bridges, campfires, journalists, courtrooms, textile mills and roads on
  * every topic — words chosen for one kind of film. What a clip shows is the picture editor's call.
  */
+/*
+ * VIDEO 638 — a term is a WORD, not a run of letters. "icon" refused every candidate of a sentence
+ * that said "its iconic face"; "toy" would refuse "Toyota", "graphic" "infographic". Each term now
+ * matches only between non-letters/digits (spaces, punctuation, "-", "_" and "." of a file name all
+ * separate), with its plural ("icons", "graphics", "glitches"). The terms themselves are unchanged.
+ */
 export const BLOCKED_STOCK_TAGS_RE =
-  /emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|dashcam|miniature|scale model|toy|diorama|tabletop|model rocket|science fiction|sci-fi|vhs|glitch|archival/i;
+  /(?<![a-z0-9])(?:emoji|cartoon|animation|icon|illustration|graphic|pattern|sticker|clipart|motion graphics|3d render|abstract background|wallpaper|seamless loop|looping|dashcam|miniature|scale model|toy|diorama|tabletop|model rocket|science fiction|sci-fi|vhs|glitch|archival)(?:e?s)?(?![a-z0-9])/i;
 
 /** When narration names a real company/product, clip slug/query must show that same entity (real-world footage). */
 export type RealEntityRuleBase = {

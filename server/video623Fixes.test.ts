@@ -191,7 +191,8 @@ describe("Video 623 — a YouTube file that arrives late is offered to the next 
 
   it("a lookahead gathers for its own sentence and takes nothing", () => {
     expect(SRC).toContain("const lateHere = req.lookahead ? [] : takeLateYoutubeCandidates(");
-    expect(SRC).toContain("offerLateYoutubeCandidates(dedup, late.paths, `s${sceneIndex}b${beat.index}`)");
+    // VIDEO 638 — clips already handed to their own turn are not offered again; the rest still go on.
+    expect(SRC).toContain("if (rest.length > 0) offerLateYoutubeCandidates(dedup, rest, `s${sceneIndex}b${beat.index}`);");
   });
 });
 

@@ -2562,6 +2562,23 @@ export function lifecyclesOf(
 }
 
 /**
+ * VIDEO 638 — per sentence ("scene:beat"), how many downloaded candidates nobody ever looked at.
+ * A report for `[GRAPHIC_ONLY_REASON]`, never a permission: nothing reads it to admit an asset.
+ */
+export function neverJudgedCountsBySentence(
+  records: readonly VisualLineageRecord[],
+  events: readonly VisualLineageEvent[]
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const a of lifecyclesOf(records, events)) {
+    if (a.terminalStatus !== "DOWNLOADED_NEVER_JUDGED") continue;
+    const key = `${a.sceneIndex}:${a.beatIndex}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
  * The six invariants, reported only when broken.
  *
  * `renderSucceeded` and `deliveryHappened` come from the render job, because two of the six are

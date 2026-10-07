@@ -492,6 +492,45 @@ export const HighlightBox: React.FC<{
 export const PRIMARY_GROUND =
   "radial-gradient(ellipse at 50% 45%, rgba(43,52,66,0.99) 0%, rgba(30,37,47,0.99) 70%, rgba(26,32,41,0.99) 100%)";
 
+/**
+ * VIDEO 638 (F1b) — the ground as a designed surface, not a flat slate.
+ *
+ * 638 showed this ground for ±43 of its 66 s, and a flat slate for that long reads as "nothing
+ * here". Three layers are drawn OVER `PRIMARY_GROUND`, which stays underneath as the 99%-opaque
+ * base (so the overlay probe and the black-frame check see exactly what they saw before):
+ *
+ *   1. a soft glow in the film's gold accent that drifts slowly across the frame
+ *   2. a faint diagonal light sweep, for depth
+ *   3. a fine grain whose offset changes every frame, like film stock
+ *
+ * Pure CSS gradients, computed from the frame number alone: deterministic, no asset, no network,
+ * nothing from any shot. Every layer is translucent and the mean brightness stays where the slate
+ * kept it (lighter at the centre, never darker than the slate's own edge at the corners).
+ */
+export function primaryGroundLayers(frame: number, durationInFrames: number): React.CSSProperties[] {
+  const t = durationInFrames > 1 ? Math.min(1, Math.max(0, frame / (durationInFrames - 1))) : 0;
+  /** The glow travels a quarter of the frame over the whole graphic: movement, never a jump. */
+  const glowX = 38 + 24 * t;
+  const glowY = 42 + 6 * Math.sin(t * Math.PI);
+  /** A fixed hop per frame, no random number: the same frame always renders the same. */
+  const grainX = (frame * 37) % 97;
+  const grainY = (frame * 61) % 89;
+  return [
+    {
+      background: `radial-gradient(ellipse 60% 55% at ${glowX.toFixed(2)}% ${glowY.toFixed(2)}%, ${ACCENT}26 0%, ${ACCENT}0d 45%, ${ACCENT}00 75%)`,
+    },
+    {
+      background: "linear-gradient(115deg, rgba(255,255,255,0) 30%, rgba(255,255,255,0.035) 50%, rgba(255,255,255,0) 70%)",
+    },
+    {
+      backgroundImage:
+        "repeating-radial-gradient(circle at 17% 23%, rgba(255,255,255,0.045) 0px, rgba(255,255,255,0) 1px, rgba(255,255,255,0) 3px)",
+      backgroundSize: "97px 89px",
+      backgroundPosition: `${grainX}px ${grainY}px`,
+    },
+  ];
+}
+
 /** The chart, map and ring family: one SVG drawn at its natural 900×520 (`Charts.tsx`, `GeoMap.tsx`). */
 const PANEL_GRAPHICS = new Set([
   "bar_chart", "horizontal_bar", "line_chart", "pie_chart", "donut_chart",
@@ -525,6 +564,10 @@ const PrimaryStage: React.FC<{
     : fontSizePx;
   return (
     <AbsoluteFill style={{ background: PRIMARY_GROUND, alignItems: "center", justifyContent: "center", fontSize: typeSize }}>
+      {/** VIDEO 638 (F1b) — the designed ground, under the graphic; the graphic itself is unchanged. */}
+      {primaryGroundLayers(frame, durationInFrames).map((style, i) => (
+        <AbsoluteFill key={`ground-${i}`} style={style} />
+      ))}
       <div
         style={{
           opacity: state.opacity,

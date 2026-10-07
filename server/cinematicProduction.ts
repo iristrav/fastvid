@@ -188,6 +188,8 @@ export type CinematicPlanParams = {
   fillerApprovedFor?: (filler: TimelineVideoClip, sceneIndex: number, beatIndex: number) => boolean;
   /** VIDEO 634 (B1) — the film's main subject, for the card of a sentence that names none. */
   filmSubject?: string | null;
+  /** VIDEO 638 — why a sentence has no picture of its own, for the `[GRAPHIC_ONLY_REASON]` line. */
+  graphicOnlyReason?: (sceneIndex: number, beatIndex: number) => string;
 };
 
 /**
@@ -232,6 +234,7 @@ export async function planAndStoreCinematicTimeline(
       sceneOffsetsSec: params.sceneOffsetsSec,
       onBeatOutcome: params.onBeatOutcome,
       filmSubject: params.filmSubject ?? null,
+      ...(params.graphicOnlyReason ? { graphicOnlyReason: params.graphicOnlyReason } : {}),
     });
     log.push(formatCinematicInputs(built));
     /**

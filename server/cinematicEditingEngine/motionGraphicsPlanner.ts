@@ -21,7 +21,7 @@ import type { VisualIntent } from "../visualMatchingV2/types";
 import type { MotionGraphicInstruction } from "./types";
 import { graphicIsRenderable } from "../graphicsVocabulary";
 import { graphicLabel, rendererGraphicType } from "../edlToTimeline";
-import { subjectWords } from "../youtubeNonFootage";
+import { sentenceWords, subjectWords } from "../youtubeNonFootage";
 
 /** The renderer's answer for one planned graphic, under the name and label the timeline gives it. */
 export function plannedGraphicIsDrawable(g: Pick<MotionGraphicInstruction, "data"> & { graphicType: string }): boolean {
@@ -692,6 +692,31 @@ export function filmSubjectChapterCard(
   return plannedGraphicIsDrawable(g) ? g : null;
 }
 
+/** A word a title cannot end on: it points at a noun that is not there ("what follows such …"). */
+const DANGLING_LAST_WORD = new Set([
+  "such", "this", "that", "these", "those", "every", "each", "any", "some", "many", "much",
+  "more", "most", "other", "another", "own", "very", "same", "few", "several",
+]);
+
+/**
+ * VIDEO 638 — a card title that is a broken cut of the sentence, not a subject.
+ *
+ *     "But what follows such unexpected success?"                          → "Follows Such"
+ *     "Discover the skepticism and resistance from traditional automakers." → "Discover Skepticism"
+ *
+ * The subject was the sentence's own search anchor, and every one of its words is in the sentence.
+ * A title made only of the sentence's words must be something the voice SAYS: one unbroken run of
+ * it ("discover … skepticism" skips "the"), not ending on a word that waits for its noun ("such").
+ * A subject with a word of its own ("gene editing laboratory") is not a cut and is not judged here.
+ */
+export function cutFromTheSentence(titleWords: readonly string[], spokenText: string): boolean {
+  if (titleWords.length === 0) return false;
+  const words = sentenceWords(spokenText);
+  if (!titleWords.every((w) => words.includes(w))) return false;
+  if (DANGLING_LAST_WORD.has(titleWords[titleWords.length - 1]!)) return true;
+  return !words.some((_, i) => titleWords.every((w, k) => words[i + k] === w));
+}
+
 /**
  * CHAPTER_CARD_FALLBACK — a picture Remotion draws for a sentence no source could illustrate.
  *
@@ -714,7 +739,7 @@ export function chapterCardFallbackFor(
   const event = intent.events[0]?.trim() ?? "";
   const person = intent.people[0]?.trim() ?? "";
   const subject = subjectWords(intent.visualSubject ?? "").filter(Boolean);
-  const subjectSaid = subject.some((w) => said.has(w));
+  const subjectSaid = subject.some((w) => said.has(w)) && !cutFromTheSentence(subject.slice(0, 5), intent.spokenText);
   const main =
     (event && plausibleEventName(event) ? event : "") ||
     person ||

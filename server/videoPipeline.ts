@@ -209,7 +209,7 @@ import {
   stillImageGenerator,
 } from "./generatedImageFallback";
 import { bindLineageLedger, bindRelevanceLedger, bindContentKeyResolver, createClipAdoptAudit, formatUnjudgedAdoptions, formatAdoptionEvidence } from "./clipAdoptAudit";
-import { UNVERIFIED_PROVIDER, VisualSourceLedger, formatAssetLifecycleAudit, formatAssetUsageSummary, formatAuditReport, formatFinalVisualReport, formatRenderManifest, formatSelectedButNotRendered, formatFillerOverAdoptedAsset, formatFunnelReport, formatProviderFunnelInvariant, formatProviderTrace, lifecyclesOf, formatLifecycleInvariants, formatSourceSummary, assertNoSelectedClipWithoutOutcome, recordAssetOutcome, ensureCuratedAssetLineageOn, type VisualLineageRecord } from "./visualSourceLineage";
+import { UNVERIFIED_PROVIDER, VisualSourceLedger, formatAssetLifecycleAudit, formatAssetUsageSummary, formatAuditReport, formatFinalVisualReport, formatRenderManifest, formatSelectedButNotRendered, formatFillerOverAdoptedAsset, formatFunnelReport, formatProviderFunnelInvariant, formatProviderTrace, lifecyclesOf, neverJudgedCountsBySentence, formatLifecycleInvariants, formatSourceSummary, assertNoSelectedClipWithoutOutcome, recordAssetOutcome, ensureCuratedAssetLineageOn, type VisualLineageRecord } from "./visualSourceLineage";
 import {
   traceYoutubeLifecycle,
   youtubeLifecycleTotals,
@@ -4050,6 +4050,28 @@ function startSceneYoutubeLookahead(
   }
 }
 
+/**
+ * VIDEO 638 — each lookahead candidate as soon as it is ready, per sentence. Taken once, by the
+ * sentence's own turn when its wait for the whole lookahead ends (`takeReadyLookaheadCandidates`).
+ */
+const readyLookaheadByRender = new WeakMap<object, Map<string, string[]>>();
+
+export function noteLookaheadCandidateReady(dedup: object, turnKey: string, clipPath: string): void {
+  const byTurn = readyLookaheadByRender.get(dedup) ?? new Map<string, string[]>();
+  readyLookaheadByRender.set(dedup, byTurn);
+  const list = byTurn.get(turnKey) ?? [];
+  if (!list.includes(clipPath)) list.push(clipPath);
+  byTurn.set(turnKey, list);
+}
+
+/** The candidates already prepared for this sentence, still on disk; each is handed out once. */
+export function takeReadyLookaheadCandidates(dedup: object, turnKey: string): string[] {
+  const byTurn = readyLookaheadByRender.get(dedup);
+  const list = byTurn?.get(turnKey) ?? [];
+  byTurn?.delete(turnKey);
+  return list.filter((p) => fs.existsSync(p));
+}
+
 /** VIDEO 623 — keep what a lookahead delivered too late for its own sentence. */
 export function offerLateYoutubeCandidates(dedup: Pick<VisualDedupState, "lateYoutubeCandidates">, paths: readonly string[], from: string): void {
   const list = (dedup.lateYoutubeCandidates ??= []);
@@ -4182,9 +4204,24 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
          * What arrives late is offered to the next sentence that takes a YouTube turn, which judges
          * it against its own words like any other candidate.
          */
+        /**
+         * VIDEO 638 — what the lookahead has ALREADY prepared for this sentence is taken now. s0b0's
+         * three moments were ready 31 s before its turn ended and 39 s before the lookahead's last
+         * download; the sentence got nothing and the three went to the next sentence. No search, no
+         * wait: only files already on disk, judged by this sentence's own picture editor.
+         */
+        const ready = takeReadyLookaheadCandidates(dedup, youtubeTurnKey(sceneIndex, beat.index));
+        if (ready.length > 0) {
+          console.log(
+            `[YouTubeLookahead] s${sceneIndex}b${beat.index} PARTIAL clips=${ready.length} — already prepared for ` +
+              `this sentence while the lookahead runs on; offered to its picture editor now`
+          );
+          found = found.concat(ready);
+        }
         void ahead.result.then(
           (late) => {
-            if (late.paths.length > 0) offerLateYoutubeCandidates(dedup, late.paths, `s${sceneIndex}b${beat.index}`);
+            const rest = late.paths.filter((p) => !ready.includes(p));
+            if (rest.length > 0) offerLateYoutubeCandidates(dedup, rest, `s${sceneIndex}b${beat.index}`);
           },
           () => undefined
         );
@@ -4213,6 +4250,8 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
         beatText: beat.text,
         beatIndex: beat.index,
         videoTitle: adoptOpts.videoTitle,
+        /** VIDEO 638 — a lookahead's candidates are this sentence's as soon as each is ready. */
+        ...(req.lookahead ? { onCandidateReady: (p: string) => noteLookaheadCandidateReady(dedup, youtubeTurnKey(sceneIndex, beat.index), p) } : {}),
       },
       dedup.usedContentKeys,
       dedup.sourcingCache
@@ -8097,7 +8136,9 @@ type SceneResourceSite =
   /** The same clips, reordered by the shot-sequence optimiser. */
   | "shot_sequence"
   /** Beat durations only — the clip list is untouched. */
-  | "visual_rhythm";
+  | "visual_rhythm"
+  /** VIDEO 638 — a sentence's own approved late answer appended; every clip already there stays. */
+  | "late_approved_placement";
 
 /**
  * WHICH REBUILDS MAY TRADE A PROVEN PICTURE FOR A GENERATED CARD — the permission, written down.
@@ -10870,6 +10911,11 @@ type ScriptGuidedBeatContext = {
    */
   beatIndex?: number;
   videoTitle?: string;
+  /**
+   * VIDEO 638 — told of each candidate the moment it is ready, so a sentence whose own turn ends
+   * while its lookahead is still preparing more can take the ones already prepared for it.
+   */
+  onCandidateReady?: (clipPath: string) => void;
 };
 
 export type YoutubeSearchRow = {
@@ -11500,6 +11546,7 @@ export async function fetchYouTubeCCClips(
                 recordProviderDownloadOutcome(sourcingCache, momentPath, ok, ok ? undefined : "youtube_moment_cut_failed");
                 if (ok) {
                   results.push(momentPath);
+                  scriptGuided?.onCandidateReady?.(momentPath);
                   offered++;
                 }
               }
@@ -12008,6 +12055,7 @@ export async function fetchYouTubeCCClips(
               results.push(outPath);
               downloadedIds.add(videoId);
               fetched++;
+              scriptGuided?.onCandidateReady?.(outPath);
               if (pass.license === "any") {
                 console.log(
                   `[Pipeline] Scene ${sceneIndex}: ✅ YouTube fair-use clip (transform on adopt): "${title.slice(0, 60)}"`
@@ -21240,6 +21288,8 @@ const approvedKeysByRender = new WeakMap<object, Map<string, Set<string>>>();
  * Nothing here places, waits, looks or searches — it only says what happened.
  */
 const approvedNotPlacedByRender = new WeakMap<object, Set<string>>();
+/** VIDEO 638 — the reason each sentence's loss was named with, for `graphicOnlyReasonFor`. */
+const approvedNotPlacedReasonByRender = new WeakMap<object, Map<string, string>>();
 const closedScenesByRender = new WeakMap<object, Set<number>>();
 
 export const APPROVED_NOT_PLACED = "APPROVED_NOT_PLACED";
@@ -21251,7 +21301,41 @@ export function noteApprovedNotPlaced(dedup: object, sceneIndex: number, beatInd
   const key = `${sceneIndex}:${beatIndex}`;
   if (set.has(key)) return;
   set.add(key);
+  const reasons = approvedNotPlacedReasonByRender.get(dedup) ?? new Map<string, string>();
+  approvedNotPlacedReasonByRender.set(dedup, reasons);
+  reasons.set(key, reason);
   console.warn(`[${APPROVED_NOT_PLACED}] s${sceneIndex}b${beatIndex} reason=${reason}`);
+}
+
+/**
+ * VIDEO 638 — WHY A SENTENCE'S PICTURE IS A GRAPHIC, never just "graphic only".
+ *
+ * Read from what the render already recorded, in this order: an approved picture that was lost
+ * (and how), every candidate refused (and by what), candidates that arrived and were never judged,
+ * or nothing found at all. `neverJudged` counts, per `scene:beat`, downloaded assets nobody judged.
+ */
+export function graphicOnlyReasonFor(
+  dedup: Pick<VisualDedupState, "rejections">,
+  sceneIndex: number,
+  beatIndex: number,
+  neverJudged: ReadonlyMap<string, number> = new Map()
+): string {
+  const lost = approvedNotPlacedReasonByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`);
+  const top = beatRejectReasons(dedup.rejections, sceneIndex, beatIndex)
+    .slice(0, 3)
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(",");
+  if (lost) {
+    if (/after scene closed/.test(lost)) return "PLACEMENT_WINDOW_CLOSED";
+    if (/refused at the push/.test(lost)) return `APPROVED_REFUSED_AT_PUSH${top ? ` (${top})` : ""}`;
+    if (/technical check/.test(lost)) return "APPROVED_FAILED_TECHNICAL_CHECK";
+    return "APPROVED_NOT_PLACED";
+  }
+  if (approvedPicksForBeat(dedup, sceneIndex, beatIndex) > 0) return "APPROVED_NOT_PLACED";
+  if (beatRejectCount(dedup.rejections, sceneIndex, beatIndex) > 0) return `ALL_REJECTED (${top})`;
+  const unjudged = neverJudged.get(`${sceneIndex}:${beatIndex}`) ?? 0;
+  if (unjudged > 0) return `CANDIDATES_NOT_REVIEWED (${unjudged})`;
+  return "NO_CANDIDATES";
 }
 
 export function approvedNotPlacedNoted(dedup: object, sceneIndex: number, beatIndex: number): boolean {
@@ -21269,10 +21353,124 @@ export function sceneIsClosed(dedup: object, sceneIndex: number): boolean {
   return Boolean(closedScenesByRender.get(dedup)?.has(sceneIndex));
 }
 
+/**
+ * VIDEO 638 — A PICTURE APPROVED AFTER ITS SCENE CLOSED, BEFORE THE FILM IS ASSEMBLED.
+ *
+ *     08:18:14  scene 2 closes; s2b2's search is still running ("no answer to place")
+ *     08:18:55  [BeatRelevance] s2b2 adopt fits … youtube_cc:acc0dfc922f30224@t5533d40
+ *               [APPROVED_NOT_PLACED] s2b2 reason=approved after scene closed — not placed
+ *     08:20:45  the film is assembled — s2b2 gets a drawn chapter card
+ *
+ * The scenes of a chunk are assembled together, after the slowest of them. A sentence's own ladder
+ * that settles in that window, with a picture the picture editor approved for THAT sentence, is
+ * handed once to its own scene's push — the same relevance gate, archive check and dedup as any
+ * clip — and only when the sentence still has no picture. No look, search or wait is added: only
+ * answers already settled when the chunk is assembled are taken. Never to another sentence.
+ */
+type LatePlacer = (clipPath: string, beatIndex: number) => Promise<{ hold: number } | "has_picture" | null>;
+const latePlacersByRender = new WeakMap<object, Map<number, LatePlacer>>();
+const assembledScenesByRender = new WeakMap<object, Set<number>>();
+const afterCloseLaddersByRender = new WeakMap<object, LateLadder[]>();
+const approvedAfterCloseByRender = new WeakMap<object, Set<string>>();
+
+/** The scene's loop is over, its film not assembled yet: its push stays available to its own sentences. */
+export function openLatePlacement(dedup: object, sceneIndex: number, placer: LatePlacer): void {
+  if (assembledScenesByRender.get(dedup)?.has(sceneIndex)) return;
+  const map = latePlacersByRender.get(dedup) ?? new Map<number, LatePlacer>();
+  latePlacersByRender.set(dedup, map);
+  map.set(sceneIndex, placer);
+}
+
+export function latePlacementOpen(dedup: object, sceneIndex: number): boolean {
+  return Boolean(latePlacersByRender.get(dedup)?.has(sceneIndex));
+}
+
+/**
+ * Called once per scene when its chunk is assembled. `sceneReturned`: the scene's own result is the
+ * one the film uses (not a deadline copy, not a failure). Returns what was placed, for the caller to
+ * add to that scene's result; everything approved and not placed is named with its reason.
+ */
+export async function placeApprovedAfterSceneClosed(
+  dedup: object,
+  sceneIndex: number,
+  opts: {
+    sceneReturned: boolean;
+    /** The last pass before the film's clips are read: the window shuts and every loss is named. */
+    final: boolean;
+    /** Whether the result the film will read already gives this sentence a picture. */
+    hasPicture?: (beatIndex: number) => boolean;
+  }
+): Promise<Array<{ beatIndex: number; clip: string; hold: number }>> {
+  const { sceneReturned, final } = opts;
+  const placer = latePlacersByRender.get(dedup)?.get(sceneIndex);
+  if (final) {
+    latePlacersByRender.get(dedup)?.delete(sceneIndex);
+    const assembled = assembledScenesByRender.get(dedup) ?? new Set<number>();
+    assembledScenesByRender.set(dedup, assembled);
+    assembled.add(sceneIndex);
+  }
+  const list = afterCloseLaddersByRender.get(dedup) ?? [];
+  /** An earlier pass takes only what has settled; what is still on its way waits for the last pass. */
+  const mine = list.filter((e) => e.sceneIndex === sceneIndex && (final || e.settled));
+  for (const e of mine) list.splice(list.indexOf(e), 1);
+  const deferred = approvedAfterCloseByRender.get(dedup);
+  const placed: Array<{ beatIndex: number; clip: string; hold: number }> = [];
+  for (const e of mine) {
+    if (approvedPicksForBeat(dedup, sceneIndex, e.beatIndex) <= e.approvedBefore) continue;
+    /** Not this scene's own result yet (it may still be rescued): decided by the last pass. */
+    if (!final && (!placer || !sceneReturned)) {
+      list.push(e);
+      continue;
+    }
+    const clip = e.settled?.value ?? null;
+    const at = `[LateApproved] s${sceneIndex}b${e.beatIndex}`;
+    let reason: string | null = null;
+    if (!placer || !sceneReturned || !e.settled) {
+      reason = "approved after scene closed — not placed";
+    } else if (opts.hasPicture?.(e.beatIndex) || placed.some((p) => p.beatIndex === e.beatIndex)) {
+      reason = "approved after scene closed — not placed: the sentence already has its picture";
+    } else if (!clip) {
+      reason = "approved picture never reached the scene — the sentence's ladder settled without a clip";
+    } else if (!pictureApprovedForBeat(dedup, sceneIndex, e.beatIndex, clipContentKey(clip))) {
+      console.log(`${at}: ${path.basename(clip)} arrived after the scene closed, without the picture editor's approval for it — not placed`);
+      reason = "approved after scene closed — not placed";
+    } else {
+      const r = await placer(clip, e.beatIndex);
+      if (r && r !== "has_picture") {
+        placed.push({ beatIndex: e.beatIndex, clip, hold: r.hold });
+        deferred?.delete(`${sceneIndex}:${e.beatIndex}`);
+        console.log(`${at}: ${path.basename(clip)} approved after the scene closed — placed on its own sentence before the film was assembled (no new look)`);
+        continue;
+      }
+      reason = r === "has_picture"
+        ? "approved after scene closed — not placed: the sentence already has its picture"
+        : "refused at the push (reason logged by [PushTrace])";
+    }
+    deferred?.delete(`${sceneIndex}:${e.beatIndex}`);
+    noteApprovedNotPlaced(dedup, sceneIndex, e.beatIndex, reason);
+  }
+  /** An approval after the close that no ladder of this scene carried: named, never silent. */
+  if (!final) return placed;
+  for (const key of [...(deferred ?? [])]) {
+    const [s, b] = key.split(":").map(Number);
+    if (s !== sceneIndex) continue;
+    deferred!.delete(key);
+    if (!placed.some((p) => p.beatIndex === b)) noteApprovedNotPlaced(dedup, s!, b!, "approved after scene closed — not placed");
+  }
+  return placed;
+}
+
 export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey?: string): void {
   /** VIDEO 634 s0b2 — approved 62 s after its scene closed: not placed, and said so (no timing change). */
   if (sceneIsClosed(dedup, sceneIndex)) {
-    noteApprovedNotPlaced(dedup, sceneIndex, beatIndex, "approved after scene closed — not placed");
+    /** VIDEO 638 — unless the film is not assembled yet: then `placeApprovedAfterSceneClosed` decides, and names a loss. */
+    if (latePlacementOpen(dedup, sceneIndex)) {
+      const deferred = approvedAfterCloseByRender.get(dedup) ?? new Set<string>();
+      approvedAfterCloseByRender.set(dedup, deferred);
+      deferred.add(`${sceneIndex}:${beatIndex}`);
+    } else {
+      noteApprovedNotPlaced(dedup, sceneIndex, beatIndex, "approved after scene closed — not placed");
+    }
   }
   const byBeat = approvedPicksByRender.get(dedup) ?? new Map<string, number>();
   approvedPicksByRender.set(dedup, byBeat);
@@ -21399,6 +21597,10 @@ export async function takeLateApprovedPicks(
     if (!e.settled) {
       if (waitMs > 0) {
         list.splice(list.indexOf(e), 1);
+        /** VIDEO 638 — kept for `placeApprovedAfterSceneClosed`: its own sentence, until the film is assembled. */
+        const afterClose = afterCloseLaddersByRender.get(dedup) ?? [];
+        afterCloseLaddersByRender.set(dedup, afterClose);
+        afterClose.push(e);
         console.warn(
           approvedPicksForBeat(dedup, e.sceneIndex, e.beatIndex) > e.approvedBefore
             ? `[LateApproved] s${e.sceneIndex}b${e.beatIndex}: a picture approved for this sentence was still being ` +
@@ -22561,6 +22763,14 @@ async function fetchSceneVisualsInner(
   } finally {
     /** The last beat's ladder, and any beat the loop left through a throw. */
     closeBeatLadder?.();
+    /** VIDEO 638 — until the film is assembled, this scene's push stays open to its own sentences' late answers. */
+    openLatePlacement(dedup, scene.index, async (clipPath, beatIndex) => {
+      const beat = beats.find((b) => b.index === beatIndex);
+      if (!beat) return null;
+      if (clipBeatIndices.includes(beatIndex)) return "has_picture";
+      const ok = await withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, beat.holdSec, beatIndex));
+      return ok ? { hold: beatDurations[beatDurations.length - 1] ?? beat.holdSec } : null;
+    });
     /** VIDEO 634 — from here on, a picture approved for this scene is named as not placed. */
     markSceneClosed(dedup, scene.index);
   }
@@ -23701,6 +23911,26 @@ async function _runVideoPipelineInner(
     const t3 = Date.now();
     profiler.recordStageEnd("retrieval", t3);
 
+    /** VIDEO 638 — the scenes whose own result the film uses (see `placeApprovedAfterSceneClosed`). */
+    const returnedInTime = new Set<number>();
+    /** VIDEO 638 — a late approved answer goes on its own sentence, never on one that already has a picture. */
+    const placeLate = async (si: number, final: boolean): Promise<void> => {
+      const placedLate = await placeApprovedAfterSceneClosed(visualDedup, scenes[si]!.index, {
+        sceneReturned: returnedInTime.has(si),
+        final,
+        hasPicture: (beatIndex) => (sceneVisualResults[si]?.clipBeatIndices ?? []).includes(beatIndex),
+      });
+      if (placedLate.length === 0) return;
+      const prevSceneVisual_14 = sceneVisualResults[si];
+      const vr = prevSceneVisual_14 ?? { clips: [], beatDurations: [] };
+      sceneVisualResults[si] = {
+        ...vr,
+        clips: [...vr.clips, ...placedLate.map((p) => p.clip)],
+        beatDurations: [...vr.beatDurations, ...placedLate.map((p) => p.hold)],
+        clipBeatIndices: [...(vr.clipBeatIndices ?? []), ...placedLate.map((p) => p.beatIndex)],
+      };
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_14, sceneVisualResults[si], scenes[si]?.index ?? si, "late_approved_placement");
+    };
     try {
     for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
       const chunk = chunks[chunkIdx]!;
@@ -23726,6 +23956,7 @@ async function _runVideoPipelineInner(
         const sceneIdx = chunk.start + ci;
         activeSceneIdx = sceneIdx;
         let result: SceneVisualsResult;
+        let sceneFailed = false;
         try {
           result = await timePipelineStep(
             pipelineStepTiming,
@@ -23777,9 +24008,11 @@ async function _runVideoPipelineInner(
           }
           visualDedup.lock = Promise.resolve();
           result = { clips: [], beatDurations: [] };
+          sceneFailed = true;
         }
         if (chunkClosed) return result;
         sceneVisualResults[sceneIdx] = result;
+        if (!sceneFailed) returnedInTime.add(sceneIdx);
         completedVisuals++;
         onProgress?.({
           stage: `Generating AI visuals... (${completedVisuals}/${scenes.length} scenes done)`,
@@ -23831,6 +24064,11 @@ async function _runVideoPipelineInner(
       }
       sceneVisualResults[si] ??= { clips: [], beatDurations: [] };
     }
+    /**
+     * VIDEO 638 — the chunk is assembled now: a sentence's own approved answer that settled after its
+     * scene closed goes on that sentence (no look, no search, no wait); every other loss is named.
+     */
+    for (let si = chunk.start; si < chunk.end; si++) await placeLate(si, false);
 
     // Refine compose budget based on this chunk's actual clip mix from retrieval — recomputed
     // per chunk (more locally accurate than one whole-video aggregate), feeds into
@@ -23896,7 +24134,7 @@ async function _runVideoPipelineInner(
                       console.warn(`[MainSubject] Scene ${scenes[si]!.index}: search failed: ${err.message?.slice(0, 120)}`);
                       return { clips: [], beatDurations: [] } as SceneVisualsResult;
                     });
-                    if (!rescueClosed && r.clips.length > 0) sceneVisualResults[si] = r;
+                    if (!rescueClosed && r.clips.length > 0) { sceneVisualResults[si] = r; returnedInTime.add(si); }
                   })
                 )
               ),
@@ -24001,6 +24239,14 @@ async function _runVideoPipelineInner(
     } finally {
       clearInterval(visualHeartbeat);
     }
+
+    /**
+     * VIDEO 638 — THE LAST MOMENT A PICTURE CAN JOIN THE FILM. From here the scenes' clips are what
+     * the planner, the editor and the report read; an approved answer that settled after its chunk
+     * was assembled is placed now, before a generated image could take its sentence. After this,
+     * an approval is named as not placed (`noteApprovedPickForBeat`).
+     */
+    for (let si = 0; si < scenes.length; si++) await placeLate(si, true);
 
     /** GENERATED_IMAGE_FALLBACK — after every source and the main-subject rescue: see `generateMissingBeatImages`. */
     await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);
@@ -25678,6 +25924,16 @@ async function _runVideoPipelineInner(
           showSubtitles: enableSubtitles,
           /** VIDEO 634 (B1) — a sentence that names nothing gets a card of the film's subject, not a held shot. */
           filmSubject: visualDedup.mainSubject ?? null,
+          /** VIDEO 638 — every graphic-only sentence says why (`[GRAPHIC_ONLY_REASON]`). */
+          graphicOnlyReason: (() => {
+            let neverJudged = new Map<string, number>();
+            try {
+              neverJudged = neverJudgedCountsBySentence(lineage.allRecords(), lineage.allEvents());
+            } catch {
+              /* a reason without the count is still a reason */
+            }
+            return (sceneIndex: number, beatIndex: number) => graphicOnlyReasonFor(visualDedup, sceneIndex, beatIndex, neverJudged);
+          })(),
           /** The render's own id, so an adapter refusal names the run that produced it. */
           renderId: lineage.renderId,
           /**

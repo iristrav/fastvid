@@ -88,7 +88,7 @@ const FUNCTION_WORDS = new Set([
   "what", "when", "where", "who", "which", "despite", "every", "all", "some", "any",
 ]);
 
-function sentenceWords(text: string): string[] {
+export function sentenceWords(text: string): string[] {
   return (text ?? "")
     .toLowerCase()
     .split(/[^\p{L}\p{N}'’-]+/u)
