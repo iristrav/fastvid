@@ -80,9 +80,9 @@ describe("W2 — READY + relevant is not lost to a second ranking", () => {
     expect(order(s636).first.map((r) => r.id)).toEqual(["mr9"]);
   });
 
-  it("2. it comes before every row that still has to be downloaded; other ready stock next; downloads that serve the sentence before the rest", () => {
+  it("2. it comes before every row that still has to be downloaded; VIDEO 642 (B-1) — downloads that serve the sentence before ready stock that does not", () => {
     const rows: Row[] = [{ id: "dl_other" }, { id: "dl_serves", serves: true }, { id: "ready_other", ready: true }, { id: "ready_serves", ready: true, serves: true }];
-    expect([...order(rows).first, ...order(rows).rest].map((r) => r.id)).toEqual(["ready_serves", "ready_other", "dl_serves", "dl_other"]);
+    expect([...order(rows).first, ...order(rows).rest].map((r) => r.id)).toEqual(["ready_serves", "dl_serves", "ready_other", "dl_other"]);
   });
 
   it("3/4. ordering only — no row is dropped, nothing is approved: the Judge still decides every moment", () => {
@@ -167,34 +167,35 @@ describe("W3 — the stock fills to N READY videos", () => {
   it("6. failures are replaced by the next usable candidate, until N are ready", async () => {
     const film = 960001;
     const h = stockHarness(new Set(["v2", "v4"]));
-    startYoutubeShotStock(film, cands(10), h.deps);
+    startYoutubeShotStock(film, cands(14), h.deps);
     await settle(film, h.started);
     const s = stockSummary(film);
     expect(s.ready).toBe(MAX_STOCK_VIDEOS);
     expect(s.failed).toBe(2);
-    expect(h.started).toEqual(expect.arrayContaining(["v7", "v8"]));
-    expect(h.started).not.toContain("v9");
+    /** VIDEO 642 — ten READY: two failures cost two more candidates (v11, v12), never a thirteenth. */
+    expect(h.started).toEqual(expect.arrayContaining(["v11", "v12"]));
+    expect(h.started).not.toContain("v13");
     releaseYoutubeShotStock(film);
   });
 
-  it("7. many failures stay within MAX_STOCK_ATTEMPTS (9), and the stock never grows past N ready", async () => {
+  it("7. many failures stay within MAX_STOCK_ATTEMPTS (14), and the stock never grows past N ready", async () => {
     const film = 960002;
-    const h = stockHarness(new Set(["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"]));
-    startYoutubeShotStock(film, cands(15), h.deps);
+    const h = stockHarness(new Set(Array.from({ length: 16 }, (_, i) => `v${i + 1}`)));
+    startYoutubeShotStock(film, cands(20), h.deps);
     await settle(film, h.started);
-    expect(MAX_STOCK_ATTEMPTS).toBe(9);
+    expect(MAX_STOCK_ATTEMPTS).toBe(14);
     expect(h.started.length).toBe(MAX_STOCK_ATTEMPTS);
     expect(stockSummary(film).ready).toBe(0);
     releaseYoutubeShotStock(film);
   });
 
-  it("no failures: exactly the planned N, no replacement started", async () => {
+  it("no failures: exactly N ready, nothing past it started", async () => {
     const film = 960003;
     const h = stockHarness(new Set());
-    startYoutubeShotStock(film, cands(10), h.deps);
+    startYoutubeShotStock(film, cands(14), h.deps);
     await settle(film, h.started);
     expect(h.started.length).toBe(MAX_STOCK_VIDEOS);
-    expect(isStocked(film, "v7")).toBe(false);
+    expect(isStocked(film, "v11")).toBe(false);
     releaseYoutubeShotStock(film);
   });
 

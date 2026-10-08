@@ -195,8 +195,9 @@ describe("F2 — a sentence's own picture approved after its scene closed, befor
     const open = PIPE.indexOf("openLatePlacement(dedup, scene.index, async (clipPath, beatIndex) => {");
     expect(open).toBeGreaterThan(0);
     const body = PIPE.slice(open, PIPE.indexOf("markSceneClosed(dedup, scene.index);", open));
-    expect(body).toContain('if (clipBeatIndices.includes(beatIndex)) return "has_picture";');
-    expect(body).toContain('withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, beat.holdSec, beatIndex))');
+    /** VIDEO 642 — "has its picture" = less than 3 s of the sentence left uncovered; a second picture fills only the rest. */
+    expect(body).toContain('if (hasPicture && left < BEAT_EXTRA_SHOT_MIN_SEC) return "has_picture";');
+    expect(body).toContain('withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, hasPicture ? left : beat.holdSec, beatIndex))');
     expect(body).not.toMatch(/beatPrimaryFetch|fetchYouTube|search|scoreFrame|judge/i);
     /** pushSceneClip is the one gate every clip passes */
     const push = PIPE.slice(PIPE.indexOf("const pushSceneClip = async"), PIPE.indexOf("const pushSceneClip = async") + 1500);
@@ -214,7 +215,9 @@ describe("F2 — a sentence's own picture approved after its scene closed, befor
     expect(finalPass).toBeGreaterThan(chunkPass);
     expect(finalPass).toBeLessThan(PIPE.indexOf("await generateMissingBeatImages(scenes, sceneVisualResults"));
     expect(finalPass).toBeLessThan(PIPE.indexOf("const clipsForScene = (i: number): string[] => sceneVisualResults[i]?.clips ?? [];"));
-    expect(PIPE).toContain("hasPicture: (beatIndex) => (sceneVisualResults[si]?.clipBeatIndices ?? []).includes(beatIndex),");
+    /** VIDEO 642 — "has its picture" = less than 3 s of the sentence left uncovered. */
+    expect(PIPE).toContain("if (!(vr?.clipBeatIndices ?? []).includes(beatIndex)) return false;");
+    expect(PIPE).toContain("beatSecondsLeft(beat.holdSec, beatIndex, vr!.clipBeatIndices ?? [], vr!.beatDurations) < BEAT_EXTRA_SHOT_MIN_SEC");
     expect(PIPE).toContain("clipBeatIndices: [...(vr.clipBeatIndices ?? []), ...placedLate.map((p) => p.beatIndex)],");
   });
 
@@ -459,7 +462,7 @@ describe("F4b — only an APPROVED late answer of the sentence itself is placed 
     const open = PIPE.indexOf("openLatePlacement(dedup, scene.index, async (clipPath, beatIndex) => {");
     const body = PIPE.slice(open, open + 700);
     expect(body).toContain("const beat = beats.find((b) => b.index === beatIndex);");
-    expect(body).toContain("pushSceneClip(clipPath, beat.holdSec, beatIndex)");
+    expect(body).toContain("pushSceneClip(clipPath, hasPicture ? left : beat.holdSec, beatIndex)");
     const push = PIPE.slice(PIPE.indexOf("const pushSceneClip = async"), PIPE.indexOf("const pushSceneClip = async") + 2600);
     expect(push).toContain("actualHold = Math.min(holdSec, probed - 0.04);");
     expect(push).toContain("noteFootageOnScreen(dedup, key, actualHold);");

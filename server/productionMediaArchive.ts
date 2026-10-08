@@ -144,6 +144,10 @@ export type ArchiveIngestRefusal = {
   durationSec?: number;
 };
 
+/** VIDEO 641/642 — waits before the read-back is asked again; after the last, the row is MISSING. */
+export const ARCHIVE_READBACK_RETRY_DELAYS_MS: readonly number[] = [1_000, 3_000];
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 export type ProductionArchiveDeps = {
   /**
    * `ingestExternalClipToArchiveWithReason`. Null still means refused, for the fakes and the
@@ -176,6 +180,8 @@ export type ProductionArchiveDeps = {
    * has no storage URL, or the bytes cannot be read.
    */
   readBack: (assetId: number, destPath: string) => Promise<boolean>;
+  /** VIDEO 641/642 — the wait between read-back attempts (`ARCHIVE_READBACK_RETRY_DELAYS_MS`); tests pass a fake. */
+  sleep?: (ms: number) => Promise<void>;
   /** §14 — the same bytes under a different id or URL are the same asset. */
   findByChecksum?: (
     checksum: string
@@ -347,7 +353,23 @@ export async function storeForProduction(params: {
     } catch {
       /* the read-back below reports the failure; a missing directory is not a separate story */
     }
-    const readable = await deps.readBack(assetId, verifyPath).catch(() => false);
+    /**
+     * VIDEO 641/642 — ONE FAILED READ IS NOT A MISSING FILE.
+     *
+     * 641's archive 60422 and 642's 60433 were written, read back once, marked MISSING — and an
+     * approved picture of each film was lost with them. The read-back is asked again after a short
+     * wait (the row and the object store resolved afresh by `readBack` itself), at most
+     * `ARCHIVE_READBACK_RETRY_DELAYS_MS.length` more times; only then is the row MISSING.
+     */
+    let readable = await deps.readBack(assetId, verifyPath).catch(() => false);
+    for (let retry = 0; !readable && retry < ARCHIVE_READBACK_RETRY_DELAYS_MS.length; retry++) {
+      await (deps.sleep ?? defaultSleep)(ARCHIVE_READBACK_RETRY_DELAYS_MS[retry]!);
+      readable = await deps.readBack(assetId, verifyPath).catch(() => false);
+      say(
+        `[ProductionArchive] read-back retry ${retry + 1}/${ARCHIVE_READBACK_RETRY_DELAYS_MS.length} ` +
+          `${formatArchiveContext(ctx, assetId)} — ${readable ? "readable" : "still not readable"}`
+      );
+    }
     if (!readable) {
       await deps.updateAsset(assetId, { mediaStatus: "MISSING" }).catch(() => {});
       say(

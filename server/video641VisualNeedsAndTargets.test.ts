@@ -5,7 +5,7 @@ import os from "os";
 import path from "path";
 
 import { MAX_YOUTUBE_SEARCHES_PER_VIDEO, memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
-import { MAX_STOCK_VIDEOS, stockOrder } from "./youtubeShotStock";
+import { MAX_STOCK_VIDEOS, STOCK_FIRST_BATCH, stockOrder } from "./youtubeShotStock";
 import { queryNames, type GateVerdict, type PlannerInput, type VisualNeed } from "./youtubeVideoSearchPlanner";
 import {
   buildVideoYoutubePool,
@@ -154,21 +154,21 @@ describe("TARGETED PIPELINE — every targeted answer's place in the stock's ord
   const unseen = cand("calab_unseen", 3, [], []);
   const pool = { entityTargets: [TARGET] };
 
-  it("rescue=yes → slot 1 of 6; the look did not see it → behind the attempts, with the reason", () => {
+  it("rescue=yes → slot 1 of the first batch; the look did not see it → a spare, behind the ten, with the reason", () => {
     const usable = [...main, seen, unseen];
     const rescue = youtubeRescueCandidates(pool, usable);
     expect([...rescue]).toEqual(["calab_seen"]);
     const lines = formatTargetedPoolEntry(641, pool, usable, rescue);
     expect(lines[0]).toBe(
-      `[TARGETED_VISUAL] film=641 subject="Calabasas" search=#3 videoId=calab_seen stage=POOL slot=1/${MAX_STOCK_VIDEOS} order=indicative rescue=yes serves=1 title="title calab_seen"`
+      `[TARGETED_VISUAL] film=641 subject="Calabasas" search=#3 videoId=calab_seen stage=POOL slot=1/${STOCK_FIRST_BATCH} order=indicative rescue=yes serves=1 title="title calab_seen"`
     );
     expect(lines[1]).toBe(
-      '[TARGETED_VISUAL] film=641 subject="Calabasas" search=#3 videoId=calab_unseen stage=NOT_IN_POOL position=11 (behind the 9 attempts the stock makes) order=indicative ' +
+      '[TARGETED_VISUAL] film=641 subject="Calabasas" search=#3 videoId=calab_unseen stage=SPARE position=1 (asked only if a pool video fails) order=indicative ' +
         'rescue=no reason=the_look_did_not_see_the_subject_and_assigned_none_of_its_sentences serves=0 title="title calab_unseen"'
     );
   });
 
-  it("serving its sentence but over the rescue cap → rescue=no reason=over_the_rescue_cap; a spare says so", () => {
+  it("serving its sentence but over the rescue cap → rescue=no reason=over_the_rescue_cap; VIDEO 642 — the only video for its sentence enters the first batch", () => {
     /** three subjects' worth of rescue answers fill the cap of three; the fourth serves its sentence and waits */
     const others = ["A", "B", "C"].map((s, i) => ({ name: s, kind: "subject" as const, beats: [i], reason: "missing_visual_subject", n: 2, query: `${s} footage`, score: 2 }));
     const targets = [...others, TARGET];
@@ -179,7 +179,7 @@ describe("TARGETED PIPELINE — every targeted answer's place in the stock's ord
     const rescue = new Set(["a1", "b1", "c1"]);
     const lines = formatTargetedPoolEntry(641, { entityTargets: targets }, usable, rescue);
     expect(lines.find((l) => l.includes("videoId=calab_capped"))).toBe(
-      '[TARGETED_VISUAL] film=641 subject="Calabasas" search=#3 videoId=calab_capped stage=SPARE position=2 (asked only if a pool video fails) order=indicative ' +
+      '[TARGETED_VISUAL] film=641 subject="Calabasas" search=#3 videoId=calab_capped stage=POOL slot=5/6 order=indicative ' +
         'rescue=no reason=over_the_rescue_cap serves=1 title="title calab_capped"'
     );
   });
@@ -189,9 +189,9 @@ describe("TARGETED PIPELINE — every targeted answer's place in the stock's ord
     const shown = (id: string) => id === "calab_seen";
     /** not rescued, shown recently: the stock fetches the six fresh videos first */
     const lines = formatTargetedPoolEntry(641, pool, usable, new Set(), shown);
-    expect(lines[0]).toContain("videoId=calab_seen stage=SPARE position=1 ");
-    const real = stockOrder(usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: 300, serves: c.serves.length, shownRecently: shown(c.videoId) })), usable.length);
-    expect(real.findIndex((c) => c.videoId === "calab_seen")).toBe(MAX_STOCK_VIDEOS);
+    expect(lines[0]).toContain("videoId=calab_seen stage=MORE position=1 ");
+    const real = stockOrder(usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: 300, serves: c.serves.length, beats: c.serves, shownRecently: shown(c.videoId) })), usable.length);
+    expect(real.findIndex((c) => c.videoId === "calab_seen")).toBe(6);
   });
 
   it("a targeted search with no usable answer says so", () => {
@@ -251,7 +251,7 @@ describe("TARGETED PIPELINE — the stock's own lines for a targeted answer: sta
   it("a targeted spare that replaces a failed download: the stock's 'replaces' line, then its own STARTED/SUCCEEDED", async () => {
     const { startYoutubeShotStock, youtubeStockSettled, releaseYoutubeShotStock } = await import("./youtubeShotStock");
     const lines: string[] = [];
-    const planned = Array.from({ length: MAX_STOCK_VIDEOS }, (_, i) => ({ videoId: `plan${i}`, title: `plan ${i}`, durationSec: 60, serves: 9 - i }));
+    const planned = Array.from({ length: MAX_STOCK_VIDEOS }, (_, i) => ({ videoId: `plan${i}`, title: `plan ${i}`, durationSec: 60, serves: 20 - i }));
     startYoutubeShotStock(
       6_412,
       [...planned, { videoId: "calab_spare", title: "Calabasas aerial", durationSec: 60, serves: 1, targetLabel: 'subject="Calabasas" search=#3' }],
@@ -264,6 +264,8 @@ describe("TARGETED PIPELINE — the stock's own lines for a targeted answer: sta
       }
     );
     await youtubeStockSettled(6_412);
+    /** VIDEO 642 — the wait covers the first batch; the spare runs once the rest of the ten are done. */
+    for (let i = 0; i < 300 && !lines.some((l) => l.includes("calab_spare stage=DOWNLOAD_SUCCEEDED")); i++) await new Promise((r) => setTimeout(r, 50));
     releaseYoutubeShotStock(6_412);
     const replaces = lines.findIndex((l) => l.startsWith("[YouTubeStock] film=6412 video=calab_spare replaces a failed download ("));
     const started = lines.indexOf('[TARGETED_VISUAL] subject="Calabasas" search=#3 videoId=calab_spare stage=DOWNLOAD_STARTED film=6412');

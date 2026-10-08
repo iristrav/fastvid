@@ -926,11 +926,15 @@ async function extractFrameAtFractionOnce(
   videoPath: string,
   outPath: string,
   seekSeconds: number,
-  timeoutMs: number
+  timeoutMs: number,
+  /** VIDEO 642 — seek after opening the file (decodes up to the position): slower, but reads a file the fast seek cannot. */
+  accurateSeek = false
 ): Promise<void> {
   throwIfActiveRenderCancelled();
   await ffmpegSemaphore.run(() => new Promise<void>((resolve, reject) => {
-    const args = ["-y", "-ss", seekSeconds.toFixed(2), "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
+    const args = accurateSeek
+      ? ["-y", "-i", videoPath, "-ss", seekSeconds.toFixed(2), "-frames:v", "1", "-q:v", "3", outPath]
+      : ["-y", "-ss", seekSeconds.toFixed(2), "-i", videoPath, "-frames:v", "1", "-q:v", "3", outPath];
     const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
@@ -1006,14 +1010,32 @@ export async function extractFrameAtFraction(
   // Duration unknown (probe failed) — grab the first frame rather than aborting outright.
   const seekSeconds = durationSec > 0 ? Math.max(0, Math.min(fraction * durationSec, durationSec - 0.1)) : 0;
   let retriesLeft = 2;
+  /**
+   * VIDEO 642 — NO FRAME AT ONE SEEK IS NOT NO FRAME AT ALL.
+   *
+   * 642 lost 31 judgements to `no_frame` on moments of one video that was on disk: ffmpeg's fast
+   * seek landed where nothing could be decoded and wrote no image. Before the moment is given up,
+   * the same position is read with the accurate seek (`-ss` after `-i`), then the clip's start.
+   * At most two extra ffmpeg calls, each under the same timeout, only after a failure.
+   */
+  const fallbacks: Array<{ seek: number; accurate: boolean }> = [
+    { seek: seekSeconds, accurate: true },
+    ...(seekSeconds > 0 ? [{ seek: 0, accurate: true }] : []),
+  ];
+  let attempt = { seek: seekSeconds, accurate: false };
   while (true) {
     try {
-      await extractFrameAtFractionOnce(videoPath, outPath, seekSeconds, timeoutMs);
+      await extractFrameAtFractionOnce(videoPath, outPath, attempt.seek, timeoutMs, attempt.accurate);
       return true;
     } catch (err) {
       if (retriesLeft > 0 && isForkPressureSpawnError(err)) {
         retriesLeft--;
         await sleep(1500 * (3 - retriesLeft));
+        continue;
+      }
+      const next = fallbacks.shift();
+      if (next && !/frame extract timeout|cancel/i.test((err as Error)?.message ?? "")) {
+        attempt = next;
         continue;
       }
       const now = Date.now();

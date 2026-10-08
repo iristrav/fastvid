@@ -5,7 +5,7 @@ import os from "os";
 import path from "path";
 
 import { claimYoutubeSearch, MAX_YOUTUBE_SEARCHES_PER_VIDEO, memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
-import { MAX_STOCK_VIDEOS, stockOrder } from "./youtubeShotStock";
+import { MAX_STOCK_VIDEOS, STOCK_FIRST_BATCH, stockOrder } from "./youtubeShotStock";
 import { queryNames, type GateVerdict } from "./youtubeVideoSearchPlanner";
 import {
   buildVideoYoutubePool,
@@ -271,7 +271,7 @@ describe("MULTI-PERSON — how many searches a script gets", () => {
 });
 
 describe("MULTI-PERSON — the targeted answers reach the stock", () => {
-  it("TEST 9 — one per subject first (round robin), at most 3 in all, the stock stays 6", async () => {
+  it("TEST 9 — one per subject first (round robin), at most 3 in all, the stock stays within its limit", async () => {
     const pool = await buildVideoYoutubePool(deps(FIVE_WORLD), FIVE);
     const usable = pool.candidates.filter((c) => c.usable && c.from !== 0);
     const rescue = youtubeRescueCandidates(pool, usable);
@@ -281,10 +281,10 @@ describe("MULTI-PERSON — the targeted answers reach the stock", () => {
     const order = stockOrder(
       usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: c.durationSec, serves: c.serves.length, ...(rescue.has(c.videoId) ? { rescue: true } : {}) }))
     );
-    expect(order).toHaveLength(MAX_STOCK_VIDEOS);
+    expect(order.length).toBeLessThanOrEqual(MAX_STOCK_VIDEOS);
     expect(order.slice(0, 3).map((c) => c.videoId)).toEqual([...rescue]);
     /** Without the mark, Kim's videos (serving every sentence) would take all six slots. */
-    const unmarked = stockOrder(usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: c.durationSec, serves: c.serves.length })));
+    const unmarked = stockOrder(usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: c.durationSec, serves: c.serves.length })), STOCK_FIRST_BATCH);
     expect(unmarked.some((c) => rescue.has(c.videoId))).toBe(false);
   });
 

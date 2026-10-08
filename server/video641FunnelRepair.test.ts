@@ -318,9 +318,9 @@ describe("B5 — Visual Needs: abstract ideas and generic scenery left out, name
     expect(valid("Accountants in office", [plain], input, a).map((n) => n.subject)).toEqual(["Accountants in office"]);
   });
 
-  it("budget, stock and the targeted searches are untouched: 4 searches, 6 stock videos, 9 attempts", () => {
+  it("budget and the targeted searches are untouched: 4 searches; VIDEO 642 — the stock is 10 ready, 14 attempts", () => {
     expect(MAX_YOUTUBE_SEARCHES_PER_VIDEO).toBe(4);
-    expect(MAX_STOCK_VIDEOS).toBe(6);
-    expect(MAX_STOCK_ATTEMPTS).toBe(9);
+    expect(MAX_STOCK_VIDEOS).toBe(10);
+    expect(MAX_STOCK_ATTEMPTS).toBe(14);
   });
 });

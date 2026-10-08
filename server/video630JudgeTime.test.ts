@@ -129,7 +129,7 @@ describe("E/F — the hard limits stay, and a long video is still bounded", () =
   it("download, stock and search limits are unchanged", () => {
     expect(youtubeMaxDownloadsPerRender()).toBe(60);
     expect(youtubeDownloadTimeoutMs()).toBe(180_000);
-    expect(MAX_STOCK_VIDEOS).toBe(6);
+    expect(MAX_STOCK_VIDEOS).toBe(10);
     expect(YOUTUBE_STOCK_WAIT_MAX_MS).toBe(180_000);
   });
 

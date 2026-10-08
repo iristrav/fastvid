@@ -54,8 +54,8 @@ const cand = (videoId: string, serves = 1, durationSec = 600) => ({ videoId, tit
 afterEach(() => releaseYoutubeShotStock(FILM));
 
 describe("Video 620 — the stock", () => {
-  it("stocks the videos that serve the most sentences first, at most six", () => {
-    const order = stockOrder([cand("a", 1), cand("b", 4), cand("c", 2), cand("d", 4), cand("e"), cand("f"), cand("g"), cand("h")]);
+  it("stocks the videos that serve the most sentences first, at most the limit asked", () => {
+    const order = stockOrder([cand("a", 1), cand("b", 4), cand("c", 2), cand("d", 4), cand("e"), cand("f"), cand("g"), cand("h")], 6);
     expect(order.map((c) => c.videoId)).toEqual(["b", "d", "c", "a", "e", "f"]);
   });
 

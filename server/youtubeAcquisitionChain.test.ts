@@ -23,7 +23,7 @@ import {
   type VideoYoutubePool,
 } from "./youtubeVideoPool";
 import { memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
-import { MAX_STOCK_VIDEOS, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots } from "./youtubeShotStock";
+import { MAX_STOCK_VIDEOS, STOCK_FIRST_BATCH, releaseYoutubeShotStock, startYoutubeShotStock, stockSummary, takeStockShots } from "./youtubeShotStock";
 import {
   YOUTUBE_MIN_TURN_MS,
   YOUTUBE_POOL_TURN_MS,
@@ -154,7 +154,7 @@ describe("the production chain: plan → search → look → pool → stock → 
     expect(servesLater(later[0]!.item.id?.videoId)).toBe(true);
   });
 
-  it("the stock: six videos at most, cut into shots; a source gives different beats different shots; a refused shot never returns", async () => {
+  it("the stock: a first batch of six, at most ten, cut into shots; a source gives different beats different shots; a refused shot never returns", async () => {
     const { deps } = chainDeps();
     const pool = await buildVideoYoutubePool(deps, { videoId: FILM, ...ww2 });
     registerVideoYoutubePool(FILM, Promise.resolve(pool));
@@ -177,8 +177,12 @@ describe("the production chain: plan → search → look → pool → stock → 
     );
     const waited = await waitForYoutubeStockBeforePictures(FILM, { log: () => {} });
     expect(waited.outcome).toBe("stock_settled");
-    expect(downloads).toHaveLength(MAX_STOCK_VIDEOS);
-    expect(stockSummary(FILM)).toMatchObject({ videos: 6, ready: 6, shots: 18 });
+    /** VIDEO 642 — the wait covers the first batch of six; the rest of the ten follow as slots free up. */
+    expect(downloads.length).toBeGreaterThanOrEqual(STOCK_FIRST_BATCH);
+    expect(downloads.length).toBeLessThanOrEqual(MAX_STOCK_VIDEOS);
+    const settled = stockSummary(FILM);
+    expect(settled.ready).toBeGreaterThanOrEqual(STOCK_FIRST_BATCH);
+    expect(settled.shots).toBe(settled.ready * 3);
 
     const source = downloads[0]!;
     const beatA = await takeStockShots(FILM, source, 0);
@@ -292,7 +296,7 @@ describe("the protections stay", () => {
   it("download ceilings, timeouts and counts are unchanged", () => {
     expect(youtubeDownloadTimeoutMs()).toBe(180_000);
     expect(youtubeMaxDownloadsPerRender()).toBe(60);
-    expect(MAX_STOCK_VIDEOS).toBe(6);
+    expect(MAX_STOCK_VIDEOS).toBe(10);
     const service = fs.readFileSync(path.join(__dirname, "..", "services", "ytdlp-download", "main.py"), "utf8");
     expect(service).toContain('"socket_timeout": 30');
     expect(service).toContain('"-rw_timeout"');

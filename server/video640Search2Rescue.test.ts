@@ -5,7 +5,7 @@ import os from "os";
 import path from "path";
 
 import { memoryYoutubeSearchBudgetStore, MAX_YOUTUBE_SEARCHES_PER_VIDEO } from "./youtubeSearchBudget";
-import { MAX_STOCK_VIDEOS, stockOrder } from "./youtubeShotStock";
+import { MAX_STOCK_VIDEOS, STOCK_FIRST_BATCH, stockOrder } from "./youtubeShotStock";
 import type { GateVerdict } from "./youtubeVideoSearchPlanner";
 import {
   buildVideoYoutubePool,
@@ -172,7 +172,7 @@ describe("search #2 for the named subject no usable pool video shows (the Kris J
     expect(kim[0]!.title).toMatch(/Kim Kardashian/);
   });
 
-  it("search #2's answer is stocked first (at most two); the stock stays at six videos", async () => {
+  it("search #2's answer is stocked first (at most two); the stock stays within its limit", async () => {
     const pool = await buildVideoYoutubePool(deps(), input);
     const usable = pool.candidates.filter((c) => c.usable && c.from !== 0);
     const rescue = youtubeRescueCandidates(pool, usable);
@@ -181,10 +181,10 @@ describe("search #2 for the named subject no usable pool video shows (the Kris J
     const order = stockOrder(
       usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: c.durationSec, serves: c.serves.length, ...(rescue.has(c.videoId) ? { rescue: true } : {}) }))
     );
-    expect(order).toHaveLength(MAX_STOCK_VIDEOS);
+    expect(order.length).toBeLessThanOrEqual(MAX_STOCK_VIDEOS);
     expect(order.slice(0, 2).every((c) => rescue.has(c.videoId))).toBe(true);
     /** Without the mark (before this fix) Kris Jenner's videos, serving 2 sentences, were stocked last. */
-    const before = stockOrder(usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: c.durationSec, serves: c.serves.length })));
+    const before = stockOrder(usable.map((c) => ({ videoId: c.videoId, title: c.title, durationSec: c.durationSec, serves: c.serves.length })), STOCK_FIRST_BATCH);
     expect(before.some((c) => rescue.has(c.videoId))).toBe(false);
   });
 

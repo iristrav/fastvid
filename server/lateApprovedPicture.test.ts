@@ -85,8 +85,10 @@ describe("B/C — an answer reaches the scene exactly once, through the one push
     const push = PIPE.slice(PIPE.indexOf("const pushSceneClip = async ("));
     expect(push.slice(0, 400)).toContain("noteOfferedToScene(dedup, scene.index, beatIndex, clipPath);");
     const place = PIPE.slice(PIPE.indexOf("const placeLateApprovedPicks = async"), PIPE.indexOf("const placeLateApprovedPicks = async") + 2_000);
-    expect(place).toContain("pushSceneClip(late.clip, beat.holdSec, late.beatIndex)");
-    expect(place).toContain("if (clipBeatIndices.includes(late.beatIndex))");
+    /** VIDEO 642 — a sentence with a picture takes a second approved one only for its uncovered seconds. */
+    expect(place).toContain("pushSceneClip(late.clip, hold, late.beatIndex)");
+    expect(place).toContain("const hasPicture = clipBeatIndices.includes(late.beatIndex);");
+    expect(place).toContain("if (hasPicture && left < BEAT_EXTRA_SHOT_MIN_SEC) {");
     expect(place).toContain("if (!late.approved)");
     expect(PIPE).toContain("await placeLateApprovedPicks(false);\n    await fillBeatWithMoreClips();");
     expect(PIPE).toContain("await placeLateApprovedPicks(true);\n    await fillBeatWithMoreClips();");

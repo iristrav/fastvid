@@ -5,7 +5,7 @@ import os from "os";
 import path from "path";
 
 import { MAX_YOUTUBE_SEARCHES_PER_VIDEO, memoryYoutubeSearchBudgetStore } from "./youtubeSearchBudget";
-import { MAX_STOCK_VIDEOS } from "./youtubeShotStock";
+import { MAX_STOCK_VIDEOS, STOCK_FIRST_BATCH } from "./youtubeShotStock";
 import { analyzeVideo, queryNames, validVisualNeeds, type GateVerdict, type VisualNeed } from "./youtubeVideoSearchPlanner";
 import {
   buildVideoYoutubePool,
@@ -511,7 +511,9 @@ describe("TEST 15 — the Berlin Wall newsreel from the targeted search ends up 
       }
     );
     await youtubeStockSettled(9_150);
-    expect(fetched.length).toBe(MAX_STOCK_VIDEOS);
+    /** VIDEO 642 — the first batch is what the wait covers; more stock follows as slots free up. */
+    expect(fetched.length).toBeGreaterThanOrEqual(STOCK_FIRST_BATCH);
+    expect(fetched.length).toBeLessThanOrEqual(MAX_STOCK_VIDEOS);
     const wallId = pool.candidates.find((c) => c.title === "November 9, 1989 newsreel")!.videoId;
     expect(rescue.has(wallId)).toBe(true);
     expect(fetched.slice(0, rescue.size)).toContain(wallId);

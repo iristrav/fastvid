@@ -53,7 +53,7 @@ import { BUDGETS, chargeAmbientBudget, createRetrievalBudgetState, formatRetriev
 import { SENTENCE_OPENERS, atSentenceStart, isSentenceOpener, withoutSentenceOpener } from "./sentenceOpeners";
 import { classifyProviderFailure, cooldownMsForFailure, formatPermanentDownloadRefusals, formatProviderCooldown, notePermanentDownloadRefusal, noteYoutubeDownloadRefusal, noteRepeatedYoutubeRefusal, noteArchiveAccessRefusal, YOUTUBE_REFUSALS_BEFORE_WRITE_OFF_THIS_RENDER, YOUTUBE_PERMANENT_DOWNLOAD_STATUSES, isDurableYoutubeServiceRefusal, permanentDownloadRefusal, resetPermanentDownloadRefusals, noteYoutubeFragmentRefusal, youtubeFragmentRefusal, cloudEgressRefusal, cloudEgressRefusalStreak, noteCloudEgressBlocked, claimCloudEgressPreflight, noteCloudEgressOk, resetCloudEgressBlocked, youtubeDownloadRefusal, youtubeServiceRefusalReason } from "./providerFailureClass";
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
-import { belowArchiveMinimumDuration } from "./archiveIngestion";
+import { belowArchiveMinimumDuration, MIN_VIDEO_DURATION_SEC } from "./archiveIngestion";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry } from "./youtubeLookahead";
 import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyQueries, sentenceOnlyYoutubeQueries, subjectWordOverlap, subjectWords, visualIntentSearchQuery, youtubeResultIsShort } from "./youtubeNonFootage";
@@ -231,7 +231,7 @@ import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner"
 import { videoMainSubject } from "./mainSubject";
 import { queryNames, sentencesOf } from "./youtubeVideoSearchPlanner";
 import { readPeopleInNarration } from "./personNames";
-import { beatRowsInStockOrder, isStocked, isStockReady, lateReadyStockVideos, MAX_STOCK_ATTEMPTS, MAX_STOCK_VIDEOS, releaseYoutubeShotStock, startYoutubeShotStock, stockOrder, stockSummary, stockVideoState, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
+import { beatRowsInStockOrder, isStocked, isStockReady, lateReadyStockVideos, MAX_STOCK_ATTEMPTS, MAX_STOCK_VIDEOS, releaseYoutubeShotStock, STOCK_FIRST_BATCH, startYoutubeShotStock, stockOrder, stockSummary, stockVideoState, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
 import {
   chooseMoments,
   sectionMoments,
@@ -4797,6 +4797,109 @@ export const BEAT_FILL_MIN_GAP_SEC = 1.5;
 export function beatFillSecondsNeeded(beatSec: number, coveredSec: number): number {
   const rest = (Number.isFinite(beatSec) ? beatSec : 0) - (Number.isFinite(coveredSec) ? coveredSec : 0);
   return rest >= BEAT_FILL_MIN_GAP_SEC ? Math.round(rest * 100) / 100 : 0;
+}
+
+/**
+ * VIDEO 642 — a sentence's ANOTHER real shot is only asked for while at least this much of it is
+ * uncovered: the archive's own 3 s minimum (`MIN_VIDEO_DURATION_SEC`), so an extra shot is never
+ * held shorter than the shortest clip the film admits.
+ */
+export const BEAT_EXTRA_SHOT_MIN_SEC = MIN_VIDEO_DURATION_SEC;
+
+/** VIDEO 642 — the seconds of sentence `beatIndex` its clips leave uncovered (see `beatFillSecondsNeeded`). */
+export function beatSecondsLeft(
+  beatSec: number,
+  beatIndex: number,
+  clipBeatIndices: readonly number[],
+  beatDurations: readonly number[]
+): number {
+  let covered = 0;
+  clipBeatIndices.forEach((b, i) => {
+    if (b === beatIndex) covered += beatDurations[i] ?? 0;
+  });
+  return beatFillSecondsNeeded(beatSec, covered);
+}
+
+/**
+ * VIDEO 642 — THREE NUMBERS THAT WERE ONE: sentences with a real moving shot, the real moving shots
+ * on screen, and their seconds. 641 covered four sentences with two shots for 13.2 s; "covered"
+ * alone could not say that. `VISUAL_SHOT_TARGET` is a soft signal printed beside them for a
+ * one-minute film — never a refusal, never a reason to place a picture the editor did not approve.
+ */
+export const VISUAL_SHOT_TARGET = { min: 20, max: 30 } as const;
+
+export function formatVisualShotsLine(
+  results: ReadonlyArray<Pick<SceneVisualsResult, "clips" | "beatDurations" | "clipBeatIndices"> | undefined>,
+  isRealMoving: (clip: string) => boolean
+): string {
+  const beats = new Set<string>();
+  let shots = 0;
+  let seconds = 0;
+  results.forEach((r, si) => {
+    (r?.clips ?? []).forEach((clip, i) => {
+      if (!isRealMoving(clip)) return;
+      shots++;
+      seconds += r?.beatDurations[i] ?? 0;
+      const b = r?.clipBeatIndices?.[i];
+      if (b != null) beats.add(`${si}:${b}`);
+    });
+  });
+  const verdict = shots >= VISUAL_SHOT_TARGET.min ? "within_or_above" : "below";
+  return (
+    `[VisualShots] coveredSentences=${beats.size} visibleRealShots=${shots} visibleRealSec=${seconds.toFixed(2)} ` +
+    `softTarget=${VISUAL_SHOT_TARGET.min}-${VISUAL_SHOT_TARGET.max}/min (${verdict}; a signal, not a rule)`
+  );
+}
+
+/** VIDEO 642 — one `adoptClip` call for a sentence, kept for its fill (`adoptAnotherFitForBeat`). */
+export type BeatCandidateCall = { paths: string[]; beatText: string; sourceQuery: string; opts: VisualAdoptOptions };
+/** The most candidate lists kept per sentence; the oldest goes first. */
+export const BEAT_CANDIDATE_CALLS_MAX = 8;
+
+function rememberBeatCandidates(dedup: VisualDedupState, sceneIndex: number, beatIndex: number, call: BeatCandidateCall): void {
+  if (!call.paths.length) return;
+  const key = `${sceneIndex}:${beatIndex}`;
+  const calls = (dedup.beatCandidateCalls ??= new Map()).get(key) ?? [];
+  calls.push(call);
+  if (calls.length > BEAT_CANDIDATE_CALLS_MAX) calls.splice(0, calls.length - BEAT_CANDIDATE_CALLS_MAX);
+  dedup.beatCandidateCalls.set(key, calls);
+}
+
+/**
+ * VIDEO 641/642 — ANOTHER APPROVED SHOT FOR A SENTENCE THAT IS LONGER THAN ITS FIRST ONE.
+ *
+ * A sentence stopped at its first FIT: 642's 6.5 s of real footage in a one-minute film while the
+ * same sentences had been handed other moments of the same stock videos, and the 3.9 s shot was
+ * stretched over the rest. This asks the candidates the sentence was already handed — through the
+ * same `adoptClip`, its gates, its dedup and the picture editor's own per-sentence and per-render
+ * ceilings — and takes only one the editor calls FIT for THIS sentence (`fitOnly`). Several moments
+ * of one video are welcome; a moment whose seconds are already in the film is not (`assetUsedInVideo`,
+ * segment overlap). No search, no download. Null when nothing more fits.
+ */
+export async function adoptAnotherFitForBeat(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  workDir: string,
+  adopt: (paths: string[], call: BeatCandidateCall) => Promise<string | null> = (paths, call) =>
+    adoptClip(paths, dedup, sceneIndex, beatIndex, call.beatText, workDir, call.sourceQuery, { ...call.opts, fitOnly: true })
+): Promise<string | null> {
+  const calls = dedup.beatCandidateCalls?.get(`${sceneIndex}:${beatIndex}`) ?? [];
+  const tried = new Set<string>();
+  for (const call of calls) {
+    const left = call.paths.filter(
+      (p) =>
+        !tried.has(p) &&
+        !isPipelineFallbackClip(p) &&
+        fs.existsSync(p) &&
+        !assetUsedInVideo(dedup, { path: p, contentKey: clipContentKey(p) })
+    );
+    for (const p of left) tried.add(p);
+    if (!left.length) continue;
+    const clip = await adopt(left, call);
+    if (clip) return clip;
+  }
+  return null;
 }
 
 /**
@@ -10010,6 +10113,7 @@ export function formatTargetedPoolEntry(
       title: c.title,
       durationSec: 0,
       serves: c.serves.length,
+      beats: c.serves,
       shownRecently: shownRecently(c.videoId),
       ...(rescue.has(c.videoId) ? { rescue: true } : {}),
     })),
@@ -10027,11 +10131,13 @@ export function formatTargetedPoolEntry(
       const place =
         at < 0
           ? "NOT_IN_POOL"
-          : at < MAX_STOCK_VIDEOS
-            ? `POOL slot=${at + 1}/${MAX_STOCK_VIDEOS}`
-            : at < MAX_STOCK_ATTEMPTS
-              ? `SPARE position=${at + 1 - MAX_STOCK_VIDEOS} (asked only if a pool video fails)`
-              : `NOT_IN_POOL position=${at + 1} (behind the ${MAX_STOCK_ATTEMPTS} attempts the stock makes)`;
+          : at < STOCK_FIRST_BATCH
+            ? `POOL slot=${at + 1}/${STOCK_FIRST_BATCH}`
+            : at < MAX_STOCK_VIDEOS
+              ? `MORE position=${at + 1 - STOCK_FIRST_BATCH} (stocked as a download slot frees up)`
+              : at < MAX_STOCK_ATTEMPTS
+                ? `SPARE position=${at + 1 - MAX_STOCK_VIDEOS} (asked only if a pool video fails)`
+                : `NOT_IN_POOL position=${at + 1} (behind the ${MAX_STOCK_ATTEMPTS} attempts the stock makes)`;
       const why = rescue.has(c.videoId)
         ? "rescue=yes"
         : candidateShows(c, t.name) || c.serves.some((b) => t.beats.includes(b))
@@ -10070,6 +10176,8 @@ function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: strin
         title: c.title,
         durationSec: c.durationSec,
         serves: c.serves.length,
+        /** VIDEO 642 — which sentences: the stock is ordered by what it covers (`stockOrder`). */
+        beats: c.serves,
         /** W6 — fresh sources are stocked before ones a recent same-subject video showed. */
         shownRecently: youtubeSourceUsedRecently(filmId, providerAssetKey("youtube_cc", c.videoId)),
         /** VIDEO 640 — MULTI-PERSON — the targeted searches' answers for subjects nobody else shows are stocked first. */
@@ -11840,8 +11948,20 @@ export async function fetchYouTubeCCClips(
         /** W2 — the serving ready stock is not cut by the top five; the usual limits hold for the rest. */
         const servingFirst = ordered.filter((r) => servingReadyRows.has(r));
         const tried = [...servingFirst, ...ordered.filter((r) => !servingReadyRows.has(r)).slice(0, 5)];
+        /**
+         * VIDEO 642 (B-1) — what the rows that serve this sentence gave. A row that does not serve it
+         * (`beatRowsInStockOrder` puts those last) is not offered once a serving row gave moments: it
+         * would take the sentence's places and its picture editor's looks. With nothing relevant to
+         * offer (none in the pool, or every one failed) the other rows are offered as before.
+         */
+        const fetchedBeforeRows = fetched;
         for (const row of tried) {
           if (Date.now() > ytDeadline) break;
+          /** VIDEO 642 (B-1) — serving rows come first; once one gave moments, the rest are not offered. */
+          if (row.servesBeat !== true && fetched > fetchedBeforeRows) {
+            console.log(`[YouTubeStock] Scene ${sceneIndex}: serving rows gave moments — non-serving rows not offered`);
+            break;
+          }
           if (!servingReadyRows.has(row)) {
             if (fetched >= count) break;
             if (attemptsSpent()) break;
@@ -15257,6 +15377,12 @@ export interface VisualDedupState {
    * Archive clip to five sentences and refused it five times for the same on-screen text.
    */
   refusedAssetsThisRender?: Map<string, string>;
+  /**
+   * VIDEO 642 — each sentence's candidate lists as its routes handed them to `adoptClip`, keyed
+   * `"<scene>:<beat>"`: the sentence's fill asks the same candidates for another FIT
+   * (`adoptAnotherFitForBeat`) before it asks the own archive.
+   */
+  beatCandidateCalls?: Map<string, BeatCandidateCall[]>;
   /** VIDEO 623 — the video's main subject; a sentence that names nothing of its own searches on it. */
   mainSubject?: string | null;
   /** VIDEO 623 — YouTube files a lookahead delivered after its sentence stopped waiting. */
@@ -16073,6 +16199,12 @@ type VisualAdoptOptions = {
   scriptAnchored?: boolean;
   /** Script-matched still fallback — trust search query, skip strict entity/person gates. */
   scriptImageFallback?: boolean;
+  /**
+   * VIDEO 642 — a sentence's ANOTHER picture (`adoptAnotherFitForBeat`): only a candidate the picture
+   * editor called FIT for this sentence is adopted. No hold for weaker evidence, no reprieve of a
+   * refused picture, and the beat's first choice stays its recorded choice.
+   */
+  fitOnly?: boolean;
 };
 
 async function withVisualDedupLock<T>(dedup: VisualDedupState, fn: () => Promise<T>): Promise<T> {
@@ -19059,12 +19191,14 @@ async function adoptClip(
    * uses; two paths for the same asset are one candidate, and saying otherwise would inflate the
    * retrieved column exactly where render 568's 3995 came from.
    */
-  {
+  if (!opts.fitOnly) {
     const uniqueKeys = new Set(paths.map((p) => clipContentKey(p)));
     noteRetrieved(dedup.beatShortlist, sceneIndex, beatIndex, paths.length, {
       normalized: paths.length,
       deduped: Math.max(0, paths.length - uniqueKeys.size),
     });
+    /** VIDEO 642 — kept, so the sentence's fill can ask the same candidates for another FIT. */
+    rememberBeatCandidates(dedup, sceneIndex, beatIndex, { paths: [...paths], beatText, sourceQuery, opts });
   }
 
   // Fase 4 (beeldkwaliteit vervolgpatch): generic providerText fallback for every provider that
@@ -19581,7 +19715,9 @@ async function adoptClip(
    * discarded eleven real candidates, and `rankIn=0 ranked=0` says nothing was ever handed over —
    * and the second is a fault in whatever was meant to fill `paths`, not in the ranking.
    */
-  noteRanked(dedup.beatShortlist, sceneIndex, beatIndex, finalPaths.length, paths.length);
+  if (!opts.fitOnly) {
+    noteRanked(dedup.beatShortlist, sceneIndex, beatIndex, finalPaths.length, paths.length);
+  }
   /**
    * R194 §18/§21 — THE BOUNDED REVIEW POOL, DECLARED BEFORE ANYTHING IS ASKED.
    *
@@ -19672,7 +19808,7 @@ async function adoptClip(
     for (const p of finalPaths) sceneCandidates.add(p);
     // RONDE 70: what this beat was actually offered. Counting only — nothing is fetched,
     // ranked or judged here, and finalPaths is the list the loop below is about to read.
-    noteBeatCandidatesOffered(dedup.beatOutcomeAudit, sceneIndex, beatIndex, finalPaths.length);
+    if (!opts.fitOnly) noteBeatCandidatesOffered(dedup.beatOutcomeAudit, sceneIndex, beatIndex, finalPaths.length);
 
     /** P2 (video 630, second run) — see `postponeBehindFresherCandidate`. */
     const refusedForAnotherSentence = (q: string): boolean =>
@@ -19982,6 +20118,8 @@ async function adoptClip(
         noteVisionAsked(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
         noteVisionOutcome(dedup.beatShortlist, sceneIndex, beatIndex, "REJECTED");
         noteReviewedCandidate(p, "MISMATCH");
+        /** VIDEO 642 — another picture for a sentence that has one is never a refused picture. */
+        if (opts.fitOnly) continue;
         // Not discarded — moved to the back of the queue. for...of reads the array by index, so
         // an append is visited after every candidate that has not been refused. If one of those
         // is adopted this is never reached again; if none is, this clip gets its turn rather
@@ -20045,6 +20183,11 @@ async function adoptClip(
           beatDeclineReasonFor(dedup, p, contentKey, sceneIndex, beatIndex)
         );
         noteReviewedCandidate(p, beatEvidence);
+      }
+      /** VIDEO 642 — another picture for the sentence: FIT or nothing, never held or reprieved. */
+      if (opts.fitOnly && beatEvidence !== "FIT") {
+        pendingEvidence.delete(p);
+        continue;
       }
       /**
        * Weaker than FIT: hold it and keep looking. Same mechanism as the refusal above — the back
@@ -20193,7 +20336,7 @@ async function adoptClip(
          * `visionSelectionViolations` compares this against the pool and reports a beat that
          * passed over a FIT, or used a refused picture while something unrefused was available.
          */
-        noteVisionAdopted(dedup.visionReviewPool, sceneIndex, beatIndex, contentKey);
+        if (!opts.fitOnly) noteVisionAdopted(dedup.visionReviewPool, sceneIndex, beatIndex, contentKey);
         noteBeatAdopted(dedup.beatOutcomeAudit, sceneIndex, beatIndex, providerOfKey, path.basename(finalPath));
         // RONDE 86/87: `finalPath` is `p` after the segment trim and/or the fair-use transform
         // have renamed it. The derived file gets its OWN record carrying parentLineageId, so the
@@ -21832,7 +21975,11 @@ export async function placeApprovedAfterSceneClosed(
     let reason: string | null = null;
     if (!placer || !sceneReturned || !e.settled) {
       reason = "approved after scene closed — not placed";
-    } else if (opts.hasPicture?.(e.beatIndex) || placed.some((p) => p.beatIndex === e.beatIndex)) {
+      /** VIDEO 642 — a second, DIFFERENT approval for the same sentence is not refused here: the placer reads its seconds left. */
+    } else if (
+      opts.hasPicture?.(e.beatIndex) ||
+      placed.some((p) => p.beatIndex === e.beatIndex && clip != null && clipContentKey(p.clip) === clipContentKey(clip))
+    ) {
       reason = "approved after scene closed — not placed: the sentence already has its picture";
     } else if (!clip) {
       reason = "approved picture never reached the scene — the sentence's ladder settled without a clip";
@@ -23252,35 +23399,56 @@ async function fetchSceneVisualsInner(
      * timeline held one 3.4 s shot for 24 s. Its own search is spent; the own archive is asked on
      * the video's main subject, the picture editor judging the result against the sentence itself.
      */
-    const found = beatDurations.slice(f.clipsBefore).length > 0;
+    const found = clipBeatIndices.includes(f.beat.index);
     const subject = found ? null : mainSubject;
     if (!found && !subject) return;
     const asked: SceneBeat = subject
       ? { ...f.beat, searchQuery: subject, powerWord: subject, keywords: [subject], visualDescription: undefined }
       : f.beat;
     for (let extra = 0; extra < BEAT_FILL_MAX_EXTRA_CLIPS; extra++) {
-      const covered = beatDurations.slice(f.clipsBefore).reduce((sum, d) => sum + d, 0);
+      /** VIDEO 642 — this sentence's own seconds, read by sentence: a late pick of another sentence is not its cover. */
+      const covered = clipBeatIndices.reduce((sum, b, i) => (b === f.beat.index ? sum + (beatDurations[i] ?? 0) : sum), 0);
       const rest = beatFillSecondsNeeded(f.beat.holdSec, covered);
       if (rest <= 0 || !(remainingScopeMs() > BEAT_FILL_MIN_SCOPE_MS)) return;
       /** VIDEO 626 — inside the sentence's own turn, never out of the next sentence's. */
-      const turnLeftMs = f.deadlineMs - Date.now();
-      if (turnLeftMs < BEAT_FALLBACK_MIN_MS) return;
+      if (f.deadlineMs - Date.now() < BEAT_FALLBACK_MIN_MS) return;
       let more: string | null = null;
-      try {
-        more = await withSceneFetchTimeout(
-          () => ownArchiveBeatClip({ ...asked, holdSec: rest }, scene, workDir, scene.index, dedup, videoTitle),
-          Math.min(BEAT_FILL_FETCH_MS, turnLeftMs),
-          `scene ${scene.index} beat ${f.beat.index} fill`
-        );
-      } catch {
-        return;
+      let from = "the own archive";
+      /**
+       * VIDEO 642 — first another moment the picture editor calls FIT among what THIS sentence was
+       * already handed (no search, no download; see `adoptAnotherFitForBeat`), then the own archive.
+       */
+      if (rest >= BEAT_EXTRA_SHOT_MIN_SEC) {
+        try {
+          more = await withSceneFetchTimeout(
+            () => adoptAnotherFitForBeat(dedup, scene.index, f.beat.index, workDir),
+            Math.min(BEAT_FILL_FETCH_MS, f.deadlineMs - Date.now()),
+            `scene ${scene.index} beat ${f.beat.index} another FIT`
+          );
+        } catch {
+          more = null;
+        }
+        if (more) from = "another FIT moment this sentence was handed";
+      }
+      if (!more) {
+        const turnLeftMs = f.deadlineMs - Date.now();
+        if (turnLeftMs < BEAT_FALLBACK_MIN_MS) return;
+        try {
+          more = await withSceneFetchTimeout(
+            () => ownArchiveBeatClip({ ...asked, holdSec: rest }, scene, workDir, scene.index, dedup, videoTitle),
+            Math.min(BEAT_FILL_FETCH_MS, turnLeftMs),
+            `scene ${scene.index} beat ${f.beat.index} fill`
+          );
+        } catch {
+          return;
+        }
       }
       if (!more || isPipelineFallbackClip(more)) return;
       const clipPath = more;
       const ok = await withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, rest, f.beat.index));
       console.log(
         `[BeatFill] s${scene.index}b${f.beat.index}: clips cover ${covered.toFixed(1)}s of ${f.beat.holdSec.toFixed(1)}s — ` +
-          `${ok ? "added" : "refused"} ${path.basename(more)} for the other ${rest.toFixed(1)}s` +
+          `${ok ? "added" : "refused"} ${path.basename(more)} for the other ${rest.toFixed(1)}s (from ${from})` +
           (subject ? ` (the sentence found nothing; asked on "${subject}")` : "")
       );
       if (!ok) return;
@@ -23302,11 +23470,18 @@ async function fetchSceneVisualsInner(
         console.log(`${at} arrived after the sentence closed, without the picture editor's approval for it — not placed`);
         continue;
       }
-      if (clipBeatIndices.includes(late.beatIndex)) {
+      /**
+       * VIDEO 642 — a sentence with a picture takes a second approved one for the seconds its
+       * clips leave uncovered (at least the 3 s minimum); a covered sentence keeps what it has.
+       */
+      const hasPicture = clipBeatIndices.includes(late.beatIndex);
+      const left = beatSecondsLeft(beat.holdSec, late.beatIndex, clipBeatIndices, beatDurations);
+      if (hasPicture && left < BEAT_EXTRA_SHOT_MIN_SEC) {
         console.log(`${at} approved after the sentence closed — not placed: the sentence already has its picture`);
         continue;
       }
-      const ok = await withAdoptionIntent("beat_fetch", () => pushSceneClip(late.clip, beat.holdSec, late.beatIndex));
+      const hold = hasPicture ? left : beat.holdSec;
+      const ok = await withAdoptionIntent("beat_fetch", () => pushSceneClip(late.clip, hold, late.beatIndex));
       console.log(
         `${at} approved after the sentence's search was capped — ` +
           (ok ? "placed (no new look)" : "refused at the push (reason logged by [PushTrace])")
@@ -23432,8 +23607,11 @@ async function fetchSceneVisualsInner(
     openLatePlacement(dedup, scene.index, async (clipPath, beatIndex) => {
       const beat = beats.find((b) => b.index === beatIndex);
       if (!beat) return null;
-      if (clipBeatIndices.includes(beatIndex)) return "has_picture";
-      const ok = await withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, beat.holdSec, beatIndex));
+      /** VIDEO 642 — as `placeLateApprovedPicks`: a second picture only for seconds the sentence still has uncovered. */
+      const hasPicture = clipBeatIndices.includes(beatIndex);
+      const left = beatSecondsLeft(beat.holdSec, beatIndex, clipBeatIndices, beatDurations);
+      if (hasPicture && left < BEAT_EXTRA_SHOT_MIN_SEC) return "has_picture";
+      const ok = await withAdoptionIntent("beat_fetch", () => pushSceneClip(clipPath, hasPicture ? left : beat.holdSec, beatIndex));
       return ok ? { hold: beatDurations[beatDurations.length - 1] ?? beat.holdSec } : null;
     });
     /** VIDEO 634 — from here on, a picture approved for this scene is named as not placed. */
@@ -24597,7 +24775,13 @@ async function _runVideoPipelineInner(
       const placedLate = await placeApprovedAfterSceneClosed(visualDedup, scenes[si]!.index, {
         sceneReturned: returnedInTime.has(si),
         final,
-        hasPicture: (beatIndex) => (sceneVisualResults[si]?.clipBeatIndices ?? []).includes(beatIndex),
+        /** VIDEO 642 — "has its picture" means: no 3 s of the sentence left uncovered (`beatSecondsLeft`). */
+        hasPicture: (beatIndex) => {
+          const vr = sceneVisualResults[si];
+          if (!(vr?.clipBeatIndices ?? []).includes(beatIndex)) return false;
+          const beat = visualDedup.sceneBeatsBySceneIndex.get(scenes[si]!.index)?.find((b) => b.index === beatIndex);
+          return !beat || beatSecondsLeft(beat.holdSec, beatIndex, vr!.clipBeatIndices ?? [], vr!.beatDurations) < BEAT_EXTRA_SHOT_MIN_SEC;
+        },
       });
       if (placedLate.length === 0) return;
       const prevSceneVisual_14 = sceneVisualResults[si];
@@ -24962,6 +25146,8 @@ async function _runVideoPipelineInner(
         : undefined
     );
     for (let si = 0; si < scenes.length; si++) await placeLate(si, true);
+    /** VIDEO 642 — covered sentences, visible real shots and their seconds, apart; the target is a soft signal only. */
+    console.log(formatVisualShotsLine(sceneVisualResults, (c) => !isStillPhotoClip(c) && !isPipelineFallbackClip(c)));
 
     /** GENERATED_IMAGE_FALLBACK — after every source and the main-subject rescue: see `generateMissingBeatImages`. */
     await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);

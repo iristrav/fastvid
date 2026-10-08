@@ -94,8 +94,9 @@ describe("FIX 1 — a candidate that lands after the cap is judged, not declined
     expect(inner).toMatch(/^refused/);
   }, 120_000);
 
-  it("9. a sentence that already has its picture is never given a second one by a late answer", () => {
-    expect(PIPE).toContain("if (clipBeatIndices.includes(late.beatIndex)) {");
+  it("9. a sentence its pictures already cover is never given another one by a late answer (VIDEO 642: an uncovered rest of 3 s or more may be)", () => {
+    expect(PIPE).toContain("const hasPicture = clipBeatIndices.includes(late.beatIndex);");
+    expect(PIPE).toContain("if (hasPicture && left < BEAT_EXTRA_SHOT_MIN_SEC) {");
   });
 
   it("11. the sentence never waits for a late candidate; the a21ae12 route is unchanged", () => {
