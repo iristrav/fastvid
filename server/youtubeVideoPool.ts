@@ -639,7 +639,11 @@ export async function buildVideoYoutubePool(
       );
       if (!next) break;
       tried.add(next.name);
-      const plan = planEntityQuery(deps, input, analysis, { name: next.name, asked: asked() });
+      /** VIDEO 641 (Option A) — the need's own sentences, and the people they name, for a need without a name. */
+      const people = next.beats.flatMap((b) =>
+        (deps.namedSubjects?.(analysis.sentences[b] ?? "") ?? []).filter((s) => s.kind === "name").map((s) => s.name)
+      );
+      const plan = planEntityQuery(deps, input, analysis, { name: next.name, asked: asked(), beats: next.beats, people });
       if (!plan) continue;
       const ran = await runSearch(plan.query);
       if (!ran) break;

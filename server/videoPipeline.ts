@@ -20173,8 +20173,10 @@ async function adoptClip(
       if (eligibleRecord) {
         /** RONDE 94: through the one writer, so eligibility has a single spelling. */
         dedup.sourcingCache.lineage.markEligible(p, contentKey, "adopt_clip_gates_cleared");
-        dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "RANKED", { status: "OK" });
-        dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "SELECTED", { status: "OK" });
+        /** VIDEO 641 (W1) — selected FOR this sentence, with this file: the event says so itself. */
+        const selectedFor = { status: "OK" as const, sceneIndex, beatIndex, currentPath: p };
+        dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "RANKED", selectedFor);
+        dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "SELECTED", selectedFor);
         eligibleRecord.sceneIndex = sceneIndex;
         eligibleRecord.beatIndex = beatIndex;
         eligibleRecord.beatText ??= beatText?.slice(0, 240);

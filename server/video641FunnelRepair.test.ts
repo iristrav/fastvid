@@ -273,7 +273,14 @@ describe("B5 — Visual Needs: abstract ideas and generic scenery left out, name
       analysis,
       SCRIPT_641
     );
-    expect(needs.map((n) => n.subject)).toEqual(["Kardashians", "Kris Jenner", "Calabasas", "Kim Kardashian"]);
+    /** the idea leaves ("hype creation", "Finance analysts"); the sentence's scene stays (B5 repair) */
+    expect(needs.map((n) => n.subject)).toEqual([
+      "Kardashians",
+      "Kris Jenner",
+      "Calabasas corporate office",
+      "Kim Kardashian",
+      "Accountants in office",
+    ]);
   });
 
   it("abstract: an idea is not a picture", () => {
@@ -282,8 +289,13 @@ describe("B5 — Visual Needs: abstract ideas and generic scenery left out, name
   });
 
   it("generic scenery under a sentence that names something to show is left out", () => {
-    expect(valid("Accountants in office", [at("Calabasas")])).toEqual([]);
+    /** the sentence about Kris Jenner never puts accountants in an office: invented scenery */
+    expect(valid("Accountants in office", [at("controlled by Kris Jenner")])).toEqual([]);
     expect(valid("Finance analysts", [at("Finance analysts")])).toEqual([]);
+  });
+
+  it("a scene its own sentence describes stays, though the sentence names Calabasas", () => {
+    expect(valid("Accountants in office", [at("Calabasas")])).toEqual([{ subject: "Accountants in office", beats: [at("Calabasas")] }]);
   });
 
   it("concrete: a filmable subject stays as it is", () => {

@@ -496,9 +496,10 @@ const ABSTRACT_NEED_WORDS = new Set(
   ).split(" ")
 );
 /**
- * VIDEO 641 (B5) — "generic scenery that any footage would do": a setting cut from a named need
- * ("Calabasas corporate office" → "Calabasas"). Roles are not in this list: a role stays where it is
- * the picture (see `validVisualNeeds`).
+ * VIDEO 641 (B5) — "generic scenery that any footage would do": a need of only these words (and
+ * roles) is left out under a sentence that names something to show, unless that sentence itself puts
+ * the scene there. A named need keeps them ("Calabasas corporate office"). Roles are not in this list:
+ * a role stays where it is the picture (see `validVisualNeeds`).
  */
 const GENERIC_SETTING_WORDS = new Set(
   (
@@ -539,11 +540,17 @@ export function scriptNameWords(input: PlannerInput, analysis: VideoAnalysis): S
  *
  * VIDEO 641 (B5) — and the task's own "leave out abstract ideas and generic scenery", which nothing
  * enforced:
- *   - a need that holds a name is cut back to the name ("Kim Kardashian hype creation" → "Kim
- *     Kardashian", "Calabasas corporate office" → "Calabasas");
+ *   - a need that holds a name loses its idea words ("Kim Kardashian hype creation" → "Kim
+ *     Kardashian"), but never its setting, and never an idea word that describes a concrete thing
+ *     after it ("Calabasas corporate office", "Kris Jenner brand meeting" stay whole);
  *   - a need without a name is left out when it is an idea (its last word), and when it is only roles
  *     and settings under a sentence that names something to show ("Finance analysts" under a sentence
- *     about Kris Jenner). Under a sentence that names nothing, a role or setting stays.
+ *     about Kris Jenner). Under a sentence that names nothing, a role or setting stays — and so does a
+ *     setting its own sentence says, with the roles that sentence puts there ("Accountants in office"
+ *     under "In the Calabasas corporate office, accountants lay out …").
+ *
+ * The first B5 cut settings from named needs and dropped that last kind: "Calabasas corporate office"
+ * became "Calabasas" and "Accountants in office" disappeared — the concrete situation of the sentence.
  */
 export function validVisualNeeds(raw: unknown, analysis: VideoAnalysis, input: PlannerInput): VisualNeed[] {
   if (!Array.isArray(raw)) return [];
@@ -561,19 +568,29 @@ export function validVisualNeeds(raw: unknown, analysis: VideoAnalysis, input: P
     if (!beats.length) continue;
     let subject = asked;
     if (acw.some((w) => written.has(w))) {
-      subject = asked
-        .split(/\s+/)
-        .filter((tok) => {
-          const w = tok.toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, "");
-          return written.has(w) || /^\d/.test(w) || (!ABSTRACT_NEED_WORDS.has(w) && !GENERIC_SETTING_WORDS.has(w));
-        })
+      const tokens = asked.split(/\s+/);
+      const plain = (tok: string) => tok.toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, "");
+      const idea = (w: string) => ABSTRACT_NEED_WORDS.has(w) && !written.has(w) && !/^\d/.test(w);
+      /** A concrete thing after an idea word is what it describes ("brand meeting", "financial reports"). */
+      const describesAThing = (i: number) =>
+        tokens.slice(i + 1).some((tok) => {
+          const w = plain(tok);
+          return contentWords(w).length > 0 && !idea(w) && !written.has(w);
+        });
+      subject = tokens
+        .filter((tok, i) => !idea(plain(tok)) || describesAThing(i))
         .join(" ")
         .replace(/^(?:of|the|a|an|in|on|at)\s+|\s+(?:of|the|a|an|in|on|at)$/gi, "")
         .trim();
     } else {
       if (ABSTRACT_NEED_WORDS.has(acw[acw.length - 1]!)) continue;
       const generic = acw.every((w) => ABSTRACT_NEED_WORDS.has(w) || GENERIC_SETTING_WORDS.has(w) || GENERIC_ROLE_WORDS.has(w));
-      if (generic && beats.some(sentenceNames)) continue;
+      /** A setting its own sentence says, with whoever that sentence puts there, is the sentence's scene. */
+      const concrete = acw.filter((w) => !ABSTRACT_NEED_WORDS.has(w));
+      const sceneOfItsSentence =
+        concrete.some((w) => GENERIC_SETTING_WORDS.has(w)) &&
+        beats.some((b) => concrete.every((w) => containsWord(analysis.sentences[b] ?? "", w)));
+      if (generic && !sceneOfItsSentence && beats.some(sentenceNames)) continue;
     }
     const cw = contentWords(subject);
     if (!cw.length) continue;
@@ -840,26 +857,105 @@ export function queryNames(query: string, name: string): boolean {
  * is asked, the same rules and the same gate as every other query decide, and the production word
  * is the planner's own ("footage", or "archival footage" for a historical request). Null when the
  * rules or the gate refuse the name — that entity is then not searched.
+ *
+ * VIDEO 641 (Option A) — a need without a name ("Accountants in office") never passed the gate in a
+ * film that names anyone: the gate refuses a query that names nothing (SUBJECT_NOT_NAMED). Only for
+ * that refusal, the need is asked once more behind a name its OWN sentence says ("In the Calabasas
+ * corporate office, accountants …" → "Calabasas Accountants in office"): a name the narration
+ * writes as one, a place or thing before a person that sentence names, and only when the rules and
+ * the gate admit it exactly as asked — a query the gate narrows (to a person and one concept) is
+ * not this need any more. Otherwise null, as before.
  */
 export function planEntityQuery(
   deps: Pick<PlannerDeps, "gate" | "log">,
   input: PlannerInput,
   analysis: VideoAnalysis,
-  target: { name: string; asked: readonly string[] }
+  target: {
+    name: string;
+    asked: readonly string[];
+    /** The sentences the need must be seen under: the only place a name may come from. */
+    beats?: readonly number[];
+    /** The people those sentences name: tried last. */
+    people?: readonly string[];
+  }
 ): PlannedQuery | null {
   const log = deps.log ?? (() => {});
   const gate = once(deps.gate);
   const name = target.name.replace(/['’]s\b/gi, "").trim();
   /** One word only when the narration writes it as a name: "SpaceX footage", never "crowd footage". */
   const properName = analysis.recurring.some((r) => r.term.toLowerCase() === name.toLowerCase());
-  const why =
-    refuseQuery(name, { analysis, mustDifferFrom: target.asked.join(" "), gate, allowSingleScene: true, minWords: properName ? 1 : 2 }) ??
-    (queryNames(gate(name).sentAs?.trim() || name, name) ? null : `the search gate drops "${name}"`);
+  /** The queries the rules let through to the gate: a refusal after that is the gate's own. */
+  const reachedGate = new Set<string>();
+  const ruled = (q: string): GateVerdict => (reachedGate.add(q), gate(q));
+  const refusal = (q: string, minWords: 1 | 2): string | null =>
+    refuseQuery(q, { analysis, mustDifferFrom: target.asked.join(" "), gate: ruled, allowSingleScene: true, minWords }) ??
+    (queryNames(gate(q).sentAs?.trim() || q, name) ? null : `the search gate drops "${name}"`);
+  const why = refusal(name, properName ? 1 : 2);
+  let query = name;
+  let namedBy = "";
   if (why) {
-    log(`[YouTubeSearchPlanner] entity "${name}" NO_QUERY — ${why}`);
-    return null;
+    const unnamed = reachedGate.has(name) && gate(name).reason === "SUBJECT_NOT_NAMED";
+    const named = unnamed ? nameFromItsSentences(name, target, analysis, (q) => refusal(q, 2), gate) : null;
+    if (!named) {
+      log(`[YouTubeSearchPlanner] entity "${name}" NO_QUERY — ${why}${unnamed ? "; its own sentences name nothing the gate admits it with" : ""}`);
+      return null;
+    }
+    query = named.query;
+    namedBy = named.term;
   }
-  const sent = gateText(gate, name, asksForArchiveFilm(input));
-  log(`[YouTubeSearchPlanner] entity "${name}" query="${sent}"`);
+  const sent = gateText(gate, query, asksForArchiveFilm(input));
+  log(
+    namedBy
+      ? `[YouTubeSearchPlanner] entity "${name}" names nothing — named by its own sentence: "${namedBy}" query="${sent}"`
+      : `[YouTubeSearchPlanner] entity "${name}" query="${sent}"`
+  );
   return { query: sent, mainSubject: name, source: "fallback", attempts: 0, refused: [] };
+}
+
+/**
+ * VIDEO 641 (Option A) — the name a need's own sentences give it: a term the analysis read as a name
+ * (`recurring`) that one of the need's sentences WRITES as a name — every word capitalised after the
+ * sentence's first word, or inside a word (`scriptNameWords`' rule), so a sentence's opening word
+ * ("Late at night, …") is never taken for one — and that is not already the need's own. Places and
+ * things first, the people those sentences name last; the first one the rules and the gate admit
+ * unchanged.
+ */
+function nameFromItsSentences(
+  name: string,
+  target: { beats?: readonly number[]; people?: readonly string[] },
+  analysis: VideoAnalysis,
+  refusal: (q: string) => string | null,
+  gate: (q: string) => GateVerdict
+): { query: string; term: string } | null {
+  const own = (target.beats ?? []).flatMap((b) => (Number.isInteger(b) && analysis.sentences[b] ? [analysis.sentences[b]!] : []));
+  if (!own.length) return null;
+  const writtenAsNames = own.map(
+    (sentence) =>
+      new Set(
+        sentence.split(/\s+/).filter(Boolean).flatMap((raw, i) => {
+          const t = raw.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/['’]s$/u, "");
+          return t && ((i > 0 && /^\p{Lu}/u.test(t)) || /^.+\p{Lu}/u.test(t)) ? [t.toLowerCase()] : [];
+        })
+      )
+  );
+  const needWords = new Set(contentWords(name));
+  const people = new Set((target.people ?? []).map((p) => contentWords(p.replace(/['’]s\b/gi, "")).join(" ")));
+  const isPerson = (term: string) => Number(people.has(contentWords(term).join(" ")));
+  const terms = [...new Set(analysis.recurring.map((r) => r.term.replace(/['’]s?$/u, "").trim()))]
+    .filter((term) => {
+      const tw = contentWords(term);
+      return (
+        tw.length > 0 &&
+        !tw.every((w) => needWords.has(w)) &&
+        writtenAsNames.some((names) => tw.every((w) => names.has(w)))
+      );
+    })
+    .sort((a, b) => isPerson(a) - isPerson(b));
+  for (const term of terms) {
+    const query = `${term} ${name}`;
+    if (refusal(query)) continue;
+    if ((gate(query).sentAs?.trim() || query).toLowerCase() !== query.toLowerCase()) continue;
+    return { query, term };
+  }
+  return null;
 }

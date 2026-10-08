@@ -734,6 +734,8 @@ export class VisualSourceLedger {
         this.recordEvent(existing.lineageId, "FOUND", {
           status: "OK",
           reason: "same_asset_seen_again",
+          sceneIndex: input.sceneIndex,
+          beatIndex: input.beatIndex,
         });
         return existing;
       }
@@ -1201,6 +1203,14 @@ export class VisualSourceLedger {
       gate?: string;
       currentPath?: string;
       timestamp?: number;
+      /**
+       * VIDEO 641 (W1) — the sentence this event happened FOR, when the writer knows it. One
+       * YouTube moment is one record however many sentences are offered it; the record names the
+       * sentence that opened (or last adopted) it, so an event that took its context from the record
+       * filed s1b1's refusal under s2b0. Absent: the record's own sentence, as before.
+       */
+      sceneIndex?: number;
+      beatIndex?: number;
     } = {}
   ): VisualLineageEvent | null {
     const record = this.records.get(lineageId);
@@ -1212,8 +1222,8 @@ export class VisualSourceLedger {
       status: opts.status ?? "OK",
       reason: opts.reason,
       gate: opts.gate,
-      sceneIndex: record.sceneIndex,
-      beatIndex: record.beatIndex,
+      sceneIndex: opts.sceneIndex ?? record.sceneIndex,
+      beatIndex: opts.beatIndex ?? record.beatIndex,
       provider: record.provider,
       providerStatus: record.providerStatus,
       providerAssetId: record.providerAssetId,
@@ -1310,7 +1320,13 @@ export class VisualSourceLedger {
     return true;
   }
 
-  recordRejection(clipPath: string, gate: string, contentKey?: string): boolean {
+  recordRejection(
+    clipPath: string,
+    gate: string,
+    contentKey?: string,
+    /** VIDEO 641 (W1) — the sentence that refused it; see `recordEvent`. */
+    context: { sceneIndex?: number; beatIndex?: number } = {}
+  ): boolean {
     const record = this.resolve(clipPath, contentKey);
     if (!record) return false;
     this.recordEvent(record.lineageId, rejectionStageForGate(gate), {
@@ -1318,6 +1334,8 @@ export class VisualSourceLedger {
       reason: gate,
       gate,
       currentPath: clipPath,
+      sceneIndex: context.sceneIndex,
+      beatIndex: context.beatIndex,
     });
     return true;
   }
@@ -1961,8 +1979,9 @@ export function formatAssetTrace(
     `status=${status}`,
     `provider=${record.provider ?? UNVERIFIED_PROVIDER}`,
     record.providerAssetId ? `providerAssetId=${record.providerAssetId}` : null,
-    `scene=${record.sceneIndex}`,
-    `beat=${record.beatIndex}`,
+    /** VIDEO 641 (W1) — the sentence this transition happened for (`recordEvent`), not the record's first. */
+    `scene=${event.sceneIndex}`,
+    `beat=${event.beatIndex}`,
     record.candidateId ? `candidateId=${record.candidateId}` : null,
     record.query ? `query="${record.query}"` : null,
     record.searchRoute ? `searchRoute=${record.searchRoute}` : null,

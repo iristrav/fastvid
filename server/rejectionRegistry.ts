@@ -181,7 +181,8 @@ export function registerRejection(
   detail: { stage?: RejectionStage; confidence?: number; contentKey?: string } = {}
 ): void {
   registry.recorded++;
-  registry.lineage?.recordRejection(clipPath, reason, detail.contentKey);
+  /** VIDEO 641 (W1) — filed under the sentence that refused it, not the one that opened the record. */
+  registry.lineage?.recordRejection(clipPath, reason, detail.contentKey, beatIndex == null ? {} : { sceneIndex, beatIndex });
   if (beatIndex == null) return;
 
   // The count comes first and has no cap. Whatever happens to the detail below, the funnel

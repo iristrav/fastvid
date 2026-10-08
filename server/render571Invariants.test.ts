@@ -247,7 +247,10 @@ describe("P0-C: a refused push is an ending on the asset, not only on the beat",
    */
   it("EVERY ONE of them files a rejection on the lineage first", () => {
     const REG = fsSync.readFileSync(pathSync.join(__dirname, "rejectionRegistry.ts"), "utf8");
-    expect(REG).toContain("registry.lineage?.recordRejection(clipPath, reason, detail.contentKey);");
+    /** VIDEO 641 (W1) — still the one write; it now also names the sentence that refused it. */
+    expect(REG).toContain(
+      "registry.lineage?.recordRejection(clipPath, reason, detail.contentKey, beatIndex == null ? {} : { sceneIndex, beatIndex });"
+    );
     for (const before of refusalSites()) {
       expect(before, "a refusal that leaves the asset unaccounted").toContain("registerRejection(");
     }
