@@ -10,6 +10,7 @@ import {
   beatTextMentionsGeoSlug,
 } from "./worldGeoSlugs";
 import { asVideoTitleString } from "./stringCoercion";
+import { isSentenceOpener } from "./sentenceOpeners";
 import { normalizeMediaTags } from "./db";
 
 /** Drives archive filtering — geography videos must not pull WWII/Hiter footage. */
@@ -148,16 +149,45 @@ function collectTagsFromEntries(cleaned: string, entries: TagEntry[]): string[] 
   return [...tags];
 }
 
+/**
+ * VIDEO 641 (W2) — the endings of an English contraction: "don't", "they're", "we've", "I'll",
+ * "I'm", "he'd". A word with one of them is grammar, never a subject.
+ */
+const CONTRACTION_TAIL_RE = /^(?:t|re|ve|ll|m|d)$/;
+
+/**
+ * VIDEO 641 (W2) — is `word` followed by `'tail` a contraction? Then it is grammar: "let's",
+ * "don't", "they're". `'s` is a contraction only after a word that opens a sentence ("let's",
+ * "it's", "that's" — the list the person reader uses, `isSentenceOpener`); after a name it is a
+ * possessive and the name stays ("kim's" → "kim"). Any other apostrophe ("o'brien") is no contraction.
+ */
+function isContraction(word: string, tail: string): boolean {
+  return CONTRACTION_TAIL_RE.test(tail) || (tail === "s" && isSentenceOpener(word));
+}
+
 /** Tags for archive asset search (English/lowercase slugs) — any topic, from the spoken sentence. */
 export function extractSalientBeatTokens(beatText: string): string[] {
-  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
+  /** VIDEO 641 (W2) — one apostrophe: "Let’s" and "Let's" are the same word. */
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").replace(/’/g, "'").trim();
   const proper = [...cleaned.matchAll(/\b[A-ZÀ-ÿ][a-zà-ÿ]{2,}\b/g)]
+    /** VIDEO 641 (W2) — "Let's", "Don't", "They're": the capital is the sentence's, not a name's. */
+    .filter((m) => {
+      const tail = /^'([a-z]+)\b/i.exec(cleaned.slice(m.index! + m[0]!.length))?.[1]?.toLowerCase();
+      return tail == null || !isContraction(m[0]!, tail);
+    })
     .map((m) => m[0]!.toLowerCase())
     .filter((w) => !LABEL_STOP.has(w));
   const lower = cleaned.toLowerCase();
   const words = lower
     .replace(/[^a-z0-9à-ÿ\s'-]/g, " ")
     .split(/\s+/)
+    /** VIDEO 641 (W2) — a contraction is dropped; a possessive keeps its name ("kim's" → "kim"). */
+    .flatMap((w) => {
+      const m = /^([a-z0-9à-ÿ-]+)'([a-z]+)$/.exec(w);
+      if (!m) return [w];
+      if (isContraction(m[1]!, m[2]!)) return [];
+      return m[2] === "s" ? [m[1]!] : [w];
+    })
     .filter((w) => w.length >= 3 && !LABEL_STOP.has(w) && !/^\d{4}$/.test(w));
   return [...new Set([...proper, ...words])].slice(0, 10);
 }

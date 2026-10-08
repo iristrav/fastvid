@@ -650,6 +650,28 @@ export async function buildVideoYoutubePool(
           `sentences=${JSON.stringify(next.beats.map((b) => analysis.sentences[b]?.slice(0, 90)))}`
       );
     }
+    /**
+     * VIDEO 641 — every need of the script, one line each: its sentences, its kind, its weight, whether
+     * the pool showed it before a search, and which search (if any) was aimed at it.
+     */
+    const gapQuery = pool.gapSearch === 2 ? pool.query2 : null;
+    const askedBy = (name: string): string | null => {
+      const words = contentWords(name);
+      if (pool.query1 && words.every((w) => contentWords(pool.query1!).includes(w))) return `#1 query="${pool.query1}" (main search)`;
+      if (gapQuery && words.every((w) => contentWords(gapQuery).includes(w))) return `#2 query="${gapQuery}" (coverage gap)`;
+      return null;
+    };
+    for (const e of namedSubjectCoverage({ ...pool, query1: null }, deps.namedSubjects, { important })) {
+      const target = (pool.entityTargets ?? []).find((t) => t.name === e.name);
+      const before = first.find((f) => f.name === e.name);
+      const asked = target ? `#${target.n} query="${target.query}"` : askedBy(e.name);
+      log(
+        `[VISUAL_NEED] video=${input.videoId} subject="${e.name}" kind=${e.kind} ` +
+          `sentences=[${e.beats.join(",")}] score=${e.score} covered_before=${before ? (before.covered ? "yes" : "no") : "asked"} ` +
+          `searched=${asked ?? "no"} covered_now=${e.covered ? "yes" : "no"}` +
+          (asked || before?.covered ? "" : ` reason=${pool.searches >= MAX_YOUTUBE_SEARCHES_PER_VIDEO ? "budget_spent" : "no_query"}`)
+      );
+    }
     const targeted = pool.entityTargets ?? [];
     log(
       `[MULTI_PERSON_SUMMARY] video=${input.videoId} searches=${pool.searches} budget=${MAX_YOUTUBE_SEARCHES_PER_VIDEO} ` +
@@ -676,28 +698,74 @@ export async function buildVideoYoutubePool(
 export function formatMultiPersonOutcome(
   videoId: number,
   pool: Pick<VideoYoutubePool, "entityTargets" | "candidates" | "searches">,
-  rows: ReadonlyArray<{ providerAssetId?: string; sceneIndex: number; beatIndex: number; downloaded: boolean; adopted: boolean; finalVideo: boolean }>
+  rows: ReadonlyArray<{ providerAssetId?: string; sceneIndex: number; beatIndex: number; downloaded: boolean; adopted: boolean; finalVideo: boolean }>,
+  /**
+   * VIDEO 641 — the YouTube footage of the rendered timeline (`youtubeFootageInTimeline().clips`). An
+   * archive clip cut from a targeted answer reaches the film under the archive's id, which the
+   * lifecycle rows do not carry; the timeline's origin (`youtube_via_archive`) does.
+   */
+  film: ReadonlyArray<{ videoId: string | null; origin: string; seconds: number }> = [],
+  /**
+   * VIDEO 641 — the film's stock per answer (`stockVideoState`). `downloaded` counts lifecycle rows,
+   * which exist only once a sentence was offered a moment: I6dUAtWoTII was downloaded, cut into two
+   * shots and never offered, and counted as nothing. Said apart: stock_downloaded, stock_offered.
+   */
+  stock?: (videoId: string) => { status: "pending" | "ready" | "failed"; offered: boolean } | null
 ): string[] {
   const targets = pool.entityTargets ?? [];
   if (!targets.length) return [];
   const lines: string[] = [];
-  const total = { downloaded: 0, adopted: 0, final: 0 };
+  const total = { downloaded: 0, adopted: 0, final: 0, filmSec: 0, stockDownloaded: 0, stockOffered: 0 };
   for (const t of targets) {
     const ids = new Set(pool.candidates.filter((c) => c.from === t.n).map((c) => c.videoId));
     const mine = rows.filter((r) => r.providerAssetId != null && ids.has(r.providerAssetId));
+    const inFilm = film.filter((f) => f.videoId != null && ids.has(f.videoId));
+    const filmSec = Number(inFilm.reduce((a, f) => a + f.seconds, 0).toFixed(2));
     const n = { downloaded: mine.filter((r) => r.downloaded).length, adopted: mine.filter((r) => r.adopted).length, final: mine.filter((r) => r.finalVideo).length };
     total.downloaded += n.downloaded;
     total.adopted += n.adopted;
     total.final += n.final;
+    total.filmSec += filmSec;
+    const stockOf = (id: string) => stock?.(id) ?? null;
+    const stockDownloaded = [...ids].filter((id) => stockOf(id)?.status === "ready").length;
+    const stockOffered = [...ids].filter((id) => stockOf(id)?.status === "ready" && stockOf(id)!.offered).length;
+    total.stockDownloaded += stockDownloaded;
+    total.stockOffered += stockOffered;
     const finals = mine.filter((r) => r.finalVideo).map((r) => `s${r.sceneIndex}b${r.beatIndex}`);
     lines.push(
       `[MULTI_PERSON_OUTCOME] video=${videoId} entity="${t.name}" search=#${t.n} downloaded=${n.downloaded} adopted=${n.adopted} ` +
-        `final=${n.final}${finals.length ? ` finalBeats=${finals.join(",")}` : ""} entityBeats=[${t.beats.join(",")}]`
+        `final=${n.final}${finals.length ? ` finalBeats=${finals.join(",")}` : ""} entityBeats=[${t.beats.join(",")}]` +
+        (film.length ? ` filmSec=${filmSec}` : "") +
+        (stock ? ` stock_downloaded=${stockDownloaded} stock_offered=${stockOffered}` : "")
     );
+    /** One line per answer that got anywhere: how far it came, sentence by sentence. */
+    for (const id of ids) {
+      const r = mine.filter((x) => x.providerAssetId === id);
+      const f = inFilm.filter((x) => x.videoId === id);
+      if (!r.length && !f.length) {
+        /** Never offered to a sentence: what its stock download came to, if it had one. */
+        const st = stockOf(id);
+        if (st && st.status !== "pending") {
+          lines.push(
+            `[TARGETED_VISUAL] video=${videoId} subject="${t.name}" search=#${t.n} videoId=${id} ` +
+              `stage=${st.status === "ready" ? (st.offered ? "STOCK_OFFERED" : "STOCK_READY_NOT_OFFERED") : "STOCK_DOWNLOAD_FAILED"}`
+          );
+        }
+        continue;
+      }
+      const stage = r.some((x) => x.finalVideo) || f.length ? "FINAL_VIDEO" : r.some((x) => x.adopted) ? "ADOPTED" : r.some((x) => x.downloaded) ? "DOWNLOADED" : "FOUND";
+      lines.push(
+        `[TARGETED_VISUAL] video=${videoId} subject="${t.name}" search=#${t.n} videoId=${id} stage=${stage} ` +
+          `sentences=[${[...new Set(r.map((x) => `s${x.sceneIndex}b${x.beatIndex}`))].join(",")}]` +
+          (f.length ? ` filmSec=${Number(f.reduce((a, x) => a + x.seconds, 0).toFixed(2))} via=${[...new Set(f.map((x) => x.origin))].join("+")}` : "")
+      );
+    }
   }
   lines.push(
     `[MULTI_PERSON_SUMMARY] video=${videoId} searches=${pool.searches} targeted_searches=${targets.length} ` +
-      `targeted_downloaded=${total.downloaded} targeted_adopted=${total.adopted} targeted_final=${total.final}`
+      `targeted_downloaded=${total.downloaded} targeted_adopted=${total.adopted} targeted_final=${total.final}` +
+      (film.length ? ` targeted_film_sec=${Number(total.filmSec.toFixed(2))}` : "") +
+      (stock ? ` targeted_stock_downloaded=${total.stockDownloaded} targeted_stock_offered=${total.stockOffered}` : "")
   );
   return lines;
 }

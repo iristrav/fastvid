@@ -1204,7 +1204,8 @@ export async function judgeBeatImage(params: {
     }
     /** Video 614 — see `approvalRestsOnAGuess`. */
     const judgement = refuseGuessedIdentity(judgementAfterSituation, beatText, params.anchors?.subject, state.personAsRead);
-    if (judgement !== judgementAsGiven) {
+    /** VIDEO 641 (L1) — compared with what reached this rule: a situation refusal is not an identity guess. */
+    if (judgement !== judgementAfterSituation) {
       console.log(
         `[BeatImageGate] identity guessed, not seen — refused: depicts="${judgement.depicts.slice(0, 80)}" ` +
           `reason="${judgementAsGiven.reason.slice(0, 100)}"`

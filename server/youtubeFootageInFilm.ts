@@ -91,6 +91,12 @@ export async function footageSourceForArchiveAssets(
   return out;
 }
 
+/** A clip the viewer does not see: drawn at opacity 0 (a graphic card's ground, or its pieces). */
+export function pictureIsHidden(c: Pick<TimelineVideoClip, "transform">): boolean {
+  const o = c.transform?.opacity;
+  return typeof o === "number" && o <= 0;
+}
+
 const clipSeconds = (c: TimelineVideoClip): number =>
   Math.max(0, (Number(c.timelineEnd) || 0) - (Number(c.timelineStart) || 0));
 
@@ -108,6 +114,12 @@ export function youtubeFootageInTimeline(
   const live = clips.filter((c) => !c.disabled);
   const found: YoutubeFilmClip[] = [];
   for (const c of live) {
+    /**
+     * VIDEO 641 (B3) — YouTube footage the viewer does not see is not YouTube in the film: a clip
+     * drawn at opacity 0 (a chapter card's ground) was counted as seconds the film delivered. It still
+     * counts toward `filmSec` — the card is on screen for that time — but never as YouTube.
+     */
+    if (pictureIsHidden(c)) continue;
     const seconds = clipSeconds(c);
     if (c.source?.provider === YOUTUBE_PROVIDER_ID) {
       found.push({ clipId: c.id, videoId: c.source.providerAssetId ?? null, origin: "youtube_direct", seconds });
@@ -175,4 +187,51 @@ export function formatYoutubeFootage(
     `share=${share}% direct=${f.directSec}s viaArchive=${f.viaArchiveSec}s ` +
     `videos=${f.videoIds.join(",") || "unidentified"}${tail}`
   );
+}
+
+/**
+ * VIDEO 641 — WHAT EACH SENTENCE SHOWS IN THE RENDERED FILM.
+ *
+ * 641's coverage line said 4 of 11 sentences had a real picture, `[YouTubeInFilm]` said the film was
+ * 100% YouTube, and the timeline held 16 clips — three numbers about three different things. The
+ * timeline the file was rendered from answers the one question per sentence: the clips the viewer
+ * sees under it (a hidden card ground is not one), each with its source and, for an archive clip
+ * that came from YouTube, the YouTube video it came from. A sentence with none of them is said to be
+ * a graphic or nothing — never counted as footage.
+ */
+export function formatSentencePictures(
+  videoId: number,
+  clips: readonly TimelineVideoClip[],
+  archiveOrigins: ReadonlyMap<number, ArchiveOrigin>,
+  sentences: ReadonlyArray<{ sceneIndex: number; beatIndex: number; text?: string }>,
+  graphicsBySentence: ReadonlyMap<string, string> = new Map()
+): string[] {
+  const visible = clips.filter((c) => !c.disabled && !pictureIsHidden(c));
+  const lines: string[] = [];
+  let withFootage = 0;
+  for (const s of sentences) {
+    const mine = visible.filter((c) => c.sceneIndex === s.sceneIndex && c.beatIndex === s.beatIndex);
+    const key = `s${s.sceneIndex}b${s.beatIndex}`;
+    const text = s.text ? ` "${s.text.slice(0, 70)}"` : "";
+    if (!mine.length) {
+      const graphic = graphicsBySentence.get(key);
+      lines.push(`[SENTENCE_PICTURE] video=${videoId} ${key} footage=none picture=${graphic ? `graphic:${graphic}` : "none"}${text}`);
+      continue;
+    }
+    withFootage++;
+    const sources = mine.map((c) => {
+      const sec = clipSeconds(c).toFixed(2);
+      if (c.source?.provider === YOUTUBE_PROVIDER_ID) return `youtube:${c.source.providerAssetId ?? "?"} ${sec}s`;
+      const assetId = c.source?.archiveAssetId;
+      const origin = assetId != null ? archiveOrigins.get(assetId) : undefined;
+      if (origin && (origin.sourcePlatform ?? "").toLowerCase() === YOUTUBE_PROVIDER_ID) {
+        return `youtube_via_archive:${youtubeIdFromUrl(origin.sourceUrl) ?? "?"} (asset ${assetId}) ${sec}s`;
+      }
+      return `${c.source?.provider ?? "unknown"}${assetId != null ? `:asset ${assetId}` : ""} ${sec}s`;
+    });
+    const total = mine.reduce((a, c) => a + clipSeconds(c), 0).toFixed(2);
+    lines.push(`[SENTENCE_PICTURE] video=${videoId} ${key} footage=${total}s clips=${mine.length} [${sources.join(", ")}]${text}`);
+  }
+  lines.push(`[SENTENCE_PICTURE] video=${videoId} TOTAL sentences=${sentences.length} withFootage=${withFootage} withoutFootage=${sentences.length - withFootage}`);
+  return lines;
 }

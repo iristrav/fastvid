@@ -26,6 +26,8 @@
 
 import type { RejectionRegistry } from "./rejectionRegistry";
 import { beatRejectCount, beatRejectReasons, formatRejectionCapacity } from "./rejectionRegistry";
+import { clipPathLooksManufactured } from "./placeholderIdentity";
+import { isAIGeneratedClip } from "./documentaryStyle";
 
 export type BeatFinalStatus =
   | "adopted"
@@ -358,15 +360,39 @@ export type BeatCoverageCategory =
  * fact: it names the rung that produced the file the viewer sees, while `adopted` only says the
  * adopt path ran.
  */
-export function resolveBeatCoverage(rec: BeatFunnelRecord): BeatCoverageCategory {
-  if (rec.adopted > 0 && rec.fillTier === "color_fallback") return "REAL_PLUS_FILLER";
+export function resolveBeatCoverage(rec: BeatFunnelRecord, placedReal?: boolean): BeatCoverageCategory {
+  /**
+   * VIDEO 641 (B4) — `adopted` says the adopt path ran, not that its clip reached the sentence. s1b2
+   * and s1b3 were adopted, ended as chapter cards, and were counted REAL_ASSET. Where the caller
+   * knows what was placed, an adoption counts only when a real clip of this sentence was placed.
+   * Unknown (`undefined`): read as before.
+   */
+  const adopted = placedReal === false ? 0 : rec.adopted;
+  if (adopted > 0 && rec.fillTier === "color_fallback") return "REAL_PLUS_FILLER";
   if (rec.fillTier === "topical" || rec.fillTier === "wikimedia") return "REAL_ASSET";
   if (rec.fillTier === "text_overlay") return "INTENTIONAL_TEXT";
   if (rec.fillTier === "color_fallback") return "FALLBACK";
-  if (rec.adopted > 0) return "REAL_ASSET";
+  if (adopted > 0) return "REAL_ASSET";
   /** The placeholder block ran but no tier was recorded — a card of unknown kind is still a card. */
   if (rec.placeholder) return "FALLBACK";
   return "NO_VALID_ASSET";
+}
+
+/**
+ * VIDEO 641 (B4) — the sentences a real clip was placed under: the beat keys of every placed clip that
+ * is not a drawn card or placeholder, not a generated still, and not hidden. Pure: the placement is
+ * passed in.
+ */
+export function beatsWithPlacedRealFootage(
+  clips: ReadonlyArray<{ path: string; sceneIndex: number; beatIndex: number | null | undefined; hidden?: boolean }>
+): Set<string> {
+  const out = new Set<string>();
+  for (const c of clips) {
+    if (c.beatIndex == null || c.hidden) continue;
+    if (!c.path || clipPathLooksManufactured(c.path) || isAIGeneratedClip(c.path) || /_genimg_/i.test(c.path)) continue;
+    out.add(beatOutcomeKey(c.sceneIndex, c.beatIndex));
+  }
+  return out;
 }
 
 /** Beats whose viewer saw real footage, whether or not filler followed it. */
@@ -376,7 +402,8 @@ export function coverageHasRealFootage(c: BeatCoverageCategory): boolean {
 
 /** Render-wide roll-up of the coverage categories. */
 export function summarizeBeatCoverage(
-  rows: Array<{ record: BeatFunnelRecord }>
+  rows: Array<{ record: BeatFunnelRecord }>,
+  placedReal?: (sceneIndex: number, beatIndex: number) => boolean
 ): Record<BeatCoverageCategory, number> {
   const out: Record<BeatCoverageCategory, number> = {
     REAL_ASSET: 0,
@@ -385,7 +412,7 @@ export function summarizeBeatCoverage(
     FALLBACK: 0,
     NO_VALID_ASSET: 0,
   };
-  for (const r of rows) out[resolveBeatCoverage(r.record)]++;
+  for (const r of rows) out[resolveBeatCoverage(r.record, placedReal?.(r.record.sceneIndex, r.record.beatIndex))]++;
   return out;
 }
 
@@ -412,7 +439,7 @@ export function summarizeBeatCoverage(
  * rather than enforced here: a counter that silently clamps itself cannot report a wiring bug, and
  * a wiring bug is precisely what this line is for.
  */
-export function formatBeatLedgerLine(rec: BeatFunnelRecord): string {
+export function formatBeatLedgerLine(rec: BeatFunnelRecord, coverage: BeatCoverageCategory = resolveBeatCoverage(rec)): string {
   const evaluated = rec.visionAccepted + rec.visionRejected + rec.visionUnclear;
   /**
    * CANDIDATES on the first line, LOOKUPS on the second — because they are different populations
@@ -433,7 +460,7 @@ export function formatBeatLedgerLine(rec: BeatFunnelRecord): string {
     `vision_unclear=${rec.visionUnclear} vision_never_asked=${rec.visionNeverAsked} ` +
     `vision_unavailable=${rec.visionUnavailable} vision_calls=${rec.visionJudged} ` +
     `eligible=${rec.eligible} adopted=${rec.adopted} ` +
-    `coverage=${resolveBeatCoverage(rec)} origin=${rec.origin || "none"}` +
+    `coverage=${coverage} origin=${rec.origin || "none"}` +
     `\n[BeatLookups] beat=s${rec.sceneIndex}b${rec.beatIndex} ` +
     `lookups=${rec.lookups} repeated=${rec.lookupsRepeated} ` +
     `distinct_candidates=${rec.countedCandidates?.size ?? 0}` +
@@ -446,12 +473,13 @@ export function formatBeatFunnelLine(
   rec: BeatFunnelRecord,
   status: BeatFinalStatus,
   rejected: number,
-  topRejects: string
+  topRejects: string,
+  coverage: BeatCoverageCategory = resolveBeatCoverage(rec)
 ): string {
   return (
     `[VisualCoverageFinal] scene=${rec.sceneIndex} beat=${rec.beatIndex} status=${status} ` +
     /** §20 — the funnel's verdict and the viewer's, side by side, never conflated. */
-    `coverage=${resolveBeatCoverage(rec)} fillTier=${rec.fillTier ?? "none"} ` +
+    `coverage=${coverage} fillTier=${rec.fillTier ?? "none"} ` +
     `origin=${rec.origin || "none"} offered=${rec.offered} rejected=${rejected} ` +
     `eligible=${rec.eligible} adopted=${rec.adopted} ` +
     `visionJudged=${rec.visionJudged} visionUnavailable=${rec.visionUnavailable} ` +
@@ -536,8 +564,11 @@ export function summarizeBeatOutcomes(
 export function renderBeatFunnelReport(
   audit: BeatOutcomeAudit,
   plannedBeats: Array<{ sceneIndex: number; beatIndex: number }>,
-  rejects: RejectionRegistry
+  rejects: RejectionRegistry,
+  /** VIDEO 641 (B4) — whether a real clip was placed under the sentence; omitted, adoption alone counts. */
+  placedReal?: (sceneIndex: number, beatIndex: number) => boolean
 ): string[] {
+  const coverageOf = (r: BeatFunnelRecord) => resolveBeatCoverage(r, placedReal?.(r.sceneIndex, r.beatIndex));
   const rows = finalizeBeatOutcomes(
     audit,
     collectReportableBeats(audit, plannedBeats, rejects.perBeat.keys()),
@@ -549,7 +580,7 @@ export function renderBeatFunnelReport(
         .slice(0, 3)
         .map(([reason, count]) => `${reason}:${count}`)
         .join(",") || "none";
-    return formatBeatFunnelLine(record, status, rejected, topRejects);
+    return formatBeatFunnelLine(record, status, rejected, topRejects, coverageOf(record));
   });
   const t = summarizeBeatOutcomes(rows);
   lines.push(
@@ -564,7 +595,7 @@ export function renderBeatFunnelReport(
    * different questions and will not agree, and a reader who sees them merged will read the funnel
    * numbers as coverage, which is the whole mistake being corrected here.
    */
-  const c = summarizeBeatCoverage(rows.map((r) => ({ record: r.record })));
+  const c = summarizeBeatCoverage(rows.map((r) => ({ record: r.record })), placedReal);
   lines.push(
     `[VisualCoverageFinal] COVERAGE beats=${rows.length} REAL_ASSET=${c.REAL_ASSET} ` +
       `REAL_PLUS_FILLER=${c.REAL_PLUS_FILLER} INTENTIONAL_TEXT=${c.INTENTIONAL_TEXT} ` +
@@ -583,7 +614,7 @@ export function renderBeatFunnelReport(
    * beat's picture come from", the ledger answers "what happened to its candidates". Merging them
    * produced a line nobody could read, which is how the funnel numbers went unnoticed for so long.
    */
-  for (const { record } of rows) lines.push(formatBeatLedgerLine(record));
+  for (const { record } of rows) lines.push(formatBeatLedgerLine(record, coverageOf(record)));
   // Whether the named examples elsewhere in the log are the whole story or a sample. The
   // per-beat counts above are never capped, so only the DETAIL can be short.
   lines.push(`[VisualCoverageFinal] rejectAudit ${formatRejectionCapacity(rejects)}`);

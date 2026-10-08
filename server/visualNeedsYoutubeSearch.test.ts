@@ -577,7 +577,10 @@ describe("TEST 15 — the Berlin Wall newsreel from the targeted search ends up 
     });
     const rows = traceYoutubeLifecycle(ledger, relevance);
     expect(rows[0]!.status).toBe("FINAL");
-    const outcome = formatMultiPersonOutcome(9150, pool as VideoYoutubePool, rows);
+    const all = formatMultiPersonOutcome(9150, pool as VideoYoutubePool, rows);
+    /** VIDEO 641 — and the answer itself, by video id, as far as it came. */
+    expect(all).toContain(`[TARGETED_VISUAL] video=9150 subject="Berlin Wall" search=#2 videoId=${wallId} stage=FINAL_VIDEO sentences=[s1b0]`);
+    const outcome = all.filter((l) => l.startsWith("[MULTI_PERSON_"));
     expect(outcome[0]).toBe(`[MULTI_PERSON_OUTCOME] video=9150 entity="Berlin Wall" search=#2 downloaded=1 adopted=1 final=1 finalBeats=s1b0 entityBeats=[2,3]`);
     /** East Berliners got search #3 and nothing from it reached the film: reported as such, not hidden. */
     expect(outcome[1]).toBe(`[MULTI_PERSON_OUTCOME] video=9150 entity="East Berliners" search=#3 downloaded=0 adopted=0 final=0 entityBeats=[2]`);

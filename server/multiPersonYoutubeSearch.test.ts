@@ -313,7 +313,12 @@ describe("MULTI-PERSON — the targeted answers reach the stock", () => {
       { providerAssetId: kylieId, sceneIndex: 2, beatIndex: 0, downloaded: false, adopted: false, finalVideo: false },
       { providerAssetId: "other", sceneIndex: 0, beatIndex: 0, downloaded: true, adopted: true, finalVideo: true },
     ]);
-    expect(lines).toEqual([
+    /** VIDEO 641 — one [TARGETED_VISUAL] line per answer that got anywhere, beside the totals. */
+    expect(lines.filter((l) => l.startsWith("[TARGETED_VISUAL]"))).toEqual([
+      `[TARGETED_VISUAL] video=${FIVE.videoId} subject="Kris Jenner" search=#2 videoId=${krisId} stage=FINAL_VIDEO sentences=[s1b0,s1b1]`,
+      `[TARGETED_VISUAL] video=${FIVE.videoId} subject="Kylie Jenner" search=#3 videoId=${kylieId} stage=FOUND sentences=[s2b0]`,
+    ]);
+    expect(lines.filter((l) => l.startsWith("[MULTI_PERSON_"))).toEqual([
       `[MULTI_PERSON_OUTCOME] video=${FIVE.videoId} entity="Kris Jenner" search=#2 downloaded=2 adopted=1 final=1 finalBeats=s1b0 entityBeats=[3,4,5]`,
       `[MULTI_PERSON_OUTCOME] video=${FIVE.videoId} entity="Kylie Jenner" search=#3 downloaded=0 adopted=0 final=0 entityBeats=[6,7]`,
       `[MULTI_PERSON_OUTCOME] video=${FIVE.videoId} entity="Paris Hilton" search=#4 downloaded=0 adopted=0 final=0 entityBeats=[2]`,
@@ -485,7 +490,7 @@ describe("MULTI-PERSON — no regression on the cases it came from", () => {
 
   it("the pipeline prints the outcome per subject at the end of the render", () => {
     const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    expect(PIPE).toContain("for (const l of formatMultiPersonOutcome(videoId, searchedPool, youtubeLifecycle))");
+    expect(PIPE).toContain("for (const l of formatMultiPersonOutcome(videoId, searchedPool, youtubeLifecycle, visibleFilm, (id) => stockVideoState(videoId, id)))");
     expect(PIPE).toContain("const rescue = youtubeRescueCandidates(pool, usable);");
   });
 });

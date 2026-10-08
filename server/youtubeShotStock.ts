@@ -60,6 +60,12 @@ export type StockCandidate = {
    * stocked never reaches its sentence. The caller marks at most two.
    */
   rescue?: boolean;
+  /**
+   * VIDEO 641 — a targeted search's answer: `subject="…" search=#n`. Its stock journey is logged as
+   * `[TARGETED_VISUAL] … stage=DOWNLOAD_STARTED|DOWNLOAD_SUCCEEDED|DOWNLOAD_FAILED`, so "0 downloads"
+   * can be told apart from "never asked for".
+   */
+  targetLabel?: string;
 };
 
 export type StockShot = {
@@ -86,7 +92,14 @@ export type StockDeps = {
   skip?: (videoId: string) => boolean;
 };
 
-type Entry = { status: "pending" | "ready" | "failed"; done: Promise<void>; shots: StockShot[]; reason?: string };
+type Entry = {
+  status: "pending" | "ready" | "failed";
+  done: Promise<void>;
+  shots: StockShot[];
+  reason?: string;
+  /** VIDEO 641 — when its shots were cut and waiting (`lateReadyStockVideos`). */
+  readyAt?: number;
+};
 
 /** Per film (render video id): YouTube video id → its stock. */
 const stocks = new Map<number, Map<string, Entry>>();
@@ -164,6 +177,7 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
       const startSec = c.durationSec > 0 ? deps.startFor(c.durationSec, take, c.videoId) : 0;
       const outPath = path.join(deps.workDir, `ytstock_${c.videoId}_${Math.round(startSec)}.mp4`);
       const t0 = Date.now();
+      if (c.targetLabel) say(`[TARGETED_VISUAL] ${c.targetLabel} videoId=${c.videoId} stage=DOWNLOAD_STARTED film=${filmId}`);
       try {
         const ok = await deps.download(c.videoId, startSec, take, outPath, c.title);
         if (!ok || !fs.existsSync(outPath)) {
@@ -184,6 +198,7 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
           }));
           entry.status = entry.shots.length ? "ready" : "failed";
           if (!entry.shots.length) entry.reason = "no single shot long enough to use";
+          else entry.readyAt = Date.now();
         }
       } catch (err) {
         entry.status = "failed";
@@ -194,6 +209,12 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
         `[YouTubeStock] film=${filmId} video=${c.videoId} ${entry.status} in ${Math.round((Date.now() - t0) / 1000)}s` +
           (entry.status === "ready" ? ` — ${entry.shots.length} shot(s)` : ` — ${entry.reason}`)
       );
+      if (c.targetLabel) {
+        say(
+          `[TARGETED_VISUAL] ${c.targetLabel} videoId=${c.videoId} ` +
+            (entry.status === "ready" ? `stage=DOWNLOAD_SUCCEEDED shots=${entry.shots.length}` : `stage=DOWNLOAD_FAILED reason="${entry.reason}"`)
+        );
+      }
       releases.get(c.videoId)?.();
     }
   };
@@ -303,6 +324,28 @@ export async function takeStockShots(
   const picks = chooseMoments(open, max);
   for (const s of picks) s.handedOut++;
   return { shots: picks };
+}
+
+/**
+ * VIDEO 641 — THE STOCK THAT CAME TOO LATE FOR EVERY SENTENCE'S TURN.
+ *
+ * I6dUAtWoTII was ready 50 s after the pictures started; every sentence had taken its YouTube turn
+ * by then and nothing looked at the stock again: two shots, downloaded, never offered. The videos
+ * that became ready after `sinceMs` (the moment the pictures started) and whose shots no sentence
+ * was ever handed. Nothing is waited for: only what is ready now.
+ */
+export function lateReadyStockVideos(filmId: number, sinceMs: number): string[] {
+  const out: string[] = [];
+  for (const [videoId, e] of stocks.get(filmId) ?? []) {
+    if (e.status === "ready" && (e.readyAt ?? 0) > sinceMs && e.shots.every((s) => s.handedOut === 0)) out.push(videoId);
+  }
+  return out;
+}
+
+/** VIDEO 641 — one stock video's state, for the outcome lines: ready or failed, and whether any sentence was offered a shot. */
+export function stockVideoState(filmId: number, videoId: string): { status: "pending" | "ready" | "failed"; offered: boolean } | null {
+  const e = stocks.get(filmId)?.get(videoId);
+  return e ? { status: e.status, offered: e.shots.some((s) => s.handedOut > 0) } : null;
 }
 
 /** What the film's stock came to, for the render's summary. */

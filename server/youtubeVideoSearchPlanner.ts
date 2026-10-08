@@ -481,22 +481,104 @@ const NEEDS_TASK =
   "fear) and generic scenery that any footage would do.";
 
 /**
+ * VIDEO 641 (B5) — words that make a need an idea, not a picture ("wealth", "hype creation"). The
+ * contract below says "leave out abstract ideas"; 641's planner sent "Kim Kardashian hype creation"
+ * and it was searched as written. A word the script writes as a name stays part of that name.
+ */
+const ABSTRACT_NEED_WORDS = new Set(
+  (
+    "wealth rich riches richness money cash income incomes revenue revenues profit profits finance finances financial " +
+    "fortune fortunes strategy strategies strategic success successes successful failure failures hype creation illusion " +
+    "illusions perception perceptions image reputation attention power powers influence status value values growth economy " +
+    "economic economics idea ideas concept concepts reality truth future legacy business businesses deal deals monetization " +
+    "trend trends projection projections mirage opulence affluence clout stakes empire empires machine control assets asset " +
+    "debt debts risk risks pressure ambition ambitions fame popularity brand branding marketing management dynamics model"
+  ).split(" ")
+);
+/**
+ * VIDEO 641 (B5) — "generic scenery that any footage would do": a setting cut from a named need
+ * ("Calabasas corporate office" → "Calabasas"). Roles are not in this list: a role stays where it is
+ * the picture (see `validVisualNeeds`).
+ */
+const GENERIC_SETTING_WORDS = new Set(
+  (
+    "office offices corporate headquarters room rooms meeting meetings scene scenes background setting footage " +
+    "city cities town street streets building buildings"
+  ).split(" ")
+);
+/** Roles that any footage shows ("analysts", "accountants") — only for the "names nothing else" rule. */
+const GENERIC_ROLE_WORDS = new Set(
+  (
+    "people person persons man men woman women crowd crowds analyst analysts accountant accountants expert experts staff " +
+    "employee employees worker workers executive executives team teams"
+  ).split(" ")
+);
+
+/** The words the script writes as a name: a capital inside a sentence, or inside a word ("SpaceX", "NASA"). */
+export function scriptNameWords(input: PlannerInput, analysis: VideoAnalysis): Set<string> {
+  const out = new Set<string>();
+  for (const text of [input.prompt, ...analysis.sentences]) {
+    text.split(/\s+/).filter(Boolean).forEach((raw, i) => {
+      const t = raw.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/['’]s$/u, "");
+      if (t && ((i > 0 && /^\p{Lu}/u.test(t)) || /^.+\p{Lu}/u.test(t))) out.add(t.toLowerCase());
+    });
+  }
+  /** A name only ever written at a sentence's start is still one when the analysis kept it — unless it is an idea or a role. */
+  for (const r of analysis.recurring) {
+    for (const w of r.term.toLowerCase().split(/\s+/)) {
+      if (/^\p{L}/u.test(w) && !ABSTRACT_NEED_WORDS.has(w) && !GENERIC_SETTING_WORDS.has(w) && !GENERIC_ROLE_WORDS.has(w)) out.add(w);
+    }
+  }
+  return out;
+}
+
+/**
  * VISUAL NEEDS — the planner's list, kept only where the script proves it: every meaningful word is in
  * the narration or the prompt (the gate's own evidence), at most 5 of them, beats that exist, and a
  * one-word subject only when the narration writes it as a name ("SpaceX", "Hollywood" — not "crowd").
+ *
+ * VIDEO 641 (B5) — and the task's own "leave out abstract ideas and generic scenery", which nothing
+ * enforced:
+ *   - a need that holds a name is cut back to the name ("Kim Kardashian hype creation" → "Kim
+ *     Kardashian", "Calabasas corporate office" → "Calabasas");
+ *   - a need without a name is left out when it is an idea (its last word), and when it is only roles
+ *     and settings under a sentence that names something to show ("Finance analysts" under a sentence
+ *     about Kris Jenner). Under a sentence that names nothing, a role or setting stays.
  */
 export function validVisualNeeds(raw: unknown, analysis: VideoAnalysis, input: PlannerInput): VisualNeed[] {
   if (!Array.isArray(raw)) return [];
   const hay = `${input.prompt} ${input.title} ${analysis.sentences.join(" ")}`;
   const names = new Set(analysis.recurring.map((r) => r.term.toLowerCase()));
+  const written = scriptNameWords(input, analysis);
+  const sentenceNames = (b: number) => contentWords(analysis.sentences[b] ?? "").some((w) => written.has(w));
   const out: VisualNeed[] = [];
   for (const n of raw.slice(0, 10)) {
-    const subject = withoutProductionWords(String((n as VisualNeed)?.subject ?? "")).replace(/['’]s\b/g, "").trim();
-    const cw = contentWords(subject);
-    if (!cw.length || cw.length > 5 || !cw.every((w) => containsWord(hay, w))) continue;
-    if (cw.length === 1 && !names.has(subject.toLowerCase())) continue;
+    const asked = withoutProductionWords(String((n as VisualNeed)?.subject ?? "")).replace(/['’]s\b/g, "").trim();
+    const acw = contentWords(asked);
+    if (!acw.length || acw.length > 5 || !acw.every((w) => containsWord(hay, w))) continue;
+    if (acw.length === 1 && !names.has(asked.toLowerCase())) continue;
     const beats = [...new Set(((n as VisualNeed)?.beats ?? []).filter((b) => Number.isInteger(b) && b >= 0 && b < analysis.sentences.length))];
     if (!beats.length) continue;
+    let subject = asked;
+    if (acw.some((w) => written.has(w))) {
+      subject = asked
+        .split(/\s+/)
+        .filter((tok) => {
+          const w = tok.toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, "");
+          return written.has(w) || /^\d/.test(w) || (!ABSTRACT_NEED_WORDS.has(w) && !GENERIC_SETTING_WORDS.has(w));
+        })
+        .join(" ")
+        .replace(/^(?:of|the|a|an|in|on|at)\s+|\s+(?:of|the|a|an|in|on|at)$/gi, "")
+        .trim();
+    } else {
+      if (ABSTRACT_NEED_WORDS.has(acw[acw.length - 1]!)) continue;
+      const generic = acw.every((w) => ABSTRACT_NEED_WORDS.has(w) || GENERIC_SETTING_WORDS.has(w) || GENERIC_ROLE_WORDS.has(w));
+      if (generic && beats.some(sentenceNames)) continue;
+    }
+    const cw = contentWords(subject);
+    if (!cw.length) continue;
+    /** Cut back to one word: only a word the script writes as a name. */
+    if (cw.length === 1 && subject !== asked && !written.has(cw[0]!) && !names.has(cw[0]!)) continue;
     const key = cw.join(" ");
     const same = out.find((o) => contentWords(o.subject).join(" ") === key);
     if (same) same.beats = [...new Set([...same.beats, ...beats])];
