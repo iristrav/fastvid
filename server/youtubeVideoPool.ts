@@ -242,6 +242,95 @@ async function judge(
   });
 }
 
+/**
+ * P1 — THE SEARCH FUNNEL, ONE LINE PER SEARCH.
+ *
+ * 643 logged 150 results and 15 usable, and nothing between: not how many were the same video twice,
+ * not how many the pool already held, not which rule turned the rest away. This counts what `judge`
+ * already decided — no new call, no new rule. A refusal is classed by the reason `judge` wrote; a
+ * reason this list does not know stays `other`, and a missing reason is `UNKNOWN`, never guessed.
+ */
+export const YOUTUBE_TRIAGE_REASON_CLASSES = [
+  "title_genre",
+  "youtube_short",
+  "no_details",
+  "live",
+  "too_short",
+  "too_long",
+  "not_embeddable",
+  "not_judged",
+  "footage_type",
+  "other",
+  "UNKNOWN",
+] as const;
+export type YoutubeTriageReasonClass = (typeof YOUTUBE_TRIAGE_REASON_CLASSES)[number];
+
+export function youtubeTriageReasonClass(why: string | null | undefined): YoutubeTriageReasonClass {
+  const w = (why ?? "").trim();
+  if (!w) return "UNKNOWN";
+  if (w.startsWith("title genre")) return "title_genre";
+  if (w.startsWith("youtube short")) return "youtube_short";
+  if (w.startsWith("no details")) return "no_details";
+  if (w === "live") return "live";
+  if (w.startsWith("too short")) return "too_short";
+  if (w.startsWith("too long")) return "too_long";
+  if (w === "not embeddable") return "not_embeddable";
+  if (w === "not judged") return "not_judged";
+  if (w.startsWith("footage type")) return "footage_type";
+  return "other";
+}
+
+export type YoutubeSearchFunnel = {
+  raw: number;
+  unique: number;
+  alreadyInPool: number;
+  judged: number;
+  passed: number;
+  rejected: number;
+  byReason: Partial<Record<YoutubeTriageReasonClass, number>>;
+};
+
+/**
+ * `rawIds`: every id the search returned, duplicates included. `judged`: what `judge` returned for the
+ * part that was new to the pool. A video counted once however often it came back: usable if any of
+ * its verdicts was (as `mergeCandidates` keeps it), else by its first reason.
+ */
+export function youtubeSearchFunnel(rawIds: readonly string[], judged: readonly Pick<PoolCandidate, "videoId" | "usable" | "why">[]): YoutubeSearchFunnel {
+  const unique = new Set(rawIds);
+  const verdict = new Map<string, Pick<PoolCandidate, "usable" | "why">>();
+  for (const c of judged) {
+    const prev = verdict.get(c.videoId);
+    if (!prev || (!prev.usable && c.usable)) verdict.set(c.videoId, c);
+  }
+  const byReason: Partial<Record<YoutubeTriageReasonClass, number>> = {};
+  let passed = 0;
+  for (const v of verdict.values()) {
+    if (v.usable) passed++;
+    else {
+      const k = youtubeTriageReasonClass(v.why);
+      byReason[k] = (byReason[k] ?? 0) + 1;
+    }
+  }
+  const judgedIds = new Set(verdict.keys());
+  return {
+    raw: rawIds.length,
+    unique: unique.size,
+    alreadyInPool: [...unique].filter((id) => !judgedIds.has(id)).length,
+    judged: verdict.size,
+    passed,
+    rejected: verdict.size - passed,
+    byReason,
+  };
+}
+
+export function formatYoutubeFunnelLine(videoId: number | string, search: string, f: YoutubeSearchFunnel): string {
+  const reasons = YOUTUBE_TRIAGE_REASON_CLASSES.filter((k) => k !== "UNKNOWN" && (f.byReason[k] ?? 0) > 0).map((k) => `${k}=${f.byReason[k]}`);
+  return (
+    `[YouTubeFunnel] video=${videoId} search=${search} raw=${f.raw} unique=${f.unique} alreadyInPool=${f.alreadyInPool} ` +
+    `judged=${f.judged} passed=${f.passed} rejected=${f.rejected} reasons={${reasons.join(" ")}} UNKNOWN=${f.byReason.UNKNOWN ?? 0}`
+  );
+}
+
 /** The agreed rules for search #2, measured on the pool as it stands. Empty when none applies. */
 export function search2Reasons(
   pool: Pick<VideoYoutubePool, "candidates" | "sentences">,
@@ -509,6 +598,14 @@ export async function buildVideoYoutubePool(
     }
   }
   pool.searches = Math.max(pool.searches, row?.searchCount ?? 0);
+  /** STEP 0 (A/B baseline) — what this attempt started from: searches already spent, candidates carried over. */
+  if (refused.size === 0) {
+    poolStartByVideo.set(input.videoId, {
+      searchesBefore: pool.searches,
+      candidatesBefore: pool.candidates.length,
+      usableBefore: pool.candidates.filter((c) => c.usable).length,
+    });
+  }
   /** VISUAL NEEDS — the subjects every look is asked about: the planner's reading plus the narration's names. */
   const subjectsToLookFor = (): string[] => scriptVisualNeeds(pool, deps.namedSubjects).map((e) => e.name);
   const persist = async (patch: Parameters<YoutubeSearchBudgetStore["record"]>[1]) =>
@@ -543,7 +640,9 @@ export async function buildVideoYoutubePool(
     );
     const got = await deps.search(plan.query).catch(() => ({ status: 0, items: [] as SearchItem[] }));
     const details = got.items.length ? await deps.details(got.items.map((i) => i.videoId)).catch(() => null) : null;
-    pool.candidates = mergeCandidates(pool.candidates, await judge(deps, got.items, details, 1, input.title, analysis.sentences, subjectsToLookFor()));
+    const judged1 = await judge(deps, got.items, details, 1, input.title, analysis.sentences, subjectsToLookFor());
+    log(formatYoutubeFunnelLine(input.videoId, "#1", youtubeSearchFunnel(got.items.map((i) => i.videoId), judged1)));
+    pool.candidates = mergeCandidates(pool.candidates, judged1);
     pool.coverage1 = coverageOf(pool.candidates);
     await persist({
       beatsTotal: analysis.sentences.length,
@@ -567,6 +666,7 @@ export async function buildVideoYoutubePool(
    */
   const archiveDetails = archiveNew.length ? await deps.details(archiveNew.map((i) => i.videoId)).catch(() => null) : null;
   const archiveJudged = await judge(deps, archiveNew, archiveDetails ?? new Map(), 0, input.title, analysis.sentences, subjectsToLookFor());
+  if (archiveItems.length) log(formatYoutubeFunnelLine(input.videoId, "archive", youtubeSearchFunnel(archiveItems.map((i) => i.videoId), archiveJudged)));
   pool.candidates = mergeCandidates(pool.candidates, archiveJudged);
   if (!pool.decided) pool.archiveUsable = archiveJudged.filter((c) => c.usable).length;
 
@@ -585,7 +685,9 @@ export async function buildVideoYoutubePool(
     const got = await deps.search(query).catch(() => ({ status: 0, items: [] as SearchItem[] }));
     const fresh = got.items.filter((i) => !pool.candidates.some((c) => c.videoId === i.videoId));
     const details = fresh.length ? await deps.details(fresh.map((i) => i.videoId)).catch(() => null) : null;
-    pool.candidates = mergeCandidates(pool.candidates, await judge(deps, fresh, details, n, input.title, analysis.sentences, subjectsToLookFor()));
+    const judgedN = await judge(deps, fresh, details, n, input.title, analysis.sentences, subjectsToLookFor());
+    log(formatYoutubeFunnelLine(input.videoId, `#${n}`, youtubeSearchFunnel(got.items.map((i) => i.videoId), judgedN)));
+    pool.candidates = mergeCandidates(pool.candidates, judgedN);
     const usable = pool.candidates.filter((c) => c.from === n && c.usable).length;
     if (n === 2) {
       await persist({
@@ -839,6 +941,19 @@ export function noteVideoYoutubePoolRefusal(videoId: number, youtubeVideoId: str
       `(${[...refused].join(",")}) — the pool is asked whether search #2 is due`
   );
   pools.set(videoId, current.then((before) => topUp([...refused]).catch(() => before)));
+}
+
+/**
+ * STEP 0 (A/B baseline) — the pool as this render's first build found it, before any search of its own.
+ * A second render of the same video reuses the first one's searches: `searchesBefore > 0` says so.
+ */
+export type YoutubePoolStart = { searchesBefore: number; candidatesBefore: number; usableBefore: number };
+const poolStartByVideo = new Map<number, YoutubePoolStart>();
+/** Read once, by the render's quality line; forgotten after it, so the map never grows past the renders running. */
+export function takeYoutubePoolStart(videoId: number): YoutubePoolStart | null {
+  const start = poolStartByVideo.get(videoId) ?? null;
+  poolStartByVideo.delete(videoId);
+  return start;
 }
 
 export function registerVideoYoutubePool(

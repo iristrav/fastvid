@@ -115,6 +115,10 @@ type Entry = {
   reason?: string;
   /** VIDEO 641 — when its shots were cut and waiting (`lateReadyStockVideos`). */
   readyAt?: number;
+  /** P2 — the last look already took this video's leftover shots once (`claimLateStock`). */
+  lateClaimed?: boolean;
+  /** FIX 1 — found by a targeted search (`StockCandidate.targetLabel`): it has sentences it was searched for. */
+  targeted?: boolean;
 };
 
 /** Per film (render video id): YouTube video id → its stock. */
@@ -204,7 +208,7 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
     registered++;
     let release!: () => void;
     const done = new Promise<void>((r) => (release = r));
-    film.set(c.videoId, { status: "pending", done, shots: [] });
+    film.set(c.videoId, { status: "pending", done, shots: [], ...(c.targetLabel ? { targeted: true } : {}) });
     releases.set(c.videoId, release);
   };
   for (const c of todo) register(c);
@@ -418,6 +422,38 @@ export function lateReadyStockVideos(filmId: number, sinceMs: number): string[] 
     if (e.status === "ready" && (e.readyAt ?? 0) > sinceMs && e.shots.every((s) => s.handedOut === 0)) out.push(videoId);
   }
   return out;
+}
+
+/**
+ * P2 — EVERY READY STOCK VIDEO WITH A SHOT NO SENTENCE WAS EVER HANDED, FOR THE LAST LOOK.
+ *
+ * `lateReadyStockVideos` only knew the videos that became ready after the pictures started and whose
+ * shots were ALL still unhanded. 643's rcYI was ready before the pictures started, never offered to
+ * any sentence, and so never late either: downloaded, cut, and never judged. And a video one sentence
+ * was offered (and refused) kept its other shots from every other sentence. Here: every ready video
+ * the last look has not taken yet, in stock order, with only its never-handed shots. Nothing waits.
+ */
+export function unofferedReadyStock(filmId: number): Array<{ videoId: string; readyAt: number; offeredBefore: boolean; shots: readonly StockShot[] }> {
+  const out: Array<{ videoId: string; readyAt: number; offeredBefore: boolean; shots: readonly StockShot[] }> = [];
+  for (const [videoId, e] of stocks.get(filmId) ?? []) {
+    if (e.status !== "ready" || e.lateClaimed) continue;
+    const shots = e.shots.filter((s) => s.handedOut === 0);
+    if (shots.length) out.push({ videoId, readyAt: e.readyAt ?? 0, offeredBefore: shots.length < e.shots.length, shots });
+  }
+  return out;
+}
+
+/** FIX 1 — whether this stock video came from a targeted search (it has a destination of its own). */
+export function stockVideoTargeted(filmId: number, videoId: string): boolean {
+  return stocks.get(filmId)?.get(videoId)?.targeted === true;
+}
+
+/** P2 — the last look takes a stock video once: true for the one caller that claimed it, false after. */
+export function claimLateStock(filmId: number, videoId: string): boolean {
+  const e = stocks.get(filmId)?.get(videoId);
+  if (!e || e.status !== "ready" || e.lateClaimed) return false;
+  e.lateClaimed = true;
+  return true;
 }
 
 /** VIDEO 641 — one stock video's state, for the outcome lines: ready or failed, and whether any sentence was offered a shot. */

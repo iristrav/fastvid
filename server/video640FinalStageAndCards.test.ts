@@ -172,7 +172,10 @@ describe("VIDEO 640 — the last YouTube stage runs on the scene shape the pipel
   it("a sentence with a clip is never asked; a sentence with nothing handed costs no look", async () => {
     quiet();
     const d = renderState({ 0: [beat(0, "with clip"), beat(1, "nothing handed")] });
-    handTo(d, 0, 0, [moment()]);
+    const shown = moment();
+    handTo(d, 0, 0, [shown]);
+    /** STEP 0 — the moment's seconds are the clip s0b0 shows: no footage of this render is left for s0b1. */
+    d.usedContentKeys.add(vp.clipContentKey(shown));
     const look = editor(d, 0, 0, () => true);
     await vp.runFinalReadyYoutubeStage(asDedup(d), [{ index: 0 }], [sceneResult([0])], look, FAST);
     expect(look).not.toHaveBeenCalled();

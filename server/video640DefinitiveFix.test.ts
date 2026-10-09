@@ -355,7 +355,7 @@ describe("TEST A–D — the last YouTube stage on the real scene shape", () => 
   it("the gate before review and FIX F both use that probe; the rule itself is the archive's, unchanged", () => {
     const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     expect(PIPE).toContain("if (isYoutubeMomentPath(p) && belowArchiveMinimumDuration(await probeDurationForMinimumRule(p))) {");
-    expect(PIPE).toContain("  measure: (clip: string) => Promise<number> = probeDurationForMinimumRule\n");
+    expect(PIPE).toContain("  measure: (clip: string) => Promise<number> = probeDurationForMinimumRule,\n");
     expect(PIPE).toContain("return sceneFetchScopeStorage.exit(() => probeVideoDurationSec(filePath));");
   });
 });

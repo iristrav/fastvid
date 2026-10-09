@@ -10,8 +10,10 @@ import {
   releaseYoutubeShotStock,
   startYoutubeShotStock,
   stockVideoState,
+  takeStockShots,
   youtubeStockSettled,
 } from "./youtubeShotStock";
+import { noteYoutubeFragmentRefusal } from "./providerFailureClass";
 import { formatMultiPersonOutcome, type PoolCandidate, type VideoYoutubePool } from "./youtubeVideoPool";
 
 /**
@@ -117,15 +119,32 @@ function lateStockFor(filmId: number, d: D, since: number, serves: (id: string, 
 const results = (clipBeats: number[]) => [{ clips: [] as string[], beatDurations: [] as number[], clipBeatIndices: clipBeats }];
 
 describe("LATE STOCK — which stock is late", () => {
-  it("TEST 1 — ready before the pictures started: not late, the normal turn had it; the last look is unchanged", async () => {
+  it("TEST 1 (P2) — ready before the pictures started: not late, but offered at the last look when valid and never offered; never when offered already or unusable", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
-    const since = await filmWithLateStock(64101, ["early_A"], []);
+    const since = await filmWithLateStock(64101, ["early_A", "early_B", "early_C"], []);
+    /** "late" keeps its meaning: none of the three became ready after the pictures started */
     expect(lateReadyStockVideos(64101, since)).toEqual([]);
+    /** early_B: both shots handed to a sentence in its own turn — offered already */
+    expect((await takeStockShots(64101, "early_B", 0, () => false, 2)).shots.length).toBe(2);
+    /** early_C: both moments refused for what their pixels show (on-screen text) — unusable for every sentence */
+    for (const start of [0, 6]) noteYoutubeFragmentRefusal(vp.youtubeFragmentKeyFor("early_C", start, 4), "baked_edit_text_before_vision");
     const d = dedupFor([{ sceneIndex: 0, beats: [sentence(0, "A sentence without a picture.")] }]);
-    const look = editor(d, 0, "early_A");
-    await vp.runFinalReadyYoutubeStage(d as never, [{ index: 0 }], results([]), look, { windowMs: 50, looksMs: 5_000 }, lateStockFor(64101, d, since));
-    expect(look).not.toHaveBeenCalled();
-    expect(stockVideoState(64101, "early_A")).toEqual({ status: "ready", offered: false });
+    const offer = vp.lateStockToOffer(64101, d as never, since);
+    expect(offer.videoIds).toEqual(["early_A"]);
+    expect(offer.line).toBe("[LateStock] offer=1 (readyBeforePictures=1 readyAfter=0 withShotsOfferedBefore=0) skipped={no_usable_shot:refused_fragment=1}");
+    const look = editor(d, 0, null);
+    await vp.runFinalReadyYoutubeStage(d as never, [{ index: 0 }], results([]), look, { windowMs: 50, looksMs: 5_000 }, {
+      ...lateStockFor(64101, d, since),
+      videoIds: offer.videoIds,
+    });
+    expect(look).toHaveBeenCalledTimes(1);
+    const offered = look.mock.calls[0]![2] as string[];
+    expect(offered.length).toBe(2);
+    expect(offered.every((p) => videoOf(d, p) === "early_A")).toBe(true);
+    expect(stockVideoState(64101, "early_A")).toEqual({ status: "ready", offered: true });
+    expect(stockVideoState(64101, "early_C")).toEqual({ status: "ready", offered: false });
+    /** once taken, never offered again */
+    expect(vp.lateStockToOffer(64101, d as never, since).videoIds).toEqual([]);
     releaseYoutubeShotStock(64101);
   });
 
@@ -190,7 +209,7 @@ describe("LATE STOCK — the same gates as any moment", () => {
     releaseYoutubeShotStock(64105);
   });
 
-  it("TEST 11 — the existing 3 s rule: a late moment under 3 s is refused, never stretched", async () => {
+  it("TEST 11 (P2) — the existing 3 s rule: stock under 3 s is never made into a late moment, judged, stretched or placed", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     expect(belowArchiveMinimumDuration(2.99)).toBe(true);
     expect(belowArchiveMinimumDuration(3)).toBe(false);
@@ -200,8 +219,11 @@ describe("LATE STOCK — the same gates as any moment", () => {
     vp.openLatePlacement(d, 1, placer);
     vp.markSceneClosed(d, 1);
     const look = editor(d, 1, "short_vid");
-    await vp.runFinalReadyYoutubeStage(d as never, [{ index: 1 }], results([]), look, { windowMs: 50, looksMs: 10_000 }, lateStockFor(64111, d, since));
-    expect(look).toHaveBeenCalled();
+    expect(vp.lateStockToOffer(64111, d as never, since).line).toContain("skipped={no_usable_shot:too_short=1}");
+    /** even handed the id directly, no moment under 3 s is cut: the picture editor spends no look on it */
+    await vp.runFinalReadyYoutubeStage(d as never, [{ index: 1 }], results([]), look, { windowMs: 50, looksMs: 10_000 }, lateStockFor(64111, d, since, () => false));
+    expect(await vp.takeLateStockMoments(64111, d, 1, { index: 0, text: "x" }, ["short_vid"], dir)).toEqual([]);
+    expect(look).not.toHaveBeenCalled();
     expect(await vp.placeApprovedAfterSceneClosed(d, 1, { sceneReturned: true, final: true })).toEqual([]);
     expect(placer).not.toHaveBeenCalled();
     releaseYoutubeShotStock(64111);
@@ -248,9 +270,23 @@ describe("LATE STOCK — one claim, one offer, no duplicates", () => {
     const offeredOnce = look.mock.calls.filter((c) => (c[2] as string[]).some((p) => videoOf(d, p) === "I6dUAtWoTII"));
     expect(offeredOnce.length).toBe(1);
     expect(lateReadyStockVideos(64107, since)).toEqual([]);
+    const madeOnce = fs.readdirSync(dir).filter((f) => f.includes("_ytfu_late")).sort();
+    const judgedBy = (beatIndex: number, p: string) => d.beatRelevance.byBeat.has(bvr.beatRelevanceBeatKey(0, beatIndex, "path", p));
+    const judgedBefore = (offeredOnce[0]![2] as string[]).map((p) => [0, 1].filter((b) => judgedBy(b, p)));
     look.mockClear();
     await vp.runFinalReadyYoutubeStage(d as never, [{ index: 0 }], results([]), look, { windowMs: 50, looksMs: 5_000 }, lateStockFor(64107, d, since));
-    expect(look.mock.calls.some((c) => (c[2] as string[]).some((p) => p.includes("_ytfu_late")))).toBe(false);
+    /** Not late again: no second claim, no new moment cut. */
+    expect(fs.readdirSync(dir).filter((f) => f.includes("_ytfu_late")).sort()).toEqual(madeOnce);
+    /**
+     * STEP 0 — a moment one sentence refused may be judged ONCE by the other sentence (the render's
+     * inventory), never twice by the sentence that refused it.
+     */
+    expect(judgedBefore.every((by) => by.length === 1)).toBe(true);
+    for (const c of look.mock.calls) {
+      const beatIndex = (c[0] as { index: number }).index;
+      const lateHere = (c[2] as string[]).filter((p) => p.includes("_ytfu_late"));
+      expect(lateHere.every((p) => !(offeredOnce[0]![2] as string[]).includes(p) || (offeredOnce[0]![0] as { index: number }).index !== beatIndex)).toBe(true);
+    }
     releaseYoutubeShotStock(64107);
   });
 
@@ -281,7 +317,9 @@ describe("LATE STOCK — one claim, one offer, no duplicates", () => {
 
   it("the pipeline hands the late stock to the last look, after the pictures started, before the final placement", () => {
     const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const late = PIPE.indexOf("const lateStockIds = lateReadyStockVideos(videoId, visualDedup.pipelineStartedMs ?? Date.now());");
+    const late = PIPE.indexOf("const lateStock = lateStockToOffer(videoId, visualDedup, visualDedup.pipelineStartedMs ?? Date.now());");
+    /** FIX 2 — read by the stage after its review window, through `videoIds: lateStockNow`. */
+    expect(PIPE).toContain("videoIds: lateStockNow,");
     const stage = PIPE.indexOf("await runFinalReadyYoutubeStage(visualDedup, scenes, sceneVisualResults, (beat, sceneIndex, ready) =>");
     expect(late).toBeGreaterThan(PIPE.indexOf("visualDedup.pipelineStartedMs = Date.now();"));
     expect(late).toBeLessThan(stage);

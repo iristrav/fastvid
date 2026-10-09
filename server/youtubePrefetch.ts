@@ -321,6 +321,27 @@ export async function claimNextYoutubePrefetch(now = new Date()): Promise<Youtub
   return null;
 }
 
+/**
+ * STEP 0 (A/B baseline) — of these YouTube videos, how many the background prefetch had already put in
+ * the archive before `before` (the render's start). A second render of the same subject can find those
+ * in the archive; the first could not. Read only; null when the database cannot be read.
+ */
+export async function prefetchedIntoArchiveBefore(videoIds: readonly string[], before: Date): Promise<number | null> {
+  if (videoIds.length === 0) return 0;
+  try {
+    const db = await getDb();
+    if (!db) return null;
+    const q = youtubePrefetchQueue;
+    const rows = await db
+      .select({ videoId: q.videoId })
+      .from(q)
+      .where(and(inArray(q.videoId, [...new Set(videoIds)].slice(0, 500)), eq(q.status, "ingested"), lt(q.updatedAt, before)));
+    return rows.length;
+  } catch {
+    return null;
+  }
+}
+
 export type PrefetchVerdict = {
   status: "queued" | "ingested" | "failed" | "refused";
   lastError: string | null;
@@ -792,6 +813,8 @@ export async function runYoutubePrefetchBatch(): Promise<{ videos: number; archi
      */
     const { resetCloudEgressBlocked } = await import("./providerFailureClass");
     resetCloudEgressBlocked();
+    /** P1 — idle means no render is open: a render that ended without its summary is closed here. */
+    (await import("./youtubeDownloadFunnel")).closeYoutubeDownloadFunnel();
     /** VIDEO 618 — the videos YouTube will not give, as renders and earlier batches found them. */
     await loadUnusableYoutubeVideos();
     for (let i = 0; i < prefetchVideosPerBatch(); i++) {

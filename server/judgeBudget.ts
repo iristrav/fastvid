@@ -17,8 +17,10 @@
  * The final stage gets a budget of its own, apart from the scene and sentence budgets. It starts at
  * what it had (`baseMs`: the 10 s window plus the 45 s look turn, never less than before) and grows by
  * `JUDGE_MS_PER_LOOK` for every look the editor is actually given — so it follows the amount of
- * picture work, and with it the length of the video. It never grows past `ceilingMs`: a hard bound by
- * the video's length (`judgeBudgetCeilingMs`) and by the time left before the render's force-export.
+ * picture work, and with it the length of the video. P3: a look is granted when it actually starts
+ * (reserved against the render's 120) and what it did not execute is refunded when it ends, so only
+ * executed looks count — one never started (its budget or the render's 120 reached) buys nothing.
+ * It never grows past `ceilingMs`: a hard bound by the video's length (`judgeBudgetCeilingMs`) and by the time left before the render's force-export.
  * The per-sentence (5) and per-render (120) look ceilings are untouched: they bound what can be
  * granted, this only stops a granted look being cut off by a clock that was not its own.
  */
@@ -55,6 +57,8 @@ export type JudgeBudget = {
   /** Looks the picture editor was given so far (each grows the budget by `perLookMs`). */
   readonly looks: number;
   grant(looks: number): void;
+  /** P3 — looks granted when a look started and never executed: taken back, never below zero. */
+  refund(looks: number): void;
   /** True once `stopWhen` said so (a cancelled or superseded render): the budget is over at once. */
   stopped(): boolean;
   grantedMs(): number;
@@ -92,6 +96,9 @@ export function createJudgeBudget(opts: {
     },
     grant(n: number) {
       if (Number.isFinite(n) && n > 0) looks += Math.floor(n);
+    },
+    refund(n: number) {
+      if (Number.isFinite(n) && n > 0) looks = Math.max(0, looks - Math.floor(n));
     },
     stopped,
     grantedMs,

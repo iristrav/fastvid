@@ -238,10 +238,10 @@ describe("D — approved against placed", () => {
     vp.noteJudgeBudgetExhausted(d, 0, 3);
     const placed: Record<number, number> = { 0: 1, 1: 0, 2: 0, 3: 0 };
     const lines = vp.formatFitPlacementCheck(d, [0, 1, 2, 3].map((b) => ({ sceneIndex: 0, beatIndex: b })), (_s, b) => placed[b]!);
-    expect(lines[0]).toBe("[FitPlacement] TOTAL approvedRealShots=4 placedRealShots=1 lost=3");
-    expect(lines).toContain("[FitPlacement] s0b1 approved=1 placed=0 lost=1 reason=approved after scene closed — not placed");
-    expect(lines).toContain("[FitPlacement] s0b2 approved=1 placed=0 lost=1 reason=UNRECORDED");
-    expect(lines).toContain(`[FitPlacement] s0b3 approved=1 placed=0 lost=1 reason=${JUDGE_BUDGET_EXHAUSTED}`);
+    expect(lines[0]).toBe("[FitPlacement] TOTAL approvedRealShots=4 placedRealShots=1 lost=3 causes={LIMIT=1 IN_REVIEW=1 UNRECORDED=1}");
+    expect(lines).toContain("[FitPlacement] s0b1 approved=1 placed=0 lost=1 reason=approved after scene closed — not placed causes={LIMIT=1}");
+    expect(lines).toContain("[FitPlacement] s0b2 approved=1 placed=0 lost=1 reason=UNRECORDED causes={UNRECORDED=1}");
+    expect(lines).toContain(`[FitPlacement] s0b3 approved=1 placed=0 lost=1 reason=${JUDGE_BUDGET_EXHAUSTED} causes={IN_REVIEW=1}`);
     expect(lines.some((l) => l.includes("s0b0"))).toBe(false);
   });
 
@@ -264,7 +264,7 @@ describe("D — approved against placed", () => {
 
   it("wired: the check runs after the last placement pass, before generated images", () => {
     const finalPass = PIPE.indexOf("for (let si = 0; si < scenes.length; si++) await placeLate(si, true);");
-    const check = PIPE.indexOf("for (const line of formatFitPlacementCheck(visualDedup, allSentences, realShotsOf)) console.log(line);");
+    const check = PIPE.indexOf("for (const line of formatFitPlacementCheck(visualDedup, allSentences, realShotsOf, realShotKeysOf)) console.log(line);");
     const generated = PIPE.indexOf("await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);");
     expect(finalPass).toBeGreaterThan(0);
     expect(check).toBeGreaterThan(finalPass);
@@ -542,7 +542,7 @@ describe("D — the known losses are named, not UNRECORDED", () => {
     const ed = editor(d, 1, 0, () => true);
     await vp.finalReadyYoutubeLook(asDedup(d), 1, 0, (ready) => ed(null, 1, ready), async () => 2.4);
     const lines = vp.formatFitPlacementCheck(d, [{ sceneIndex: 1, beatIndex: 0 }], () => 0);
-    expect(lines[0]).toBe("[FitPlacement] TOTAL approvedRealShots=1 placedRealShots=0 lost=1");
+    expect(lines[0]).toBe("[FitPlacement] TOTAL approvedRealShots=1 placedRealShots=0 lost=1 causes={TECHNICAL=1}");
     expect(lines[1]).toContain("reason=approved, prepared 2.40s < 3s (3 s rule)");
   });
 
