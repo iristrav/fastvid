@@ -698,6 +698,14 @@ import {
   formatHardMatch,
 } from "./beatVisualIntent";
 import { AsyncLocalStorage } from "async_hooks";
+import {
+  JUDGE_BUDGET_EXHAUSTED,
+  createJudgeBudget,
+  formatJudgeBudgetLine,
+  judgeBudgetCeilingMs,
+  settledWithinJudgeBudget,
+  type JudgeBudget,
+} from "./judgeBudget";
 /** ONE ROUTE — every rule that may refuse to deliver a film has one owner, the DeliveryGate. */
 import {
   assertVisionCoverageExportGate,
@@ -4892,7 +4900,9 @@ export async function adoptAnotherFitForBeat(
         !tried.has(p) &&
         !isPipelineFallbackClip(p) &&
         fs.existsSync(p) &&
-        !assetUsedInVideo(dedup, { path: p, contentKey: clipContentKey(p) })
+        !assetUsedInVideo(dedup, { path: p, contentKey: clipContentKey(p) }) &&
+        /** VIDEO 643 (E) — a moment the editor already refused for THIS sentence is not offered as its other picture. */
+        !(dedup.beatRelevance && beatAlreadyRefusedPicture(dedup.beatRelevance, sceneIndex, beatIndex, { contentKey: clipContentKey(p), clipPath: p }))
     );
     for (const p of left) tried.add(p);
     if (!left.length) continue;
@@ -11953,12 +11963,31 @@ export async function fetchYouTubeCCClips(
          * (`beatRowsInStockOrder` puts those last) is not offered once a serving row gave moments: it
          * would take the sentence's places and its picture editor's looks. With nothing relevant to
          * offer (none in the pool, or every one failed) the other rows are offered as before.
+         *
+         * VIDEO 643 (B) — only what a SERVING row gave counts. Counting every moment stopped a sentence
+         * with no serving row at all after its first non-serving video (scene 2: three times "serving
+         * rows gave moments" after 4JnAH0O-vh0, which serves none of its sentences), below the old limit
+         * of two (`count`). Read per row: `fetched` is raised by the row that gave moments.
          */
-        const fetchedBeforeRows = fetched;
+        let servingGaveMoments = false;
+        let previousRowServes: boolean | null = null;
+        let fetchedAtPreviousRow = fetched;
+        /** VIDEO 643 (C) — per row that gave moments: serving or not (the `[BeatServing]` line below). */
+        const yieldOf = { serving: 0, other: 0 };
+        const settlePreviousRow = () => {
+          if (previousRowServes == null || !(fetched > fetchedAtPreviousRow)) return;
+          if (previousRowServes) {
+            servingGaveMoments = true;
+            yieldOf.serving++;
+          } else yieldOf.other++;
+        };
         for (const row of tried) {
+          settlePreviousRow();
+          previousRowServes = row.servesBeat === true;
+          fetchedAtPreviousRow = fetched;
           if (Date.now() > ytDeadline) break;
           /** VIDEO 642 (B-1) — serving rows come first; once one gave moments, the rest are not offered. */
-          if (row.servesBeat !== true && fetched > fetchedBeforeRows) {
+          if (row.servesBeat !== true && servingGaveMoments) {
             console.log(`[YouTubeStock] Scene ${sceneIndex}: serving rows gave moments — non-serving rows not offered`);
             break;
           }
@@ -12567,6 +12596,17 @@ export async function fetchYouTubeCCClips(
               (err as Error).message
             );
           }
+        }
+        settlePreviousRow();
+        {
+          /** VIDEO 643 (C) — this sentence's funnel in one line: serving sources → downloads → videos that gave moments → fallback. */
+          const servingRows = ordered.filter((r) => r.servesBeat === true);
+          console.log(
+            `[BeatServing] Scene ${sceneIndex}${scriptGuided?.beatIndex != null ? ` beat ${scriptGuided.beatIndex}` : ""}: ` +
+              `servingSources=${servingRows.length} (ready=${servingReadyRows.size} toDownload=${servingRows.filter((r) => !servingReadyRows.has(r)).length}) ` +
+              `servingVideosWithMoments=${yieldOf.serving} nonServingVideosWithMoments=${yieldOf.other}` +
+              (servingRows.length === 0 ? " — no serving source in the pool for this sentence (non-serving fallback, old limit)" : "")
+          );
         }
       } catch (err) {
         // RONDE 52: this catch used to swallow the failure without touching the breaker, because
@@ -21878,6 +21918,8 @@ export function graphicOnlyReasonFor(
     return "APPROVED_NOT_PLACED";
   }
   if (approvedPicksForBeat(dedup, sceneIndex, beatIndex) > 0) return "APPROVED_NOT_PLACED";
+  /** VIDEO 643 (A) — its review was still running when the picture editor's own budget ran out. */
+  if (judgeBudgetExhaustedFor(dedup, sceneIndex, beatIndex)) return JUDGE_BUDGET_EXHAUSTED;
   /** VIDEO 639 (FIX D/E) — its review was still running when the film was filled: named, never silent. */
   if (reviewTimedOutBeforeFinalize(dedup, sceneIndex, beatIndex)) return REVIEW_TIMEOUT_BEFORE_FINALIZE;
   if (beatRejectCount(dedup.rejections, sceneIndex, beatIndex) > 0) return `ALL_REJECTED (${top})`;
@@ -22069,7 +22111,12 @@ export async function finalReadyYoutubeLook(
   const own = takeReadyLookaheadCandidates(dedup, youtubeTurnKey(sceneIndex, beatIndex));
   const late = (dedup.lateYoutubeCandidates ?? []).filter((p) => fs.existsSync(p));
   const pending = pendingYoutubeForBeat(dedup, sceneIndex, beatIndex);
-  let ready = [...new Set([...own, ...late, ...pending])].filter((p) => isYoutubeMomentPath(p));
+  /**
+   * VIDEO 643 (A) — what was handed to THIS sentence (its own turn's moments, then the ones handed and
+   * never judged) before the leftovers offered to any next sentence: 643's s0b0 had 9 moments of its
+   * own pending and its five looks went to three own and two leftovers.
+   */
+  let ready = [...new Set([...own, ...pending, ...late])].filter((p) => isYoutubeMomentPath(p));
   if (ready.length === 0) return null;
   const inFlight = reviewsInFlightFor(dedup, youtubeTurnKey(sceneIndex, beatIndex)).length;
   const looksLeft = () =>
@@ -22094,13 +22141,17 @@ export async function finalReadyYoutubeLook(
     }
     const offered = [...judged, ...fresh];
     console.log(`${at} review started clips=${offered.length} (fresh=${fresh.length} already judged=${judged.length})`);
+    /** VIDEO 643 (A) — the picture editor's own budget grows by the fresh moments it is given. */
+    judgeBudgetByRender.get(dedup)?.grant(fresh.length);
     const clip = await look(offered);
     if (!clip) {
       console.log(`${at} review completed — no fit`);
       return null;
     }
     if (assembledScenesByRender.get(dedup)?.has(sceneIndex)) {
-      console.warn(`${at} ${path.basename(clip)} approved after the film was assembled — not placed (${REVIEW_TIMEOUT_BEFORE_FINALIZE})`);
+      /** VIDEO 643 (A) — named by what ended the wait: the picture editor's own budget, when it had one. */
+      const why = judgeBudgetExhaustedFor(dedup, sceneIndex, beatIndex) ? JUDGE_BUDGET_EXHAUSTED : REVIEW_TIMEOUT_BEFORE_FINALIZE;
+      console.warn(`${at} ${path.basename(clip)} approved after the film was assembled — not placed (${why})`);
       noteReviewTimeoutBeforeFinalize(dedup, sceneIndex, beatIndex);
       return null;
     }
@@ -22108,6 +22159,7 @@ export async function finalReadyYoutubeLook(
     if (belowArchiveMinimumDuration(seconds)) {
       /** FIX F — refused by the existing 3 s rule; never stretched, never looped: the next moment is tried. */
       tried.add(clipContentKey(clip));
+      notePlacementLoss(dedup, sceneIndex, beatIndex, `approved, prepared ${seconds.toFixed(2)}s < 3s (3 s rule)`);
       console.log(
         `${at} placement attempted ${path.basename(clip)} — refused: ${seconds.toFixed(2)}s < 3s after preparing; ` +
           `trying the next moment already found for this sentence`
@@ -22169,7 +22221,13 @@ async function settledWithin(work: Promise<unknown>[], ms: number): Promise<bool
 export async function awaitFinalReviewWindow(
   dedup: object,
   sentences: ReadonlyArray<{ sceneIndex: number; beatIndex: number }>,
-  windowMs: number = FINAL_REVIEW_WINDOW_MS
+  windowMs: number = FINAL_REVIEW_WINDOW_MS,
+  /**
+   * VIDEO 643 (A) — `carry`: what is still running after the window is not named as timed out here;
+   * it is carried into the picture editor's own budget (`runFinalReadyYoutubeStage`), which names it
+   * only if that budget runs out too.
+   */
+  opts: { carry?: boolean } = {}
 ): Promise<Array<{ sceneIndex: number; beatIndex: number }>> {
   const mine = (e: { sceneIndex: number; beatIndex: number }) =>
     sentences.some((s) => s.sceneIndex === e.sceneIndex && s.beatIndex === e.beatIndex);
@@ -22188,6 +22246,10 @@ export async function awaitFinalReviewWindow(
       reviewsInFlightFor(dedup, youtubeTurnKey(s.sceneIndex, s.beatIndex)).length > 0
   );
   for (const s of still) {
+    if (opts.carry) {
+      console.log(`[FinalReviewWindow] s${s.sceneIndex}b${s.beatIndex} still running after ${windowMs}ms — carried into the picture editor's own budget`);
+      continue;
+    }
     noteReviewTimeoutBeforeFinalize(dedup, s.sceneIndex, s.beatIndex);
     console.warn(`[FinalReviewWindow] s${s.sceneIndex}b${s.beatIndex} review interrupted — still running after ${windowMs}ms (${REVIEW_TIMEOUT_BEFORE_FINALIZE})`);
   }
@@ -22195,20 +22257,66 @@ export async function awaitFinalReviewWindow(
   return still;
 }
 
-/** The last looks run side by side, bounded by `FINAL_LOOK_TURN_MS`; one still running is named, never silent. */
+/**
+ * The last looks run side by side, bounded by `FINAL_LOOK_TURN_MS`; one still running is named, never silent.
+ * VIDEO 643 (A) — or bounded by the picture editor's own budget (`JudgeBudget`), which grows with the
+ * looks it was given while it waits; one still running when it runs out is named `JUDGE_BUDGET_EXHAUSTED`.
+ * Returns the sentences still running when the wait ended.
+ */
 export async function finalLooksWithin(
   dedup: object,
   looks: ReadonlyArray<{ sceneIndex: number; beatIndex: number; run: Promise<unknown> }>,
-  ms: number = FINAL_LOOK_TURN_MS
-): Promise<void> {
+  ms: number | JudgeBudget = FINAL_LOOK_TURN_MS
+): Promise<Array<{ sceneIndex: number; beatIndex: number }>> {
   const done = new Set<number>();
   looks.forEach((l, i) => l.run.then(() => done.add(i), () => done.add(i)));
-  await settledWithin(looks.map((l) => l.run), ms);
+  if (typeof ms === "number") await settledWithin(looks.map((l) => l.run), ms);
+  else await settledWithinJudgeBudget(looks.map((l) => l.run), ms);
+  const still: Array<{ sceneIndex: number; beatIndex: number }> = [];
   looks.forEach((l, i) => {
-    if (done.has(i)) return;
+    if (done.has(i) || still.some((s) => s.sceneIndex === l.sceneIndex && s.beatIndex === l.beatIndex)) return;
+    still.push({ sceneIndex: l.sceneIndex, beatIndex: l.beatIndex });
+    if (typeof ms !== "number") {
+      noteJudgeBudgetExhausted(dedup, l.sceneIndex, l.beatIndex);
+      console.warn(
+        `[JudgeBudget] s${l.sceneIndex}b${l.beatIndex} review still running when the picture editor's own budget ` +
+          `(${ms.grantedMs()}ms of ${ms.ceilingMs}ms) ran out — film goes on (${JUDGE_BUDGET_EXHAUSTED})`
+      );
+      return;
+    }
     noteReviewTimeoutBeforeFinalize(dedup, l.sceneIndex, l.beatIndex);
     console.warn(`[FinalReadyYouTube] s${l.sceneIndex}b${l.beatIndex} review still running after ${ms}ms — film goes on (${REVIEW_TIMEOUT_BEFORE_FINALIZE})`);
   });
+  return still;
+}
+
+const judgeBudgetExhaustedByRender = new WeakMap<object, Set<string>>();
+/** VIDEO 643 (A) — the render's picture-editor budget while its final stage runs (`runFinalReadyYoutubeStage`). */
+const judgeBudgetByRender = new WeakMap<object, JudgeBudget>();
+
+/** VIDEO 643 (A) — this sentence's review was still running when the picture editor's own budget ran out. */
+export function noteJudgeBudgetExhausted(dedup: object, sceneIndex: number, beatIndex: number): void {
+  const set = judgeBudgetExhaustedByRender.get(dedup) ?? new Set<string>();
+  judgeBudgetExhaustedByRender.set(dedup, set);
+  set.add(`${sceneIndex}:${beatIndex}`);
+}
+
+export function judgeBudgetExhaustedFor(dedup: object, sceneIndex: number, beatIndex: number): boolean {
+  return Boolean(judgeBudgetExhaustedByRender.get(dedup)?.has(`${sceneIndex}:${beatIndex}`));
+}
+
+const placementLossByRender = new WeakMap<object, Map<string, string[]>>();
+
+/**
+ * VIDEO 643 (D) — an approved picture of a sentence that HAS a picture and was not placed, with its
+ * known reason (the 3 s rule, the late placement refusing an extra shot). Read only by the approved-vs-
+ * placed check (`formatFitPlacementCheck`); a sentence's card reason is unchanged.
+ */
+export function notePlacementLoss(dedup: object, sceneIndex: number, beatIndex: number, reason: string): void {
+  const map = placementLossByRender.get(dedup) ?? new Map<string, string[]>();
+  placementLossByRender.set(dedup, map);
+  const key = `${sceneIndex}:${beatIndex}`;
+  map.set(key, [...(map.get(key) ?? []), reason]);
 }
 
 /**
@@ -22237,7 +22345,13 @@ export async function runFinalReadyYoutubeStage(
   scenes: ReadonlyArray<{ index: number }>,
   results: ReadonlyArray<Pick<SceneVisualsResult, "beats" | "clipBeatIndices"> | undefined>,
   look: (beat: SceneBeat, sceneIndex: number, ready: string[]) => Promise<string | null>,
-  limits: { windowMs?: number; looksMs?: number } = {},
+  /**
+   * VIDEO 643 (A) — `budget`: the picture editor's own time (see `judgeBudget.ts`). With it, the reviews
+   * still running after the window are carried into it instead of being named timed out, and the last
+   * looks are waited for as long as the looks they were given need, up to its hard ceiling. Without it
+   * (`looksMs`), the fixed window of before.
+   */
+  limits: { windowMs?: number; looksMs?: number; budget?: JudgeBudget } = {},
   /**
    * VIDEO 641 — stock ready after every sentence's turn (`lateReadyStockVideos`): each video goes to
    * ONE sentence still without a picture (`assignLateStockVideos`); its moments are handed to that
@@ -22255,7 +22369,27 @@ export async function runFinalReadyYoutubeStage(
       .filter((b) => !(results[si]?.clipBeatIndices ?? []).includes(b.index))
       .map((beat) => ({ sceneIndex: scene.index, beatIndex: beat.index, beat }))
   );
-  await awaitFinalReviewWindow(dedup, withoutPicture, limits.windowMs ?? FINAL_REVIEW_WINDOW_MS);
+  const budget = limits.budget;
+  const gate = (dedup as Partial<Pick<VisualDedupState, "beatImageGate">>).beatImageGate;
+  const before = { judged: gate?.judgementAttempts ?? 0, fit: gate?.judgementsFits ?? 0, mismatch: gate?.judgementsMismatch ?? 0 };
+  if (budget) judgeBudgetByRender.set(dedup, budget);
+  const carried = await awaitFinalReviewWindow(dedup, withoutPicture, limits.windowMs ?? FINAL_REVIEW_WINDOW_MS, { carry: budget != null });
+  const finalLooks: Array<{ sceneIndex: number; beatIndex: number; run: Promise<unknown> }> = [];
+  if (budget) {
+    console.log(
+      `[JudgeBudget] started base=${budget.baseMs}ms ceiling=${budget.ceilingMs}ms perLook=${budget.perLookMs}ms ` +
+        `sentencesWithoutPicture=${withoutPicture.length} carried=${carried.length} — the picture editor's own time, apart from the scene budgets`
+    );
+    /** A review already running is not thrown away because a scene's clock ran out: it is waited for inside this budget. */
+    for (const c of carried) {
+      budget.grant(1);
+      const work = [
+        ...(afterCloseLaddersByRender.get(dedup) ?? []).filter((e) => !e.settled && e.sceneIndex === c.sceneIndex && e.beatIndex === c.beatIndex).map((e) => e.promise),
+        ...reviewsInFlightFor(dedup, youtubeTurnKey(c.sceneIndex, c.beatIndex)),
+      ];
+      finalLooks.push({ ...c, run: Promise.allSettled(work) });
+    }
+  }
   const lateStockFor = lateStock?.videoIds.length
     ? assignLateStockVideos(
         lateStock.videoIds,
@@ -22263,7 +22397,6 @@ export async function runFinalReadyYoutubeStage(
         (id, s) => lateStock.serves(id, s.sceneIndex, s.beat)
       )
     : new Map<string, string[]>();
-  const finalLooks: Array<{ sceneIndex: number; beatIndex: number; run: Promise<unknown> }> = [];
   for (const { sceneIndex, beatIndex, beat } of withoutPicture) {
     if (lateApprovalPendingFor(dedup, sceneIndex, beatIndex)) continue;
     finalLooks.push({ sceneIndex, beatIndex, run: (async () => {
@@ -22277,7 +22410,149 @@ export async function runFinalReadyYoutubeStage(
       }
     })() });
   }
-  await finalLooksWithin(dedup, finalLooks, limits.looksMs ?? FINAL_LOOK_TURN_MS);
+  const still = await finalLooksWithin(dedup, finalLooks, budget ?? limits.looksMs ?? FINAL_LOOK_TURN_MS);
+  if (budget) {
+    console.log(
+      formatJudgeBudgetLine(budget, {
+        queued: budget.looks,
+        judged: (gate?.judgementAttempts ?? 0) - before.judged,
+        fit: (gate?.judgementsFits ?? 0) - before.fit,
+        mismatch: (gate?.judgementsMismatch ?? 0) - before.mismatch,
+        stop: budget.stopped() ? "RENDER_CANCELLED" : still.length ? JUDGE_BUDGET_EXHAUSTED : "ALL_REVIEWED",
+        unreviewed: still.map((x) => `s${x.sceneIndex}b${x.beatIndex}`),
+      })
+    );
+  }
+}
+
+/**
+ * VIDEO 643 (E) — ANOTHER APPROVED SHOT FOR A SENTENCE, INSIDE THE PICTURE EDITOR'S OWN TIME.
+ *
+ * 643 had BeatFill 0. The fill ran only inside a scene (`fillBeatWithMoreClips`), behind the scene's
+ * scope (more than 15 s left) and the sentence's turn (at least 4 s left) — 110 SCOPE_EXPIRED — and
+ * the two sentences with a FIT had it placed after their turn (late placement), where no fill runs
+ * for them at all. A 4.1 s FIT on an 8 s sentence stayed one shot.
+ *
+ * Here, once the last looks are done and before the film is assembled, every sentence with a real
+ * picture and at least `BEAT_EXTRA_SHOT_MIN_SEC` (3 s) uncovered asks the candidates it was already
+ * handed for another FIT (`adoptAnotherFitForBeat`: no search, no download, FIT only, never a moment
+ * refused for it, inside the per-sentence and per-render look ceilings), up to
+ * `BEAT_FILL_MAX_EXTRA_CLIPS` more. A FIT goes the late-placement route (`placeApprovedAfterSceneClosed`):
+ * its own sentence, the seconds it still has uncovered, the push's gates and dedup. Bounded by the same
+ * `JudgeBudget` as the last looks; when it runs out the stop is named.
+ */
+export async function runFinalBeatFillStage(
+  dedup: VisualDedupState,
+  sentences: ReadonlyArray<{ sceneIndex: number; beatIndex: number }>,
+  budget: JudgeBudget,
+  io: {
+    /** Real (non-fallback) pictures this sentence has in the film's result. */
+    hasRealPicture: (sceneIndex: number, beatIndex: number) => boolean;
+    /** Seconds of the sentence its clips leave uncovered (`beatSecondsLeft`). */
+    secondsLeft: (sceneIndex: number, beatIndex: number) => number;
+    /** The scene's late placement pass (not the final one): places what was handed to it. */
+    place: (sceneIndex: number) => Promise<void>;
+    adoptAnother: (sceneIndex: number, beatIndex: number) => Promise<string | null>;
+  }
+): Promise<{ added: number; stop: string }> {
+  const want = sentences.filter(
+    (s) => io.hasRealPicture(s.sceneIndex, s.beatIndex) && io.secondsLeft(s.sceneIndex, s.beatIndex) >= BEAT_EXTRA_SHOT_MIN_SEC
+  );
+  if (want.length === 0) return { added: 0, stop: "NOTHING_TO_FILL" };
+  console.log(
+    `[BeatFill] final stage: ${want.length} sentence(s) with a picture and ≥${BEAT_EXTRA_SHOT_MIN_SEC}s uncovered — another FIT ` +
+      `from what each was handed, inside the picture editor's own budget (no search, no download)`
+  );
+  let added = 0;
+  let stop = "FILLED";
+  /** Where the budget ran out: this sentence and every one after it were not (fully) asked. */
+  let stoppedAt = -1;
+  outer: for (let wi = 0; wi < want.length; wi++) {
+    const { sceneIndex, beatIndex } = want[wi]!;
+    stoppedAt = wi;
+    const at = `[BeatFill] s${sceneIndex}b${beatIndex}`;
+    for (let extra = 0; extra < BEAT_FILL_MAX_EXTRA_CLIPS; extra++) {
+      const left = io.secondsLeft(sceneIndex, beatIndex);
+      if (left < BEAT_EXTRA_SHOT_MIN_SEC) break;
+      if (budget.leftMs() <= 0) {
+        stop = JUDGE_BUDGET_EXHAUSTED;
+        console.warn(`${at}: ${left.toFixed(1)}s uncovered, not asked — the picture editor's own budget ran out (${JUDGE_BUDGET_EXHAUSTED})`);
+        break outer;
+      }
+      if (!latePlacementOpen(dedup, sceneIndex)) {
+        console.log(`${at}: ${left.toFixed(1)}s uncovered, not asked — its scene can no longer place a picture`);
+        break;
+      }
+      budget.grant(1);
+      const approvedBefore = approvedPicksForBeat(dedup, sceneIndex, beatIndex);
+      /** Waited for through the same budget as the last looks — no deadline of its own. */
+      let clip: string | null = null;
+      await settledWithinJudgeBudget([io.adoptAnother(sceneIndex, beatIndex).then((c) => void (clip = c), () => {})], budget);
+      if (!clip && budget.leftMs() <= 0) {
+        stop = JUDGE_BUDGET_EXHAUSTED;
+        console.warn(`${at}: ${left.toFixed(1)}s uncovered — its review was still running when the picture editor's own budget ran out (${JUDGE_BUDGET_EXHAUSTED})`);
+        break outer;
+      }
+      if (!clip) {
+        console.log(`${at}: no other FIT among what it was handed — ${left.toFixed(1)}s stay with the shot(s) it has`);
+        break;
+      }
+      /** Handed to the late placement exactly like a late approval: its own sentence, its seconds left. */
+      const ladders = afterCloseLaddersByRender.get(dedup) ?? [];
+      afterCloseLaddersByRender.set(dedup, ladders);
+      ladders.push({ sceneIndex, beatIndex, approvedBefore, promise: Promise.resolve(clip), settled: { value: clip } });
+      await io.place(sceneIndex);
+      const ok = io.secondsLeft(sceneIndex, beatIndex) < left;
+      console.log(
+        `${at}: ${ok ? "added" : "not placed"} ${path.basename(clip)} for the other ${left.toFixed(1)}s ` +
+          `(another FIT moment this sentence was handed; final stage)`
+      );
+      if (!ok) {
+        notePlacementLoss(dedup, sceneIndex, beatIndex, "extra FIT not placed by the late placement (reason logged above)");
+        break;
+      }
+      added++;
+    }
+  }
+  /** Every sentence the budget left unasked is named, not only the one it stopped on. */
+  const notAsked = stop === JUDGE_BUDGET_EXHAUSTED ? want.slice(stoppedAt).map((w) => `s${w.sceneIndex}b${w.beatIndex}`) : [];
+  console.log(`[BeatFill] final stage done: added=${added} stop=${stop}${notAsked.length ? ` notAsked=[${notAsked.join(",")}]` : ""}`);
+  return { added, stop };
+}
+
+/**
+ * VIDEO 643 (D) — APPROVED vs PLACED, the last word before the film is assembled.
+ *
+ * Every approval the picture editor gave a sentence (`approvedPicksForBeat`) against the real shots the
+ * film's result holds for it. A sentence with fewer placed than approved is named with the reason the
+ * render recorded (`noteApprovedNotPlaced`, the picture editor's budget, a review cut off) — or
+ * `UNRECORDED` when none was: a silent loss is then visible as one.
+ */
+export function formatFitPlacementCheck(
+  dedup: object,
+  sentences: ReadonlyArray<{ sceneIndex: number; beatIndex: number }>,
+  placedRealShots: (sceneIndex: number, beatIndex: number) => number
+): string[] {
+  let approved = 0;
+  let placed = 0;
+  const lines: string[] = [];
+  for (const { sceneIndex, beatIndex } of sentences) {
+    const a = approvedPicksForBeat(dedup, sceneIndex, beatIndex);
+    const p = placedRealShots(sceneIndex, beatIndex);
+    approved += a;
+    placed += Math.min(a, p);
+    if (a <= p) continue;
+    const reason =
+      approvedNotPlacedReasonByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`) ??
+      placementLossByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`)?.join("; ") ??
+      (judgeBudgetExhaustedFor(dedup, sceneIndex, beatIndex)
+        ? JUDGE_BUDGET_EXHAUSTED
+        : reviewTimedOutBeforeFinalize(dedup, sceneIndex, beatIndex)
+          ? REVIEW_TIMEOUT_BEFORE_FINALIZE
+          : "UNRECORDED");
+    lines.push(`[FitPlacement] s${sceneIndex}b${beatIndex} approved=${a} placed=${p} lost=${a - p} reason=${reason}`);
+  }
+  return [`[FitPlacement] TOTAL approvedRealShots=${approved} placedRealShots=${placed} lost=${approved - placed}`, ...lines];
 }
 
 /** A sentence with an approval still on its way to the final pass needs no last look. */
@@ -25129,9 +25404,50 @@ async function _runVideoPipelineInner(
      */
     const lateStockIds = lateReadyStockVideos(videoId, visualDedup.pipelineStartedMs ?? Date.now());
     const lateStockPool = lateStockIds.length > 0 ? await awaitVideoYoutubePool(videoId, 1_000).catch(() => null) : null;
+    /**
+     * VIDEO 643 (A) — the picture editor's own time for the last looks and the last extra shots: what
+     * the stage had (window + one turn), growing with the looks it is given, never past the video's
+     * length bound nor the render's force-export moment (see `judgeBudget.ts`).
+     */
+    const judgeBaseMs = FINAL_REVIEW_WINDOW_MS + FINAL_LOOK_TURN_MS;
+    const judgeBudget = createJudgeBudget({
+      baseMs: judgeBaseMs,
+      ceilingMs: judgeBudgetCeilingMs(
+        scenes.reduce((sum, sc) => sum + (sc.duration || 0), 0),
+        (visualDedup.pipelineStartedMs ?? Date.now()) + pipelineEmergencyFinishMs(videoLength) - Date.now(),
+        judgeBaseMs
+      ),
+      /** A cancelled or superseded render does not wait for its picture editor (VIDEO 23: lock and slot back within a minute). */
+      stopWhen: () => {
+        try {
+          throwIfActiveRenderCancelled();
+          return false;
+        } catch {
+          return true;
+        }
+      },
+    });
+    /** VIDEO 643 (D/E) — every sentence of the film, and the real shots its result holds. */
+    const siOfScene = (sceneIndex: number) => scenes.findIndex((sc) => sc.index === sceneIndex);
+    const realShotsOf = (sceneIndex: number, beatIndex: number): number => {
+      const vr = sceneVisualResults[siOfScene(sceneIndex)];
+      return (vr?.clips ?? []).filter((c, i) => vr!.clipBeatIndices?.[i] === beatIndex && !isPipelineFallbackClip(c)).length;
+    };
+    const allSentences = scenes.flatMap((sc, si) =>
+      sentencesOfScene(visualDedup, sc.index, sceneVisualResults[si]).map((b) => ({ sceneIndex: sc.index, beatIndex: b.index }))
+    );
+    /** The visual heartbeat stopped with the chunks; the render keeps saying it is alive while the editor works. */
+    const judgePulse = setInterval(() => {
+      try {
+        onProgress?.({ stage: STAGE_LABELS.visuals, percent: 45 });
+      } catch {
+        /* a progress write never stops the picture editor */
+      }
+    }, 30_000);
+    try {
     await runFinalReadyYoutubeStage(visualDedup, scenes, sceneVisualResults, (beat, sceneIndex, ready) =>
       adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, visualDedup, { videoTitle: asVideoTitleString(videoTitle) }),
-      {},
+      { budget: judgeBudget },
       lateStockIds.length > 0
         ? {
             videoIds: lateStockIds,
@@ -25145,7 +25461,25 @@ async function _runVideoPipelineInner(
           }
         : undefined
     );
+    /** VIDEO 643 (E) — the last looks are done: a sentence with a picture and ≥3 s uncovered asks for another FIT. */
+    await runFinalBeatFillStage(visualDedup, allSentences, judgeBudget, {
+      hasRealPicture: (sceneIndex, beatIndex) => realShotsOf(sceneIndex, beatIndex) > 0,
+      secondsLeft: (sceneIndex, beatIndex) => {
+        const si = siOfScene(sceneIndex);
+        const vr = sceneVisualResults[si];
+        const beat = sentencesOfScene(visualDedup, sceneIndex, vr).find((b) => b.index === beatIndex);
+        return beat && vr ? beatSecondsLeft(beat.holdSec, beatIndex, vr.clipBeatIndices ?? [], vr.beatDurations) : 0;
+      },
+      place: (sceneIndex) => placeLate(siOfScene(sceneIndex), false),
+      adoptAnother: (sceneIndex, beatIndex) => adoptAnotherFitForBeat(visualDedup, sceneIndex, beatIndex, workDir),
+    });
+    } finally {
+      clearInterval(judgePulse);
+    }
+    throwIfActiveRenderCancelled();
     for (let si = 0; si < scenes.length; si++) await placeLate(si, true);
+    /** VIDEO 643 (D) — every approval against what the film holds; a difference is named with its reason. */
+    for (const line of formatFitPlacementCheck(visualDedup, allSentences, realShotsOf)) console.log(line);
     /** VIDEO 642 — covered sentences, visible real shots and their seconds, apart; the target is a soft signal only. */
     console.log(formatVisualShotsLine(sceneVisualResults, (c) => !isStillPhotoClip(c) && !isPipelineFallbackClip(c)));
 

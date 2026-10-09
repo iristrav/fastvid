@@ -949,6 +949,18 @@ export function poolRowsForBeat(
   const mine = new Set(beatSentences(pool, beatText));
   const rows: PoolRow[] = [];
   const servesMine = new Set<string>();
+  /**
+   * VIDEO 643 — A TARGETED SEARCH'S ANSWERS SERVE THE SENTENCES IT WAS MADE FOR.
+   *
+   * Search #2 was asked for "Kendall Jenner" because pool sentence 7 (the render's s1b2) names her and
+   * no usable video showed her. The look assigned none of its answers to any sentence (serves=[]), so
+   * none of them ranked first for s1b2, and the film's late stock handed her two videos' six moments to
+   * s0b0 — the first sentence without a picture — while s1b2 got a card. The sentences a targeted
+   * search was made for (`entityTargets[].beats`, pool-sentence indices like `serves`) now rank its
+   * usable answers first, as the look's own assignment does. Ranking only: whether a picture fits is
+   * still the picture editor's answer on the downloaded frames, with every identity rule unchanged.
+   */
+  const searchedFor = new Map<number, readonly number[]>((pool.entityTargets ?? []).map((t) => [t.n, t.beats]));
   for (const c of pool.candidates) {
     if (!c.usable) continue;
     const hay = `${c.title} ${c.description}`.toLowerCase();
@@ -961,7 +973,7 @@ export function poolRowsForBeat(
      * sentence is still offered, after every one it did. Whether the picture fits is the
      * VisualJudge's answer on the downloaded frames.
      */
-    if (c.serves.some((s) => mine.has(s))) servesMine.add(c.videoId);
+    if (c.serves.some((s) => mine.has(s)) || (searchedFor.get(c.from)?.some((s) => mine.has(s)) ?? false)) servesMine.add(c.videoId);
     const text = relevanceKeywords.filter((k) => k.length >= 3 && hay.includes(k.toLowerCase())).length;
     rows.push({
       item: { id: { videoId: c.videoId }, snippet: { title: c.title, description: c.description, channelTitle: c.channel, thumbnails: { high: { url: c.thumb } } } },
