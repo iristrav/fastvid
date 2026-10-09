@@ -38,6 +38,8 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -237,6 +239,9 @@ def _ydl_options(out_path: Path, start: float, end: float) -> dict:
             "ffmpeg_i": [
                 "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "4",
                 "-rw_timeout", str(FFMPEG_IO_TIMEOUT_S * 1_000_000),
+                # VIDEO 644 — after yt-dlp's own `-loglevel quiet`, so ffmpeg says why it stopped; it
+                # says it into the cut's own capture file only (see `_install_ffmpeg_stderr_capture`).
+                *(["-loglevel", "warning"] if _FFMPEG_CAPTURE_READY else []),
             ],
         },
     }
@@ -379,6 +384,10 @@ def health() -> JSONResponse:
             "ffmpeg": bool(shutil.which("ffmpeg")),
             "auth": "required" if SERVICE_TOKEN else "open",
             "proxy": bool(PROXY_URL),
+            # VIDEO 644 — the route the STREAM takes, which is not the metadata's when the proxy is
+            # not `http://` (see `_ffmpeg_proxy_route`). A scheme, never a host.
+            "ffmpegRoute": _ffmpeg_proxy_route(),
+            "ffmpegErrorCapture": _FFMPEG_CAPTURE_READY,
             "cookies": bool(COOKIES_FILE and Path(COOKIES_FILE).is_file()),
             "minHeight": MIN_HEIGHT,
             # Whether the LAST probe got through, not whether a proxy is configured. Null until
@@ -613,10 +622,12 @@ def _probe_on_boot() -> None:
     # silently downgraded to the JS-less client set, and that is invisible in every other signal
     # this service emits — see `_runtime_facts`.
     logging.info(
-        "[Runtime] js=%s supported=%s clients=%s",
+        "[Runtime] js=%s supported=%s clients=%s ffmpeg_route=%s ffmpeg_error_capture=%s",
         result.get("jsRuntime"),
         result.get("jsRuntimeSupported"),
         result.get("playerClients"),
+        _ffmpeg_proxy_route(),
+        _FFMPEG_CAPTURE_READY,
     )
     if result.get("jsRuntimeSupported") is False:
         logging.error(
@@ -742,6 +753,180 @@ def _redact(text: str) -> str:
     return re.sub(r"(//)[^/\s:@]+:[^/\s@]+@", r"\1<credentials>@", text)
 
 
+"""
+VIDEO 644 — WHY GOOGLEVIDEO REFUSED THE STREAM, SAID WITHOUT THE STREAM'S ADDRESS.
+
+57 of 73 failed downloads on 7–9 October ended `ffmpeg exited with code 8`, and nothing more. Two
+facts made that all there was to read:
+
+  · yt-dlp runs ffmpeg with `-loglevel quiet` whenever the service sets `quiet` (FFmpegFD,
+    yt_dlp/downloader/external.py), so ffmpeg never wrote WHY it stopped;
+  · and ffmpeg's stderr is not captured by yt-dlp at all — it goes to this process's stderr.
+
+`code 8` is the low byte of every AVERROR_HTTP_* (they all start 0xF8): ANY 4xx/5xx — and, measured
+locally against ffmpeg 6.1, also a proxy that refuses the CONNECT (403, 407, 502 all exit 8 with the
+same "Server returned …" line). What tells the two apart is the line before it, at `warning`:
+`[https @ …] HTTP error 403` (googlevideo answered) or `[httpproxy @ …] HTTP error 403` (the proxy
+did). So each attempt's ffmpeg now writes at `warning` into a file of its own, and a failure is
+logged from it — but the next line ffmpeg prints is "Error opening input file <the signed stream
+URL>", which carries the signature and the address the URL was issued to. `_redact` only removes the
+proxy's own URL and user:password pairs; it leaves such a URL whole. So nothing from that file is
+logged before `_sanitize` has replaced every URL with what it is (host kind, itag, whether it is
+bound to one address), removed the proxy host and every IPv4 address, and cut each line short.
+
+Nothing about the download changes: the format, the range, the retries, the response and its
+detail (which the client classifies) are exactly as before.
+"""
+
+_FFMPEG_TAIL_LINES = 20
+_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>]+")
+_IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+_FFMPEG_HTTP_ERROR_RE = re.compile(r"\[(https?|httpproxy|tls|tcp)(?: @ 0x[0-9a-fA-F]+)?\]\s*HTTP error (\d{3})")
+_FFMPEG_NETWORK_RE = re.compile(
+    r"connection to .* failed|connection refused|connection timed out|connection reset|i/o error|timed out|end of file",
+    re.I,
+)
+
+
+def _proxy_scheme() -> str:
+    """The proxy's scheme only — never its host or credentials. yt-dlp treats a bare host as http."""
+    if not PROXY_URL:
+        return "none"
+    return PROXY_URL.split("://", 1)[0].lower() if "://" in PROXY_URL else "http"
+
+
+def _ffmpeg_proxy_route() -> str:
+    """
+    How ffmpeg reaches googlevideo. yt-dlp hands ffmpeg the proxy as the `http_proxy` environment
+    variable only (FFmpegFD), and ffmpeg's tls/http code uses it only when it starts with
+    `http://` — measured locally: an `https://` or `socks5://` proxy is ignored WITHOUT a warning,
+    so the metadata goes through the proxy while the stream goes out from this machine.
+    """
+    scheme = _proxy_scheme()
+    if scheme == "none":
+        return "direct(no_proxy)"
+    return "proxy" if scheme == "http" else f"direct({scheme}_proxy_ignored_by_ffmpeg)"
+
+
+def _proxy_host() -> str | None:
+    try:
+        return urllib.parse.urlsplit(PROXY_URL if "://" in PROXY_URL else f"http://{PROXY_URL}").hostname
+    except ValueError:
+        return None
+
+
+def _describe_url(url: str) -> str:
+    """A URL said without itself: the kind of host, the stream (itag), whether it is address-bound."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        query = urllib.parse.parse_qs(parts.query)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return "<url>"
+    kind = (
+        "googlevideo" if host.endswith("googlevideo.com")
+        else "youtube" if host.endswith(("youtube.com", "ytimg.com", "youtu.be"))
+        else "other"
+    )
+    said = [f"<url {kind}"]
+    itag = (query.get("itag") or [""])[0]
+    if itag.isdigit():
+        said.append(f"itag={itag}")
+    if kind == "googlevideo":
+        signed = ",".join(query.get("sparams") or []).split(",")
+        said.append("iplock=" + ("yes" if "ip" in signed and "ip" in query else "no"))
+    return " ".join(said) + ">"
+
+
+def _sanitize(text: str) -> str:
+    """For any text that may hold a stream URL, the proxy or an address: none of them survive."""
+    text = _redact(text)
+    text = _URL_RE.sub(lambda m: _describe_url(m.group(0)), text)
+    host = _proxy_host()
+    if host:
+        text = text.replace(host, "<proxy>")
+    text = _IPV4_RE.sub("<ip>", text)
+    return re.sub(r" @ 0x[0-9a-fA-F]+\]", "]", text)
+
+
+def _ffmpeg_failure(stderr_text: str) -> dict[str, object]:
+    """
+    What ffmpeg said when it stopped: the HTTP status and WHO answered it (`server` = googlevideo
+    through the tunnel, `proxy` = the proxy refused the CONNECT, `network` = no answer at all), which
+    stream it was opening, and the last lines — every one sanitized.
+    """
+    lines = [line.strip() for line in (stderr_text or "").splitlines() if line.strip()]
+    status: str | None = None
+    origin = "unknown"
+    for line in lines:
+        m = _FFMPEG_HTTP_ERROR_RE.search(line)
+        if m:
+            status = m.group(2)
+            origin = "proxy" if m.group(1) == "httpproxy" else "server"
+            break
+    if status is None and any(_FFMPEG_NETWORK_RE.search(line) for line in lines):
+        origin = "network"
+    stream = None
+    for line in lines:
+        if "Error opening input" in line:
+            m = _URL_RE.search(line)
+            if m:
+                stream = _describe_url(m.group(0))
+                break
+    tail = [_sanitize(line)[:200] for line in lines[-_FFMPEG_TAIL_LINES:]]
+    return {"status": status, "origin": origin, "stream": stream, "tail": " | ".join(tail)[:1500]}
+
+
+def _failure_stage(timing: dict, text: str) -> str:
+    """Where a cut stopped: the lookup (`metadata`), the HLS manifest inside it, or the stream (`data`)."""
+    if timing.get("download_ms") is not None or timing.get("facts"):
+        return "data"
+    return "manifest" if "m3u8" in (text or "").lower() else "metadata"
+
+
+# ── Each cut's ffmpeg writes its stderr to a file of its own ─────────────────────────────────────
+#
+# FFmpegFD starts ffmpeg through the `Popen` name in yt_dlp.downloader.external, without a stderr
+# argument. That one name is replaced with a subclass that, while THIS thread's cut has a capture
+# file open, hands ffmpeg that file as stderr. Every other call is untouched; another yt-dlp
+# release that renames it simply leaves capture off (and with it the louder log level below, so an
+# uncaptured ffmpeg never prints a signed URL into the service log).
+_ffmpeg_capture = threading.local()
+
+
+def _install_ffmpeg_stderr_capture() -> bool:
+    try:
+        from yt_dlp.downloader import external as _external
+    except Exception:  # noqa: BLE001
+        return False
+    base = getattr(_external, "Popen", None)
+    if not isinstance(base, type):
+        return False
+    if getattr(base, "_fastvid_stderr_capture", False):
+        return True
+
+    class _CapturingPopen(base):  # type: ignore[misc, valid-type]
+        _fastvid_stderr_capture = True
+
+        def __init__(self, *args, **kwargs):
+            if kwargs.get("stderr") is None:
+                sink = getattr(_ffmpeg_capture, "sink", None)
+                cmd = args[0] if args else kwargs.get("args")
+                if sink is not None:
+                    kwargs["stderr"] = sink
+                elif isinstance(cmd, (list, tuple)) and "-loglevel" in cmd and "warning" in cmd:
+                    # No capture open on this thread: an ffmpeg asked to speak is silenced rather than
+                    # allowed to print its stream URL into the service log.
+                    kwargs["stderr"] = subprocess.DEVNULL
+            super().__init__(*args, **kwargs)
+
+    _external.Popen = _CapturingPopen
+    return True
+
+
+_FFMPEG_CAPTURE_READY = _install_ffmpeg_stderr_capture()
+
+
 def _format_facts(info: dict) -> str:
     """VIDEO 618 — which video and which stream a cut asked for, for the log.
 
@@ -777,7 +962,7 @@ def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dic
     """
     timing = timing if timing is not None else {}
     for attempt in range(1, _ATTEMPTS + 1):
-        timing.update(attempt=attempt, extract_ms=None, download_ms=None, facts=None)
+        timing.update(attempt=attempt, extract_ms=None, download_ms=None, facts=None, ffmpeg=None)
         began = time.monotonic()
         lookup_done: list[float] = []
         hooked: list[bool] = []
@@ -790,6 +975,10 @@ def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dic
             timing["extract_ms"] = int((split - began) * 1000)
             timing["download_ms"] = int((ended - split) * 1000) if lookup_done else None
 
+        # VIDEO 644 — this attempt's ffmpeg stderr. OUTSIDE the work directory on purpose:
+        # `_download_and_cut` takes any single file it finds there as the cut.
+        capture = tempfile.NamedTemporaryFile(prefix="ytdl-ffmpeg-", suffix=".log", delete=False) if _FFMPEG_CAPTURE_READY else None
+        _ffmpeg_capture.sink = capture
         try:
             opts = _ydl_options(out_path, start, end)
             opts["no_warnings"] = False
@@ -815,6 +1004,7 @@ def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dic
             return
         except yt_dlp.utils.DownloadError as err:
             settle()
+            _note_ffmpeg_failure(id, start, timing, str(err), capture)
             if attempt >= _ATTEMPTS or not _retryable(str(err)):
                 raise
             log.info(
@@ -823,6 +1013,38 @@ def _fetch_window(id: str, out_path: Path, start: float, end: float, timing: dic
             )
             for leftover in out_path.parent.glob("*"):
                 leftover.unlink(missing_ok=True)
+        finally:
+            _ffmpeg_capture.sink = None
+            if capture is not None:
+                capture.close()
+                Path(capture.name).unlink(missing_ok=True)
+
+
+def _note_ffmpeg_failure(id: str, start: float, timing: dict, message: str, capture) -> None:
+    """
+    VIDEO 644 — one line per attempt that ffmpeg ended: its exit code, the HTTP status and who gave
+    it, the stream, the proxy route ffmpeg took, and its last lines — sanitized. Logged on the
+    attempt itself, so a retried one is not lost to the attempt after it. Never raises.
+    """
+    m = re.search(r"ffmpeg exited with code (\d+)", message or "")
+    if not m:
+        return
+    try:
+        text = ""
+        if capture is not None:
+            capture.flush()
+            text = Path(capture.name).read_text(errors="replace")
+    except Exception:  # noqa: BLE001 — a log field never stops a cut
+        text = ""
+    failure = _ffmpeg_failure(text)
+    timing["ffmpeg"] = failure
+    log.warning(
+        'ffmpeg failure id=%s start=%.2f attempt=%s stage=data exit=%s http=%s from=%s stream=%s '
+        'ffmpeg_route=%s download_ms=%s captured=%s tail="%s"',
+        id, start, timing.get("attempt"), m.group(1), failure["status"] or "none", failure["origin"],
+        failure["stream"] or "unknown", _ffmpeg_proxy_route(), timing.get("download_ms"),
+        "yes" if capture is not None else "no", failure["tail"],
+    )
 
 
 def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileResponse:
@@ -840,14 +1062,14 @@ def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileR
         # into 500 is what made the RapidAPI route's failures unreadable for so long.
         detail = str(err).strip().replace("\n", " ")[:300]
         log.warning(
-            "download failed id=%s start=%.2f dur=%.2f attempt=%s extract_ms=%s download_ms=%s %s: %s",
-            id, start, duration, timing.get("attempt"), timing.get("extract_ms"), timing.get("download_ms"),
-            timing.get("facts") or "facts=none", detail,
+            "download failed id=%s start=%.2f dur=%.2f stage=%s attempt=%s extract_ms=%s download_ms=%s %s: %s",
+            id, start, duration, _failure_stage(timing, detail), timing.get("attempt"), timing.get("extract_ms"),
+            timing.get("download_ms"), timing.get("facts") or "facts=none", detail,
         )
         cleanup.func(*cleanup.args, **cleanup.kwargs)
         raise HTTPException(status_code=502, detail=detail) from err
     except Exception as err:  # noqa: BLE001 - the response must say something either way
-        log.exception("unexpected failure id=%s", id)
+        log.exception("unexpected failure id=%s stage=%s", id, _failure_stage(timing, traceback.format_exc()))
         cleanup.func(*cleanup.args, **cleanup.kwargs)
         raise HTTPException(status_code=500, detail=str(err)[:300]) from err
 
