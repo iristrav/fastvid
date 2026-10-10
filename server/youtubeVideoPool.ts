@@ -341,7 +341,17 @@ export function search2Reasons(
    */
   refused: ReadonlySet<string> = new Set()
 ): string[] {
-  const usable = pool.candidates.filter((c) => c.usable && !refused.has(c.videoId));
+  /**
+   * H2 (video 644) — WHAT YOUTUBE FOUND DECIDES WHETHER YOUTUBE IS ASKED AGAIN.
+   *
+   * 644's search #1 gave 7 usable videos covering 3 of 13 sentences; the archive added 16 earlier
+   * finds and lifted the coverage on paper to 11/13, so search #2 was never spent — while the
+   * gap query the planner had ready ("Tesla sales model legal storm") had passed the gate. The
+   * archive still joins the pool and is still stocked and judged exactly as before; it just no
+   * longer counts as proof that a search found enough. `from >= 1` is a search's candidate;
+   * `from === 0` is the archive's (see `PoolCandidate.from`).
+   */
+  const usable = pool.candidates.filter((c) => c.usable && c.from >= 1 && !refused.has(c.videoId));
   const beats = pool.sentences.length;
   const covered = new Set(usable.flatMap((c) => c.serves)).size;
   const distinct = new Set(usable.map((c) => c.videoId)).size;

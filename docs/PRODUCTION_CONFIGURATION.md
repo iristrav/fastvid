@@ -175,6 +175,7 @@ a valid render.
 | `CINEMATIC_RENDER_PATH` | the timeline renderer |
 | `POOL_RANKING_V2` | the thirteen-signal ranking engine (follows the flag above unless set) |
 | `ENABLE_YOUTUBE_SOURCING` | YouTube as a retrieval source |
+| `YOUTUBE_SEARCH_DURATION` | the length YouTube's search is asked for. Default `any`: no filter, the request exactly as it was before video 644. `medium` (4–20 min) and `long` (over 20 min) are deliberate opt-ins for a measured test; the local Short rule applies in every case |
 | `AI_DIRECTOR` | the LLM Director |
 
 `SEARCH_GATE_STRICT` defaults **on** and should stay on.

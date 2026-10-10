@@ -231,6 +231,39 @@ export const ARCHIVE_STORE_FAILED = "ARCHIVE_STORE_FAILED";
 export const ARCHIVE_ASSET_READY = "ARCHIVE_ASSET_READY";
 export const ARCHIVE_ASSET_MISSING = "ARCHIVE_ASSET_MISSING";
 
+/**
+ * H5 (after video 644) — WHY A READ-BACK FAILED, AS A CLASS AND NEVER AS A URL.
+ *
+ * 644 lost two approved YouTube shots to `ARCHIVE_NOT_READABLE:MISSING` (assets 60476 and 60518),
+ * and nothing in the log said whether the object store answered 403, the download timed out, or the
+ * pipeline's own downloader refused before the wire — `readBack` swallowed every error as `false`.
+ * The read-back goes through `downloadToFileStreaming`, which can throw for the sentence's download
+ * budget, a URL refused earlier this render, a byte cap or a timeout; each is a different repair.
+ *
+ * Only the class is logged. A thrown message can carry the signed URL (the downloader prefixes its
+ * label with it on some paths), so the message itself never reaches the log.
+ */
+export function archiveReadBackFailureClass(err: unknown): string {
+  const message = ((err as { message?: unknown })?.message ?? "").toString().toLowerCase();
+  const name = ((err as { name?: unknown })?.name ?? "").toString();
+  if (message.includes("download budget")) return "download_budget";
+  if (message.includes("already refused")) return "refused_before";
+  if (message.includes("exceeds maximum size")) return "byte_cap";
+  if (name === "AbortError" || message.includes("timed out") || message.includes("timeout") || message.includes("aborted")) return "timeout";
+  if (message.includes("fetch failed") || message.includes("econnreset") || message.includes("enotfound") || message.includes("econnrefused")) return "network";
+  return name ? `thrown:${name}` : "thrown";
+}
+
+/** One line per read-back attempt: which route answered and how, without the address it used. */
+export function formatArchiveReadBackLine(p: {
+  assetId: number;
+  via: "local" | "signed" | "direct" | "unresolvable" | "no_row";
+  outcome: string;
+  ms: number;
+}): string {
+  return `[ProductionArchive] read-back asset=${p.assetId} via=${p.via} outcome=${p.outcome} ms=${p.ms}`;
+}
+
 /* ═══════════════════════ the store ═══════════════════════ */
 
 /** SHA-256 of the bytes on disk. File identity — not a URL, not a name, not a provider id. */
@@ -583,15 +616,29 @@ export function productionArchiveDeps(params: {
      * cannot be resolved is still `false`, and a `false` still refuses the push.
      */
     readBack: async (assetId, destPath) => {
+      /** H5 — every exit of this read-back says which route it took and how it ended. Same returns as before. */
+      const t0 = Date.now();
+      const said = (via: Parameters<typeof formatArchiveReadBackLine>[0]["via"], outcome: string, result: boolean): boolean => {
+        console.log(formatArchiveReadBackLine({ assetId, via, outcome, ms: Date.now() - t0 }));
+        return result;
+      };
+      const fetched = async (via: "signed" | "direct", url: string): Promise<boolean> => {
+        try {
+          const ok = await params.download(url, destPath);
+          return said(via, ok ? "ok" : "no_file", ok);
+        } catch (err) {
+          return said(via, archiveReadBackFailureClass(err), false);
+        }
+      };
       const { getMediaArchiveAssetById } = await import("./db");
       const row = await getMediaArchiveAssetById(assetId);
       const storageUrl = row?.storageUrl;
-      if (!storageUrl) return false;
+      if (!storageUrl) return said("no_row", "no_storage_url", false);
       const { resolveLocalStorageFilePath } = await import("./storageLocal");
       const local = resolveLocalStorageFilePath({ storageUrl, storageKey: row?.storageKey });
       if (local && fs.existsSync(local)) {
         fs.copyFileSync(local, destPath);
-        return true;
+        return said("local", "ok", true);
       }
       const { resolveArchiveObjectFetchUrl } = await import("./archiveAssetLoad");
       const fetchable = await resolveArchiveObjectFetchUrl({
@@ -599,13 +646,13 @@ export function productionArchiveDeps(params: {
         storageKey: row?.storageKey ?? null,
       }).catch(() => null);
       if (fetchable && /^https?:\/\//i.test(fetchable)) {
-        return params.download(fetchable, destPath).catch(() => false);
+        return fetched("signed", fetchable);
       }
       /** An absolute http URL stored directly is still fetchable as it always was. */
       if (/^https?:\/\//i.test(storageUrl)) {
-        return params.download(storageUrl, destPath).catch(() => false);
+        return fetched("direct", storageUrl);
       }
-      return false;
+      return said("unresolvable", "no_fetchable_url", false);
     },
     findByChecksum: async (checksum) => {
       const { findMediaArchiveAssetByChecksum } = await import("./db");

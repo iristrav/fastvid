@@ -19963,9 +19963,32 @@ async function adoptClip(
     const postponedBehindFresher = new Set<string>();
     /** W1 — candidates that gave this sentence's last look to a YouTube candidate (once each). */
     const gaveLastLookToYoutube = new Set<string>();
+    /**
+     * H3a (after video 644) — WHERE A SENTENCE'S TURN SPENDS ITS TIME, PER CANDIDATE.
+     *
+     * 644's s0b2 had six YouTube moments ready at 08:12:46, opened its turn with them at 08:13:19
+     * and ended it at 08:15:48 with `rejected=0`: in 150 s this loop did not reach the picture editor
+     * for one candidate, and nothing said which step held it. Measurement only: one `[AdoptTiming]`
+     * line per candidate that leaves this loop, naming how long each awaited step took and how long
+     * the candidate waited for its turn in the loop. No order, limit, deadline or decision changes.
+     */
+    const adoptLoopStartedMs = Date.now();
     let cursor = -1;
     for (const p of finalPaths) {
       cursor++;
+      const candidateStartedMs = Date.now();
+      const adoptStepMs: string[] = [];
+      /** Stamps taken around the statements as they are, so the statements themselves stay word for word. */
+      const noteAdoptStep = (step: string, startedMs: number): void => {
+        adoptStepMs.push(`${step}=${Date.now() - startedMs}ms`);
+      };
+      const logAdoptTiming = (outcome: string): void => {
+        console.log(
+          `[AdoptTiming] s${sceneIndex}b${beatIndex} ${path.basename(p)} outcome=${outcome} ` +
+            `waited=${candidateStartedMs - adoptLoopStartedMs}ms total=${Date.now() - candidateStartedMs}ms ` +
+            (adoptStepMs.length ? adoptStepMs.join(" ") : "steps=none")
+        );
+      };
       /**
        * RONDE 97 (production timeout) — a beat that has asked enough STOPS, it does not keep
        * paying and refusing.
@@ -20074,6 +20097,8 @@ async function adoptClip(
         if (reason === "mostly_black" || reason === "baked_edit_text_before_vision") {
           rememberRefusedYoutubeFragment(dedup, p, reason);
         }
+        /** H3a — a candidate refused before the picture editor says which step it reached. */
+        logAdoptTiming(`refused:${reason}`);
         return true;
       };
       /**
@@ -20098,7 +20123,9 @@ async function adoptClip(
         refuse("already_used_in_render");
         continue;
       }
+      const probeStartedMs = Date.now();
       const mediaRefusal = await technicalMediaRefusal(p, MEDIA_PROBES);
+      noteAdoptStep("probe", probeStartedMs);
       if (mediaRefusal && refuse(mediaRefusal)) continue;
       /**
        * VIDEO 638 (G2) — a YouTube moment the archive refuses at the push (shorter than its
@@ -20107,10 +20134,13 @@ async function adoptClip(
        * 2.0–2.3 s. Same constant and comparison as the ingestion: nothing is rounded, slowed or
        * stretched, and a moment of 3.0 s or more goes on exactly as before.
        */
+      const durationStartedMs = Date.now();
       if (isYoutubeMomentPath(p) && belowArchiveMinimumDuration(await probeDurationForMinimumRule(p))) {
+        noteAdoptStep("duration", durationStartedMs);
         refuse(INVALID_DURATION_BEFORE_REVIEW);
         continue;
       }
+      if (isYoutubeMomentPath(p)) noteAdoptStep("duration", durationStartedMs);
       const beatMatch = scoreBeatNarrationMatch(beatText, sourceQuery, p);
       const queryWords = sourceQuery.split(/\s+/).filter((w) => w.length >= 3);
       const providerTitle = dedup.clipAnnotationMeta.get(p)?.providerText?.title;
@@ -20143,12 +20173,14 @@ async function adoptClip(
        * under the key the archive uses, so the push reads it back instead of paying twice.
        */
       if (clipRequiresFairUseTransform(p)) {
+        const textStartedMs = Date.now();
         const text = await judgeOnScreenText({
           path: p,
           mimeType: "video/mp4",
           memoKey: onScreenTextVerdictKey(dedup, p, contentKey),
           budget: beatClipTextFilterMaxChecks(),
         }).catch(() => null);
+        noteAdoptStep("text", textStartedMs);
         /** P0 (video 630) — only text that IS the picture is refused here; see onScreenTextRefusesBeforeVision. */
         if (onScreenTextRefusesBeforeVision(text) && refuse("baked_edit_text_before_vision")) continue;
         if (text?.decision === "REJECT") {
@@ -20176,6 +20208,7 @@ async function adoptClip(
       // Calls evaluateClipVisionGate directly (rather than the boolean-only clipPassesVisionGate
       // wrapper) so a cache hit can be told apart from a fresh evaluation below — a cache hit is
       // the SAME earlier CLIP judgment being returned again, not a new verdict on this candidate.
+      const clipStartedMs = Date.now();
       const visionResult = await evaluateClipVisionGate(
         p,
         beatText,
@@ -20195,6 +20228,7 @@ async function adoptClip(
         // arrives under a different cascade's filename.
         contentKey
       );
+      noteAdoptStep("clip", clipStartedMs);
       /**
        * RONDE 103 — CLIP ranks, it does not decide. Same reasoning as in
        * beatClipPassesVisionGate: this gate's content verdicts are measurably inverted on archive
@@ -20256,10 +20290,15 @@ async function adoptClip(
           continue;
         }
       }
+      /** H3a — the editor's call is timed from here; a requeued candidate is not asked again (short-circuit). */
+      const judgeStartedMs = Date.now();
+      const askedTheEditor = !requeuedAfterRefusal.has(p);
       if (
         !requeuedAfterRefusal.has(p) &&
         !(await beatClipPassesImageGate(p, contentKey, beatText, opts, workDir, sceneIndex, beatIndex, dedup))
       ) {
+        noteAdoptStep("judge", judgeStartedMs);
+        logAdoptTiming("judge:refused");
         registerRejection(dedup.rejections, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);
         noteVisionAsked(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
         noteVisionOutcome(dedup.beatShortlist, sceneIndex, beatIndex, "REJECTED");
@@ -20291,6 +20330,8 @@ async function adoptClip(
       const beatEvidence: VisionEvidence = requeuedAfterRefusal.has(p)
         ? "MISMATCH"
         : beatVisionEvidenceFor(dedup, p, contentKey, sceneIndex, beatIndex);
+      if (askedTheEditor) noteAdoptStep("judge", judgeStartedMs);
+      logAdoptTiming(`judge:${beatEvidence}`);
       if (firstLookAtCandidate) {
         /** A decline costs no judgement, so it is not counted as one. */
         if (beatEvidence !== "UNREVIEWED") {
@@ -23992,8 +24033,17 @@ async function storeExternalClipForTimeline(params: {
        * logging apply to the read-back unchanged — §16's "no second downloader".
        */
       download: async (url, dest) => {
-        await downloadToFileStreaming(url, dest, 120_000, "productionArchive:readBack");
-        return fs.existsSync(dest) && fs.statSync(dest).size > 0;
+        const got = await downloadToFileStreaming(url, dest, 120_000, "productionArchive:readBack");
+        const ok = fs.existsSync(dest) && fs.statSync(dest).size > 0;
+        /**
+         * H5 (after video 644) — the object store's answer, by status only. The URL is signed and
+         * is never printed; a thrown refusal (budget, byte cap, timeout) is classified by the caller.
+         */
+        console.log(
+          `[ProductionArchive] read-back fetch status=${got?.response?.status ?? "none"} ` +
+            `bytes=${got?.bytesWritten ?? 0} file=${ok ? "ok" : "none"}`
+        );
+        return ok;
       },
     }),
     ctx: {

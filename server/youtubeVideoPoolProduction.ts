@@ -13,6 +13,35 @@ import type { PoolDeps, SearchItem, ItemDetails, Triage } from "./youtubeVideoPo
 import type { PlannerInput } from "./youtubeVideoSearchPlanner";
 import { isoDurationSec, rememberYoutubeVideoDurationSec } from "./youtubeVideoDuration";
 
+/**
+ * H1 (video 644) — ASK YOUTUBE FOR THE LENGTHS THE POOL CAN USE.
+ *
+ * 644's one search returned 50 results and the pool threw 42 of them away as Shorts (≤ 180 s,
+ * `youtubeResultIsShort`) before a thumbnail was looked at: 7 usable videos from a call that costs
+ * 100 of the day's 10 000 quota units. The Data API filters length server-side with
+ * `videoDuration`: `medium` is 4–20 minutes, `long` over 20 minutes, `any` no filter. The local
+ * Short rule stays as the second lock whatever is asked for.
+ *
+ * Opt-in by configuration: the default `any` sends the exact request this module sent before,
+ * under the exact cache key it used before, so a deploy changes nothing until the operator sets
+ * `YOUTUBE_SEARCH_DURATION=medium` or `long`. Those two each get a key of their own, so a payload
+ * fetched under one setting is never served under another.
+ * Nothing here touches the per-video search budget: one call is one claim, as before.
+ */
+export type YoutubeSearchDuration = "any" | "medium" | "long";
+export const YOUTUBE_SEARCH_DURATION_DEFAULT: YoutubeSearchDuration = "any";
+
+export function youtubeSearchDuration(env: NodeJS.ProcessEnv = process.env): YoutubeSearchDuration {
+  const raw = env.YOUTUBE_SEARCH_DURATION?.trim().toLowerCase();
+  return raw === "any" || raw === "medium" || raw === "long" ? raw : YOUTUBE_SEARCH_DURATION_DEFAULT;
+}
+
+/** The process-cache key of one search: the request's query, page size and length filter. */
+export function youtubeSearchCacheKey(query: string, duration: YoutubeSearchDuration): string {
+  const base = `${query}#video_pool#n50`;
+  return duration === "any" ? base : `${base}#d=${duration}`;
+}
+
 const TRIAGE_SCHEMA = {
   type: "json_schema" as const,
   json_schema: {
@@ -129,7 +158,8 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
   const llm = invokeLLM as unknown as (p: unknown) => Promise<unknown>;
 
   const search = async (query: string): Promise<{ status: number; items: SearchItem[] }> => {
-    const key = `${query}#video_pool#n50`;
+    const duration = youtubeSearchDuration();
+    const key = youtubeSearchCacheKey(query, duration);
     const callContext = { videoId: input.videoId, renderId: input.renderId, sceneIndex: -1, query };
     type Payload = { items?: Array<{ id?: { videoId?: string }; snippet?: Record<string, unknown> }> };
     const reused = quota.cachedYoutubeSearchPayload(key) as Payload | undefined;
@@ -149,6 +179,8 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
       url.searchParams.set("maxResults", "50");
       url.searchParams.set("order", "relevance");
       url.searchParams.set("videoEmbeddable", "true");
+      /** H1 — `any` sends the request exactly as before; see `youtubeSearchDuration`. */
+      if (duration !== "any") url.searchParams.set("videoDuration", duration);
       const resp = await fetch(url, { signal: AbortSignal.timeout(20_000) });
       status = resp.status;
       console.log(

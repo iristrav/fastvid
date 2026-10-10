@@ -331,7 +331,25 @@ export function refuseQuery(
      */
     const named = subject.filter((sw) => cw.some((x) => sameSubjectWord(x, sw))).length;
     const namedEnough = cw.some((x) => initials.has(x)) || named >= (subject.length >= 3 ? 2 : 1);
-    if (subject.length && !namedEnough) {
+    /**
+     * H2 (video 644) — THE NAME THE VIDEO KEEPS SAYING NAMES ITS SUBJECT.
+     *
+     * 644's model called the main subject "How Tesla Changed the Car Industry" — the film's title,
+     * five words — and the rule above then wanted two of those words in the query. "Tesla Elon Musk
+     * New Jersey California" has one, so three queries were refused and the search went out as the
+     * fallback "Tesla Model footage". The name that recurs most through the narration (`recurring[0]`,
+     * a capitalised run, never a year) and is itself part of that subject names the subject when the
+     * query carries all of its words. "World War II" as subject and recurring name still needs all of
+     * "World War II" in the query; the P5 rule for a subject the narration does not keep saying is
+     * unchanged.
+     */
+    const recurringName = ctx.analysis.recurring[0]?.term ?? "";
+    const recurringWords = /^\d{4}s?$/.test(recurringName) ? [] : contentWords(recurringName);
+    const namesRecurringSubject =
+      recurringWords.length > 0 &&
+      recurringWords.every((rw) => subject.some((sw) => sameSubjectWord(rw, sw))) &&
+      recurringWords.every((rw) => cw.some((x) => sameSubjectWord(x, rw)));
+    if (subject.length && !namedEnough && !namesRecurringSubject) {
       return `the video's main subject "${ctx.mainSubject}" is not in the query`;
     }
     if (!ctx.allowSingleScene) {
