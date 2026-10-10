@@ -1360,6 +1360,19 @@ export function buildCinematicSceneInputs(params: {
 /** Below this, a difference is floating-point noise from three additions, not a fault. */
 const ADAPTER_EPS = 0.001;
 const s3 = (n: number) => `${n.toFixed(3)}s`;
+/**
+ * VIDEO 644 — the overlap check compares whole milliseconds, with a slack of exactly one.
+ *
+ * A beat's start and its length are rounded to 3 decimals separately (`partStart.toFixed(3)`,
+ * `shareBeatTime`), and the next beat's start is rounded on its own. Two half-up roundings can
+ * disagree by at most 0.5 ms + 0.5 ms = 1 ms, which is what `ADAPTER_EPS` was meant to allow. But
+ * applied in floating point it did not: 644's s0b1 ran to 8.326 s and s0b2 started at 8.325 s, and
+ * `8.326 - 0.001` is `8.325000000000001`, so a gap of exactly the allowed size refused the whole
+ * plan. Whole milliseconds carry no such noise: a 1 ms disagreement is the two roundings, 2 ms or
+ * more is two clips on screen at once and is still refused.
+ */
+const BEAT_OVERLAP_SLACK_MS = 1;
+const wholeMs = (sec: number) => Math.round(sec * 1000);
 
 /**
  * Every rule this adapter is responsible for, asked of the plan it just built.
@@ -1462,7 +1475,7 @@ export function checkCinematicSceneInputs(scenes: CinematicSceneInput[]): Adapte
     for (let i = 1; i < placed.length; i++) {
       const prev = placed[i - 1]!;
       const cur = placed[i]!;
-      if (cur.start < prev.end - ADAPTER_EPS) {
+      if (wholeMs(cur.start) < wholeMs(prev.end) - BEAT_OVERLAP_SLACK_MS) {
         issues.push({
           check: "beat_overlap",
           sceneIndex,

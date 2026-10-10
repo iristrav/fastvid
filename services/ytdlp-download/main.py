@@ -311,6 +311,49 @@ def _probe_duration(path: Path) -> float | None:
         return None
 
 
+def _video_stream(path: Path) -> tuple[str, str]:
+    """
+    VIDEO 644 — does the file carry a picture? `(verdict, why)`, never raises.
+
+    Render 644 was handed four "ok" files of 324.805–684.866 bytes for 20–40 s cuts: about 16 KB/s,
+    which is the 128 kbps audio track and nothing else. The size checks passed them (above the
+    floor, under the ceiling), FastVid's own ffprobe then found no video stream, and each cost a
+    download slot, a cut and 30 minutes in the result cache. The size of a file says nothing about
+    what is in it; this asks.
+
+      ("video", "WxH")          — a video stream with a frame size
+      ("none", "")              — readable media without a video stream (audio only)
+      ("unreadable", <ffprobe>) — ffprobe could not read it: corrupt, truncated, not media
+      ("unverified", <why>)     — ffprobe did not answer (timed out, missing); not a success either
+    """
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "csv=p=0",
+                str(path),
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return "unverified", "ffprobe timed out after 30s"
+    except OSError as err:
+        return "unverified", f"ffprobe did not run: {err.__class__.__name__}"
+    if probe.returncode != 0:
+        first = (probe.stderr or "").strip().splitlines()
+        return "unreadable", (first[-1] if first else f"ffprobe exit {probe.returncode}")[:120]
+    fields = probe.stdout.strip().split(",") if probe.stdout.strip() else []
+    try:
+        width, height = int(fields[0]), int(fields[1])
+    except (IndexError, ValueError):
+        return "none", ""
+    if width <= 0 or height <= 0:
+        return "none", ""
+    return "video", f"{width}x{height}"
+
+
 def _cut_window(src: Path, dst: Path, start: float, duration: float) -> bool:
     """
     Cut [start, start+duration] out of src.
@@ -1105,6 +1148,23 @@ def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileR
             status_code=502,
             detail=f"file over ceiling ({size} > {MAX_BYTES} bytes, salvage={salvage})",
         )
+
+    # VIDEO 644 — a body of the right size is not yet a video. Refused here, with its own reason,
+    # before the "ok" line and before the cache: an audio-only body kept under its key would be
+    # served again for 30 minutes to every caller asking for the same cut.
+    picture, why = _video_stream(produced)
+    if picture != "video":
+        cleanup.func(*cleanup.args, **cleanup.kwargs)
+        detail = {
+            "none": f"file has no video stream (bytes={size}, salvage={salvage})",
+            "unreadable": f"file is not readable media ({why}, salvage={salvage})",
+        }.get(picture, f"video stream unverified ({why}, salvage={salvage})")
+        log.warning(
+            "cut refused id=%s start=%.2f dur=%.2f bytes=%d picture=%s attempt=%s download_ms=%s %s: %s",
+            id, start, duration, size, picture, timing.get("attempt"), timing.get("download_ms"),
+            timing.get("facts") or "facts=none", detail,
+        )
+        raise HTTPException(status_code=502, detail=detail)
 
     log.info(
         "ok id=%s start=%.2f dur=%.2f bytes=%d salvage=%s proxy=%s attempt=%s extract_ms=%s download_ms=%s %s",

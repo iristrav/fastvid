@@ -189,6 +189,46 @@ describe("a beat that overlaps its neighbour", () => {
   });
 });
 
+/**
+ * VIDEO 644 — the one-millisecond disagreement two separate roundings can leave.
+ *
+ *     [CinematicPipeline] video=644 plan NOT stored code=CINEMATIC_ADAPTER_INVALID reason=1 adapter
+ *       check(s) failed, first: s0b2 beat_overlap (actual starts 8.325s while b1 runs to 8.326s,
+ *       expected starts >= 8.326s)
+ *
+ * s0b1's start and length were rounded to 3 decimals on their own, s0b2's start too; the two
+ * answers differed by exactly the 1 ms `ADAPTER_EPS` allows — and in floating point
+ * `8.326 - 0.001` is `8.325000000000001`, so the allowance did not hold at its own boundary and the
+ * whole render was refused. The numbers below are 644's own.
+ */
+describe("a one-millisecond rounding gap between neighbours (video 644)", () => {
+  /** s0b1 at 4.163 s for 4.163 s runs to 8.326 s; s0b2 was rounded to 8.325 s. */
+  const gapOf = (nextStart: number) =>
+    planWith([[0, 4], [4, 4], [8, 2]], 10, (plan) => {
+      moveBeat(plan, 0, 0, 4.163);
+      moveBeat(plan, 1, 4.163, 4.163);
+      moveBeat(plan, 2, nextStart, 10 - nextStart);
+    });
+
+  it("1 ms, the two roundings disagreeing: the clips adjoin, the plan passes", () => {
+    expect(gapOf(8.325).filter((i) => i.check === "beat_overlap")).toEqual([]);
+  });
+
+  it("2 ms is two clips on screen at once, and is still refused", () => {
+    const issue = gapOf(8.324).find((i) => i.check === "beat_overlap");
+    expect(issue?.actual).toBe("starts 8.324s while b1 runs to 8.326s");
+  });
+
+  it("exactly adjoining neighbours pass", () => {
+    expect(gapOf(8.326).filter((i) => i.check === "beat_overlap")).toEqual([]);
+  });
+
+  it("the slack hides no real overlap: the render-574 case is refused as before", () => {
+    const issues = planWith([[0, 4], [4, 4]], 10, (plan) => moveBeat(plan, 0, 0, 6));
+    expect(issues.map((i) => i.check)).toContain("beat_overlap");
+  });
+});
+
 describe("a shot with no length", () => {
   it("zero duration is refused", () => {
     const found = planWith([[0, 5], [5, 5]], 10, (plan) => moveBeat(plan, 1, 5, 0));

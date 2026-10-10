@@ -8,12 +8,20 @@ by a stand-in; nothing touches YouTube.
 import os, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["SERVICE_TOKEN"] = ""
+import shutil, subprocess
 import main
 from pathlib import Path
 from fastapi.testclient import TestClient
 
 script: list = []
 calls: list = []
+
+# VIDEO 644 — the service now asks ffprobe whether a cut carries a picture, so the stand-in writes a
+# real (tiny) MP4 instead of a run of zero bytes, which would be refused as "not readable media".
+FIXTURE = Path(tempfile.mkdtemp(prefix="ytdl-check-fixture-")) / "v.mp4"
+subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25:duration=3",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(FIXTURE)], check=True)
+assert FIXTURE.stat().st_size >= 10_000
 class FakeYDL:
     def __init__(self, opts): self.opts = opts
     def __enter__(self): return self
@@ -24,7 +32,7 @@ class FakeYDL:
             raise main.yt_dlp.utils.DownloadError(info_dict["outcome"])
         tmpl = self.opts.get("outtmpl")
         path = tmpl["default"] if isinstance(tmpl, dict) else tmpl
-        with open(path, "wb") as f: f.write(b"\0" * 50_000)
+        shutil.copyfile(FIXTURE, path)
     def download(self, urls):
         calls.append(self.opts)
         outcome = script.pop(0)
