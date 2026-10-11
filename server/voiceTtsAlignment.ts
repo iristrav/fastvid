@@ -394,14 +394,34 @@ export async function fetchElevenLabsWithTimestamps(
         signal: AbortSignal.timeout(timeoutMs),
       }
     );
-    if (!response.ok) return null;
+    if (!response.ok) {
+      /**
+       * VIDEO 645 — this returned null without a word, and the render's log never said why the
+       * narration had no word timing (ElevenLabs had answered 401 quota_exceeded; Fish Audio spoke
+       * the text, which carries no timestamps, and all eleven sentences were laid out). The reason
+       * is now on the log, next to the consequence.
+       */
+      const body = await response.text().catch(() => "");
+      console.warn(
+        `[TtsAlign] with-timestamps HTTP ${response.status}: ${body.slice(0, 150)} — no word timing from this part; ` +
+          `the beats of a narration spoken without timestamps are laid out, not measured`
+      );
+      return null;
+    }
     const data = (await response.json()) as ElevenLabsTimestampResponse;
     const alignment = data.alignment ?? data.normalized_alignment;
-    if (!alignment?.characters?.length || !data.audio_base64) return null;
+    if (!alignment?.characters?.length || !data.audio_base64) {
+      console.warn("[TtsAlign] with-timestamps: response carried no alignment or no audio — no word timing from this part");
+      return null;
+    }
     const audioBuffer = Buffer.from(data.audio_base64, "base64");
-    if (audioBuffer.length < 100) return null;
+    if (audioBuffer.length < 100) {
+      console.warn("[TtsAlign] with-timestamps: audio shorter than 100 bytes — no word timing from this part");
+      return null;
+    }
     return { audioBuffer, alignment };
-  } catch {
+  } catch (err) {
+    console.warn(`[TtsAlign] with-timestamps error: ${((err as Error).message ?? String(err)).slice(0, 150)} — no word timing from this part`);
     return null;
   }
 }

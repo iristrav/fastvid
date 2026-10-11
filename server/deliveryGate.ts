@@ -30,6 +30,7 @@
  *    verdict built from anything less.
  */
 
+import type { SentenceCoverageReport } from "./sentenceCoverage";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import { normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import { computeScreenTimeShare } from "./deliveredScreenTime";
@@ -63,6 +64,35 @@ export type DeliveredFileFacts = {
   hasVideoStream: boolean;
   hasAudioStream: boolean;
   sizeBytes: number;
+};
+
+/**
+ * HARD QUALITY GATE — the delivered file's own placeholder scan (postRenderSpotCheck.ts): every frame
+ * of the MP4, read. `complete` is false when the decode failed, stopped short, disagreed with its own
+ * timing, a planned interval held no frame, or the scan did not run.
+ */
+export type PlaceholderCheckFacts = {
+  /** Every frame of the file was read (postRenderSpotCheck.ts); the scan has no other method. */
+  method?: "all_frames";
+  complete: boolean;
+  /** Every decoded frame. */
+  framesSampled: number;
+  placeholderFrames: number;
+  /** The placeholder frames' own presentation time, in seconds. Exactly zero is the only passing value. */
+  placeholderSec?: number;
+  /** Ground frames inside a planned content graphic (a chart, a counter): reported, not placeholder. */
+  contentGraphicGroundSec?: number;
+  /** Seconds the decode covered. */
+  decodedSec?: number;
+  /** Chapter-card time the timeline planned (seconds). */
+  plannedCardSec: number;
+  /** Planned card intervals whose every sample showed the blue-grey ground: their planned seconds. */
+  confirmedPlaceholderSec: number;
+  /** Planned card intervals with at least one placeholder sample: their planned seconds. */
+  indicatedPlaceholderSec: number;
+  /** Placeholder frames found at the regular sample points, outside any planned card. */
+  unplannedPlaceholderFrames: number;
+  detail?: string;
 };
 
 export type DeliveryGateInput = {
@@ -99,6 +129,14 @@ export type DeliveryGateInput = {
   footageRefusal?: string | null;
   /** RONDE 662 — `blankPictureFinding` on the delivered file's spot check; null when not blank or not sampled. */
   blankPicture?: string | null;
+  /**
+   * HARD QUALITY GATE — sentence coverage measured on the rendered timeline (sentenceCoverage.ts).
+   * `undefined`: this caller did not measure it (older callers, tests of the other rules); `null`: it
+   * was asked for and could not be measured — fail closed. The render worker always passes it.
+   */
+  sentenceCoverage?: SentenceCoverageReport | null;
+  /** HARD QUALITY GATE — the MP4 placeholder scan. `null`: not run or unreadable — fail closed. */
+  placeholderCheck?: PlaceholderCheckFacts | null;
 };
 
 export type DeliveryGateFailureCode =
@@ -112,7 +150,12 @@ export type DeliveryGateFailureCode =
   | "DELIVERED_FILE_NO_VIDEO"
   | "DELIVERED_FILE_NO_AUDIO"
   | "DELIVERED_DURATION_WRONG"
-  | "FINAL_PICTURE_IS_BLACK";
+  | "FINAL_PICTURE_IS_BLACK"
+  | "SENTENCE_NOT_COVERED"
+  | "SENTENCE_COVERAGE_UNPROVEN"
+  | "CHAPTER_CARD_PLACEHOLDER"
+  | "PLACEHOLDER_IN_FILE"
+  | "PLACEHOLDER_CHECK_INCOMPLETE";
 
 export type DeliveryGateVerdict =
   | { allow: true; checked: number; lines: string[] }
@@ -237,6 +280,28 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
     }
   }
 
+  /**
+   * HARD QUALITY GATE — every sentence covered by a picture that fits, for all of its spoken time, and
+   * no blue-grey chapter-card ground in the file. Fail closed: what cannot be proven is not passed.
+   */
+  for (const f of hardVisualRuleFailures(input)) failures.push(f);
+  const hardRuleLines: string[] = [];
+  if (input.sentenceCoverage) {
+    const c = input.sentenceCoverage;
+    hardRuleLines.push(
+      `[DeliveryGate]   COVERAGE sentences=${c.total} covered=${c.covered} partial=${c.partial} uncovered=${c.uncovered} unknown=${c.unknown} ` +
+        `stretchedClips=${c.stretchedClips} plannedCardSec=${c.plannedCardSec.toFixed(2)} proven=${c.proven ? "yes" : "no"}`
+    );
+  }
+  if (input.placeholderCheck) {
+    const p = input.placeholderCheck;
+    hardRuleLines.push(
+      `[DeliveryGate]   PLACEHOLDER method=${p.method ?? "unknown"} complete=${p.complete ? "yes" : "no"} frames=${p.framesSampled} placeholderFrames=${p.placeholderFrames} ` +
+        `placeholderSec=${(p.placeholderSec ?? p.confirmedPlaceholderSec).toFixed(2)} plannedCardSec=${p.plannedCardSec.toFixed(2)} confirmedSec=${p.confirmedPlaceholderSec.toFixed(2)} ` +
+        `indicatedSec=${p.indicatedPlaceholderSec.toFixed(2)} unplannedFrames=${p.unplannedPlaceholderFrames} contentGraphicGroundSec=${(p.contentGraphicGroundSec ?? 0).toFixed(2)}`
+    );
+  }
+
   const fromArchive = input.clips.filter((c) => c.fromArchive).length;
   const summary =
     `clips=${input.clips.length} fromArchive=${fromArchive} route=${input.route} ` +
@@ -244,17 +309,79 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
     `checks=${input.assetsOnly ? "assets" : "assets+file"}`;
 
   if (failures.length === 0) {
-    lines.push(`[DeliveryGate] ${DELIVERY_GATE_PASS} ${at} ${summary}`, ...qualityNotes);
+    lines.push(`[DeliveryGate] ${DELIVERY_GATE_PASS} ${at} ${summary}`, ...hardRuleLines, ...qualityNotes);
     return { allow: true, checked: input.clips.length, lines };
   }
   lines.push(`[DeliveryGate] ${DELIVERY_GATE_FAIL} ${at} ${summary} failures=${failures.length}`);
   for (const f of failures) lines.push(`[DeliveryGate]   ${f.code} — ${f.detail}`);
-  lines.push(...qualityNotes);
+  lines.push(...hardRuleLines, ...qualityNotes);
   return { allow: false, failures, lines };
 }
 
 
 /** The one sentence a blocked delivery reports to the operator and to the job row. */
+/**
+ * HARD QUALITY GATE — the two hard rules as gate failures. Pure: the same facts give the same answer.
+ *
+ *   SENTENCE_NOT_COVERED         a sentence's spoken window is not fully under approved footage or a
+ *                                content graphic (a card, a hold past the source, an unverified clip
+ *                                or nothing fills part of it);
+ *   SENTENCE_COVERAGE_UNPROVEN   coverage asked for but not measurable (no sentences, estimated
+ *                                timing, a clip without a source window) — never passed as covered;
+ *   CHAPTER_CARD_PLACEHOLDER     the timeline plans a chapter card as a sentence's picture;
+ *   PLACEHOLDER_IN_FILE          one or more frames of the MP4 are the blue-grey ground outside a
+ *                                planned content graphic (planned card or not): placeholder time > 0;
+ *   PLACEHOLDER_CHECK_INCOMPLETE the scan did not run, could not read every frame, or a planned
+ *                                interval held no frame.
+ */
+export function hardVisualRuleFailures(
+  input: Pick<DeliveryGateInput, "sentenceCoverage" | "placeholderCheck">
+): Array<{ code: DeliveryGateFailureCode; detail: string }> {
+  const failures: Array<{ code: DeliveryGateFailureCode; detail: string }> = [];
+  if (input.sentenceCoverage === null) {
+    failures.push({ code: "SENTENCE_COVERAGE_UNPROVEN", detail: "sentence coverage could not be measured on this timeline" });
+  } else if (input.sentenceCoverage) {
+    const c = input.sentenceCoverage;
+    if (c.total === 0) failures.push({ code: "SENTENCE_COVERAGE_UNPROVEN", detail: "the timeline carries no sentences" });
+    for (const row of c.sentences) {
+      const where = `${row.key}${row.text ? ` "${row.text.slice(0, 60)}"` : ""}`;
+      if (row.status === "uncovered" || row.status === "partial") {
+        failures.push({
+          code: "SENTENCE_NOT_COVERED",
+          detail: `${where}: ${row.coveredSec.toFixed(2)}s of ${row.spokenSec?.toFixed(2) ?? "?"}s covered — ${row.reasons.join("; ") || "no picture"}`,
+        });
+      } else if (row.status === "unknown") {
+        failures.push({ code: "SENTENCE_COVERAGE_UNPROVEN", detail: `${where}: ${row.reasons.join("; ") || "coverage not measurable"}` });
+      }
+    }
+    if (c.plannedCardSec > 0) {
+      failures.push({
+        code: "CHAPTER_CARD_PLACEHOLDER",
+        detail:
+          `${c.cardIntervals.length} chapter card(s) planned as a sentence's picture, ${c.plannedCardSec.toFixed(2)}s of blue-grey ground ` +
+          `(${c.cardIntervals.map((i) => `${i.startSec.toFixed(2)}–${i.endSec.toFixed(2)}${i.sceneIndex != null ? ` s${i.sceneIndex}b${i.beatIndex}` : ""}`).join(", ")})`,
+      });
+    }
+  }
+  if (input.placeholderCheck === null) {
+    failures.push({ code: "PLACEHOLDER_CHECK_INCOMPLETE", detail: "the delivered file was not scanned for the chapter-card ground" });
+  } else if (input.placeholderCheck) {
+    const p = input.placeholderCheck;
+    const placeholderSec = p.placeholderSec ?? p.confirmedPlaceholderSec;
+    if (p.placeholderFrames > 0 || placeholderSec > 0 || p.indicatedPlaceholderSec > 0) {
+      failures.push({
+        code: "PLACEHOLDER_IN_FILE",
+        detail:
+          `${p.placeholderFrames} of ${p.framesSampled} frame(s) show the blue-grey chapter-card ground: ` +
+          `${placeholderSec.toFixed(2)}s where exactly 0.00s is allowed (planned cards ${p.plannedCardSec.toFixed(2)}s)` +
+          (p.unplannedPlaceholderFrames ? `; ${p.unplannedPlaceholderFrames} frame(s) outside any planned card` : ""),
+      });
+    }
+    if (!p.complete) failures.push({ code: "PLACEHOLDER_CHECK_INCOMPLETE", detail: p.detail ?? "the scan could not read every frame of the delivered file" });
+  }
+  return failures;
+}
+
 export function formatDeliveryBlock(verdict: DeliveryGateVerdict, videoId: number): string {
   if (verdict.allow) return "";
   const first = verdict.failures[0];

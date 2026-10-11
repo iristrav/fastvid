@@ -25,8 +25,22 @@
  * granted, this only stops a granted look being cut off by a clock that was not its own.
  */
 
-/** Measured in 643: 34 moments judged in 133 s with 9 sentences side by side (≈ 3.9 s each), rounded up. */
-export const JUDGE_MS_PER_LOOK = 5_000;
+/**
+ * Measured in 643: 34 moments judged in 133 s with 9 sentences side by side (≈ 3.9 s each), rounded up
+ * to 5 s. VIDEO 644 then measured the other side of that estimate: eleven looks were queued, 55 s were
+ * granted (11 × 5 s, exactly the base), nine looks were judged in those 55 s and eight sentences ended
+ * without their last look (`JUDGE_BUDGET_EXHAUSTED`), while the ceiling (188 s) was never approached.
+ * A look costs more than 5 s when three run side by side against a remote vision model. Half again
+ * per look, and half again on the base (`JUDGE_BASE_SCALE`), sized on what 644 actually used.
+ * Both stay under the same ceiling: by the video's length, and never past the force-export moment.
+ */
+export const JUDGE_MS_PER_LOOK = 7_500;
+/**
+ * VIDEO 644 — the base the picture editor starts with (`FINAL_REVIEW_WINDOW_MS + FINAL_LOOK_TURN_MS`,
+ * 55 s) scaled once, here, rather than by moving the two constants it is built from: those name what
+ * one sentence's review and one last look cost on their own paths, and other clocks read them.
+ */
+export const JUDGE_BASE_SCALE = 1.5;
 /** The ceiling's floor and roof, and how it follows the video's length. */
 export const JUDGE_BUDGET_MIN_CEILING_MS = 180_000;
 export const JUDGE_BUDGET_MAX_CEILING_MS = 600_000;

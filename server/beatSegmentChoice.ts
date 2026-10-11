@@ -131,6 +131,32 @@ export function pickLongVideoStartSec(
 }
 
 /**
+ * VIDEO 645 — WHERE A SECOND SECTION OF THE SAME VIDEO STARTS.
+ *
+ * Another hash-placed point in the body (the same head and tail skipped), that does not overlap a
+ * section already cut: three seeds are tried, the first clear one wins. `null` when the video has no
+ * room for a section clear of the ones it already gave (a short video is one section).
+ */
+export function pickSecondSectionStartSec(
+  sourceDurationSec: number,
+  takeSec: number,
+  seed: string,
+  takenStarts: readonly number[]
+): number | null {
+  if (!Number.isFinite(sourceDurationSec) || !Number.isFinite(takeSec) || takeSec <= 0) return null;
+  if (sourceDurationSec < 2 * takeSec) return null;
+  const clear = (s: number) => takenStarts.every((t) => Math.abs(s - t) >= takeSec);
+  for (let n = 2; n <= 4; n++) {
+    const s = pickLongVideoStartSec(sourceDurationSec, takeSec, `${seed}#${n}`);
+    if (clear(s)) return s;
+  }
+  /** The hash kept landing on a taken section: the first clear slot after the last section, if any. */
+  const after = Math.max(0, ...takenStarts) + takeSec;
+  if (after + takeSec <= sourceDurationSec && clear(after)) return after;
+  return null;
+}
+
+/**
  * The fractions of a trimmed clip to sample when judging what it shows.
  *
  * One frame is not a clip. Even a 3.5-second cut can contain a shot change, and the frame that

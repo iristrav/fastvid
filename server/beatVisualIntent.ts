@@ -193,6 +193,65 @@ export function ensureBeatVisualIntent(
 }
 
 /**
+ * VIDEO 644 — WHAT THE PICTURE EDITOR MAY KNOW ABOUT THE LINE, AND NOTHING MORE.
+ *
+ * Two facts the intent already holds, read out for the relevance judge so it can tell an abstract
+ * line from a concrete one without a text heuristic of its own. Both are deterministic readings of
+ * fields `buildBeatVisualIntent` filled from the verified context and the planner's contract.
+ *
+ *   evidenceRequirement   `hard` — the planner named what the picture MUST contain; `soft` — the
+ *                         line has a subject and nothing is mandatory; `none` — the line could not
+ *                         say what it is about.
+ *   wantsSpecificPicture  the line typed something a picture has to SHOW: a person, a place, a
+ *                         period, an object, an event, an action, a quantity or a map. This is the
+ *                         `want=…` half of the `[VisualIntent]` log line; `want=NONE` reads false.
+ */
+export type LineFacts = {
+  evidenceRequirement: BeatVisualIntent["evidenceRequirement"];
+  wantsSpecificPicture: boolean;
+};
+
+export function lineFactsOf(intent: BeatVisualIntent): LineFacts {
+  const need = intent.mediaForm ?? mediaFormsForIntent(intent);
+  const typed = [intent.people, intent.event, intent.location, intent.period, intent.objects, intent.action].some(
+    (list) => list.length > 0
+  );
+  return {
+    evidenceRequirement: intent.evidenceRequirement,
+    wantsSpecificPicture: need.preferred.length > 0 || typed,
+  };
+}
+
+/** The facts for one beat, or nothing when no route has built that beat's intent yet. */
+export function lineFactsFor(
+  state: BeatVisualIntentState | undefined,
+  sceneIndex: number,
+  beatIndex: number
+): LineFacts | undefined {
+  const intent = state?.byBeat.get(key(sceneIndex, beatIndex));
+  return intent ? lineFactsOf(intent) : undefined;
+}
+
+/**
+ * VIDEO 645 — MAY GENERAL FOOTAGE STAND IN FOR THE PEOPLE A SENTENCE NAMES?
+ *
+ * 645's s1b1 ("Enter Tesla, rewriting the rules. Mary Barra and Bill Ford watched as…") had the intent
+ * `want=PERSON ok=PERSON|REAL_FOOTAGE|PHOTO|B_ROLL evidence=soft`: the planner made nothing mandatory
+ * and general footage was acceptable. The metadata gate (`entity_evidence`) still refused eight
+ * Tesla-factory moments before any look, because no title named the two executives — the sentence
+ * got a 6.95 s card with the footage unjudged on disk.
+ *
+ * True when the intent accepts REAL_FOOTAGE or B_ROLL AND the planner did not name what the picture
+ * MUST contain (`evidenceRequirement !== "hard"`). With no intent, or a hard requirement, false: the
+ * gate stays exactly what it was. This answers "may the picture editor look?", never "is it a fit".
+ */
+export function intentAcceptsGeneralFootage(intent: BeatVisualIntent | null | undefined): boolean {
+  if (!intent || intent.evidenceRequirement === "hard") return false;
+  const need = intent.mediaForm ?? mediaFormsForIntent(intent);
+  return need.acceptable.includes("REAL_FOOTAGE") || need.acceptable.includes("B_ROLL");
+}
+
+/**
  * HOW WELL DOES THIS CANDIDATE ANSWER THE BEAT?
  *
  * A deliberately small, deterministic score over text the provider supplied — a title, a

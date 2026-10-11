@@ -54,7 +54,7 @@ import {
   formatGraphicsLifecycle,
   graphicsLifecycle,
 } from "./graphicsLifecycle";
-import type { AssetSourceIdentity, ProjectTimeline, TimelineText, TimelineVideoClip } from "./projectTimeline";
+import type { AssetSourceIdentity, ProjectTimeline, TimelineSentence, TimelineText, TimelineVideoClip } from "./projectTimeline";
 import { captionTrack, DEFAULT_TEXT_STYLE, graphicsTrack } from "./projectTimeline";
 import { graphicOnScreenWindow, timelineWordTiming } from "./remotionProps";
 import { intensityAtFrom, typewriterSfxClips } from "./typewriterSound";
@@ -156,6 +156,8 @@ export type CinematicPipelineParams = {
   fillerFits?: (filler: TimelineVideoClip, startSec: number, endSec: number) => boolean;
   /** GRAPHICS FIX — sentences with no picture whose graphic is their picture. See `placePrimaryGraphics`. */
   primaryGraphics?: ReadonlyArray<PrimaryGraphicInput>;
+  /** HARD QUALITY GATE — the script's sentences with their spoken windows, stored on the timeline for the gate. */
+  sentences?: readonly TimelineSentence[];
   /** The persisted narration, when there is one. Never regenerated — RONDE 146 stores it. */
   voice?: { url: string; durationSec: number } | null;
   /** The measured TTS alignment, carried so captions land on real word boundaries. */
@@ -426,6 +428,9 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
    * film's most intense beats. The beat intensities come from the planning engine's curve.
    */
   /** OCTOBER 2026 — subtitles off unless the video asks for them; switched off, never deleted. */
+  /** HARD QUALITY GATE — the sentences travel with the timeline; the render worker measures coverage against them. */
+  if (params.sentences?.length) timeline.sentences = params.sentences.map((s) => ({ ...s }));
+
   if (params.showSubtitles === false) {
     for (const c of captionTrack(timeline)) {
       c.disabled = true;

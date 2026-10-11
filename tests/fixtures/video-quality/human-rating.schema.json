@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FastVid human rating",
+  "description": "One human reviewer's scores for one render of one fixed test prompt. Filled in BY A PERSON; never generated. averageScore is the mean of the six scores, two decimals.",
+  "type": "object",
+  "required": ["renderId", "testId", "gitSha", "ratedAt", "scores", "averageScore"],
+  "additionalProperties": false,
+  "properties": {
+    "renderId": { "type": "string", "description": "The FastVid video id or the render lock id of the rated render." },
+    "testId": { "type": "string", "pattern": "^vq-\\d{2}-[a-z0-9-]+$", "description": "The id in prompts.json." },
+    "gitSha": { "type": "string", "description": "The code version that produced the render." },
+    "ratedAt": { "type": "string", "format": "date-time" },
+    "rater": { "type": "string" },
+    "scores": {
+      "type": "object",
+      "required": ["pictureMatchesSpeech", "visualVariety", "editingAndPace", "voiceoverAndSubtitles", "chartsAndExplanation", "overallViewingQuality"],
+      "additionalProperties": false,
+      "properties": {
+        "pictureMatchesSpeech": { "type": "integer", "minimum": 1, "maximum": 5, "description": "1. Beeld past bij de gesproken tekst." },
+        "visualVariety": { "type": "integer", "minimum": 1, "maximum": 5, "description": "2. Variatie in beelden." },
+        "editingAndPace": { "type": "integer", "minimum": 1, "maximum": 5, "description": "3. Montage en tempo." },
+        "voiceoverAndSubtitles": { "type": "integer", "minimum": 1, "maximum": 5, "description": "4. Voice-over en ondertiteling." },
+        "chartsAndExplanation": { "type": "integer", "minimum": 1, "maximum": 5, "description": "5. Grafieken en uitleg." },
+        "overallViewingQuality": { "type": "integer", "minimum": 1, "maximum": 5, "description": "6. Totale kijkkwaliteit." }
+      }
+    },
+    "averageScore": { "type": "number", "minimum": 1, "maximum": 5 },
+    "note": { "type": "string", "maxLength": 500 }
+  }
+}

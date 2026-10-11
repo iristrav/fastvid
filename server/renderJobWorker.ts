@@ -85,6 +85,7 @@ import {
   type LoudnessResult,
 } from "./audioLoudness";
 import { postRenderSpotCheckEnabled, spotCheckFinalVideo, type PostRenderSpotCheckResult } from "./postRenderSpotCheck";
+import { chapterCardIntervals, contentGraphicIntervals, formatSentenceCoverage, sentenceCoverage } from "./sentenceCoverage";
 import { resolveLocalStorageFilePath } from "./storageLocal";
 import { resolveArchiveObjectFetchUrl } from "./archiveAssetLoad";
 import { downloadToFileStreaming, isPipelineFallbackClip } from "./videoPipeline";
@@ -982,14 +983,35 @@ export async function runRenderJob(params: {
      *
      * It runs before the work directory is swept, because after that the file is gone.
      */
+    /**
+     * HARD QUALITY GATE — every sentence under a picture that fits, for all of its spoken time, measured
+     * on the timeline this file was rendered from (sentenceCoverage.ts); and the chapter cards that
+     * timeline planned, as the intervals the content check must look at in the file.
+     */
+    const coverage = sentenceCoverage(timeline);
+    for (const line of formatSentenceCoverage(job.videoId, coverage)) {
+      if (/status=covered\b|TOTAL .*proven=yes/.test(line)) console.log(line);
+      else console.warn(line);
+    }
+    /** Every frame of the file is read; these say which ground frames a planned content graphic (a chart, a counter) accounts for. */
+    const cardIntervals = [
+      ...chapterCardIntervals(timeline).map((c) => ({ startSec: c.startSec, endSec: c.endSec, id: c.graphicId, kind: "chapter_card" as const })),
+      ...contentGraphicIntervals(timeline).map((c) => ({ startSec: c.startSec, endSec: c.endSec, id: c.graphicId, kind: "content_graphic" as const })),
+    ];
+
     let spotCheck: PostRenderSpotCheckResult | null = null;
     if (postRenderSpotCheckEnabled()) {
-      spotCheck = await spotCheckFinalVideo(outputPath).catch(() => null);
+      spotCheck = await spotCheckFinalVideo(outputPath, { placeholderIntervals: cardIntervals }).catch(() => null);
       if (spotCheck) {
+        const p = spotCheck.placeholder;
         console.log(
           `[RenderJob] video=${job.videoId} job=${job.id} contentCheck ok=${spotCheck.ok} ` +
             `black=${spotCheck.blackSegments} freeze=${spotCheck.freezeSegments} ` +
-            `silent=${spotCheck.silentSegments} frames=${spotCheck.framesChecked}`
+            `silent=${spotCheck.silentSegments} frames=${spotCheck.framesChecked}` +
+            (p
+              ? ` placeholderFrames=${p.placeholderFrames} placeholderFramesChecked=${p.framesSampled} placeholderSec=${p.placeholderSec.toFixed(2)} placeholderMethod=${p.method} plannedCardSec=${p.plannedCardSec.toFixed(2)} ` +
+                `blueGrayConfirmedSec=${p.confirmedPlaceholderSec.toFixed(2)} blueGrayIndicatedSec=${p.indicatedPlaceholderSec.toFixed(2)} contentGraphicGroundSec=${p.contentGraphicGroundSec.toFixed(2)} placeholderDetectionComplete=${p.complete}`
+              : " placeholderDetectionComplete=false")
         );
         for (const w of spotCheck.warnings) {
           console.warn(`[RenderJob] video=${job.videoId} job=${job.id} contentCheck: ${w}`);
@@ -1084,6 +1106,9 @@ export async function runRenderJob(params: {
        * warnings stay non-blocking; every sample black is the one content finding that blocks.
        */
       blankPicture: blankPictureFinding(spotCheck),
+      /** HARD QUALITY GATE — always passed: `null` (not measurable / not scanned) fails closed in the gate. */
+      sentenceCoverage: coverage,
+      placeholderCheck: spotCheck?.placeholder ?? null,
       /** Video 612 — the timeline that was rendered, measured after its holds and pieces. */
       footageRefusal: finalTimelineFootageRefusal(
         videoTrack(timeline),

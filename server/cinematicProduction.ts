@@ -327,6 +327,7 @@ export async function planAndStoreCinematicTimeline(
     result = runCinematicPipeline({
       videoId: params.videoId,
       scenes: built.scenes,
+      sentences: built.sentences,
       voice: params.voice ?? null,
       words: params.words,
       format: params.format,

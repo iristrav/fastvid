@@ -53,6 +53,13 @@ export type AssetSourceIdentity = {
   providerAssetId?: string;
   /** media_archive_assets.id, when this system holds the file itself. The strongest handle. */
   archiveAssetId?: number;
+  /**
+   * HARD QUALITY GATE — whether the picture editor (VisualJudge) approved THIS picture for the
+   * sentence it stands under: "judge_fit" from the render's own approval ledger, "unverified"
+   * when it was placed without that approval (a filler, a hold, an older timeline). Absent on
+   * timelines written before the mark existed; the gate reads absent as unverified.
+   */
+  contentApproval?: "judge_fit" | "unverified";
   /** A URL this system serves the media from, and will still serve tomorrow. */
   canonicalUrl?: string;
   /** The provider's direct media URL as it was at render time. May have expired since. */
@@ -619,6 +626,21 @@ export type TimelineFormat = {
  */
 export const TIMELINE_SCHEMA_VERSION = 1;
 
+/**
+ * HARD QUALITY GATE — one spoken sentence of the script, in whole-video seconds. `startSec`/`endSec`
+ * are the narration's measured word timing when the render had it, else null (an estimate is not a
+ * spoken time). The gate measures each sentence's picture against this window.
+ */
+export type TimelineSentence = {
+  sceneIndex: number;
+  beatIndex: number;
+  startSec: number | null;
+  endSec: number | null;
+  /** "measured": TTS word alignment; "estimated": laid out from the planned hold (not proof). */
+  timingBasis: "measured" | "estimated";
+  text?: string;
+};
+
 export type ProjectTimeline = {
   /** The document's shape. Absent on anything written before RONDE 147; read as 1. */
   schemaVersion?: number;
@@ -628,6 +650,8 @@ export type ProjectTimeline = {
   durationSec: number;
   format: TimelineFormat;
   tracks: TimelineTrack[];
+  /** HARD QUALITY GATE — the script's sentences with their spoken windows (see `TimelineSentence`). Absent on older timelines. */
+  sentences?: TimelineSentence[];
   /**
    * RONDE 149 — the colour treatment for the whole video. Absent means untouched pixels.
    */

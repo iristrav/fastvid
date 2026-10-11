@@ -121,7 +121,7 @@ export function summarizeProviders(providers: readonly string[]): string {
 
 /** The one provider that spoke all of it, or "mixed:…" — what the metadata records. */
 export function narrationProviderLabel(providers: readonly string[]): string | null {
-  const unique = [...new Set(providers.map((p) => (p === "elevenlabs-timestamped" ? "elevenlabs" : p)))];
+  const unique = [...new Set(providers.map((p) => (p === "elevenlabs-timestamped" ? "elevenlabs" : p === "google-tts-timepointed" ? "google-tts" : p)))];
   if (unique.length === 0) return null;
   return unique.length === 1 ? unique[0]! : `mixed:${unique.join("+")}`;
 }

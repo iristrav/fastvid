@@ -46,6 +46,7 @@ import { recordVisionAsk, type VisionCaller } from "./visionCensus";
 import { normaliseShotType } from "./shotVocabulary";
 import type { ShotType } from "./cinematicEditingEngine/types";
 import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
+import type { LineFacts } from "./beatVisualIntent";
 
 export type BeatImageVerdict = "fits" | "does_not_fit" | "unknown";
 
@@ -756,6 +757,113 @@ export function situationRule<T extends Pick<BeatImageJudgement, "verdict" | "re
   };
 }
 
+/**
+ * VIDEO 644 — GENERAL FOOTAGE OF THE SUBJECT, UNDER A LINE THAT SHOWS NOTHING IN PARTICULAR.
+ *
+ *     s1b0 does_not_fit  depicts="Interior of a Tesla car … driving autonomously on a suburban road."
+ *                        reason="… matches the subject of Tesla. However, it does not visually depict
+ *                                the specific situation of …"
+ *     s2b2 does_not_fit  depicts="A Tesla car driving on a road."
+ *                        reason="… matches the subject, but the situation described in the narration
+ *                                (profit from carbon credits) is not depicted."
+ *
+ * Eight of twelve sentences in render 644 ended as a title card while Tesla footage sat in the
+ * pool. The judge was asked whether the frame shows the SITUATION the line describes, and for a
+ * line about a strategy, a valuation or an industry there is no situation a camera can film — so
+ * every honest answer was no, and every real picture of the subject lost to a grey rectangle.
+ *
+ * The rule below admits such a picture, and only such a picture. It is deterministic and reads
+ * two sources: what the model said it SAW, and what the line's own intent says it NEEDS. Every
+ * condition must hold; when any fails the judgement is returned exactly as it was.
+ *
+ *   · the model refused (`does_not_fit`) while answering that the frame DOES show the subject
+ *     (`subject_matches: true`) and does NOT show the situation (`situation_matches: false`) —
+ *     the one combination that means "right thing, no event";
+ *   · the line's intent is known, its evidence requirement is `soft` — it has a subject and the
+ *     planner named nothing the picture must contain (`hard` lines keep the full rule; `none`
+ *     lines cannot say what they are about and get no benefit of the doubt);
+ *   · the intent typed no specific picture: no person, place, period, object, event, action,
+ *     quantity or map (`want=NONE`). A line about a lawsuit, a launch, a factory or a year wants
+ *     THAT, and general footage of the subject does not show it;
+ *   · nothing in what the model saw or said marks the frame as contradicting the line — a title
+ *     card, a screenshot, a web page, an animation, a different company, era or country, or a
+ *     picture the model itself calls unrelated.
+ *
+ * What it does NOT do: it never touches a `fits`, never lowers the bar for a line that names a
+ * situation, and never outranks the guards that run after it — a logo-only frame and an identity
+ * the model guessed from the narration are still refused by `refuseGuessedIdentity`.
+ *
+ * The admission carries its own prefix so the log, the ledger and the durable store all say that
+ * this is b-roll admitted by rule, not a fit the model declared.
+ */
+export const BROLL_PREFIX = "b-roll for an abstract line: ";
+const SITUATION_PREFIX_RE = /^(?:subject and situation|subject|situation) not shown: /;
+/**
+ * SAFETY CHECK — A CONCRETE CLAIM THAT THE EXTRACTORS COULD NOT TYPE IS STILL A CONCRETE CLAIM.
+ *
+ * Measured with the real extractors: "The settlement with the SEC was costly for Tesla." and "The
+ * fine was the largest in the agency's history." type nothing — no verb from the action vocabulary,
+ * no number, no year, no place — and would read as abstract lines. They are not: each asserts a
+ * legal or financial fact that general footage of the subject cannot stand for. So the line's own
+ * words are read once more, for the vocabulary of claims a documentary makes about money, tax, law,
+ * regulation, markets and corporate deals. Any hit keeps the full rule. This is a second lock on the
+ * exception, never a loosening: a line that trips it is judged exactly as before.
+ */
+const CONCRETE_CLAIM_RE =
+  /\b(?:lawsuits?|sued?|sues|suing|courts?|trials?|verdicts?|rulings?|ruled|judges?|settlements?|settled|fines?|fined|penalt\w*|indict\w*|fraud\w*|SEC|regulat\w*|tax|taxes|taxed|tariffs?|subsid\w*|incentives?|rebates?|credits?|revenues?|profit\w*|earnings|losses?|quarter\w*|shares?|stocks?|shareholders?|investors?|valuations?|valuable|worth|billions?|millions?|dollars?|euros?|percent|acqui\w*|mergers?|bankrupt\w*|recalls?|recalled|investigat\w*|probes?|contracts?|patents?)\b/i;
+const CONTRADICTION_RE =
+  /\b(?:title card|intertitle|screenshot|screen shot|web ?page|website|thumbnail|watermark|cartoon|animation|animated|video game|meme|unrelated|not related|does not relate|no relation|nothing to do with|contradict\w*|anachron\w*|(?:different|wrong|another) (?:company|brand|manufacturer|person|subject|product|vehicle|era|period|century|decade|country|city))\b/i;
+
+export function abstractLineRule<T extends Pick<BeatImageJudgement, "verdict" | "depicts" | "reason">>(
+  judgement: T,
+  answer: { subject_matches?: unknown; situation_matches?: unknown },
+  line: LineFacts | undefined,
+  /** The line itself, for `CONCRETE_CLAIM_RE`. Absent reads as "unknown", which keeps the full rule. */
+  beatText?: string
+): T {
+  if (judgement.verdict !== "does_not_fit") return judgement;
+  if (!line) return judgement;
+  if (line.evidenceRequirement !== "soft" || line.wantsSpecificPicture) return judgement;
+  if (typeof beatText !== "string" || !beatText.trim() || CONCRETE_CLAIM_RE.test(beatText)) return judgement;
+  if (answer.subject_matches !== true || answer.situation_matches !== false) return judgement;
+  if (CONTRADICTION_RE.test(`${judgement.depicts ?? ""} ${judgement.reason ?? ""}`)) return judgement;
+  const reason = (judgement.reason ?? "").replace(SITUATION_PREFIX_RE, "");
+  return { ...judgement, verdict: "fits", reason: `${BROLL_PREFIX}${reason}`.slice(0, 160) };
+}
+
+/**
+ * THE SITUATION QUESTION, SETTLED — the rule and its one exception, in that order.
+ *
+ * `situationRule` first: an approval that shows the subject without the situation is refused.
+ * `abstractLineRule` second: when the line's own intent says there is no situation to show, general
+ * footage of the subject is admitted again. Each step logs what it changed, against the model's own
+ * answer, so a log line always names the rule that wrote the verdict.
+ */
+function settleSituationQuestion(
+  judgementAsGiven: BeatImageJudgement,
+  parsed: { subject_matches?: unknown; situation_matches?: unknown },
+  line: LineFacts | undefined,
+  beatText: string
+): BeatImageJudgement {
+  /** OCTOBER 2026 (render 626) — see `situationRule`: the subject alone is not a fit. */
+  const judgementAfterSituation = situationRule(judgementAsGiven, parsed);
+  if (judgementAfterSituation !== judgementAsGiven) {
+    console.log(
+      `[BeatImageGate] subject without the situation — refused: depicts="${judgementAsGiven.depicts.slice(0, 80)}" ` +
+        `subject_matches=${parsed.subject_matches} situation_matches=${parsed.situation_matches}`
+    );
+  }
+  /** VIDEO 644 — see `abstractLineRule`: general footage of the subject under a line with no situation. */
+  const judgementAfterAbstractLine = abstractLineRule(judgementAfterSituation, parsed, line, beatText);
+  if (judgementAfterAbstractLine !== judgementAfterSituation) {
+    console.log(
+      `[BeatImageGate] abstract line — b-roll admitted: depicts="${judgementAsGiven.depicts.slice(0, 80)}" ` +
+        `evidence=${line?.evidenceRequirement} want=NONE reason="${judgementAsGiven.reason.slice(0, 100)}"`
+    );
+  }
+  return judgementAfterAbstractLine;
+}
+
 export function buildBeatImagePrompt(
   beatText: string,
   frameCount: number,
@@ -967,6 +1075,11 @@ export async function judgeBeatImage(params: {
   anchors?: BeatSubjectAnchors;
   /** ONE ROUTE: the VisualIntent plan's description of the shot planned for this line. */
   plannedVisual?: string;
+  /**
+   * VIDEO 644 — what the line's intent says it needs, for `abstractLineRule`. Absent on a caller
+   * whose beat has no intent yet; the rule then changes nothing.
+   */
+  line?: LineFacts;
   contentKey: string;
   /**
    * RONDE 103 — identity of the narration this clip is being judged against. See
@@ -1194,14 +1307,8 @@ export async function judgeBeatImage(params: {
       evaluated: true,
       ...(provider ? { provider } : {}),
     };
-    /** OCTOBER 2026 (render 626) — see `situationRule`: the subject alone is not a fit. */
-    const judgementAfterSituation = situationRule(judgementAsGiven, parsed);
-    if (judgementAfterSituation !== judgementAsGiven) {
-      console.log(
-        `[BeatImageGate] subject without the situation — refused: depicts="${judgementAsGiven.depicts.slice(0, 80)}" ` +
-          `subject_matches=${parsed.subject_matches} situation_matches=${parsed.situation_matches}`
-      );
-    }
+    /** The situation question, settled: `situationRule` (render 626) and its one exception (render 644). */
+    const judgementAfterSituation = settleSituationQuestion(judgementAsGiven, parsed, params.line, beatText);
     /** Video 614 — see `approvalRestsOnAGuess`. */
     const judgement = refuseGuessedIdentity(judgementAfterSituation, beatText, params.anchors?.subject, state.personAsRead);
     /** VIDEO 641 (L1) — compared with what reached this rule: a situation refusal is not an identity guess. */

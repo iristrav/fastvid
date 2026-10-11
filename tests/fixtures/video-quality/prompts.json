@@ -1,0 +1,110 @@
+[
+  {
+    "id": "vq-01-tesla-growth-competition",
+    "genre": "Bedrijf",
+    "title": "Tesla's groei en concurrentie",
+    "prompt": "Tell the story of Tesla's growth from the first Roadster to a mass-market carmaker, and how legacy manufacturers responded to its rise.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["real_footage", "chart_data"],
+    "notes": "Referentiecasus: render 645 (Tesla). Echt bewegend beeld van auto's en fabrieken, plus een grafiek voor groei en beurswaarde."
+  },
+  {
+    "id": "vq-02-rise-of-a-car-brand",
+    "genre": "Bedrijf",
+    "title": "De opkomst van een automerk",
+    "prompt": "How a car brand rose from a small workshop to a global name, and the decisions that made the difference.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["archival_footage", "real_footage"],
+    "notes": "Vroege geschiedenis vraagt archiefbeeld; het heden echt bewegend beeld."
+  },
+  {
+    "id": "vq-03-famous-entrepreneur",
+    "genre": "Persoon",
+    "title": "Het verhaal van een bekende ondernemer",
+    "prompt": "The life story of a well-known entrepreneur: the early failures, the breakthrough and what the public rarely sees.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["real_footage", "archival_footage", "text_card"],
+    "notes": "Personen vragen bewijs in beeld (entity_evidence); tekstkaarten voor citaten en jaartallen."
+  },
+  {
+    "id": "vq-04-how-ai-models-work",
+    "genre": "Technologie",
+    "title": "Hoe AI-modellen werken",
+    "prompt": "Explain in plain language how large AI models are trained and how they produce an answer.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["chart_data", "text_card", "real_footage"],
+    "notes": "Abstract onderwerp: uitleg-grafieken en tekst dragen de zinnen; datacenters en schermen als b-roll."
+  },
+  {
+    "id": "vq-05-market-cap-growth",
+    "genre": "Financiën",
+    "title": "Groei van een bedrijf in beurswaarde",
+    "prompt": "How one company's market value grew over a decade, what drove each jump, and what the numbers hide.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["chart_data", "real_footage"],
+    "notes": "Cijfers over tijd vragen een tijdlijn- of lijngrafiek; echt beeld voor het bedrijf zelf."
+  },
+  {
+    "id": "vq-06-company-near-bankruptcy",
+    "genre": "Geschiedenis",
+    "title": "Een bedrijf dat bijna failliet ging",
+    "prompt": "The year a famous company nearly went bankrupt, the people who kept it alive, and how it recovered.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["archival_footage", "chart_data", "text_card"],
+    "notes": "Historisch: archiefbeeld; de val en het herstel als grafiek."
+  },
+  {
+    "id": "vq-07-famous-fraud-case",
+    "genre": "Misdaad",
+    "title": "Een bekende fraudezaak",
+    "prompt": "A famous fraud case: how it worked, how it was uncovered, and what happened to the people behind it.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["archival_footage", "text_card", "real_footage"],
+    "notes": "Rechtbank- en nieuwsbeeld; bedragen en data als tekst; rechtencontrole blijft leidend."
+  },
+  {
+    "id": "vq-08-scientific-discovery",
+    "genre": "Wetenschap",
+    "title": "Een wetenschappelijke ontdekking",
+    "prompt": "A scientific discovery that changed how we see the world: the experiment, the doubt, and the proof.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["real_footage", "chart_data", "archival_footage"],
+    "notes": "Lab- en instrumentbeeld; data als grafiek; historisch archief voor de aanloop."
+  },
+  {
+    "id": "vq-09-medical-development",
+    "genre": "Gezondheid",
+    "title": "Een medische ontwikkeling",
+    "prompt": "A recent medical development: what it treats, how it was tested, and who can expect to benefit.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["real_footage", "chart_data"],
+    "notes": "Ziekenhuis- en laboratoriumbeeld; studieresultaten als grafiek."
+  },
+  {
+    "id": "vq-10-rise-of-an-athlete",
+    "genre": "Sport",
+    "title": "De opkomst van een sporter",
+    "prompt": "The rise of an athlete from an unknown talent to a champion, and the setbacks along the way.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["real_footage", "archival_footage"],
+    "notes": "Wedstrijd- en trainingsbeeld; rechten op wedstrijdbeeld zijn de beperking."
+  },
+  {
+    "id": "vq-11-technology-news",
+    "genre": "Nieuws",
+    "title": "Een technologische ontwikkeling",
+    "prompt": "A technological development in the news this year: what changed, who is affected, and what comes next.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["real_footage", "text_card", "chart_data"],
+    "notes": "Actueel beeld van product en mensen; kernfeiten als tekstkaart."
+  },
+  {
+    "id": "vq-12-what-happens-next",
+    "genre": "Toekomstverhaal",
+    "title": "Wat gebeurt er hierna?",
+    "prompt": "What happens next: a grounded look at how one industry may change in the next ten years.",
+    "scriptVersion": null,
+    "expectedVisualStrategy": ["chart_data", "map", "text_card", "real_footage"],
+    "notes": "Speculatief onderwerp: grafieken, kaarten en tekst; echt beeld alleen voor het heden."
+  }
+]

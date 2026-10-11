@@ -192,10 +192,13 @@ describe("§4 — the background asks the route that measured delivering first",
     ).toEqual(["cloud"]);
   });
 
-  it("the render's download call passes no route, so both run in their order as before", () => {
+  it("the render's download calls pass no route, so both run in their order as before — except ordinary pre-fetched stock, which names the free route (VIDEO 645 cost guard)", () => {
     const renderCalls = PIPE.match(/downloadYouTubeCCClip\([^)]*\)/g) ?? [];
     expect(renderCalls.length).toBeGreaterThan(0);
-    for (const call of renderCalls) expect(call).not.toMatch(/"rapidapi"|"cloud"/);
+    /** VIDEO 645 — the stock's ONE call names the cloud route for videos no targeted search asked for; a targeted video keeps both routes. */
+    const stockCall = renderCalls.filter((call) => call.includes('targeted ? undefined : "cloud"'));
+    expect(stockCall.length).toBe(1);
+    for (const call of renderCalls) if (!stockCall.includes(call)) expect(call).not.toMatch(/"rapidapi"|"cloud"/);
   });
 });
 
@@ -203,7 +206,8 @@ describe("§4 — the background asks the route that measured delivering first",
 
 describe("§5 — wired where it claims to be", () => {
   it("both delivery paths keep the timeline they delivered, and say which kind it is", () => {
-    expect(PIPE).toContain('deliveredTimeline = { clips: videoTrack(outcome.timeline), basis: "planned_timeline" };');
+    /** HARD QUALITY GATE: the graphics come along, so the sentence coverage can see the chapter cards. */
+    expect(PIPE).toContain('deliveredTimeline = { clips: videoTrack(outcome.timeline), basis: "planned_timeline", graphics: graphicsTrack(outcome.timeline) };');
     /** RONDE 644: the rendering path counts only what the renderer reports it rendered. */
     expect(PIPE).toContain("clips: videoTrack(outcome.timeline).filter((c) => renderedIds.has(c.id)),");
     expect(PIPE).toContain("const renderedIds = new Set(jobOutcome.renderedClipIds);");

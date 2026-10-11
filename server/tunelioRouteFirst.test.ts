@@ -18,6 +18,8 @@ import type { AddressInfo } from "net";
 const tunelio = vi.hoisted(() => ({
   acquire: vi.fn(),
   enabled: vi.fn(() => true),
+  /** VIDEO 645 — the source this process already paid for and kept (`keptTunelioSource`); null by default. */
+  kept: vi.fn((_videoId: string) => null as null | { path: string; durationSec: number; bytes: number; width: number; height: number }),
 }));
 vi.mock("./tunelioDownloader", async (importOriginal) => {
   const real = await importOriginal<typeof import("./tunelioDownloader")>();
@@ -25,10 +27,12 @@ vi.mock("./tunelioDownloader", async (importOriginal) => {
     ...real,
     acquireTunelioSource: (...args: unknown[]) => tunelio.acquire(...args),
     tunelioEnabled: () => tunelio.enabled(),
+    keptTunelioSource: (videoId: string) => tunelio.kept(videoId),
   };
 });
 
-import { downloadYouTubeCCClip } from "./videoPipeline";
+import { downloadYouTubeCCClip, stockYoutubePool } from "./videoPipeline";
+import { releaseYoutubeShotStock, stockVideoState, youtubeStockSettled } from "./youtubeShotStock";
 
 let dir: string;
 let server: http.Server;
@@ -70,6 +74,8 @@ beforeEach(() => {
   tunelio.acquire.mockReset();
   tunelio.enabled.mockReset();
   tunelio.enabled.mockReturnValue(true);
+  tunelio.kept.mockReset();
+  tunelio.kept.mockReturnValue(null);
   process.env.TUNELIO_API_KEY = "tk_route_test";
   process.env.TUNELIO_ENABLED = "true";
 });
@@ -109,7 +115,7 @@ describe("Tunelio first", () => {
     expect(Number(dur)).toBeLessThan(5);
     const [args] = tunelio.acquire.mock.calls[0] as [string, unknown, { timeoutMs: number }];
     expect(args).toBe(videoId);
-  });
+  }, 30_000);
 
   it("when Tunelio refuses, the cloud service is asked and delivers exactly as before", async () => {
     tunelio.acquire.mockResolvedValue({ ok: false, code: "INSUFFICIENT_CREDITS", detail: "balance 4 < 10", paid: false });
@@ -220,13 +226,133 @@ describe("Tunelio first", () => {
   });
 });
 
+/* ═══════════════════ VIDEO 645 — the cost guard, at the route and at the stock ═══════════════════ */
+
+describe("VIDEO 645 — a caller that named the cloud route still gets a source already on disk", () => {
+  it("a kept source is cut for the cloud-only caller: no paid call, no cloud transfer, the clip arrives from the kept file", async () => {
+    const source = realMp4(20, path.join(dir, "kept-source.mp4"));
+    tunelio.kept.mockReturnValue({ path: source, durationSec: 20, bytes: fs.statSync(source).size, width: 640, height: 360 });
+    await startCloud(servesCloudClip());
+    const outPath = path.join(dir, "beat.mp4");
+    const outcome: { status?: string; reason?: string } = {};
+    const ok = await downloadYouTubeCCClip(videoId, 4, 6, outPath, -1, "Test video", undefined, true, outcome as never, undefined, "cloud", false);
+    expect(ok).toBe(true);
+    expect(outcome.status).toBe("DOWNLOAD_SUCCESS");
+    expect(outcome.reason).toBe("tunelio");
+    expect(tunelio.acquire).not.toHaveBeenCalled();
+    expect(cloudHits).toEqual([]);
+    expect(fs.existsSync(outPath)).toBe(true);
+    expect(fs.statSync(outPath).size).toBeGreaterThan(10_000);
+  }, 30_000);
+
+  it("no kept source (gone, expired, never fetched): the cloud-only caller goes to the cloud service as before, and Tunelio is not asked", async () => {
+    tunelio.kept.mockReturnValue(null);
+    await startCloud(servesCloudClip());
+    const ok = await downloadYouTubeCCClip(videoId, 5, 0, path.join(dir, "beat.mp4"), -1, "Test video", undefined, true, undefined, undefined, "cloud", false);
+    expect(ok).toBe(true);
+    expect(tunelio.acquire).not.toHaveBeenCalled();
+    expect(cloudHits.length).toBe(1);
+  });
+
+  it("the render's paid-call limit reached (RENDER_LIMIT): the free cloud route still delivers", async () => {
+    tunelio.acquire.mockResolvedValue({ ok: false, code: "RENDER_LIMIT", detail: "3 paid calls already reserved for render 645", paid: false });
+    await startCloud(servesCloudClip());
+    const outcome: { status?: string; reason?: string; transferStarted?: boolean } = {};
+    const ok = await downloadYouTubeCCClip(videoId, 5, 0, path.join(dir, "beat.mp4"), 0, "Test video", undefined, true, outcome as never, undefined, undefined, false);
+    expect(ok).toBe(true);
+    expect(outcome.status).toBe("DOWNLOAD_SUCCESS");
+    expect(tunelio.acquire).toHaveBeenCalledTimes(1);
+    expect(cloudHits.length).toBe(1);
+  });
+});
+
+describe("VIDEO 645 — the stock: ordinary pre-fetched videos take the free route, a targeted one may still take Tunelio", () => {
+  const FILM = 645_777;
+  afterEach(() => releaseYoutubeShotStock(FILM));
+  /** the cloud service of this test answers with a clip as long as it was asked for */
+  const servesRequestedLength = (): http.RequestListener => (req, res) => {
+    const u = new URL(req.url ?? "/", "http://x");
+    const seconds = Math.max(1, Math.min(45, Number(u.searchParams.get("duration") ?? "5") || 5));
+    const clip = fs.readFileSync(realMp4(seconds, path.join(dir, `cloud-${seconds}.mp4`)));
+    res.writeHead(200, { "content-type": "video/mp4", "content-length": String(clip.length) });
+    res.end(clip);
+  };
+  const candidate = (id: string, from: number, usable: boolean, serves: number[] = [0]) => ({
+    videoId: id,
+    title: `Video ${id}`,
+    description: "",
+    thumb: "",
+    durationSec: 120,
+    footageType: "real_footage" as const,
+    serves,
+    from,
+    usable,
+    why: usable ? "ok" : "youtube short (#shorts)",
+  });
+
+  it("645 replayed: two ordinary stock videos go to the cloud service (no paid call); the targeted video is asked of Tunelio; a candidate the triage marked unusable is never downloaded at all", async () => {
+    const source = realMp4(60, path.join(dir, "targeted-source.mp4"));
+    tunelio.acquire.mockResolvedValue({ ok: true, path: source, bytes: fs.statSync(source).size, durationSec: 60, width: 640, height: 360, cached: false });
+    await startCloud(servesRequestedLength());
+    const ordinary = [`${videoId}A`, `${videoId}B`];
+    const targeted = `${videoId}T`;
+    const unusable = `${videoId}U`;
+    const pool = {
+      videoId: FILM,
+      sentences: ["The factory floor.", "The founder speaks."],
+      query1: "factory",
+      query2: "founder",
+      searches: 2,
+      candidates: [candidate(ordinary[0]!, 1, true), candidate(ordinary[1]!, 1, true, [0, 1]), candidate(targeted, 2, true, [1]), candidate(unusable, 1, false)],
+      coverage1: 1,
+      archiveUsable: 0,
+      search2Needed: true,
+      search2Reason: "subject not covered",
+      finalCoverage: 2,
+      decided: true,
+      entityTargets: [{ name: "The Founder", kind: "name", beats: [1], reason: "named, not covered", n: 2, query: "founder interview", score: 1 }],
+    };
+    stockYoutubePool(FILM, pool as never, dir);
+    await youtubeStockSettled(FILM);
+    /** Tunelio was asked for the targeted video only */
+    expect(tunelio.acquire.mock.calls.map((c) => c[0])).toEqual([targeted]);
+    /** the ordinary videos were fetched through the cloud service, each once; the unusable one never */
+    const cloudIds = cloudHits.map((u) => new URL(u, "http://x").searchParams.get("id"));
+    expect(cloudIds.sort()).toEqual([...ordinary].sort());
+    expect(cloudIds).not.toContain(unusable);
+    expect(cloudIds).not.toContain(targeted);
+    expect(stockVideoState(FILM, unusable)).toBeNull();
+    /** every downloaded video is stocked (ready or failed after a real cut) — the picture editor decides later, from the shots */
+    for (const id of [...ordinary, targeted]) expect(stockVideoState(FILM, id)?.status).not.toBe("pending");
+  }, 120_000);
+});
+
 describe("wiring, pinned in the source", () => {
   const vp = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+
+  it("VIDEO 645 — the stock names the cloud route for ordinary videos and keeps both routes for targeted ones; the kept source is cut for a cloud-only caller; the render's paid-call limit is keyed on the render", () => {
+    const stock = vp.slice(vp.indexOf("export function stockYoutubePool("), vp.indexOf("export const YOUTUBE_STOCK_WAIT_MAX_MS"));
+    expect(stock).toContain("const targeted = stockVideoTargeted(filmId, ytId);");
+    expect(stock).toContain('YOUTUBE_STOCK_DOWNLOAD_MS, targeted ? undefined : "cloud"');
+    const fn = vp.slice(vp.indexOf("export async function downloadYouTubeCCClip("), vp.indexOf("// F3-41: cloud/yt-dlp service tried FIRST"));
+    expect(fn).toContain("const keptSource = onlyRoute ? keptTunelioSource(videoId) : null;");
+    expect(fn).toContain("if ((!onlyRoute && tunelioEnabled()) || keptSource) {");
+    expect(fn).toContain("? { ok: true, ...keptSource, cached: true }");
+    expect(fn).toContain("renderId: get_activeSourcingCache()!.renderVideoId!");
+    const deps = vp.slice(vp.indexOf("function productionTunelioDeps("), vp.indexOf("export function tunelioStatusFor("));
+    expect(deps).toContain("reserveRenderSlot: async (slotKey) => {");
+    expect(deps).toContain("db.insert(workerOnceClaims).ignore().values({ claimKey: slotKey, holder })");
+    expect(deps).toContain("releaseRenderSlot: async (slotKey) => {");
+    expect(deps).toContain("db.delete(workerOnceClaims).where(eq(workerOnceClaims.claimKey, slotKey))");
+    /** the background prefetch still names the cloud route: no paid call from the background */
+    const prefetch = fs.readFileSync(path.join(__dirname, "youtubePrefetch.ts"), "utf8");
+    expect(prefetch).toContain('export function prefetchRouteOrder(env: NodeJS.ProcessEnv = process.env): Array<"cloud"> {');
+  });
 
   it("the attempt type knows both routes and Tunelio is asked before the cloud route", () => {
     expect(vp).toContain('route: "cloud" | "tunelio";');
     const fn = vp.indexOf("export async function downloadYouTubeCCClip(");
-    const tunelioBlock = vp.indexOf("if (!onlyRoute && tunelioEnabled()) {", fn);
+    const tunelioBlock = vp.indexOf("if ((!onlyRoute && tunelioEnabled()) || keptSource) {", fn);
     const cloudBlock = vp.indexOf("// F3-41: cloud/yt-dlp service tried FIRST", fn);
     expect(tunelioBlock).toBeGreaterThan(fn);
     expect(cloudBlock).toBeGreaterThan(tunelioBlock);
@@ -261,7 +387,7 @@ describe("wiring, pinned in the source", () => {
   });
 
   it("the Tunelio cut passes the same validation as the cloud route", () => {
-    const fn = vp.slice(vp.indexOf("if (!onlyRoute && tunelioEnabled()) {"), vp.indexOf("// F3-41: cloud/yt-dlp service tried FIRST"));
+    const fn = vp.slice(vp.indexOf("if ((!onlyRoute && tunelioEnabled()) || keptSource) {"), vp.indexOf("// F3-41: cloud/yt-dlp service tried FIRST"));
     expect(fn).toContain("await validateAcquiredFile(tunelioTmpPath, duration, {");
     expect(fn).toContain("fs.renameSync(tunelioTmpPath, outPath);");
     expect(fn).toContain('reportDownload("DOWNLOAD_SUCCESS", "tunelio");');

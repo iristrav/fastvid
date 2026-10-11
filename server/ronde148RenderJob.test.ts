@@ -159,7 +159,14 @@ function clip(i: number, url: string): TimelineVideoClip {
       providerAssetId: `item/${i}`,
       mediaUrl: url,
       archiveAssetId: 59000 + i,
+      /** HARD QUALITY GATE — a deliverable film: the picture editor approved each clip for its sentence. */
+      contentApproval: "judge_fit",
     },
+    /** HARD QUALITY GATE — the clip's own seconds of source (the sources are 4 s), so it is not a held frame. */
+    sourceIn: 0,
+    sourceOut: 3,
+    sceneIndex: 0,
+    beatIndex: i,
     timelineStart: i * 3,
     timelineEnd: (i + 1) * 3,
     motion: "none",
@@ -186,6 +193,11 @@ function goodTimeline(videoId = 1): ProjectTimeline {
     { kind: "GRAPHICS", texts: [] },
   ];
   t.durationSec = 6;
+  /** HARD QUALITY GATE — two spoken sentences, measured, each under its own approved clip: a film the gate may deliver. */
+  t.sentences = [
+    { sceneIndex: 0, beatIndex: 0, startSec: 0, endSec: 3, timingBasis: "measured", text: "The battle begins." },
+    { sceneIndex: 0, beatIndex: 1, startSec: 3, endSec: 6, timingBasis: "measured", text: "And it ends." },
+  ];
   return t;
 }
 

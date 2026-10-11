@@ -356,7 +356,8 @@ describe("ATTRIBUTION — each sentence's picture, and the film's YouTube second
 
   it("the pipeline prints it for the delivered film, and gives the outcome lines the same visible clips", () => {
     const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    expect(PIPE).toContain("for (const line of formatSentencePictures(videoId, measured.clips, origins, sentences)) {");
+    /** HARD QUALITY GATE: the sentences whose picture is a graphic are named too, from the delivered graphics track. */
+    expect(PIPE).toContain("for (const line of formatSentencePictures(videoId, measured.clips, origins, sentences, graphicsBySentence)) {");
     expect(PIPE).toContain("footage = youtubeFootageInTimeline(measured.clips, origins, measured.basis);");
     expect(PIPE).toContain("visibleFilm = footage.clips;");
     expect(PIPE).toContain("for (const l of formatMultiPersonOutcome(videoId, searchedPool, youtubeLifecycle, visibleFilm, (id) => stockVideoState(videoId, id)))");

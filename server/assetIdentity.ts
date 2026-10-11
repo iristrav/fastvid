@@ -37,6 +37,8 @@ export type AdoptionRecordFacts = {
   originalUrl?: string;
   assetTitle?: string;
   archiveAssetId?: number;
+  /** HARD QUALITY GATE — the picture editor's approval of this clip for its sentence, when the render knows it. */
+  contentApproval?: "judge_fit" | "unverified";
 };
 
 /**
@@ -164,6 +166,7 @@ export function identityFromAdoption(
   const identity: AssetSourceIdentity = { provider };
   if (providerAssetId) identity.providerAssetId = providerAssetId;
   if (facts.archiveAssetId != null) identity.archiveAssetId = facts.archiveAssetId;
+  if (facts.contentApproval) identity.contentApproval = facts.contentApproval;
 
   /**
    * `sourceUrl` from the ledger is the provider's MEDIA url — `videoFile.link` for Pexels,

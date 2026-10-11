@@ -119,6 +119,10 @@ type Entry = {
   lateClaimed?: boolean;
   /** FIX 1 — found by a targeted search (`StockCandidate.targetLabel`): it has sentences it was searched for. */
   targeted?: boolean;
+  /** VIDEO 645 — where in the video each section that was cut starts (the first by `startFor`, later ones by `addStockSection`). */
+  sectionStarts?: number[];
+  /** VIDEO 645 — the video's title, for shots of a later section when the first gave none. */
+  title?: string;
 };
 
 /** Per film (render video id): YouTube video id → its stock. */
@@ -208,7 +212,7 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
     registered++;
     let release!: () => void;
     const done = new Promise<void>((r) => (release = r));
-    film.set(c.videoId, { status: "pending", done, shots: [], ...(c.targetLabel ? { targeted: true } : {}) });
+    film.set(c.videoId, { status: "pending", done, shots: [], title: c.title, ...(c.targetLabel ? { targeted: true } : {}) });
     releases.set(c.videoId, release);
   };
   for (const c of todo) register(c);
@@ -247,6 +251,7 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
       const entry = film.get(c.videoId)!;
       const take = c.durationSec > 0 ? Math.min(STOCK_SECTION_SEC, c.durationSec) : STOCK_SECTION_SEC;
       const startSec = c.durationSec > 0 ? deps.startFor(c.durationSec, take, c.videoId) : 0;
+      entry.sectionStarts = [...(entry.sectionStarts ?? []), startSec];
       const outPath = path.join(deps.workDir, `ytstock_${c.videoId}_${Math.round(startSec)}.mp4`);
       const t0 = Date.now();
       if (c.targetLabel) say(`[TARGETED_VISUAL] ${c.targetLabel} videoId=${c.videoId} stage=DOWNLOAD_STARTED film=${filmId}`);
@@ -441,6 +446,53 @@ export function unofferedReadyStock(filmId: number): Array<{ videoId: string; re
     if (shots.length) out.push({ videoId, readyAt: e.readyAt ?? 0, offeredBefore: shots.length < e.shots.length, shots });
   }
   return out;
+}
+
+/** VIDEO 645 — the videos in the film's stock whose download is over (ready, or failed after it arrived), in stock order. */
+export function stockedVideoIds(filmId: number): string[] {
+  return [...(stocks.get(filmId) ?? [])].filter(([, e]) => e.status !== "pending").map(([id]) => id);
+}
+
+/** VIDEO 645 — where this video's sections start; null when it is not stocked. */
+export function stockSectionStarts(filmId: number, videoId: string): number[] | null {
+  const e = stocks.get(filmId)?.get(videoId);
+  return e ? [...(e.sectionStarts ?? [])] : null;
+}
+
+/**
+ * VIDEO 645 — ANOTHER SECTION OF A VIDEO ALREADY IN THE STOCK.
+ *
+ * The stock cut one section per video; when its shots are refused (or all too short: 645's 8_lfxPI5ObM,
+ * five shots, none usable) the video was spent. A section cut later from the kept source joins the
+ * video's stock here: new shots, never handed out, under the same video. A video that had failed for
+ * want of a usable shot is ready again; the late take may claim it once more for these new shots
+ * (`lateClaimed` cleared) — the shots already handed out stay handed out. Returns how many shots joined.
+ */
+export function addStockSection(
+  filmId: number,
+  videoId: string,
+  startSec: number,
+  pieces: ReadonlyArray<{ path: string; startSec: number; endSec: number }>,
+  title?: string
+): number {
+  const e = stocks.get(filmId)?.get(videoId);
+  if (!e || e.status === "pending" || pieces.length === 0) return 0;
+  e.sectionStarts = [...(e.sectionStarts ?? []), startSec];
+  const name = title ?? e.title ?? e.shots[0]?.title ?? videoId;
+  const shots: StockShot[] = pieces.map((p) => ({
+    videoId,
+    title: name,
+    path: p.path,
+    sourceStartSec: Number((startSec + p.startSec).toFixed(2)),
+    sourceEndSec: Number((startSec + p.endSec).toFixed(2)),
+    handedOut: 0,
+  }));
+  e.shots.push(...shots);
+  e.status = "ready";
+  e.reason = undefined;
+  e.readyAt = Date.now();
+  e.lateClaimed = false;
+  return shots.length;
 }
 
 /** FIX 1 — whether this stock video came from a targeted search (it has a destination of its own). */

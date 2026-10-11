@@ -15,6 +15,10 @@ import {
   resetTunelioStateForTests,
   retryAfterMs,
   TUNELIO_SOURCE_TTL_MS,
+  TUNELIO_PAID_CALLS_PER_RENDER,
+  TUNELIO_TRANSFER_RETRY_MIN_MS,
+  tunelioRenderSlotKey,
+  tunelioRenderSlotsHeld,
   tunelioCreateClaimKey,
   tunelioEnabled,
   tunelioStateSnapshot,
@@ -523,5 +527,240 @@ describe("helpers", () => {
     expect(args).toContain("libx264");
     expect(args).toContain("aac");
     expect(args[args.length - 1]).toBe("/d.mp4");
+  });
+});
+
+/* ═══════════════════ VIDEO 645 — the cost guard: paid calls per render, a refused call, one more transfer ═══════════════════ */
+
+describe("VIDEO 645 — at most three paid calls per render", () => {
+  const RENDER = 645;
+  const vids = ["rndVid00001", "rndVid00002", "rndVid00003", "rndVid00004", "rndVid00005"];
+
+  it("645 replayed in miniature: five stock videos, one render — three paid calls, the fourth and fifth refused before any request, with the log line", async () => {
+    const d = deps();
+    const outcomes: TunelioOutcome[] = [];
+    for (const v of vids) outcomes.push(await acquireTunelioSource(v, d, { timeoutMs: 30_000, renderId: RENDER }));
+    expect(outcomes.slice(0, 3).every((o) => o.ok)).toBe(true);
+    expect(outcomes.slice(3).map((o) => (o.ok ? "ok" : o.code))).toEqual(["RENDER_LIMIT", "RENDER_LIMIT"]);
+    expect(outcomes.slice(3).every((o) => !o.ok && o.paid === false)).toBe(true);
+    expect(createCalls().length).toBe(TUNELIO_PAID_CALLS_PER_RENDER);
+    expect(tunelioStateSnapshot(clock).stats.createCalls).toBe(3);
+    expect(tunelioStateSnapshot(clock).stats.renderLimitHits).toBe(2);
+    expect(tunelioRenderSlotsHeld(RENDER)).toBe(3);
+    const line = logs.find((l) => l.includes("step=render_limit"));
+    expect(line).toContain("video=rndVid00004");
+    expect(line).toContain(`${TUNELIO_PAID_CALLS_PER_RENDER} paid calls already reserved for render ${RENDER}`);
+    expect(line).toContain("existing route");
+  });
+
+  it("a caller without a render id (none in the render context) is not limited — exactly as before", async () => {
+    const d = deps();
+    for (const v of vids) expect((await acquireTunelioSource(v, d, { timeoutMs: 30_000 })).ok).toBe(true);
+    expect(createCalls().length).toBe(5);
+  });
+
+  it("two renders do not share a limit", async () => {
+    const d = deps();
+    for (const v of vids.slice(0, 3)) expect((await acquireTunelioSource(v, d, { timeoutMs: 30_000, renderId: 645 })).ok).toBe(true);
+    expect((await acquireTunelioSource("otherRender1", d, { timeoutMs: 30_000, renderId: 646 })).ok).toBe(true);
+    expect((await acquireTunelioSource("rndVid00004", d, { timeoutMs: 30_000, renderId: 645 })).ok).toBe(false);
+    expect(createCalls().length).toBe(4);
+  });
+
+  it("concurrent workers: five videos at once against one claim store with INSERT-IGNORE semantics — exactly three paid calls, three slot rows", async () => {
+    const store = new Set<string>();
+    const reserveRenderSlot = vi.fn(async (key: string) => {
+      await new Promise((r) => setTimeout(r, 2 + Math.floor(Math.random() * 5)));
+      if (store.has(key)) return false;
+      store.add(key);
+      return true;
+    });
+    const d = deps({ reserveRenderSlot, claimCreate: async () => true });
+    const outcomes = await Promise.all(vids.map((v) => acquireTunelioSource(v, d, { timeoutMs: 30_000, renderId: RENDER })));
+    expect(outcomes.filter((o) => o.ok).length).toBe(3);
+    expect(outcomes.filter((o) => !o.ok && o.code === "RENDER_LIMIT").length).toBe(2);
+    expect(createCalls().length).toBe(3);
+    expect([...store].sort()).toEqual([1, 2, 3].map((n) => tunelioRenderSlotKey(RENDER, n)));
+  });
+
+  it("another replica already holds slots in the store: this process makes only what is left — and asks the store for a taken slot once", async () => {
+    const store = new Set<string>([tunelioRenderSlotKey(RENDER, 1), tunelioRenderSlotKey(RENDER, 2)]);
+    const reserveRenderSlot = vi.fn(async (key: string) => {
+      if (store.has(key)) return false;
+      store.add(key);
+      return true;
+    });
+    const d = deps({ reserveRenderSlot });
+    expect((await acquireTunelioSource(vids[0]!, d, { timeoutMs: 30_000, renderId: RENDER })).ok).toBe(true);
+    const second = await acquireTunelioSource(vids[1]!, d, { timeoutMs: 30_000, renderId: RENDER });
+    expect(second.ok).toBe(false);
+    expect(!second.ok && second.code).toBe("RENDER_LIMIT");
+    expect(createCalls().length).toBe(1);
+    /** slots 1 and 2 were asked once each (then remembered as taken), slot 3 once (won) */
+    expect(reserveRenderSlot.mock.calls.map((c) => c[0])).toEqual([1, 2, 3].map((n) => tunelioRenderSlotKey(RENDER, n)));
+  });
+
+  it("a claim store that cannot answer: no paid call (CLAIM_UNKNOWN), nothing counted", async () => {
+    const d = deps({ reserveRenderSlot: async () => { throw new Error("ECONNRESET db"); } });
+    const out = await acquireTunelioSource(vids[0]!, d, { timeoutMs: 30_000, renderId: RENDER });
+    expect(out.ok).toBe(false);
+    expect(!out.ok && out.code).toBe("CLAIM_UNKNOWN");
+    expect(createCalls().length).toBe(0);
+    expect(logs.some((l) => l.includes("step=render_slot unknown"))).toBe(true);
+  });
+
+  it("a /create Tunelio refuses (402, 429, 404) is not a paid call: its slot goes back and the next video may use it", async () => {
+    let n = 0;
+    const released: string[] = [];
+    const script = {
+      "/credits": { status: 200, body: { credits: 100 } },
+      "/create": () => {
+        n++;
+        if (n === 1) return { status: 429, body: { error: "slow down" }, headers: { "retry-after": "0" } };
+        return { status: 200, body: { status: "ok", url: GOOD_URL, filename: "v.mp4", quality: "720p", mode: "video", file_size: 123_456 } };
+      },
+    };
+    const d = deps({ script, releaseRenderSlot: async (k) => void released.push(k) });
+    const first = await acquireTunelioSource(vids[0]!, d, { timeoutMs: 30_000, renderId: RENDER });
+    expect(first.ok).toBe(false);
+    expect(!first.ok && first.code).toBe("RATE_LIMITED");
+    expect(released).toEqual([tunelioRenderSlotKey(RENDER, 1)]);
+    expect(tunelioRenderSlotsHeld(RENDER)).toBe(0);
+    /** the cooldown the 429 put the route on is over; three more videos get three paid calls */
+    clock += TUNELIO_COOLDOWN_MS.rateLimitedMax + 1;
+    for (const v of vids.slice(1, 4)) expect((await acquireTunelioSource(v, d, { timeoutMs: 30_000, renderId: RENDER })).ok).toBe(true);
+    expect((await acquireTunelioSource(vids[4]!, d, { timeoutMs: 30_000, renderId: RENDER })).ok).toBe(false);
+    expect(createCalls().length).toBe(4);
+    expect(tunelioRenderSlotsHeld(RENDER)).toBe(3);
+  });
+
+  it("a /create that threw (the call may have gone out) keeps its slot: the limit errs towards fewer paid calls", async () => {
+    let n = 0;
+    const script = {
+      "/credits": { status: 200, body: { credits: 100 } },
+      "/create": () => {
+        n++;
+        if (n === 1) throw new Error("socket hang up");
+        return { status: 200, body: { status: "ok", url: GOOD_URL, filename: "v.mp4", quality: "720p", mode: "video", file_size: 123_456 } };
+      },
+    };
+    const released: string[] = [];
+    const d = deps({ script, releaseRenderSlot: async (k) => void released.push(k) });
+    const first = await acquireTunelioSource(vids[0]!, d, { timeoutMs: 30_000, renderId: RENDER });
+    expect(first.ok).toBe(false);
+    expect(!first.ok && first.paid).toBe(true);
+    expect(released).toEqual([]);
+    expect(tunelioRenderSlotsHeld(RENDER)).toBe(1);
+    let okCount = 0;
+    for (const v of vids.slice(1)) okCount += (await acquireTunelioSource(v, d, { timeoutMs: 30_000, renderId: RENDER })).ok ? 1 : 0;
+    expect(okCount).toBe(2);
+  });
+
+  it("a cached source and a refusal before the claim (switched off, no credits, cooldown, memo) take no slot", async () => {
+    const d = deps();
+    expect((await acquireTunelioSource(vids[0]!, d, { timeoutMs: 30_000, renderId: RENDER })).ok).toBe(true);
+    const again = await acquireTunelioSource(vids[0]!, d, { timeoutMs: 30_000, renderId: RENDER });
+    expect(again.ok && again.cached).toBe(true);
+    expect(tunelioRenderSlotsHeld(RENDER)).toBe(1);
+    const broke = deps({ script: { "/credits": { status: 200, body: { credits: 5 } }, "/create": { status: 200, body: {} } } });
+    resetTunelioStateForTests();
+    const poor = await acquireTunelioSource(vids[1]!, broke, { timeoutMs: 30_000, renderId: RENDER });
+    expect(!poor.ok && poor.code).toBe("INSUFFICIENT_CREDITS");
+    expect(tunelioRenderSlotsHeld(RENDER)).toBe(0);
+  });
+});
+
+describe("VIDEO 645 — one more transfer on the same paid URL", () => {
+  it("a transfer that breaks (HTTP 500) is tried once more on the same URL: one /create, two transfers, the source arrives", async () => {
+    let n = 0;
+    const d = deps({
+      download: async (url, outPath) => {
+        downloads.push({ url, timeoutMs: 0, maxBytes: 0 });
+        n++;
+        if (n === 1) return { ok: false, status: 500, bytes: null };
+        fs.writeFileSync(outPath, Buffer.alloc(50_000, 1));
+        return { ok: true, status: 200, bytes: 50_000 };
+      },
+    });
+    const out = await acquire(d);
+    expect(out.ok).toBe(true);
+    expect(createCalls().length).toBe(1);
+    expect(downloads.length).toBe(2);
+    expect(new Set(downloads.map((x) => x.url)).size).toBe(1);
+    expect(logs.some((l) => l.includes("step=transfer_retry") && l.includes("http 500") && l.includes("no new paid call"))).toBe(true);
+    expect(tunelioStateSnapshot(clock).stats.transferRetries).toBe(1);
+  });
+
+  it("a connection that drops (a throw that is not a timeout) and a truncated file are also tried once more", async () => {
+    let n = 0;
+    const d = deps({
+      download: async (_url, outPath) => {
+        n++;
+        if (n === 1) throw new Error("ECONNRESET");
+        fs.writeFileSync(outPath, Buffer.alloc(50_000, 1));
+        return { ok: true, status: 200, bytes: 50_000 };
+      },
+    });
+    expect((await acquire(d)).ok).toBe(true);
+    expect(n).toBe(2);
+    resetTunelioStateForTests();
+    let m = 0;
+    const d2 = deps({
+      download: async (_url, outPath) => {
+        m++;
+        fs.writeFileSync(outPath, Buffer.alloc(m === 1 ? 300 : 50_000, 1));
+        return { ok: true, status: 200, bytes: m === 1 ? 300 : 50_000 };
+      },
+    });
+    expect((await acquireTunelioSource("truncVideo01", d2, { timeoutMs: 30_000 })).ok).toBe(true);
+    expect(m).toBe(2);
+  });
+
+  it("the second try fails too: exactly two transfers, the paid failure stands, no new /create", async () => {
+    let n = 0;
+    const d = deps({ download: async () => { n++; return { ok: false, status: 502, bytes: null }; } });
+    const out = await acquire(d);
+    expect(out.ok).toBe(false);
+    expect(!out.ok && out.code).toBe("DOWNLOAD_FAILED");
+    expect(!out.ok && out.paid).toBe(true);
+    expect(n).toBe(2);
+    expect(createCalls().length).toBe(1);
+  });
+
+  it("no second try for a refused URL (4xx), a timeout, a file that is too large, or when the clock is nearly out", async () => {
+    let n = 0;
+    expect((await acquire(deps({ download: async () => { n++; return { ok: false, status: 403, bytes: null }; } }))).ok).toBe(false);
+    expect(n).toBe(1);
+    resetTunelioStateForTests();
+    n = 0;
+    expect((await acquireTunelioSource("retryVid0002", deps({ download: async () => { n++; throw new Error("Tunelio source: timeout after 30000ms"); } }), { timeoutMs: 30_000 })).ok).toBe(false);
+    expect(n).toBe(1);
+    resetTunelioStateForTests();
+    n = 0;
+    expect((await acquireTunelioSource("retryVid0003", deps({ download: async (_u, outPath) => { n++; fs.writeFileSync(outPath, "x"); throw new Error("response exceeds maximum size of 1 bytes"); } }), { timeoutMs: 30_000 })).ok).toBe(false);
+    expect(n).toBe(1);
+    resetTunelioStateForTests();
+    n = 0;
+    /** the first attempt used the whole clock: nothing left for a second */
+    const slow = deps({ download: async () => { n++; clock += 30_000 - TUNELIO_TRANSFER_RETRY_MIN_MS + 1; return { ok: false, status: 500, bytes: null }; } });
+    expect((await acquireTunelioSource("retryVid0004", slow, { timeoutMs: 30_000 })).ok).toBe(false);
+    expect(n).toBe(1);
+  });
+
+  it("the retried file is validated exactly like a first one: a second transfer without a video stream is still refused", async () => {
+    let n = 0;
+    const d = deps({
+      download: async (_url, outPath) => {
+        n++;
+        if (n === 1) return { ok: false, status: 500, bytes: null };
+        fs.writeFileSync(outPath, Buffer.alloc(50_000, 1));
+        return { ok: true, status: 200, bytes: 50_000 };
+      },
+      probe: async () => ({ width: 0, height: 0, durationSec: 100, hasAudio: true }),
+    });
+    const out = await acquire(d);
+    expect(out.ok).toBe(false);
+    expect(!out.ok && out.code).toBe("NO_VIDEO_STREAM");
+    expect(n).toBe(2);
   });
 });

@@ -115,8 +115,8 @@ import { externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEn
 import { FOOTAGE_SHARE_TIERS, footageKeyOf, footageShareSoFar, noteFootageOnScreen, preferLessFilledFootage, recentUsageCounts, recentYoutubeUsage, recordArchiveVideoUsage, recordYoutubeVideoUsage, setRecentYoutubeUsageForFilm, youtubeSecondsShownRecently, youtubeSourceUsedRecently, type YoutubeUse } from "./usageDiversity";
 import { fetchCuratedArchiveBeatClip, isCuratedPreparedStillClip, curatedClipPathAssetId, curatedAssetContentKey, buildGeoStockSearchQueries, type CuratedCandidatePick, type ArchiveAssetRow, setCuratedClipPreparedHook, setCuratedAssetRefusedHook } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
-import { acquireTunelioSource, clampWindow, cutWindowArgs, redactSecrets, tunelioApiKey, tunelioEnabled, type TunelioDeps, type TunelioFailCode } from "./tunelioDownloader";
-import { queryIntentHints, type BeatVisualIntent, createBeatVisualIntentState, ensureBeatVisualIntent, formatIntentSummary, formatVisualIntent, intentMatchScore, type BeatVisualIntentState } from "./beatVisualIntent";
+import { acquireTunelioSource, clampWindow, cutWindowArgs, keptTunelioSource, redactSecrets, tunelioApiKey, tunelioEnabled, type TunelioDeps, type TunelioFailCode, type TunelioOutcome } from "./tunelioDownloader";
+import { queryIntentHints, type BeatVisualIntent, createBeatVisualIntentState, ensureBeatVisualIntent, formatIntentSummary, formatVisualIntent, intentAcceptsGeneralFootage, intentMatchScore, lineFactsFor, type BeatVisualIntentState, type LineFacts } from "./beatVisualIntent";
 import {
   admitToShortlist,
   releaseShortlistSlot,
@@ -189,6 +189,7 @@ import { applyVisualRhythm, buildRhythmProfile, visualRhythmEngineEnabled } from
 import { planSceneAudio } from "./cinematicAudio/planner";
 import { buildRenderFeatureMatrix, formatFeatureMatrix } from "./renderContract";
 import { audioTrackOf, captionTrack, graphicsTrack, videoTrack, type TimelineVideoClip } from "./projectTimeline";
+import type { TimelineGraphic } from "./projectTimeline";
 import { type StillStyleContext } from "./motionGraphicsEngine";
 import { PipelineStepTiming, recordPipelineTiming, timePipelineStep } from "./pipelineStepTiming";
 import { type BeatGeoRegion } from "./vidrushQuality";
@@ -234,7 +235,7 @@ import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner"
 import { videoMainSubject } from "./mainSubject";
 import { queryNames, sentencesOf } from "./youtubeVideoSearchPlanner";
 import { readPeopleInNarration } from "./personNames";
-import { beatRowsInStockOrder, claimLateStock, stockVideoTargeted, isStocked, isStockReady, MAX_STOCK_ATTEMPTS, unofferedReadyStock, MAX_STOCK_VIDEOS, releaseYoutubeShotStock, STOCK_FIRST_BATCH, startYoutubeShotStock, stockOrder, stockSummary, stockVideoState, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
+import { addStockSection, beatRowsInStockOrder, claimLateStock, stockSectionStarts, stockVideoTargeted, stockedVideoIds, STOCK_SECTION_SEC, isStocked, isStockReady, MAX_STOCK_ATTEMPTS, unofferedReadyStock, MAX_STOCK_VIDEOS, releaseYoutubeShotStock, STOCK_FIRST_BATCH, startYoutubeShotStock, stockOrder, stockSummary, stockVideoState, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
 import {
   chooseMoments,
   sectionMoments,
@@ -350,7 +351,7 @@ import {
   type PipelineReportCollector,
   storeRenderReport,
 } from "./renderReport";
-import { pickLongVideoStartSec } from "./beatSegmentChoice";
+import { pickLongVideoStartSec, pickSecondSectionStartSec } from "./beatSegmentChoice";
 import { peekYoutubeVideoContext } from "./youtubeVideoContext";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { rankCandidatesByThumbnailClip } from "./scenePool";
@@ -401,6 +402,7 @@ import {
   wordsFromCharacterAlignment,
   type TtsPlannedBeat,
 } from "./voiceTtsAlignment";
+import { synthesizeGoogleTimepointed } from "./ttsMarkAlignment";
 
 import { ALL_GEO_SLUGS } from "./worldGeoSlugs";
 import {
@@ -702,6 +704,7 @@ import {
 } from "./beatVisualIntent";
 import { AsyncLocalStorage } from "async_hooks";
 import {
+  JUDGE_BASE_SCALE,
   JUDGE_BUDGET_EXHAUSTED,
   createJudgeBudget,
   formatJudgeBudgetLine,
@@ -5974,6 +5977,14 @@ export type VoiceoverGenerateOptions = {
 };
 
 export type VoiceoverProvider = "elevenlabs" | "fish-audio" | "google-tts" | "silent";
+/**
+ * VIDEO 645 — which provider ACTUALLY spoke. `synthesizeElevenLabsVoice` falls through to Fish Audio
+ * and Google Cloud TTS on its own, and `generateVoiceover` reported "elevenlabs" for all of them:
+ * 645's log read `providers=elevenlabs×1` while Fish Audio had spoken (`Fish Audio selected voice:
+ * 52.8s`), which hid why the narration carried no word timing. The synth functions write the speaker
+ * here; the result reports it.
+ */
+type SpokenBy = { provider: Exclude<VoiceoverProvider, "silent"> };
 
 /** Result of generateVoiceover() — callers must check usedSilentFallback rather than assume
  *  a returned duration means real narration was produced. */
@@ -6079,10 +6090,20 @@ export async function synthesizeFullNarrationMp3(
   const partPaths: string[] = [];
   const alignParts: Array<{ offsetSec: number; alignment: TtsCharacterAlignment }> = [];
   let timeOffset = 0;
-  const useTtsAlign =
-    ttsWordAlignmentEnabled() &&
-    Boolean(ELEVENLABS_API_KEY) &&
-    Boolean(voiceId?.trim());
+  /**
+   * MEASURED TIMING — the with-timestamps call is made for the voice generateVoiceover would use:
+   * the selected one, else the same default documentary voice. "No voice selected" used to switch
+   * the measured route off and leave the beats laid out, which the hard gate does not pass.
+   */
+  const alignVoiceId = voiceId?.trim() || "pNInz6obpgDQGcFmaJgB";
+  const useTtsAlign = ttsWordAlignmentEnabled() && Boolean(ELEVENLABS_API_KEY);
+  /**
+   * THE SECOND MEASURED ROUTE (ttsMarkAlignment.ts) — when ElevenLabs gives no timestamps (video
+   * 645: 401 quota_exceeded) and Google Cloud TTS is configured, Google speaks the part and reports
+   * its own timepoints. Tried BEFORE the plain chain, because a part spoken without timing (plain
+   * ElevenLabs, Fish Audio) cannot pass the gate. ELEVENLABS_ONLY keeps the chain as it was.
+   */
+  const useGoogleTimepoints = ttsWordAlignmentEnabled() && googleTtsFallbackEnabled() && !elevenLabsOnlyVoice();
   const TTS_TIMEOUT_MS = 180_000;
   const silentFallbackChunks: number[] = [];
   /** RONDE 653 — which provider spoke each part. Was returned and dropped; now kept and reported. */
@@ -6096,14 +6117,11 @@ export async function synthesizeFullNarrationMp3(
     const chunkVoiceSettings = narrationEmotionalVoiceEnabled()
       ? elevenLabsVoiceSettingsForTone(classifyNarrationEmotionalTone(chunks[i]!))
       : undefined;
-    if (useTtsAlign && voiceId) {
-      const stamped = await fetchElevenLabsWithTimestamps(
-        chunks[i]!,
-        voiceId,
-        ELEVENLABS_API_KEY,
-        TTS_TIMEOUT_MS,
-        chunkVoiceSettings
-      );
+    if (useTtsAlign) {
+      /** one retry: a transient failure must not hand the part to another voice */
+      const stamped =
+        (await fetchElevenLabsWithTimestamps(chunks[i]!, alignVoiceId, ELEVENLABS_API_KEY, TTS_TIMEOUT_MS, chunkVoiceSettings)) ??
+        (await fetchElevenLabsWithTimestamps(chunks[i]!, alignVoiceId, ELEVENLABS_API_KEY, TTS_TIMEOUT_MS, chunkVoiceSettings));
       if (stamped) {
         fs.writeFileSync(partPath, stamped.audioBuffer);
         alignParts.push({ offsetSec: timeOffset, alignment: stamped.alignment });
@@ -6113,6 +6131,32 @@ export async function synthesizeFullNarrationMp3(
         partProviders.push("elevenlabs-timestamped");
         continue;
       }
+    }
+    if (useGoogleTimepoints) {
+      const g = await synthesizeGoogleTimepointed(chunks[i]!, partPath, workDir, {
+        apiKey: GOOGLE_TTS_API_KEY,
+        fetchImpl: async (url, init) => await fetchWithTimeout(url, TTS_TIMEOUT_MS, `Google TTS timepoints part ${i + 1}`, init),
+        probeDurationSec: probeVideoDurationSec,
+        concatParts: concatVoiceoverParts,
+        log: (line) => console.log(line),
+      });
+      if (g.ok) {
+        markGoogleTtsResult(true);
+        alignParts.push({ offsetSec: timeOffset, alignment: g.alignment });
+        timeOffset += g.durationSec;
+        partPaths.push(partPath);
+        partProviders.push("google-tts-timepointed");
+        continue;
+      }
+      if (g.audioWritten) {
+        /** Google spoke it but its timing was refused: the voice is kept, the part is not measured */
+        markGoogleTtsResult(true);
+        timeOffset += g.durationSec;
+        partPaths.push(partPath);
+        partProviders.push("google-tts");
+        continue;
+      }
+      console.warn(`[TtsAlign] Google timepoints unavailable for part ${i + 1}: ${g.reason} — falling back to the plain voice chain`);
     }
     const voResult = await generateVoiceover(chunks[i], partPath, voiceId, {
       maxChars: BULK_VO_CHUNK_CHARS,
@@ -6152,7 +6196,17 @@ export async function synthesizeFullNarrationMp3(
   const fullPath = path.join(workDir, "full_voiceover.mp3");
   await concatVoiceoverParts(partPaths, fullPath, workDir);
 
-  if (useTtsAlign && alignParts.length === chunks.length) {
+  const wantAlign = useTtsAlign || useGoogleTimepoints;
+  if (!wantAlign) {
+    const why = process.env.ENABLE_TTS_WORD_ALIGNMENT === "false" ? "ENABLE_TTS_WORD_ALIGNMENT=false" : "no ELEVENLABS_API_KEY";
+    console.warn(`[TtsAlign] off (${why}): the narration carries no word timing, so the beats are laid out, not measured`);
+  } else if (alignParts.length !== chunks.length) {
+    console.warn(
+      `[TtsAlign] word alignment not stored: ${alignParts.length}/${chunks.length} part(s) carried measured timing (ElevenLabs timestamps or Google timepoints) — ` +
+        `the beats are laid out, not measured (see the [TtsAlign] line(s) above for why)`
+    );
+  }
+  if (wantAlign && alignParts.length === chunks.length) {
     const merged = mergeCharacterAlignments(alignParts);
     const words = wordsFromCharacterAlignment(merged);
     if (words.length > 0) {
@@ -6330,14 +6384,15 @@ async function synthesizeFishAudioVoice(
   text: string,
   outputPath: string,
   timeoutMs: number,
-  label: string
+  label: string,
+  spokeBy?: SpokenBy
 ): Promise<number> {
   if (!FISH_AUDIO_API_KEY) {
     throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Fish Audio API key is not configured");
   }
   if (isFishAudioInCooldown() && googleTtsFallbackEnabled()) {
     console.warn(`[Pipeline] Fish Audio ${label}: in cooldown — skipping straight to Google Cloud TTS`);
-    return synthesizeGoogleCloudVoice(text, outputPath, timeoutMs, label);
+    return synthesizeGoogleCloudVoice(text, outputPath, timeoutMs, label, spokeBy);
   }
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -6388,6 +6443,7 @@ async function synthesizeFishAudioVoice(
       const dur = await probeVideoDurationSec(outputPath);
       console.log(`[Pipeline] Fish Audio ${label}: ${dur.toFixed(1)}s`);
       markFishAudioResult(true);
+      if (spokeBy) spokeBy.provider = "fish-audio";
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
       if (attempt === MAX_ATTEMPTS) {
@@ -6396,7 +6452,7 @@ async function synthesizeFishAudioVoice(
         // (free 1M chars/month, commercial-use-safe), so try it before giving up entirely.
         if (googleTtsFallbackEnabled()) {
           console.warn(`[Pipeline] Fish Audio ${label}: failed after retries — switching to Google Cloud TTS`);
-          return synthesizeGoogleCloudVoice(text, outputPath, timeoutMs, label);
+          return synthesizeGoogleCloudVoice(text, outputPath, timeoutMs, label, spokeBy);
         }
         throw err;
       }
@@ -6411,7 +6467,8 @@ async function synthesizeGoogleCloudVoice(
   text: string,
   outputPath: string,
   timeoutMs: number,
-  label: string
+  label: string,
+  spokeBy?: SpokenBy
 ): Promise<number> {
   if (!GOOGLE_TTS_API_KEY) {
     throw pipelineError(PIPELINE_ERROR.VOICEOVER, "Google Cloud TTS API key is not configured");
@@ -6471,6 +6528,7 @@ async function synthesizeGoogleCloudVoice(
       fs.writeFileSync(outputPath, audioBuffer);
       const dur = await probeVideoDurationSec(outputPath);
       console.log(`[Pipeline] Google Cloud TTS ${label}: ${dur.toFixed(1)}s`);
+      if (spokeBy) spokeBy.provider = "google-tts";
       markGoogleTtsResult(true);
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
@@ -6491,12 +6549,13 @@ async function synthesizeVoiceoverFallback(
   text: string,
   outputPath: string,
   timeoutMs: number,
-  label: string
+  label: string,
+  spokeBy?: SpokenBy
 ): Promise<number> {
   if (fishAudioFallbackEnabled()) {
-    return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label);
+    return synthesizeFishAudioVoice(text, outputPath, timeoutMs, label, spokeBy);
   }
-  return synthesizeGoogleCloudVoice(text, outputPath, timeoutMs, label);
+  return synthesizeGoogleCloudVoice(text, outputPath, timeoutMs, label, spokeBy);
 }
 
 async function synthesizeElevenLabsVoice(
@@ -6505,7 +6564,8 @@ async function synthesizeElevenLabsVoice(
   elevenVoiceId: string,
   timeoutMs: number,
   label: string,
-  voiceSettings?: ElevenLabsVoiceSettings
+  voiceSettings?: ElevenLabsVoiceSettings,
+  spokeBy?: SpokenBy
 ): Promise<number> {
   if (!ELEVENLABS_API_KEY) {
     throw pipelineError(
@@ -6518,7 +6578,7 @@ async function synthesizeElevenLabsVoice(
     (fishAudioFallbackEnabled() || googleTtsFallbackEnabled())
   ) {
     console.warn(`[Pipeline] ElevenLabs ${label}: quota exhausted or in cooldown — fallback direct`);
-    return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
+    return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label, spokeBy);
   }
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -6562,7 +6622,7 @@ async function synthesizeElevenLabsVoice(
           console.warn(
             `[Pipeline] ElevenLabs ${label}: HTTP ${response.status} — switching to fallback: ${errText.slice(0, 150)}`
           );
-          return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
+          return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label, spokeBy);
         }
         throw pipelineError(
           PIPELINE_ERROR.VOICEOVER,
@@ -6577,6 +6637,7 @@ async function synthesizeElevenLabsVoice(
       const dur = await probeVideoDurationSec(outputPath);
       console.log(`[Pipeline] ElevenLabs ${label}: voice=${elevenVoiceId.slice(0, 10)}… ${dur.toFixed(1)}s`);
       markElevenLabsResult(true);
+      if (spokeBy) spokeBy.provider = "elevenlabs";
       return dur > 0 ? dur : Math.max(3, Math.round(audioBuffer.length / 40000));
     } catch (err) {
       // Same reasoning as above: a thrown error (network failure, our own timeout, etc.) means
@@ -6587,7 +6648,7 @@ async function synthesizeElevenLabsVoice(
         markElevenLabsResult(false);
         set_elevenLabsQuotaExhausted(true);
         console.warn(`[Pipeline] ElevenLabs ${label}: error — switching to fallback: ${msg.slice(0, 150)}`);
-        return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
+        return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label, spokeBy);
       }
       if (attempt === MAX_ATTEMPTS) {
         markElevenLabsResult(false);
@@ -6599,7 +6660,7 @@ async function synthesizeElevenLabsVoice(
   markElevenLabsResult(false);
   if (fishAudioFallbackEnabled() || googleTtsFallbackEnabled()) {
     console.warn(`[Pipeline] ElevenLabs ${label}: out of retries (rate-limited) — switching to fallback`);
-    return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label);
+    return synthesizeVoiceoverFallback(text, outputPath, timeoutMs, label, spokeBy);
   }
   throw pipelineError(PIPELINE_ERROR.VOICEOVER, "ElevenLabs TTS failed after retries");
 }
@@ -6624,6 +6685,8 @@ export async function generateVoiceover(
   const cleanText = sanitizeVoiceoverText(text, maxChars);
 
   const TTS_TIMEOUT_MS = maxChars > 2000 ? 180_000 : 90_000;
+  /** VIDEO 645 — overwritten by whichever synth function actually produced the audio. */
+  const spokeBy: SpokenBy = { provider: "elevenlabs" };
 
   const selectedElevenVoice = voiceId?.trim();
   // User picked a voice in the dashboard → always that exact ElevenLabs voice (never Fish remap).
@@ -6636,9 +6699,10 @@ export async function generateVoiceover(
       selectedElevenVoice,
       TTS_TIMEOUT_MS,
       "selected voice",
-      options?.voiceSettings
+      options?.voiceSettings,
+      spokeBy
     );
-    return { duration, usedSilentFallback: false, provider: "elevenlabs" };
+    return { duration, usedSilentFallback: false, provider: spokeBy.provider };
   }
 
   // Product decision to use ElevenLabs exclusively (ELEVENLABS_ONLY=true) — no cross-provider
@@ -6651,9 +6715,10 @@ export async function generateVoiceover(
       "pNInz6obpgDQGcFmaJgB",
       TTS_TIMEOUT_MS,
       "default documentary",
-      options?.voiceSettings
+      options?.voiceSettings,
+      spokeBy
     );
-    return { duration, usedSilentFallback: false, provider: "elevenlabs" };
+    return { duration, usedSilentFallback: false, provider: spokeBy.provider };
   }
 
   // Try ElevenLabs first when it's configured at all — synthesizeElevenLabsVoice already chains
@@ -6667,9 +6732,10 @@ export async function generateVoiceover(
         voiceId || "pNInz6obpgDQGcFmaJgB",
         TTS_TIMEOUT_MS,
         "default documentary",
-        options?.voiceSettings
+        options?.voiceSettings,
+        spokeBy
       );
-      return { duration, usedSilentFallback: false, provider: "elevenlabs" };
+      return { duration, usedSilentFallback: false, provider: spokeBy.provider };
     } catch (err) {
       console.warn(
         `[Pipeline] generateVoiceover: ElevenLabs (+ its Fish/Google fallback chain) exhausted: ${(err as Error).message?.slice(0, 200)}`
@@ -10185,7 +10251,7 @@ export function formatTargetedPoolEntry(
   return lines;
 }
 
-function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: string): VideoYoutubePool {
+export function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: string): VideoYoutubePool {
   try {
     const usable = withoutUnusableYoutubeVideos(
       pool.candidates.filter((c) => c.usable && c.from !== 0 && !youtubeDownloadRefusal(c.videoId)),
@@ -10219,8 +10285,17 @@ function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: strin
         skip: (ytId) => youtubeDownloadRefusal(ytId) != null || youtubeVideoUnusable(ytId) != null,
         download: async (ytId, startSec, durationSec, outPath, title) => {
           const dl: { status?: YoutubeDownloadStatus; reason?: string; transferStarted?: boolean } = {};
+          /**
+           * VIDEO 645 — TUNELIO COST GUARD. 645's ten paid Tunelio calls (100 credits) were ALL
+           * pre-fetched stock, and three of the ten videos reached the film. Ordinary stock now names
+           * the free yt-dlp route (`onlyRoute: "cloud"`: no paid call, the same validation and
+           * refusal memory as before; a source already kept on disk is still cut, see
+           * `downloadYouTubeCCClip`). A video a targeted search found (`stockVideoTargeted`: it has
+           * sentences it was searched for) keeps both routes, within `TUNELIO_PAID_CALLS_PER_RENDER`.
+           */
+          const targeted = stockVideoTargeted(filmId, ytId);
           const ok = await downloadYouTubeCCClip(
-            ytId, durationSec, startSec, outPath, -1, title, undefined, true, dl, YOUTUBE_STOCK_DOWNLOAD_MS
+            ytId, durationSec, startSec, outPath, -1, title, undefined, true, dl, YOUTUBE_STOCK_DOWNLOAD_MS, targeted ? undefined : "cloud"
           );
           if (!ok) noteYoutubeDownloadRefusal(ytId, dl.status, dl.reason);
           return ok;
@@ -10602,6 +10677,29 @@ function productionTunelioDeps(label: string): TunelioDeps {
       const result = await db.insert(workerOnceClaims).ignore().values({ claimKey, holder });
       return affectedRowCount(result) === 1;
     },
+    /**
+     * VIDEO 645 — the render's paid-call slots (`tunelioRenderSlotKey`), in the same table: the INSERT
+     * that lands holds the slot, whichever replica runs the render's downloads. No database: the module
+     * counts the slots in this process, which for one render on one worker is the whole truth. A slot
+     * whose `/create` Tunelio refused is deleted again, so a refusal is not counted as a paid call.
+     */
+    reserveRenderSlot: async (slotKey) => {
+      const { getDb, affectedRowCount } = await import("./db");
+      const db = await getDb();
+      if (!db) return true;
+      const { workerOnceClaims } = await import("../drizzle/schema");
+      const holder = `${process.env.RAILWAY_REPLICA_ID ?? "replica"}:${process.pid}`.slice(0, 128);
+      const result = await db.insert(workerOnceClaims).ignore().values({ claimKey: slotKey, holder });
+      return affectedRowCount(result) === 1;
+    },
+    releaseRenderSlot: async (slotKey) => {
+      const { getDb } = await import("./db");
+      const db = await getDb();
+      if (!db) return;
+      const { workerOnceClaims } = await import("../drizzle/schema");
+      const { eq } = await import("drizzle-orm");
+      await db.delete(workerOnceClaims).where(eq(workerOnceClaims.claimKey, slotKey));
+    },
     log: (line) => console.log(line),
   };
 }
@@ -10632,6 +10730,45 @@ async function cutTunelioWindow(
   }
   if (!fs.existsSync(dst) || fs.statSync(dst).size <= 0) return { ok: false, detail: "ffmpeg wrote nothing" };
   return { ok: true, start: w.start, duration: w.duration };
+}
+
+/** VIDEO 645 — the most second sections one render cuts; each is one ffmpeg cut and one shot scan, no download. */
+export const SECOND_SECTIONS_PER_RENDER = 3;
+
+/**
+ * VIDEO 645 — A SECOND SECTION OF A STOCK VIDEO, FROM THE SOURCE ALREADY ON DISK.
+ *
+ * 645 downloaded eleven videos (nine whole sources via Tunelio, 100 credits) and cut ONE 40 s section
+ * from each: 40 moments, 14 under 3 s, 19 refused by the picture editor, one video (8_lfxPI5ObM) with
+ * no usable shot at all — and when a section's shots were refused the video was spent, with the rest
+ * of it sitting on disk. This cuts one more `STOCK_SECTION_SEC` section from the KEPT source
+ * (`keptTunelioSource`: no request, no credits, no transfer), at a point clear of the sections already
+ * cut (`pickSecondSectionStartSec`), scans it into shots with the stock's own cutter and adds them to
+ * the video's stock (`addStockSection`). From there they are offered, deduplicated, measured and judged
+ * exactly like any other stock shot. Nothing kept (the yt-dlp route fetches the section only): nothing
+ * is cut and nothing is fetched — the existing routes are not asked again.
+ */
+export async function secondSectionFromKeptSource(
+  filmId: number,
+  videoId: string,
+  workDir: string
+): Promise<{ shots: number; detail: string; startSec?: number }> {
+  const kept = keptTunelioSource(videoId);
+  if (!kept) return { shots: 0, detail: "no_kept_source" };
+  const taken = stockSectionStarts(filmId, videoId);
+  if (taken == null) return { shots: 0, detail: "not_stocked" };
+  const startSec = pickSecondSectionStartSec(kept.durationSec, STOCK_SECTION_SEC, videoId, taken);
+  if (startSec == null) return { shots: 0, detail: "no_room_in_source" };
+  const outPath = path.join(workDir, `ytstock_${videoId}_${Math.round(startSec)}_s2.mp4`);
+  const cut = await cutTunelioWindow(kept.path, outPath, startSec, STOCK_SECTION_SEC, kept.durationSec);
+  if (!cut.ok) return { shots: 0, detail: `cut_failed:${cut.detail.slice(0, 60)}` };
+  const pieceDir = path.join(workDir, `ytstock_${videoId}_shots_s2`);
+  fs.mkdirSync(pieceDir, { recursive: true });
+  const pieces = await cutLocalVideoIntoShots(outPath, pieceDir, await productionLocalShotCutter());
+  const list =
+    pieces.kind === "pieces" ? pieces.pieces : pieces.kind === "one_shot" ? [{ path: outPath, startSec: 0, endSec: pieces.durationSec }] : [];
+  const added = addStockSection(filmId, videoId, cut.start, list);
+  return { shots: added, detail: added ? `${added}_shots` : `no_usable_shot:${pieces.kind}`, startSec: cut.start };
 }
 
 export async function downloadYouTubeCCClip(
@@ -10896,7 +11033,14 @@ export async function downloadYouTubeCCClip(
    * route below runs exactly as before: every failure is NOTED as an attempt and falls through,
    * and nothing thrown in here can leave this function — the pipeline keeps the downloader it had.
    */
-  if (!onlyRoute && tunelioEnabled()) {
+  /**
+   * VIDEO 645 — A SOURCE ALREADY ON DISK IS CUT, WHOEVER ASKS. A caller that named the cloud route
+   * (ordinary stock, the background prefetch) makes no paid call — but a whole source this process
+   * already paid for and kept (`keptTunelioSource`, 45 min) is cut for it here instead of fetching
+   * the same video again through the yt-dlp service (645: three videos fetched twice).
+   */
+  const keptSource = onlyRoute ? keptTunelioSource(videoId) : null;
+  if ((!onlyRoute && tunelioEnabled()) || keptSource) {
     const tunelioTmpPath = outPath.replace(/\.mp4$/, "_tunelio_tmp.mp4");
     const tunelioStartedAt = Date.now();
     try {
@@ -10908,9 +11052,13 @@ export async function downloadYouTubeCCClip(
           YOUTUBE_MIN_DOWNLOAD_WINDOW_MS,
           Math.min(youtubeDownloadTimeoutMs(budgetMs), remainingForTunelio)
         );
-        const source = await acquireTunelioSource(videoId, productionTunelioDeps(`Tunelio source scene ${sceneIndex}`), {
-          timeoutMs: tunelioTimeoutMs,
-        });
+        const source: TunelioOutcome = keptSource
+          ? { ok: true, ...keptSource, cached: true }
+          : await acquireTunelioSource(videoId, productionTunelioDeps(`Tunelio source scene ${sceneIndex}`), {
+              timeoutMs: tunelioTimeoutMs,
+              /** VIDEO 645 — at most `TUNELIO_PAID_CALLS_PER_RENDER` paid calls for this render, across replicas. */
+              ...(get_activeSourcingCache()?.renderVideoId != null ? { renderId: get_activeSourcingCache()!.renderVideoId! } : {}),
+            });
         if (!source.ok) {
           if (source.paid) transferStarted = true;
           note("tunelio", tunelioStatusFor(source.code), `${source.code.toLowerCase()}:${source.detail.slice(0, 80)}`);
@@ -17448,6 +17596,8 @@ export interface ProviderSourcingMetrics {
 }
 
 export interface SourcingCache {
+  /** VIDEO 645 — the FastVid video (render) this cache belongs to, when the caller named one: the Tunelio per-render paid-call limit keys on it. */
+  renderVideoId?: number;
   /** `${provider}|${normalized query}` → parsed search payload from the first execution. */
   queries: Map<string, unknown>;
   /**
@@ -17509,6 +17659,7 @@ let sourcingCacheSeq = 0;
 export function createSourcingCache(videoId?: number): SourcingCache {
   sourcingCacheSeq += 1;
   const cache: SourcingCache = {
+    ...(videoId != null ? { renderVideoId: videoId } : {}),
     queries: new Map(),
     budgetCancelledProviders: new Set(),
     assets: new Map(),
@@ -20343,6 +20494,8 @@ async function adoptClip(
         requireBeatMatch: requireBeat,
         scriptAnchored,
         entityRules,
+        /** VIDEO 645 — the intent's answer, read beside the gate; the gate itself decides what to do with it. */
+        generalFootageAcceptable: intentAcceptsGeneralFootage(_intent),
         signals: {
           beatMatch,
           queryInBeat: scoreVisualRelevance(beatText, queryWords) >= 1,
@@ -21591,7 +21744,9 @@ type BeatProgressPhase = "beat" | "backfill";
 function beatVisualContext(
   beat: { text?: string; index?: number },
   scene: { text?: string; index?: number },
-  videoTitle: string | undefined
+  videoTitle: string | undefined,
+  /** VIDEO 644 — the line's intent facts, when the caller's render has built them. */
+  line?: LineFacts
 ): BeatVisualContext {
   /**
    * RONDE 175 §3 — what the pipeline already established, handed to the judge.
@@ -21618,6 +21773,7 @@ function beatVisualContext(
     sceneText: scene.text,
     videoTitle: asVideoTitleString(videoTitle) || undefined,
     anchors,
+    ...(line ? { line } : {}),
   };
 }
 
@@ -23149,6 +23305,15 @@ export async function runFinalReadyYoutubeStage(
     /** FIX 1 — found by a targeted search: only its own sentences may take it. */
     targeted?: (videoId: string) => boolean;
     moments: (beat: SceneBeat, sceneIndex: number, videoIds: string[]) => Promise<string[]>;
+    /**
+     * VIDEO 645 — a second section from a stock video's kept source when a sentence's last looks
+     * found no fit: `candidates` are the stocked videos that serve the sentence and are not in the film;
+     * `cut` adds one more section's shots to that video's stock (no download) and says how many.
+     */
+    secondSection?: {
+      candidates: (sceneIndex: number, beat: SceneBeat) => string[];
+      cut: (videoId: string) => Promise<{ shots: number; detail: string; startSec?: number }>;
+    };
   },
   /**
    * STEP 0 — which inventory moments (footage this render has on disk for other sentences) a sentence
@@ -23184,20 +23349,25 @@ export async function runFinalReadyYoutubeStage(
     }
   }
   const lateStockIds = lateStock ? (typeof lateStock.videoIds === "function" ? lateStock.videoIds() : lateStock.videoIds) : [];
+  /** P2 — what one sentence's looks can judge: a third video's moments would never be looked at. */
+  const lateVideosPerSentence = Math.max(1, Math.ceil(maxRelevanceLooksPerBeat() / youtubeMomentsPerVideo()));
+  /** VIDEO 645 — targeted stock left "ready, not offered" because every sentence it serves was full. */
+  const targetedLeftOver: string[] = [];
   const lateStockFor = lateStock && lateStockIds.length
     ? assignLateStockVideos(
         lateStockIds,
         withoutPicture.filter((s) => !lateApprovalPendingFor(dedup, s.sceneIndex, s.beatIndex)),
         (id, s) => lateStock.serves(id, s.sceneIndex, s.beat),
-        /** P2 — what one sentence's looks can judge: a third video's moments would never be looked at. */
-        Math.max(1, Math.ceil(maxRelevanceLooksPerBeat() / youtubeMomentsPerVideo())),
+        lateVideosPerSentence,
         (id) => lateStock.targeted?.(id) === true,
-        (id, why) =>
+        (id, why) => {
+          if (why === "no_room" && lateStock.targeted?.(id) === true) targetedLeftOver.push(id);
           console.log(
             why === "targeted_no_open_sentence"
               ? `[LateStock] video=${id} targeted — none of the sentences it was searched for is open (or its destination is unknown); not handed to another sentence`
               : `[LateStock] video=${id} not assigned — every open sentence already holds what its looks can judge`
-          )
+          );
+        }
       )
     : new Map<string, string[]>();
   /**
@@ -23210,6 +23380,91 @@ export async function runFinalReadyYoutubeStage(
   const slots = pLimit(FINAL_LOOK_CONCURRENCY);
   const tally = finalLookTally(dedup);
   let stageOver = false;
+  /**
+   * VIDEO 645 — ONE EXTRA ROUND, PER RENDER, FOR TARGETED STOCK LEFT UNOFFERED.
+   *
+   * 645's s1b0 ("The Detroit Auto Show was a cathedral for giants like Ford and General Motors") held
+   * two pool videos for its two late slots (`lateVideosPerSentence`); the video a targeted search found
+   * FOR it — 20FBN3tdJUg, "General Motors", downloaded and cut into seven shots — was left `no_room`.
+   * Its last look refused both pool videos (a map, a 3D printer) and the sentence got a card while the
+   * GM footage sat on disk unjudged (`STOCK_READY_NOT_OFFERED`).
+   *
+   * When a sentence's last look ends without a fit, the targeted videos left over that serve it are
+   * handed to it once, through the same look: no search, no download (the shots are already cut),
+   * `moments` claims each video for one sentence and passes over seconds already in the film, the
+   * same ceilings and the same budget apply, and the picture editor decides. Once per render — the
+   * first sentence to end without a fit takes it; a second extra round never runs.
+   */
+  let extraRoundUsed = false;
+  const extraTargetedStockRound = async (sceneIndex: number, beatIndex: number, beat: SceneBeat): Promise<string | null> => {
+    if (extraRoundUsed || !lateStock || targetedLeftOver.length === 0 || stageOver || budget?.stopped()) return null;
+    if (budget && budget.leftMs() <= 0) return null;
+    const ids = targetedLeftOver.filter((id) => lateStock.serves(id, sceneIndex, beat)).slice(0, lateVideosPerSentence);
+    if (ids.length === 0) return null;
+    extraRoundUsed = true;
+    console.log(
+      `[LateStock] s${sceneIndex}b${beatIndex} extra round — targeted stock left unoffered, handed after a last look without a fit: ` +
+        `${ids.join(",")} (once per render; no search, no download; the picture editor decides)`
+    );
+    const moments = await lateStock.moments(beat, sceneIndex, ids);
+    if (moments.length === 0) {
+      console.log(`[LateStock] s${sceneIndex}b${beatIndex} extra round — no usable moment left in ${ids.join(",")}`);
+      return null;
+    }
+    noteYoutubeAssigned(dedup, youtubeTurnKey(sceneIndex, beatIndex), moments);
+    return finalReadyYoutubeLook(dedup, sceneIndex, beatIndex, (ready) => look(beat, sceneIndex, ready), undefined, inventory?.(beat, sceneIndex));
+  };
+  /**
+   * VIDEO 645 — A SECOND SECTION FROM A VIDEO ALREADY DOWNLOADED, WHEN THE FIRST GAVE NO FIT.
+   *
+   * Every stock video gave one 40 s section; 645 refused 33 of its 40 moments and then had nothing
+   * more to look at while nine whole sources sat on disk. Here, for a sentence whose looks all ended
+   * without a fit: of the stocked videos that serve it and are not in the film, one more section is
+   * cut from the kept source (`secondSection.cut`: no download, no request), its new shots are handed
+   * to this sentence through the same `moments` (one video to one sentence, seconds in the film passed
+   * over, the 3 s rule) and judged by the same look inside the same budget. Bounded: at most
+   * `SECOND_SECTIONS_PER_RENDER` cuts per render, one per video, `lateVideosPerSentence` per sentence,
+   * none once the budget is spent. A video with no room for another section, or no kept source, is
+   * passed over and nothing is fetched for it.
+   */
+  const secondSectionTried = new Set<string>();
+  let secondSectionsCut = 0;
+  const secondSectionRound = async (sceneIndex: number, beatIndex: number, beat: SceneBeat): Promise<string | null> => {
+    const second = lateStock?.secondSection;
+    if (!second || !lateStock || stageOver || budget?.stopped()) return null;
+    if (budget && budget.leftMs() <= 0) return null;
+    const candidates = second.candidates(sceneIndex, beat).filter((id) => !secondSectionTried.has(id));
+    let tried = 0;
+    for (const id of candidates) {
+      if (tried >= lateVideosPerSentence || secondSectionsCut >= SECOND_SECTIONS_PER_RENDER) break;
+      if (stageOver || budget?.stopped() || (budget && budget.leftMs() <= 0)) break;
+      secondSectionTried.add(id);
+      tried++;
+      secondSectionsCut++;
+      const cutStartedAt = Date.now();
+      const cut = await second.cut(id);
+      /** MEASUREMENT — `cut_ms`, and the `result=` line below, are read back by railwayLogAnalyser.ts; they decide nothing. */
+      console.log(
+        `[SecondSection] s${sceneIndex}b${beatIndex} video=${id} — another section of a video already downloaded ` +
+          `(${cut.detail}${cut.startSec != null ? ` @${cut.startSec}s` : ""}; cuts this render ${secondSectionsCut}/${SECOND_SECTIONS_PER_RENDER}; cut_ms=${Date.now() - cutStartedAt}; no download)`
+      );
+      if (cut.shots === 0) continue;
+      const moments = await lateStock.moments(beat, sceneIndex, [id]);
+      if (moments.length === 0) {
+        console.log(`[SecondSection] s${sceneIndex}b${beatIndex} video=${id} result=NO_MOMENT moments=0 look_ms=0`);
+        continue;
+      }
+      noteYoutubeAssigned(dedup, youtubeTurnKey(sceneIndex, beatIndex), moments);
+      const lookStartedAt = Date.now();
+      const clip = await finalReadyYoutubeLook(dedup, sceneIndex, beatIndex, (ready) => look(beat, sceneIndex, ready), undefined, inventory?.(beat, sceneIndex));
+      console.log(
+        `[SecondSection] s${sceneIndex}b${beatIndex} video=${id} result=${clip ? "FIT" : "NO_FIT"} moments=${moments.length} look_ms=${Date.now() - lookStartedAt}` +
+          `${clip ? ` clip=${path.basename(clip)}` : ""}`
+      );
+      if (clip) return clip;
+    }
+    return null;
+  };
   /** STEP 0 — every sentence queued for a last look has the first claim on the moments it was handed. */
   const open = finalLookOpenByRender.get(dedup) ?? new Set<string>();
   finalLookOpenByRender.set(dedup, open);
@@ -23241,7 +23496,11 @@ export async function runFinalReadyYoutubeStage(
           const lateIds = lateStockFor.get(youtubeTurnKey(sceneIndex, beatIndex)) ?? [];
           /** Handed to THIS sentence like any moment of its turn: its last look finds them as its own (`pendingYoutubeForBeat`). */
           if (lateStock && lateIds.length) noteYoutubeAssigned(dedup, youtubeTurnKey(sceneIndex, beatIndex), await lateStock.moments(beat, sceneIndex, lateIds));
-          await finalReadyYoutubeLook(dedup, sceneIndex, beatIndex, (ready) => look(beat, sceneIndex, ready), undefined, inventory?.(beat, sceneIndex));
+          const first = await finalReadyYoutubeLook(dedup, sceneIndex, beatIndex, (ready) => look(beat, sceneIndex, ready), undefined, inventory?.(beat, sceneIndex));
+          /** VIDEO 645 — no fit among what it was handed: once per render, the targeted stock left over … */
+          const extra = first == null ? await extraTargetedStockRound(sceneIndex, beatIndex, beat) : first;
+          /** … and then another section of a video already downloaded, from the source on disk. */
+          if (extra == null) await secondSectionRound(sceneIndex, beatIndex, beat);
         } catch (err) {
           console.warn(`[FinalReadyYouTube] s${sceneIndex}b${beatIndex} look failed:`, (err as Error)?.message?.slice(0, 120));
         } finally {
@@ -23823,6 +24082,14 @@ async function judgeBeatClipRelevance(
   if (!params.placeholder) {
     noteEligibleForJudgement(dedup, params.clipPath, "judged", sceneIndex, beatIndex);
   }
+  /**
+   * VIDEO 644 — what this line's intent says it needs, handed to the judge's `abstractLineRule`.
+   * Read from the render's own intent state, built once per beat in `adoptClip`, and put on the
+   * context BEFORE the own-sentence override below so both ride together. A caller that already
+   * carries the facts keeps its own; a beat without an intent passes nothing.
+   */
+  const line = params.ctx.line ?? lineFactsFor(dedup.beatIntent, sceneIndex, beatIndex);
+  if (line && !params.ctx.line) params = { ...params, ctx: { ...params.ctx, line } };
   /** VIDEO 627 — a beat searched on something else is still judged on its own sentence. */
   const ownSentence = dedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`);
   const { decision } = await judgePicture({
@@ -25673,7 +25940,9 @@ async function _runVideoPipelineInner(
         return beatVisualContext(
           { text, index: beatIndex },
           { text: scene?.text, index: sceneIndex },
-          asVideoTitleString(videoTitle) || undefined
+          asVideoTitleString(videoTitle) || undefined,
+          /** VIDEO 644 — the compose-time look gets the same line facts the in-scene looks got. */
+          lineFactsFor(visualDedup.beatIntent, sceneIndex, beatIndex)
         );
       };
       /**
@@ -26342,7 +26611,8 @@ async function _runVideoPipelineInner(
      * the stage had (window + one turn), growing with the looks it is given, never past the video's
      * length bound nor the render's force-export moment (see `judgeBudget.ts`).
      */
-    const judgeBaseMs = FINAL_REVIEW_WINDOW_MS + FINAL_LOOK_TURN_MS;
+    /** VIDEO 644 — the base 644 used (55 s) cut eight sentences' last look; see `JUDGE_BASE_SCALE`. */
+    const judgeBaseMs = Math.round((FINAL_REVIEW_WINDOW_MS + FINAL_LOOK_TURN_MS) * JUDGE_BASE_SCALE);
     const judgeBudget = createJudgeBudget({
       baseMs: judgeBaseMs,
       ceilingMs: judgeBudgetCeilingMs(
@@ -26394,6 +26664,18 @@ async function _runVideoPipelineInner(
                 const c = lateStockPool?.candidates.find((x) => x.videoId === id);
                 return c ? { title: c.title, description: c.description, ...(c.license ? { license: c.license } : {}) } : undefined;
               }),
+            /** VIDEO 645 — one more section from a stocked video's kept source: the sources this render already has. */
+            secondSection: {
+              candidates: (_sceneIndex, beat) =>
+                stockedVideoIds(videoId).filter(
+                  (id) =>
+                    lateStockPool != null &&
+                    poolRowsForBeat(lateStockPool, beat.text, [], "").some((r) => r.item.id.videoId === id && r.servesBeat === true) &&
+                    !providerAssetAlreadyUsed(visualDedup.usedContentKeys, visualDedup.sourcingCache, "youtube_cc", id) &&
+                    keptTunelioSource(id) != null
+                ),
+              cut: (id) => secondSectionFromKeptSource(videoId, id, workDir),
+            },
       },
       /**
        * STEP 0 — the render's footage for another sentence, judged for this one: a moment's video is
@@ -27973,6 +28255,8 @@ async function _runVideoPipelineInner(
     let deliveredTimeline: {
       clips: TimelineVideoClip[];
       basis: "rendered_timeline" | "planned_timeline";
+      /** HARD QUALITY GATE — the graphics placed as a sentence's picture, so the per-sentence report can name a card for what it is. */
+      graphics?: TimelineGraphic[];
     } | null = null;
     /** VIDEO 616 — the planned timeline, kept only so its YouTube share can be reported when the render does not deliver. */
     let refusedTimelineClips: TimelineVideoClip[] | null = null;
@@ -28313,6 +28597,8 @@ async function _runVideoPipelineInner(
                         /** §7 — the cut this render made into the provider's original, if any. */
                         sourceInSec: record.sourceInSec,
                         sourceOutSec: record.sourceOutSec,
+                        /** HARD QUALITY GATE — did the picture editor approve THIS clip for THIS sentence? Read from the render's own ledger. */
+                        contentApproval: pictureApprovedForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath)) ? ("judge_fit" as const) : ("unverified" as const),
                       }
                     : null,
                 };
@@ -28660,7 +28946,7 @@ async function _runVideoPipelineInner(
                 );
                 if (waited.kind === "DELIVERED") {
                   cinematicDeliveredUrl = waited.outputUrl;
-                  deliveredTimeline = { clips: videoTrack(outcome.timeline), basis: "planned_timeline" };
+                  deliveredTimeline = { clips: videoTrack(outcome.timeline), basis: "planned_timeline", graphics: graphicsTrack(outcome.timeline) };
                   /** The renderer ran — in the worker's process, but it ran, and it delivered. */
                   cinematicProgress.rendered = true;
                   /**
@@ -28919,6 +29205,7 @@ async function _runVideoPipelineInner(
                   deliveredTimeline = {
                     clips: videoTrack(outcome.timeline).filter((c) => renderedIds.has(c.id)),
                     basis: "rendered_timeline",
+                    graphics: graphicsTrack(outcome.timeline),
                   };
                   console.log(
                     pipelineReport.add(
@@ -29295,7 +29582,17 @@ async function _runVideoPipelineInner(
           const sentences = [...visualDedup.sceneBeatsBySceneIndex.entries()]
             .sort((a, b) => a[0] - b[0])
             .flatMap(([sceneIndex, beats]) => beats.map((b) => ({ sceneIndex, beatIndex: b.index, text: b.text })));
-          for (const line of formatSentencePictures(videoId, measured.clips, origins, sentences)) {
+          /** HARD QUALITY GATE — a sentence whose picture is a graphic: a chapter card is named "card:…", anything else "graphic:<type>". */
+          const graphicsBySentence = new Map<string, string>();
+          for (const g of deliveredTimeline?.graphics ?? []) {
+            if (g.disabled || g.data?.primaryVisual !== true) continue;
+            const si = g.data?.sceneIndex;
+            const bi = g.data?.beatIndex;
+            if (typeof si !== "number" || typeof bi !== "number") continue;
+            const isCard = g.graphicType === "chapter_card" || g.graphicType === "chapter_title";
+            graphicsBySentence.set(`s${si}b${bi}`, `${isCard ? "card" : "graphic"}:${g.graphicType}`);
+          }
+          for (const line of formatSentencePictures(videoId, measured.clips, origins, sentences, graphicsBySentence)) {
             console.log(pipelineReport.add("summary", line));
           }
         }

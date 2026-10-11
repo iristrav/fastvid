@@ -451,6 +451,13 @@ export type CandidateJudgeInput = {
   scriptAnchored: boolean;
   /** The named things this sentence mentions (see `namedEntityRules`). */
   entityRules: RealEntityRule[];
+  /**
+   * VIDEO 645 — the sentence's intent accepts general footage (REAL_FOOTAGE or B_ROLL) and made no
+   * entity mandatory (`intentAcceptsGeneralFootage`). Then missing evidence of the named people in
+   * the METADATA is flagged, not a refusal: the picture editor judges the frames against the
+   * sentence as it always has. Absent or false: `entity_evidence` refuses exactly as before.
+   */
+  generalFootageAcceptable?: boolean;
   /** Ranking signals the caller measured. Read here, never produced here. */
   signals: {
     /** Narration-to-candidate token overlap. */
@@ -522,8 +529,21 @@ export function judgeCandidateMetadata(input: CandidateJudgeInput): VisualJudgeV
   const personRules = input.entityRules.filter((r) => r.kind === "person");
   if (personRules.length > 0) {
     const failsEntityEvidence = !clipSatisfiesRealEntities(personRules, input.meta);
-    recordGateVerdict("entity_evidence", failsEntityEvidence);
-    if (failsEntityEvidence) return reject("metadata", "entity_evidence");
+    /**
+     * VIDEO 645 — a sentence whose intent accepts general footage is not refused here for what its
+     * metadata does not say: the candidate goes on to the picture editor, which decides on the frames
+     * (its "a person alone is not a fit" and situation rules unchanged). Nothing is approved here.
+     * Recorded as the gate's real decision, so a gate that never refuses still reads as such.
+     */
+    const deferred = failsEntityEvidence && input.generalFootageAcceptable === true;
+    recordGateVerdict("entity_evidence", failsEntityEvidence && !deferred);
+    if (failsEntityEvidence && !deferred) return reject("metadata", "entity_evidence");
+    if (deferred) {
+      console.log(
+        `[VisualJudge] ${input.where}: no evidence of ${personRules.map((r) => r.fullName).join(", ")} in the metadata of ` +
+          `"${path.basename(p)}" — the sentence's intent accepts general footage; flagged, not refused; the picture decides`
+      );
+    }
   }
   /**
    * RONDE 114 — a provider TITLE that shares nothing with the sentence is flagged, not refused.

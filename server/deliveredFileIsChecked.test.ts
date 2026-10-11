@@ -38,7 +38,8 @@ describe("the render job inspects the file it is about to deliver", () => {
   const worker = fs.readFileSync(path.join(__dirname, "renderJobWorker.ts"), "utf8");
 
   it("runs the content check on the rendered file, not on a path from elsewhere", () => {
-    expect(worker).toContain("spotCheckFinalVideo(outputPath)");
+    /** HARD QUALITY GATE — the same file, now also scanned where the timeline planned chapter cards. */
+    expect(worker).toContain("spotCheckFinalVideo(outputPath, { placeholderIntervals: cardIntervals })");
   });
 
   /**
@@ -47,7 +48,7 @@ describe("the render job inspects the file it is about to deliver", () => {
    * "missing or too small" — a warning that looks like a finding and is an artefact.
    */
   it("checks before the work directory is swept", () => {
-    const checkAt = worker.indexOf("spotCheckFinalVideo(outputPath)");
+    const checkAt = worker.indexOf("spotCheckFinalVideo(outputPath, { placeholderIntervals: cardIntervals })");
     const sweepAt = worker.indexOf("fs.rmSync(workDir");
     expect(checkAt).toBeGreaterThan(-1);
     expect(sweepAt).toBeGreaterThan(-1);
@@ -74,7 +75,7 @@ describe("the render job inspects the file it is about to deliver", () => {
      * deliberate and each is guarded by its own test: the gate's by
      * `everyProductionRouteMeetsTheArchive`, the upload's by `OUTPUT_UPLOAD_FAILED` below.
      */
-    const at = worker.indexOf("spotCheckFinalVideo(outputPath)");
+    const at = worker.indexOf("spotCheckFinalVideo(outputPath, { placeholderIntervals: cardIntervals })");
     const nextStepAt = worker.indexOf("6d. THE DELIVERY GATE", at);
     expect(at).toBeGreaterThan(-1);
     expect(nextStepAt, "the content check is no longer followed by the delivery gate").toBeGreaterThan(at);
@@ -91,7 +92,7 @@ describe("the render job inspects the file it is about to deliver", () => {
   });
 
   it("survives a check that throws, rather than losing a finished render to it", () => {
-    expect(worker).toContain("spotCheckFinalVideo(outputPath).catch(() => null)");
+    expect(worker).toContain("spotCheckFinalVideo(outputPath, { placeholderIntervals: cardIntervals }).catch(() => null)");
   });
 
   it("hands the result back to the caller instead of only logging it", () => {

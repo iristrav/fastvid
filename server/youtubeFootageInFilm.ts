@@ -215,7 +215,9 @@ export function formatSentencePictures(
     const text = s.text ? ` "${s.text.slice(0, 70)}"` : "";
     if (!mine.length) {
       const graphic = graphicsBySentence.get(key);
-      lines.push(`[SENTENCE_PICTURE] video=${videoId} ${key} footage=none picture=${graphic ? `graphic:${graphic}` : "none"}${text}`);
+      /** HARD QUALITY GATE — "card:<type>" is a chapter-card placeholder, "graphic:<type>" a content graphic; the caller names which. */
+      const picture = graphic ? (graphic.includes(":") ? graphic : `graphic:${graphic}`) : "none";
+      lines.push(`[SENTENCE_PICTURE] video=${videoId} ${key} footage=none picture=${picture}${text}`);
       continue;
     }
     withFootage++;

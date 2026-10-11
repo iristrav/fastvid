@@ -761,7 +761,8 @@ export function placePrimaryGraphics(
     const graphic: TimelineGraphic = {
       id: timelineElementId("gfx", slot.beatId, type, start),
       graphicType: type,
-      data: { ...payload, primaryVisual: true },
+      /** HARD QUALITY GATE — the graphic names the sentence it is the picture of, so the gate can measure it. */
+      data: { ...payload, primaryVisual: true, ...(owner ? { sceneIndex: owner.sceneIndex, beatIndex: owner.beatIndex } : {}) },
       start: backdrop.timelineStart,
       end: backdrop.timelineEnd,
       label,

@@ -51,7 +51,7 @@ import {
   isHistoricalDocumentary,
 } from "./mediaResearchEngine";
 import type { Scene } from "./pipeline/types";
-import type { AssetSourceIdentity } from "./projectTimeline";
+import type { AssetSourceIdentity, TimelineSentence } from "./projectTimeline";
 import { identityFromAdoption, identityIsRehydratable } from "./assetIdentity";
 import { identityHasRehydrationRoute } from "./assetRehydrator";
 /** F-1 — the local-file check below asks the filesystem rather than trusting a name. */
@@ -145,6 +145,8 @@ export type AdoptionFacts = {
    */
   sourceInSec?: number;
   sourceOutSec?: number;
+  /** HARD QUALITY GATE — "judge_fit" when the picture editor approved this clip for this sentence (`pictureApprovedForBeat`). */
+  contentApproval?: "judge_fit" | "unverified";
 };
 
 /**
@@ -327,6 +329,8 @@ export type AdapterIssue = {
 
 export type CinematicInputsResult = {
   scenes: CinematicSceneInput[];
+  /** HARD QUALITY GATE — every sentence of the script with its spoken window, planned or not (see `TimelineSentence`). */
+  sentences: TimelineSentence[];
   /**
    * GRAPHICS FIX — sentences with no approved picture whose MediaForm asks for a data graphic or a
    * map the planner can draw from the sentence's own words: that graphic is the sentence's picture,
@@ -997,6 +1001,7 @@ export function buildCinematicSceneInputs(params: {
   const dropped: string[] = [];
   const out: CinematicSceneInput[] = [];
   const beatWindows: CinematicInputsResult["beatWindows"] = [];
+  const sentences: TimelineSentence[] = [];
   const primaryGraphics: PrimaryGraphicSlot[] = [];
   const stats = {
     scenes: 0, beats: 0, planned: 0, withTrim: 0, withProbe: 0,
@@ -1126,6 +1131,25 @@ export function buildCinematicSceneInputs(params: {
        * a zero-length window so the drop below can say that in those words.
        */
       const end = clamped ? Math.max(start, sceneLengthSec) : rawEnd;
+      /**
+       * HARD QUALITY GATE — every sentence is recorded, with or without a clip. A measured window
+       * (narration alignment) is a spoken time; a laid-out one is the planner's estimate and is
+       * recorded as such — the gate does not read an estimate as proof.
+       *
+       * The sentence ends where its beat ends, AFTER the clamp above: a measured last word that sits
+       * past the scene's own audio (the TTS split trims a scene's leading silence, so a scene's
+       * clock is a few hundredths shorter than its word span) belongs to time this timeline gives
+       * the next scene. Recorded unclamped, the sentence asked for cover its own clip was not
+       * allowed to hold, and the coverage check read the last sentence of every scene as `partial`.
+       */
+      sentences.push({
+        sceneIndex: scene.index,
+        beatIndex,
+        startSec: Number((sceneOffsetSec + start).toFixed(3)),
+        endSec: Number((sceneOffsetSec + end).toFixed(3)),
+        timingBasis: measured && beat.voiceEndSec != null ? "measured" : "estimated",
+        text: beat.text,
+      });
       beatCursorSec = Math.max(beatCursorSec, end);
       beatWindows.push({ sceneIndex: scene.index, beatIndex, startSec: sceneOffsetSec + start, endSec: sceneOffsetSec + end });
 
@@ -1352,7 +1376,7 @@ export function buildCinematicSceneInputs(params: {
    * already named, and a check that judged the input would report faults in beats that are not in
    * the plan. What has to hold is that the SURVIVING set is internally possible.
    */
-  return { scenes: out, dropped, adapterIssues: checkCinematicSceneInputs(out), stats, beatWindows, primaryGraphics };
+  return { scenes: out, sentences, dropped, adapterIssues: checkCinematicSceneInputs(out), stats, beatWindows, primaryGraphics };
 }
 
 /* ═══════════════════════ the adapter checks its own work ═══════════════════════ */

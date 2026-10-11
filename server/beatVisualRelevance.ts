@@ -47,6 +47,7 @@ import path from "path";
 import { MAX_JUDGEMENTS_PER_BEAT, type VisionDeclineCause, BEAT_JUDGE_RULES, judgeBeatImage, judgementTally, noteJudgementSkipped, type BeatImageGateState, type BeatImageVerdict, type BeatSubjectAnchors } from "./beatImageRelevanceGate";
 import { extractFrameAtFraction } from "./localClipVision";
 import { storedVisualIntentForBeat } from "./scriptVisualKeywords";
+import type { LineFacts } from "./beatVisualIntent";
 import type { ShotType } from "./cinematicEditingEngine/types";
 /**
  * RONDE 166 — the severity vocabulary, read from the kind this decision's own words already imply.
@@ -94,6 +95,13 @@ export type BeatVisualContext = {
    * Like the anchors, not part of `beatIdentityKey`.
    */
   plannedVisual?: string;
+  /**
+   * VIDEO 644 — what the line's intent says it needs (`lineFactsFor`), for the judge's
+   * `abstractLineRule`. Read from the render's intent state by the caller; absent when no route
+   * has built this beat's intent. Like the anchors, not part of `beatIdentityKey`: the facts are a
+   * deterministic reading of the same sentence, so they never make two questions out of one.
+   */
+  line?: LineFacts;
 };
 
 /** What was decided about one clip on one beat. */
@@ -903,6 +911,8 @@ export async function checkBeatRelevance(
     // that has none, in which case the prompt prints nothing rather than an empty placeholder.
     anchors: ctx.anchors,
     plannedVisual: ctx.plannedVisual ?? storedVisualIntentForBeat(ctx.beatText)?.visual_description,
+    /** VIDEO 644 — see `abstractLineRule`. */
+    line: ctx.line,
     contentKey,
     beatIdentity: identity,
     state,

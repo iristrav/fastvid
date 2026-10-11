@@ -97,6 +97,7 @@ export type TunelioFailCode =
   | "INVALID_FILE"
   | "NO_VIDEO_STREAM"
   | "NO_AUDIO_STREAM"
+  | "RENDER_LIMIT"
   | "THREW";
 
 export type TunelioSource = {
@@ -151,6 +152,14 @@ export type TunelioDeps = {
    * paid call is made either. Absent: single-process behaviour (tests, local).
    */
   claimCreate?: (claimKey: string) => Promise<boolean>;
+  /**
+   * VIDEO 645 — the render's paid-call slots (`tunelioRenderSlotKey`), across replicas: true when
+   * this slot is now held by this worker, false when it is already taken. A throw: the store could
+   * not answer, and no paid call is made. Absent: slots are counted in this process only.
+   */
+  reserveRenderSlot?: (slotKey: string) => Promise<boolean>;
+  /** Gives a slot back when the paid call it was reserved for was refused before acceptance. Best effort. */
+  releaseRenderSlot?: (slotKey: string) => Promise<void>;
   now?: () => number;
   /** Where sources are kept. Defaults to `<tmpdir>/fastvid-tunelio`. */
   sourceDir?: string;
@@ -161,6 +170,8 @@ export type TunelioAcquireOptions = {
   /** Ceiling on the whole transfer. */
   timeoutMs: number;
   maxBytes?: number;
+  /** VIDEO 645 — the render this call is for: at most `TUNELIO_PAID_CALLS_PER_RENDER` paid calls per render. Absent: no per-render limit. */
+  renderId?: string | number;
 };
 
 /* ═══════════════════════ switches ═══════════════════════ */
@@ -322,8 +333,10 @@ type TunelioState = {
   sources: Map<string, SourceEntry>;
   inflight: Map<string, Promise<TunelioOutcome>>;
   videoRefusals: Map<string, { code: TunelioFailCode; detail: string; at: number }>;
+  /** VIDEO 645 — the paid-call slots held in this process per render (no claim store: the only ledger). */
+  renderSlots: Map<string, Set<string>>;
   /** Counters for the render log; never money, never secrets. */
-  stats: { createCalls: number; creditsCalls: number; sourcesServed: number; sourcesDownloaded: number };
+  stats: { createCalls: number; creditsCalls: number; sourcesServed: number; sourcesDownloaded: number; renderLimitHits: number; transferRetries: number };
 };
 
 const freshState = (): TunelioState => ({
@@ -333,7 +346,8 @@ const freshState = (): TunelioState => ({
   sources: new Map(),
   inflight: new Map(),
   videoRefusals: new Map(),
-  stats: { createCalls: 0, creditsCalls: 0, sourcesServed: 0, sourcesDownloaded: 0 },
+  renderSlots: new Map(),
+  stats: { createCalls: 0, creditsCalls: 0, sourcesServed: 0, sourcesDownloaded: 0, renderLimitHits: 0, transferRetries: 0 },
 });
 
 let state: TunelioState = freshState();
@@ -380,6 +394,80 @@ export function sweepTunelioSources(now: number = Date.now()): number {
   }
   return removed;
 }
+
+/**
+ * VIDEO 645 — THE WHOLE SOURCE IS ALREADY HERE.
+ *
+ * Tunelio delivers the entire video (645: nine sources, 36–288 MB, 10 credits each) and the pipeline
+ * cut ONE 40 s section from each — 4 to 7 shots, many under 3 s — and never looked at the rest. The
+ * source is kept for `TUNELIO_SOURCE_TTL_MS`; this names it, so another section can be cut from the
+ * file on disk: no request, no credits, no transfer. `null` when nothing is kept (or the file is gone).
+ */
+export function keptTunelioSource(
+  videoId: string,
+  now: number = Date.now()
+): { path: string; durationSec: number; bytes: number; width: number; height: number } | null {
+  sweepTunelioSources(now);
+  const entry = state.sources.get(videoId);
+  if (!entry || !fs.existsSync(entry.path)) return null;
+  return { path: entry.path, durationSec: entry.durationSec, bytes: entry.bytes, width: entry.width, height: entry.height };
+}
+
+/**
+ * VIDEO 645 — one of the render's `TUNELIO_PAID_CALLS_PER_RENDER` slots, or why none: the store across
+ * replicas when the caller has one, this process otherwise. The slots are tried in order; the first
+ * that lands is held. A store that cannot answer means no paid call (`CLAIM_UNKNOWN`).
+ */
+async function reserveRenderSlot(
+  renderKey: string,
+  deps: TunelioDeps
+): Promise<{ ok: true; slotKey: string } | { ok: false; code: "RENDER_LIMIT" | "CLAIM_UNKNOWN"; detail: string }> {
+  const held = state.renderSlots.get(renderKey) ?? new Set<string>();
+  state.renderSlots.set(renderKey, held);
+  for (let n = 1; n <= TUNELIO_PAID_CALLS_PER_RENDER; n++) {
+    const slotKey = tunelioRenderSlotKey(renderKey, n);
+    if (held.has(slotKey)) continue;
+    if (deps.reserveRenderSlot) {
+      let won: boolean;
+      try {
+        won = await deps.reserveRenderSlot(slotKey);
+      } catch (err) {
+        return { ok: false, code: "CLAIM_UNKNOWN", detail: `slot store ${classifyThrow(err).detail}` };
+      }
+      if (!won) {
+        /** another worker holds it: remembered here so this process does not ask the store for it again */
+        held.add(slotKey);
+        continue;
+      }
+    }
+    held.add(slotKey);
+    return { ok: true, slotKey };
+  }
+  return { ok: false, code: "RENDER_LIMIT", detail: `${TUNELIO_PAID_CALLS_PER_RENDER} paid calls already reserved for render ${renderKey}` };
+}
+
+/** VIDEO 645 — how many paid-call slots this process holds or saw taken for a render (tests and the render log). */
+export function tunelioRenderSlotsHeld(renderId: string | number): number {
+  return state.renderSlots.get(String(renderId))?.size ?? 0;
+}
+
+/**
+ * VIDEO 645 — THE PAID CALLS ONE RENDER MAY MAKE.
+ *
+ * 645 made ten paid `/create` calls (100 credits) for ten pre-fetched stock videos of which three
+ * reached the film. A render now reserves a slot — `tunelioRenderSlotKey(renderId, 1..3)` — before
+ * every paid call: across worker replicas in the same `worker_once_claims` table as the per-video
+ * claim (`TunelioDeps.reserveRenderSlot`), in this process when there is no store. A `/create` that
+ * Tunelio refuses (any answer but HTTP 200) gives its slot back: a refused request is not a paid one.
+ * A call that timed out or threw keeps its slot — it may have been accepted, and the limit guards money.
+ */
+export const TUNELIO_PAID_CALLS_PER_RENDER = 3;
+/** A render's n-th paid-call slot in the claim store; `renderId` is the FastVid video id. */
+export function tunelioRenderSlotKey(renderId: string | number, n: number): string {
+  return `tunelio:render:${String(renderId)}:paid:${n}`;
+}
+/** The least time a second transfer attempt is given (`TRANSFER_RETRY`); below it the first failure stands. */
+export const TUNELIO_TRANSFER_RETRY_MIN_MS = 10_000;
 
 /** Delete every kept source now (end of a render, or a test's teardown). */
 export function dropTunelioSources(): void {
@@ -524,6 +612,40 @@ export async function acquireTunelioSource(
       }
     }
 
+    /* 1c. VIDEO 645 — the render's paid-call slot: none left, no paid call */
+    const renderKey = opts.renderId != null ? String(opts.renderId) : null;
+    let heldSlot: string | null = null;
+    if (renderKey != null) {
+      const slot = await reserveRenderSlot(renderKey, deps);
+      if (!slot.ok) {
+        if (slot.code === "RENDER_LIMIT") {
+          state.stats.renderLimitHits++;
+          log(
+            `[YouTubeTunelio] video=${videoId} step=render_limit — ${TUNELIO_PAID_CALLS_PER_RENDER} paid calls already reserved for render ${renderKey}; ` +
+              `no paid call; existing route`
+          );
+        } else {
+          log(`[YouTubeTunelio] video=${videoId} step=render_slot unknown — no paid call: ${safe(slot.detail)}`);
+        }
+        return fail(slot.code, slot.detail);
+      }
+      heldSlot = slot.slotKey;
+    }
+    /** A `/create` Tunelio answered with anything but 200 was not accepted: the slot goes back. */
+    const giveSlotBack = async (): Promise<void> => {
+      if (heldSlot == null || renderKey == null) return;
+      const key = heldSlot;
+      heldSlot = null;
+      state.renderSlots.get(renderKey)?.delete(key);
+      if (deps.releaseRenderSlot) {
+        try {
+          await deps.releaseRenderSlot(key);
+        } catch {
+          /* the slot stays taken in the store: the limit errs towards fewer paid calls */
+        }
+      }
+    };
+
     /* 2. the one paid call */
     let created: { status: number; json: unknown; headers: Headers | null };
     state.stats.createCalls++;
@@ -538,6 +660,7 @@ export async function acquireTunelioSource(
     }
     const createMs = now() - started;
     if (created.status !== 200) {
+      await giveSlotBack();
       const body = created.json && typeof created.json === "object" ? JSON.stringify(created.json).slice(0, 120) : "";
       const detail = `create http ${created.status}${body ? ` ${safe(body)}` : ""}`;
       switch (created.status) {
@@ -590,19 +713,6 @@ export async function acquireTunelioSource(
     const finalPath = path.join(dir, `${videoId}-${crypto.randomBytes(4).toString("hex")}.mp4`);
     const partPath = `${finalPath}.part`;
     const transferStarted = now();
-    let got: { ok: boolean; status: number; bytes: number | null; detail?: string };
-    try {
-      got = await deps.download(verdict.url.toString(), partPath, opts.timeoutMs, maxBytes);
-    } catch (err) {
-      const c = classifyThrow(err);
-      try {
-        fs.unlinkSync(partPath);
-      } catch {
-        /* nothing written */
-      }
-      return paidFailure(c.code === "THREW" ? "DOWNLOAD_FAILED" : c.code, `download ${safe(c.detail)}`);
-    }
-    const bytes = got.bytes ?? (fs.existsSync(partPath) ? fs.statSync(partPath).size : 0);
     const dropPart = () => {
       try {
         fs.unlinkSync(partPath);
@@ -610,6 +720,43 @@ export async function acquireTunelioSource(
         /* nothing written */
       }
     };
+    type Transfer = { ok: boolean; status: number; bytes: number | null; detail?: string };
+    const bytesOnDisk = () => (fs.existsSync(partPath) ? fs.statSync(partPath).size : 0);
+    const transfer = async (timeoutMs: number): Promise<{ got: Transfer; threw: null } | { got: null; threw: { code: TunelioFailCode; detail: string } }> => {
+      try {
+        return { got: await deps.download(verdict.url.toString(), partPath, timeoutMs, maxBytes), threw: null };
+      } catch (err) {
+        return { got: null, threw: classifyThrow(err) };
+      }
+    };
+    let attempt = await transfer(opts.timeoutMs);
+    /**
+     * VIDEO 645 — ONE MORE TRY ON THE SAME SIGNED URL. 645 paid for a source whose transfer broke
+     * ("response exceeds"/reset) and then fetched the video again through the yt-dlp service. A broken
+     * or short transfer (a throw that is not a timeout, an HTTP 5xx or no status, fewer bytes than a
+     * video has) is tried once more on the URL already paid for — no new `/create` — when the clock
+     * has at least `TUNELIO_TRANSFER_RETRY_MIN_MS` left. A timeout, a 4xx (the URL is refused) or a
+     * file that is too large stands as it is. The file is validated after the retry exactly as before.
+     */
+    const brokenTransfer = attempt.threw
+      ? attempt.threw.code !== "TIMEOUT" && attempt.threw.code !== "TOO_LARGE"
+      : !attempt.got.ok
+        ? attempt.got.status === 0 || attempt.got.status >= 500
+        : (attempt.got.bytes ?? bytesOnDisk()) < MIN_SOURCE_BYTES;
+    const leftForRetry = opts.timeoutMs - (now() - transferStarted);
+    if (brokenTransfer && leftForRetry >= TUNELIO_TRANSFER_RETRY_MIN_MS) {
+      const why = attempt.threw ? `threw ${safe(attempt.threw.detail)}` : attempt.got && !attempt.got.ok ? `http ${attempt.got.status}` : `${attempt.got?.bytes ?? bytesOnDisk()} bytes`;
+      dropPart();
+      state.stats.transferRetries++;
+      log(`[YouTubeTunelio] video=${videoId} step=transfer_retry — first transfer broke (${why}); one more try on the same paid URL, ${Math.round(leftForRetry / 1000)}s left; no new paid call`);
+      attempt = await transfer(leftForRetry);
+    }
+    if (attempt.threw) {
+      dropPart();
+      return paidFailure(attempt.threw.code === "THREW" ? "DOWNLOAD_FAILED" : attempt.threw.code, `download ${safe(attempt.threw.detail)}`);
+    }
+    const got: Transfer = attempt.got;
+    const bytes = got.bytes ?? bytesOnDisk();
     if (!got.ok) {
       dropPart();
       return paidFailure("DOWNLOAD_FAILED", `download http ${got.status}${got.detail ? ` ${safe(got.detail)}` : ""}`);

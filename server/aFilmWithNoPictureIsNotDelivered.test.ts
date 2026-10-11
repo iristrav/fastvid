@@ -250,7 +250,7 @@ describe("the render job refuses a blank film before it is published", () => {
   });
 
   it("THE JOB FAILS AFTER MEASURING AND BEFORE THE DELIVERY GATE AND THE UPLOAD", () => {
-    const measured = WORKER.indexOf("spotCheck = await spotCheckFinalVideo(outputPath)");
+    const measured = WORKER.indexOf("spotCheck = await spotCheckFinalVideo(outputPath, { placeholderIntervals: cardIntervals })");
     const gate = WORKER.indexOf("const gate = deliveryGate({");
     const refused = WORKER.indexOf("blankPicture: blankPictureFinding(spotCheck),");
     const blocked = WORKER.indexOf("return await fail(RENDER_ERROR.RENDER_FAILED, formatDeliveryBlock(gate, job.videoId));");
