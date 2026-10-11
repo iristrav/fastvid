@@ -115,6 +115,7 @@ import { externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEn
 import { FOOTAGE_SHARE_TIERS, footageKeyOf, footageShareSoFar, noteFootageOnScreen, preferLessFilledFootage, recentUsageCounts, recentYoutubeUsage, recordArchiveVideoUsage, recordYoutubeVideoUsage, setRecentYoutubeUsageForFilm, youtubeSecondsShownRecently, youtubeSourceUsedRecently, type YoutubeUse } from "./usageDiversity";
 import { fetchCuratedArchiveBeatClip, isCuratedPreparedStillClip, curatedClipPathAssetId, curatedAssetContentKey, buildGeoStockSearchQueries, type CuratedCandidatePick, type ArchiveAssetRow, setCuratedClipPreparedHook, setCuratedAssetRefusedHook } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
+import { acquireTunelioSource, clampWindow, cutWindowArgs, redactSecrets, tunelioApiKey, tunelioEnabled, type TunelioDeps, type TunelioFailCode } from "./tunelioDownloader";
 import { queryIntentHints, type BeatVisualIntent, createBeatVisualIntentState, ensureBeatVisualIntent, formatIntentSummary, formatVisualIntent, intentMatchScore, type BeatVisualIntentState } from "./beatVisualIntent";
 import {
   admitToShortlist,
@@ -9798,7 +9799,8 @@ export type YoutubeDownloadStatus =
 
 /** One route's attempt at one video, kept so the final line can report all of them. */
 export type YoutubeDownloadAttempt = {
-  route: "cloud";
+  /** TUNELIO FIRST — "tunelio" is the hosted download API asked before the own yt-dlp service ("cloud"). */
+  route: "cloud" | "tunelio";
   status: YoutubeDownloadStatus;
   detail: string;
 };
@@ -10546,6 +10548,92 @@ export async function youtubeShortAtTheDoor(
   return youtubeResultIsShort(title, null, sec);
 }
 
+/* ═══════════════════════ TUNELIO FIRST — the hosted API ahead of the own yt-dlp service ═══════════════════════ */
+
+/** ffprobe: does the file carry an audio stream? False on any doubt. */
+async function probeHasAudioStream(filePath: string): Promise<boolean> {
+  for (const probePath of FFPROBE_PATHS()) {
+    try {
+      const { stdout } = await execFileRaw(probePath, [
+        "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=codec_type",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        filePath,
+      ], 8_000);
+      return stdout.toString().trim().split("\n").some((l) => l.trim() === "audio");
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+/**
+ * What the Tunelio module needs from this file: the shared streaming transfer (no Authorization
+ * header, redirects refused, the byte ceiling enforced while the bytes arrive) and ffprobe. Built
+ * per call so the label names the scene.
+ */
+function productionTunelioDeps(label: string): TunelioDeps {
+  return {
+    download: async (url, outPath, timeoutMs, maxBytes) => {
+      const { response, bytesWritten } = await downloadToFileStreaming(
+        url, outPath, timeoutMs, label, { redirect: "manual" }, maxBytes
+      );
+      return { ok: response.ok, status: response.status, bytes: bytesWritten };
+    },
+    probe: async (p) => {
+      const meta = await probeVideoStreamMeta(p);
+      if (!meta) return null;
+      const durationSec = meta.durationSec > 0 ? meta.durationSec : await probeVideoDurationSec(p);
+      return { width: meta.width, height: meta.height, durationSec, hasAudio: await probeHasAudioStream(p) };
+    },
+    /**
+     * Three worker replicas run this code. The paid call for a video goes out from the one whose
+     * INSERT into `worker_once_claims` lands (the same table RONDE 644 uses for the Apify run);
+     * the others fall through to the yt-dlp service. No database (local, tests): one process,
+     * nothing to share. A database error throws, and the module then makes no paid call.
+     */
+    claimCreate: async (claimKey) => {
+      const { getDb, affectedRowCount } = await import("./db");
+      const db = await getDb();
+      if (!db) return true;
+      const { workerOnceClaims } = await import("../drizzle/schema");
+      const holder = `${process.env.RAILWAY_REPLICA_ID ?? "replica"}:${process.pid}`.slice(0, 128);
+      const result = await db.insert(workerOnceClaims).ignore().values({ claimKey, holder });
+      return affectedRowCount(result) === 1;
+    },
+    log: (line) => console.log(line),
+  };
+}
+
+/**
+ * How a Tunelio refusal is counted among the attempts. Deliberately coarse: `videoRefusalOf` reads
+ * only the cloud route's refusals when it decides whether a VIDEO is unusable, and a Tunelio
+ * failure says nothing about the yt-dlp service's chances — so the status never claims more than
+ * "this route did not deliver", and the detail carries the real code.
+ */
+export function tunelioStatusFor(code: TunelioFailCode): YoutubeDownloadStatus {
+  return code === "TIMEOUT" ? "DOWNLOAD_TIMEOUT" : "DOWNLOAD_FAILED";
+}
+
+/** Cut the beat's window out of the whole source with ffmpeg. `{ ok: false }` names why, never throws. */
+async function cutTunelioWindow(
+  src: string,
+  dst: string,
+  clipStart: number,
+  duration: number,
+  sourceSec: number
+): Promise<{ ok: true; start: number; duration: number } | { ok: false; detail: string }> {
+  const w = clampWindow(clipStart, duration, sourceSec);
+  try {
+    await execFileRaw(FFMPEG_BIN, cutWindowArgs(src, dst, w.start, w.duration), 120_000);
+  } catch (err) {
+    return { ok: false, detail: (err as Error).message?.slice(0, 100) ?? "ffmpeg threw" };
+  }
+  if (!fs.existsSync(dst) || fs.statSync(dst).size <= 0) return { ok: false, detail: "ffmpeg wrote nothing" };
+  return { ok: true, start: w.start, duration: w.duration };
+}
+
 export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
@@ -10797,6 +10885,105 @@ export async function downloadYouTubeCCClip(
     console.warn(`[YouTubeNotFootage] video=${videoId} ${shortAtTheDoor} — never downloaded`);
     reportDownload("DOWNLOAD_FAILED", `youtube_short:${shortAtTheDoor}`);
     return false;
+  }
+
+  /**
+   * TUNELIO FIRST — see tunelioDownloader.ts.
+   *
+   * Asked before the own yt-dlp service only when `TUNELIO_ENABLED` is exactly "true" AND
+   * `TUNELIO_API_KEY` is set (an opt-in). A caller that named one route (`onlyRoute`: the background prefetch and the route
+   * test size their scope for that route) is not sent here. Whatever this block finds, the cloud
+   * route below runs exactly as before: every failure is NOTED as an attempt and falls through,
+   * and nothing thrown in here can leave this function — the pipeline keeps the downloader it had.
+   */
+  if (!onlyRoute && tunelioEnabled()) {
+    const tunelioTmpPath = outPath.replace(/\.mp4$/, "_tunelio_tmp.mp4");
+    const tunelioStartedAt = Date.now();
+    try {
+      const remainingForTunelio = remainingScopeMs();
+      if (remainingForTunelio < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {
+        note("tunelio", "DOWNLOAD_TIMEOUT", `scene_budget_${Math.round(remainingForTunelio / 1000)}s_left`);
+      } else {
+        const tunelioTimeoutMs = Math.max(
+          YOUTUBE_MIN_DOWNLOAD_WINDOW_MS,
+          Math.min(youtubeDownloadTimeoutMs(budgetMs), remainingForTunelio)
+        );
+        const source = await acquireTunelioSource(videoId, productionTunelioDeps(`Tunelio source scene ${sceneIndex}`), {
+          timeoutMs: tunelioTimeoutMs,
+        });
+        if (!source.ok) {
+          if (source.paid) transferStarted = true;
+          note("tunelio", tunelioStatusFor(source.code), `${source.code.toLowerCase()}:${source.detail.slice(0, 80)}`);
+          if (source.code !== "COOLDOWN" && source.code !== "VIDEO_REFUSED") {
+            console.warn(
+              `[Pipeline] Scene ${sceneIndex}: Tunelio did not deliver ${videoId} (${source.code}: ` +
+                `${source.detail.slice(0, 100)}) — falling back to the yt-dlp service`
+            );
+          }
+        } else {
+          transferStarted = true;
+          const cut = await cutTunelioWindow(source.path, tunelioTmpPath, clipStart, duration, source.durationSec);
+          if (!cut.ok) {
+            note("tunelio", "DOWNLOAD_FAILED", `cut_failed:${cut.detail.slice(0, 60)}`);
+            console.warn(`[Pipeline] Scene ${sceneIndex}: Tunelio source for ${videoId} could not be cut (${cut.detail.slice(0, 80)}) — falling back to the yt-dlp service`);
+          } else {
+            const cutSize = fs.statSync(tunelioTmpPath).size;
+            const verdict = await validateAcquiredFile(tunelioTmpPath, duration, {
+              probe: async (p) => {
+                const meta = await probeVideoStreamMeta(p);
+                if (!meta || meta.durationSec > 0) return meta;
+                return { ...meta, durationSec: await probeVideoDurationSec(p) };
+              },
+              decodeFrame: async (p) => {
+                const framePath = `${p}.validate.jpg`;
+                try {
+                  return await extractFrameAtFraction(p, framePath, 0.5);
+                } finally {
+                  try { fs.unlinkSync(framePath); } catch { /* none written */ }
+                }
+              },
+            });
+            if (!verdict.ok || cutSize <= 10_000) {
+              const why = verdict.ok ? `below_size_floor_${cutSize}_bytes` : `${verdict.code}:${verdict.detail}`;
+              note("tunelio", "DOWNLOAD_FAILED", `cut_invalid:${why.slice(0, 70)}`);
+              console.warn(`[Pipeline] Scene ${sceneIndex}: Tunelio cut for ${videoId} is not a usable clip (${why.slice(0, 100)}) — falling back to the yt-dlp service`);
+            } else {
+              fs.renameSync(tunelioTmpPath, outPath);
+              note("tunelio", "DOWNLOAD_SUCCESS", `${cutSize}_bytes${source.cached ? "_from_kept_source" : ""}`);
+              console.log(
+                `[Pipeline] Scene ${sceneIndex}: ✅ YouTube via Tunelio: "${title?.slice(0, 60) ?? videoId}" (${videoId}) ` +
+                  `window=${cut.start}s+${cut.duration}s source=${source.cached ? "kept" : "fetched"} ms=${Date.now() - tunelioStartedAt}`
+              );
+              try {
+                get_activeSourcingCache()?.lineage.recordSourceTrim(outPath, {
+                  inSec: cut.start,
+                  outSec: cut.start + cut.duration,
+                });
+              } catch {
+                /* a clip that arrived correctly is never lost to its own bookkeeping */
+              }
+              reportDownload("DOWNLOAD_SUCCESS", "tunelio");
+              if (archiveDelivered) {
+                archiveYoutubeDownloadInBackground(outPath, { videoId, title, startSec: cut.start, durationSec: cut.duration });
+              }
+              return true;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      const thrownAs = classifyYoutubeDownloadError(err);
+      note("tunelio", thrownAs, redactSecrets((err as Error).message?.slice(0, 60) ?? "threw", tunelioApiKey()));
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: Tunelio route threw for ${videoId} (${thrownAs}) — falling back to the yt-dlp service`
+      );
+    } finally {
+      try {
+        if (fs.existsSync(tunelioTmpPath)) fs.unlinkSync(tunelioTmpPath);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   // F3-41: cloud/yt-dlp service tried FIRST — this is the intended primary route (see the F3-40
