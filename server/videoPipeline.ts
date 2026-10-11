@@ -22099,6 +22099,36 @@ export function sceneIsClosed(dedup: object, sceneIndex: number): boolean {
 }
 
 /**
+ * VIDEO 644 — A SCENE THE DEADLINE CUT OFF STILL TAKES ITS OWN LATE ANSWERS, ONCE ITS LOOP IS OVER.
+ *
+ *     08:20:10  the chunk's 225 s are up; scene 1 is still running — the film keeps a copy of the
+ *               one clip it had pushed (`sceneClipsKeptAtDeadline`), scene 1 is not "returned"
+ *     08:20:32  scene 1's loop ends: s1b3's search still running, its push stays open
+ *     08:26:10  [BeatRelevance] s1b3 adopt fits … t5497d40 — the ladder settles with that clip
+ *     08:27:06  the last pass: "[APPROVED_NOT_PLACED] s1b3 reason=approved after scene closed — not
+ *               placed" — only because the scene had not returned in time; s1b3 got a chapter card
+ *
+ * `placeApprovedAfterSceneClosed` asks for the scene's own result to be the one the film uses. A
+ * deadline copy is that result too: the film holds it, `placeLate` appends to it, and the scene's
+ * own push is the placer. What has to be true is only that the scene's loop is OVER (its push is no
+ * longer racing its own placements) and that it did not fail. A scene that returned in time is
+ * unchanged; a failed scene still places nothing late.
+ */
+export function lateAnswersUseSceneResult(scene: {
+  /** The scene's own result reached the film before the chunk's deadline. */
+  returnedInTime: boolean;
+  /** The film holds the scene as a deadline copy (or a gap) because it was still running at the deadline. */
+  keptAtDeadline: boolean;
+  /** The scene's search threw: its approvals are named as lost, nothing is placed. */
+  failed: boolean;
+  /** `sceneIsClosed`: the scene's loop is over. */
+  closed: boolean;
+}): boolean {
+  if (scene.returnedInTime) return true;
+  return scene.keptAtDeadline && !scene.failed && scene.closed;
+}
+
+/**
  * VIDEO 638 — A PICTURE APPROVED AFTER ITS SCENE CLOSED, BEFORE THE FILM IS ASSEMBLED.
  *
  *     08:18:14  scene 2 closes; s2b2's search is still running ("no answer to place")
@@ -25745,10 +25775,18 @@ async function _runVideoPipelineInner(
 
     /** VIDEO 638 — the scenes whose own result the film uses (see `placeApprovedAfterSceneClosed`). */
     const returnedInTime = new Set<number>();
+    /** VIDEO 644 — scenes the film holds as a deadline copy or a gap (still running at the chunk's deadline), and scenes whose search threw. */
+    const keptAtDeadline = new Set<number>();
+    const failedScenes = new Set<number>();
     /** VIDEO 638 — a late approved answer goes on its own sentence, never on one that already has a picture. */
     const placeLate = async (si: number, final: boolean): Promise<void> => {
       const placedLate = await placeApprovedAfterSceneClosed(visualDedup, scenes[si]!.index, {
-        sceneReturned: returnedInTime.has(si),
+        sceneReturned: lateAnswersUseSceneResult({
+          returnedInTime: returnedInTime.has(si),
+          keptAtDeadline: keptAtDeadline.has(si),
+          failed: failedScenes.has(si),
+          closed: sceneIsClosed(visualDedup, scenes[si]!.index),
+        }),
         final,
         /** VIDEO 642 — "has its picture" means: no 3 s of the sentence left uncovered (`beatSecondsLeft`). */
         hasPicture: (beatIndex) => {
@@ -25847,6 +25885,7 @@ async function _runVideoPipelineInner(
           visualDedup.lock = Promise.resolve();
           result = { clips: [], beatDurations: [] };
           sceneFailed = true;
+          failedScenes.add(sceneIdx);
         }
         if (chunkClosed) return result;
         sceneVisualResults[sceneIdx] = result;
@@ -25890,6 +25929,8 @@ async function _runVideoPipelineInner(
        * stay gaps, exactly as before.
        */
       if (!sceneVisualResults[si]) {
+        /** VIDEO 644 — the film's copy of this scene; its own late answers go on it once its loop is over (`lateAnswersUseSceneResult`). */
+        keptAtDeadline.add(si);
         const kept = sceneClipsKeptAtDeadline(visualDedup.sceneClipsSoFar?.get(scenes[si]!.index));
         if (kept.clips.length > 0) {
           console.log(
