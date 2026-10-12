@@ -104,7 +104,15 @@ export type YoutubeVisionOutcome =
  * one, which is a different kind of fact and is why they are named differently:
  *
  *   FINAL                        reached the delivered film
- *   RENDER_INPUT_NOT_IN_FINAL    handed to the renderer and not in its output
+ *   RENDER_INPUT_NOT_IN_FINAL    handed to the renderer and PROVABLY not in the file that was
+ *                                produced and checked — only sayable once the pipeline has checked
+ *                                that file (`VisualSourceLedger.finalVideoWasVerified`)
+ *   RENDER_INPUT_FINAL_VIDEO_NOT_PROVEN
+ *                                handed to the renderer, and no delivered file was ever proven: the
+ *                                DeliveryGate refused the render, the job failed, or the check never
+ *                                ran. VIDEO 646 — the gate refused the film and two render inputs
+ *                                were reported as NOT_IN_FINAL, which reads as a lost picture when
+ *                                the only fact is that nothing was delivered to compare against
  *   CINEMATIC_DROPPED            the cinematic planner turned it down, with a reason
  *   COMPOSE_DROPPED              the compose filter turned it down, with a reason
  *   REPLACED / REMOVED           swapped out or taken out, with a reason
@@ -122,6 +130,7 @@ export type YoutubeVisionOutcome =
 export type YoutubeLifecycleStatus =
   | "FINAL"
   | "RENDER_INPUT_NOT_IN_FINAL"
+  | "RENDER_INPUT_FINAL_VIDEO_NOT_PROVEN"
   | "CINEMATIC_DROPPED"
   | "COMPOSE_DROPPED"
   | "REPLACED"
@@ -166,6 +175,15 @@ const DOWNSTREAM_ORDER: readonly LineageStage[] = [
   "FINAL_VIDEO",
   "DELIVERED",
 ];
+
+/** VIDEO 646 (D) — stages that prove a record was still in use after a refusal filed on it. */
+const PROGRESS_AFTER_REFUSAL: ReadonlySet<LineageStage> = new Set<LineageStage>([
+  "COMPOSE_SELECTED",
+  "CINEMATIC_SELECTED",
+  "RENDER_INPUT",
+  "FINAL_VIDEO",
+  "DELIVERED",
+]);
 
 /** The transforms that turn a downloaded file into something a montage can use. */
 const PREPARATION_STAGES: readonly LineageStage[] = [
@@ -214,6 +232,11 @@ export type YoutubeLifecycleRow = {
   render: string;
   finalVideo: boolean;
   delivered: boolean;
+  /**
+   * VIDEO 646 (B) — whether this render ever proved which clips reached a delivered file. False
+   * for a refused or failed delivery; then `finalVideo=no` on a render input is not a loss.
+   */
+  finalVideoProven: boolean;
   status: YoutubeLifecycleStatus;
   /** Quoted from the event that ended this asset's life. Empty when that event carried none. */
   reason: string;
@@ -240,11 +263,34 @@ export type YoutubeLifecycleRow = {
  */
 function contentKeyIsAssetIdentity(contentKey: string): boolean {
   if (!isCanonicalAssetKey(contentKey)) return false;
-  return ASSET_IDENTITY_RE.test(contentKey.trim());
+  return isYoutubeAssetIdentityKey(contentKey);
 }
 
-/** The exact shape `providerAssetKey` writes: the provider, then a 16-hex sha256 prefix. */
-const ASSET_IDENTITY_RE = new RegExp(`^${YOUTUBE_PROVIDER}:[0-9a-f]{16}$`);
+/**
+ * VIDEO 646 (A) — THE TWO SHAPES A YOUTUBE RECORD'S KEY CAN LEGITIMATELY HAVE.
+ *
+ *   youtube_cc:<16 hex>                       `providerAssetKey` — the whole video
+ *   youtube_cc:<16 hex>@t<ms>d<sec>           `youtubeFragmentKey` (VIDEO 620) — one MOMENT of it,
+ *                                             which is what `clipContentKey` has returned for every
+ *                                             fetched YouTube clip since the picture editor started
+ *                                             judging moments rather than videos
+ *
+ * The relevance ledger files its verdicts under the second form, so the join below was always
+ * possible — and this regex, written for the first form only, refused every production row: 24 of
+ * 24 in render 646 came back CONTENT_KEY_NOT_ASSET_IDENTITY, `[FitChain]` printed FIT=UNKNOWN and
+ * the verdict was INCONCLUSIVE while the FITs sat in the other register under exactly these keys.
+ *
+ * A fragment key is NOT folded to its video: two moments of one video are two different pictures
+ * with two different verdicts, and the ledger keys them apart on purpose. Nothing else is admitted:
+ * a wrong hex length, uppercase hex, a bare `@t`, a decimal or a stray suffix all fail, so the join
+ * can still only be made on a key the provider tag itself produced.
+ */
+export const YOUTUBE_ASSET_IDENTITY_RE = new RegExp(`^${YOUTUBE_PROVIDER}:[0-9a-f]{16}(@t\\d+d\\d+)?$`);
+
+/** One validator for both callers, so the two forms cannot drift apart again. */
+export function isYoutubeAssetIdentityKey(contentKey: string): boolean {
+  return typeof contentKey === "string" && YOUTUBE_ASSET_IDENTITY_RE.test(contentKey.trim());
+}
 
 /**
  * What one record actually filed — stages AND statuses AND reasons.
@@ -400,6 +446,55 @@ function endingOf(
    */
   const adoptedIndex = events.findIndex((e) => e.stage === "ADOPTED" && e.status === "OK");
   const adopted = adoptedIndex >= 0;
+  const adoptedEvent = adopted ? events[adoptedIndex]! : null;
+  /**
+   * VIDEO 646 (D) — WHICH OFFERING A REFUSAL BELONGS TO, READ FROM THE EVENT'S OWN IDENTITY.
+   *
+   * One YouTube moment is one root record however many sentences it is offered to; each offer that
+   * is transformed for a sentence opens a derived record, and `eventsWithDescendants` folds them all
+   * into the root's history. Render 646, s1b2: the moment adopted for s1b2 was transformed, selected
+   * by the planner and handed to the renderer, while a copy of the same moment offered to another
+   * sentence was refused `file_missing`. Folded together and read latest-first, that refusal became
+   * the adopted clip's ending — REJECTED_AFTER_ADOPTION on a clip that reached RENDER_INPUT.
+   *
+   * Every event carries `lineageId`, `parentLineageId`, `sceneIndex` and `beatIndex` (RONDE 641
+   * made the writer stamp the sentence the event happened FOR). A refusal ends the adopted clip
+   * only when it is about THAT clip: filed on the adopted record or on something derived from it,
+   * or filed for the sentence the clip was adopted for. A refusal filed under another sentence, on
+   * a line that does not descend from the adopted record, is the refusal of another offering of the
+   * same moment — recorded, real, and no ending for this one. Nothing is inferred beyond those
+   * four recorded fields; where they do not separate two offerings (same sentence, same line) the
+   * refusal is kept as the ending, exactly as before.
+   *
+   * And a refusal that the same line later OUTLIVED — an OK COMPOSE_SELECTED, CINEMATIC_SELECTED,
+   * RENDER_INPUT, FINAL_VIDEO or DELIVERED filed after it on the same lineageId, which is
+   * chronological per record — did not end it either.
+   */
+  const parentOf = new Map<string, string | undefined>();
+  for (const e of events) if (!parentOf.has(e.lineageId)) parentOf.set(e.lineageId, e.parentLineageId);
+  const descendsFromAdopted = (lineageId: string): boolean => {
+    if (!adoptedEvent) return false;
+    const seen = new Set<string>();
+    let cursor: string | undefined = lineageId;
+    while (cursor && !seen.has(cursor) && seen.size <= 64) {
+      if (cursor === adoptedEvent.lineageId) return true;
+      seen.add(cursor);
+      cursor = parentOf.get(cursor);
+    }
+    return false;
+  };
+  const aboutTheAdoptedClip = (e: VisualLineageEvent): boolean =>
+    !adoptedEvent ||
+    descendsFromAdopted(e.lineageId) ||
+    (e.sceneIndex === adoptedEvent.sceneIndex && e.beatIndex === adoptedEvent.beatIndex);
+  const outlivedOnItsOwnLine = (i: number): boolean =>
+    events.some(
+      (later, j) =>
+        j > i &&
+        later.lineageId === events[i]!.lineageId &&
+        later.status === "OK" &&
+        PROGRESS_AFTER_REFUSAL.has(later.stage)
+    );
   const refusal = (after: boolean) => {
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i]!;
@@ -414,6 +509,7 @@ function endingOf(
         if (!after) return e;
         continue;
       }
+      if (after && (!aboutTheAdoptedClip(e) || outlivedOnItsOwnLine(i))) continue;
       if (after ? i > adoptedIndex : i < adoptedIndex) return e;
     }
     return undefined;
@@ -453,11 +549,25 @@ function endingOf(
  */
 export function traceYoutubeLifecycle(
   ledger: VisualSourceLedger | undefined,
-  relevance: BeatRelevanceLedger | undefined
+  relevance: BeatRelevanceLedger | undefined,
+  /**
+   * VIDEO 646 (B) — what the pipeline knows about the delivery, when it knows more than the ledger:
+   * `refusal` is quoted on every row the missing proof affects, so a reader sees "the gate refused
+   * the film" beside the clip instead of inferring a loss.
+   */
+  delivery: { refusal?: string | null } = {}
 ): YoutubeLifecycleRow[] {
   if (!ledger) return [];
-  const filed = eventsById(ledger.allEvents());
+  const allEvents = ledger.allEvents();
+  const filed = eventsById(allEvents);
   const records = ledger.allRecords();
+  /**
+   * The ledger's own flag first (`markFinalVideo` sets it, `replaceFinalVideo` re-sets it); a FINAL_VIDEO
+   * event filed by any other hand is the same proof. A ledger that was never checked proves nothing.
+   */
+  const finalVideoProven =
+    (ledger as { finalVideoWasVerified?: boolean }).finalVideoWasVerified === true ||
+    allEvents.some((e) => e.stage === "FINAL_VIDEO" && e.status === "OK");
   const childrenOf = new Map<string, string[]>();
   for (const r of records) {
     if (!r.parentLineageId) continue;
@@ -515,18 +625,40 @@ export function traceYoutubeLifecycle(
       }
     }
 
-    /**
-     * An asset handed to the renderer and absent from its output stopped at a NAMED place — case
-     * F — which is more useful than "no terminal outcome". Applied only where the status is still
-     * one of the two open ones: a recorded drop or a delivery says who decided and why, and an
-     * approved picture that vanished keeps the stronger name of the two.
-     */
-    if (
-      (status === "NOT_ADOPTED" || status === "ADOPTED_NO_TERMINAL_OUTCOME") &&
-      reached(events, "RENDER_INPUT") &&
-      !reached(events, "FINAL_VIDEO")
-    ) {
-      status = "RENDER_INPUT_NOT_IN_FINAL";
+    let reason = ending?.reason ?? "";
+    if (reached(events, "RENDER_INPUT") && !reached(events, "FINAL_VIDEO")) {
+      if (!finalVideoProven) {
+        /**
+         * VIDEO 646 (B) — NO DELIVERED FILE WAS PROVEN, SO ABSENCE FROM IT IS NOT A FACT.
+         *
+         * Render 646: the DeliveryGate refused the film, the worker swept its workdir, and the
+         * pipeline marks FINAL_VIDEO only inside `if (jobOutcome.ok)`. Two YouTube clips that were
+         * render inputs (`[FinalRenderAsset]`) came out as RENDER_INPUT_NOT_IN_FINAL, which a reader
+         * takes for a lost picture. The only recorded fact is: handed to the renderer, delivery not
+         * proven. Said as that, with the refusal quoted when the pipeline passed one, and no
+         * violation — a loss cannot be claimed against a file nobody checked. The row still stops
+         * at RENDER_INPUT (`missingStage=FINAL_VIDEO`), so the gap stays visible without a verdict.
+         */
+        if (
+          status === "NOT_ADOPTED" ||
+          status === "ADOPTED_NO_TERMINAL_OUTCOME" ||
+          status === "YOUTUBE_ASSET_VANISHED_AFTER_ADOPTION"
+        ) {
+          status = "RENDER_INPUT_FINAL_VIDEO_NOT_PROVEN";
+          violation = null;
+          reason = delivery.refusal
+            ? `delivery not proven: ${delivery.refusal}`
+            : "delivery not proven: no delivered file was checked";
+        }
+      } else if (status === "NOT_ADOPTED" || status === "ADOPTED_NO_TERMINAL_OUTCOME") {
+        /**
+         * An asset handed to the renderer and absent from the CHECKED output stopped at a NAMED
+         * place — case F — which is more useful than "no terminal outcome". Applied only where the
+         * status is still one of the two open ones: a recorded drop or a delivery says who decided
+         * and why, and an approved picture that vanished keeps the stronger name of the two.
+         */
+        status = "RENDER_INPUT_NOT_IN_FINAL";
+      }
     }
 
     const composeState = filedStage(events, "COMPOSE_DROPPED")
@@ -568,8 +700,9 @@ export function traceYoutubeLifecycle(
       render: reached(events, "RENDER_INPUT") ? "INPUT" : "no",
       finalVideo: reached(events, "FINAL_VIDEO"),
       delivered: reached(events, "DELIVERED"),
+      finalVideoProven,
       status,
-      reason: ending?.reason ?? "",
+      reason,
       lastKnownStage,
       missingStage,
       violation,
@@ -654,6 +787,13 @@ export function youtubeLifecycleTotals(
     youtubeCinematicDropped: count((r) => r.cinematic === "DROPPED"),
     youtubeRenderInput: count((r) => r.render === "INPUT"),
     youtubeFinalVideo: count((r) => r.finalVideo),
+    /**
+     * VIDEO 646 (B) — 0 when a traced row's delivery was not proven, 1 otherwise (vacuously for no rows).
+     * Render-wide; `[FitChain]` reads the per-row count beside it, so FINAL_VIDEO=NOT_PROVEN is printed
+     * only where a render input lacks the proof, never as a zero that reads as "every clip was lost".
+     */
+    youtubeFinalVideoProven: rows.some((r) => !r.finalVideoProven) ? 0 : 1,
+    youtubeRenderInputFinalVideoNotProven: count((r) => r.status === "RENDER_INPUT_FINAL_VIDEO_NOT_PROVEN"),
     youtubeDelivered: count((r) => r.delivered),
     youtubeVanishedAfterAdoption: count(
       (r) => r.violation === "YOUTUBE_ASSET_VANISHED_AFTER_ADOPTION"

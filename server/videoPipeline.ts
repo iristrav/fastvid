@@ -2509,8 +2509,9 @@ export async function fetchBeatArchivalThenPexels(
   });
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
 
-  const settle = <T>(p: Promise<T>, label: string): Promise<T | null> =>
+  const settle = <T>(p: Promise<T>, label: string, onError?: (err: unknown) => void): Promise<T | null> =>
     p.catch((err) => {
+      onError?.(err);
       console.warn(
         `[ArchiveFirst] s${sceneIndex}b${beat.index} ${label} ended without a clip:`,
         (err as Error)?.message?.slice(0, 120)
@@ -2542,10 +2543,31 @@ export async function fetchBeatArchivalThenPexels(
   const youtubeBeforeArchive = await readyYoutubeFirst("before_archive");
   if (youtubeBeforeArchive) return youtubeBeforeArchive;
 
+  /**
+   * VIDEO 646 (F) — AN ARCHIVE THAT WAS NEVER ASKED IS NOT "NO MATCH".
+   *
+   * `ownArchiveBeatClip` runs inside a scope; when the beat's budget has already ended that scope
+   * is refused before it opens (RONDE 263), the lookup never runs, and tier 2 is never recorded —
+   * `noteTierAttempted("OWN_ARCHIVE")` sits inside the lookup. Render 646, s0b0 and s0b2: the gap
+   * line said "no match", the ladder read `2=NOT_REACHED`, and the stock search that followed was
+   * refused TIER_OUT_OF_ORDER for skipping an archive nobody could have asked. The order check was
+   * right; the ladder had not been told why tier 2 was not attempted. It is told here, in the
+   * ladder's own vocabulary: a tier the budget made unavailable is DECLINED with that reason, as
+   * every other unavailable tier is. The archive lookup itself and every budget are unchanged.
+   *
+   * The same flag marks a lookup the budget cut off MID-WAY (`scopeAbortError`); that lookup had
+   * already marked tier 2 attempted on entry, and ATTEMPTED wins over a decline in the ladder, so
+   * the decline is harmless there and the gap line says only what holds for both: not completed.
+   */
+  let ownArchiveNotAsked: string | null = null;
   const ownArchiveClip = await settle(
     ownArchiveBeatClip(beat, scene, workDir, sceneIndex, dedup, videoTitle),
-    "own archive"
+    "own archive",
+    (err) => {
+      if (isScopeAbortError(err)) ownArchiveNotAsked = (err as Error)?.message?.slice(0, 120) ?? "budget ended";
+    }
   );
+  if (ownArchiveNotAsked) declineTier("OWN_ARCHIVE", "BUDGET_ENDED_BEFORE_ASKED");
   /** The own archive holds photographs too; one of those waits until no source had a video. */
   const ownArchiveStill = ownArchiveClip !== null && isCuratedPreparedStillClip(ownArchiveClip);
   let archiveHitRefused = false;
@@ -2589,7 +2611,7 @@ export async function fetchBeatArchivalThenPexels(
   /** The YouTube turn runs beside the cascade; the cascade itself never asks YouTube. */
   noteTierAttempted("YOUTUBE", "youtube_first_turn");
   console.log(
-    `[ArchiveFirst] s${sceneIndex}b${beat.index} ARCHIVE_GAP (${ownArchiveStill ? "photo only" : archiveHitRefused ? "archive hit refused" : "no match"}) — ` +
+    `[ArchiveFirst] s${sceneIndex}b${beat.index} ARCHIVE_GAP (${ownArchiveStill ? "photo only" : archiveHitRefused ? "archive hit refused" : ownArchiveNotAsked ? "not completed — the beat's budget had ended" : "no match"}) — ` +
       `asking suppliers: youtube, ` +
       HISTORICAL_SOURCE_TIER_ORDER.join("/")
   );
@@ -5112,6 +5134,27 @@ export function remainingScopeMs(): number {
   const deadline = sceneFetchScopeStorage.getStore()?.deadlineAtMs;
   if (deadline == null || !Number.isFinite(deadline)) return Number.POSITIVE_INFINITY;
   return Math.max(0, deadline - Date.now());
+}
+
+/**
+ * VIDEO 646 (E) — IS THE ENCLOSING BUDGET ALREADY OVER? Asked BEFORE a batch of optional work.
+ *
+ * RONDE 263 made `withSceneFetchTimeout` refuse a scope that opens after its parent's deadline, one
+ * warning per refusal. Render 646 printed that warning 2,086 times: the black-bar probes of the
+ * fair-use transform open one scope per ffmpeg binary (4), per region (3), per sample time (3) —
+ * thirty-six refused scopes per clip, each a line, each inside a scene whose clock had run out up
+ * to 111 s earlier. Every one of those scopes was correctly refused; what was wrong is that the
+ * caller kept opening them, and tried the next ffmpeg binary after a refusal that had nothing to do
+ * with the binary.
+ *
+ * The same question `withSceneFetchTimeout` asks (`deadlineAtMs <= now`), exposed so a caller with
+ * a LOOP of optional scopes can ask it once and stop, instead of being refused thirty-six times.
+ * False outside any scope: there is no parent to be past. Nothing is loosened — a scope with time
+ * left behaves exactly as before.
+ */
+export function enclosingScopeHasEnded(): boolean {
+  const deadline = sceneFetchScopeStorage.getStore()?.deadlineAtMs;
+  return deadline != null && Number.isFinite(deadline) && Date.now() >= deadline;
 }
 
 /** The part of the reservation still being withheld: zero once the turn is over. */
@@ -17066,6 +17109,8 @@ export function curatedStorageUrlForClip(clipPath: string, dedup: VisualDedupSta
 }
 
 async function probeClipMeanLuma(filePath: string, atSec: number): Promise<number | null> {
+  /** VIDEO 646 (E) — a probe is optional work: inside an ended budget it is not started at all. */
+  if (enclosingScopeHasEnded()) return null;
   for (const bin of FFMPEG_PATHS()) {
     try {
       const { stdout: buf } = await withSceneFetchTimeout(
@@ -17080,7 +17125,9 @@ async function probeClipMeanLuma(filePath: string, atSec: number): Promise<numbe
       let sum = 0;
       for (let i = 0; i < buf.length; i++) sum += buf[i];
       return sum / buf.length;
-    } catch {
+    } catch (err) {
+      /** VIDEO 646 (E) — the budget ending is not a fault of this binary: the next one is not tried. */
+      if (isScopeAbortError(err)) return null;
       /* try next ffmpeg binary */
     }
   }
@@ -17098,6 +17145,8 @@ async function probeClipRegionMeanLuma(
       : region === "right"
         ? "crop=iw/8:ih:iw-iw/8:0"
         : "crop=iw/3:ih/3:iw/3:ih/3";
+  /** VIDEO 646 (E) — see probeClipMeanLuma. */
+  if (enclosingScopeHasEnded()) return null;
   for (const bin of FFMPEG_PATHS()) {
     try {
       const { stdout: buf } = await withSceneFetchTimeout(
@@ -17112,17 +17161,32 @@ async function probeClipRegionMeanLuma(
       let sum = 0;
       for (let i = 0; i < buf.length; i++) sum += buf[i];
       return sum / buf.length;
-    } catch {
+    } catch (err) {
+      if (isScopeAbortError(err)) return null;
       /* try next ffmpeg binary */
     }
   }
   return null;
 }
 
-/** Source has baked-in black pillar/letterbox bars (not our gray pad). */
-async function hasEmbeddedBlackBars(filePath: string): Promise<boolean> {
+/**
+ * Source has baked-in black pillar/letterbox bars (not our gray pad).
+ *
+ * VIDEO 646 (E) — nine probes, each opening a scope. Inside a budget that has already ended none of
+ * them can run (RONDE 263 refuses each), so the answer is the same `false` the refusals produced —
+ * reached here with one line instead of thirty-six, and without starting anything. The clip is then
+ * used as it is, exactly as it was when every probe came back null.
+ */
+export async function hasEmbeddedBlackBars(filePath: string): Promise<boolean> {
   const sampleTimes = [0.35, 1.0, 2.5];
   for (const t of sampleTimes) {
+    if (enclosingScopeHasEnded()) {
+      console.warn(
+        `[SceneFetchScope] PROBES_SKIPPED label="luma ${path.basename(filePath)}" — the enclosing budget ` +
+          `has ended, so the black-bar probes are not started; the clip is used as it is`
+      );
+      return false;
+    }
     const left = await probeClipRegionMeanLuma(filePath, t, "left");
     const right = await probeClipRegionMeanLuma(filePath, t, "right");
     const center = await probeClipRegionMeanLuma(filePath, t, "center");
@@ -23694,6 +23758,67 @@ export function formatFitPlacementCheck(
 }
 
 /**
+ * VIDEO 646 (C) — AN APPROVED CLIP WHOSE SENTENCE TOOK ANOTHER PICTURE IS FILED AS REPLACED.
+ *
+ *     20:53:50  s2b2 adopts t5769d40 (FIT) — ADOPTED on its transformed copy
+ *     20:59:29  [VisionSelection] s2b2 … FIT=2 … best=FIT@rank2 adopted=…@t5830d40
+ *     20:58:54  [APPROVED_NOT_PLACED] s2b2 reason=approved after scene closed — not placed
+ *     21:01:59  [YouTubeLifecycle] … t5769d40 … status=ADOPTED_NO_TERMINAL_OUTCOME missingStage=TRIMMED
+ *
+ * `noteApprovedNotPlaced` names the loss per SENTENCE and files nothing per CLIP: the lineage knew
+ * the clip was adopted and never learned that its sentence went on with another picture, so the
+ * audit reported a disappearance where the render had made a choice. `replaced_by_candidate`
+ * (RONDE 165) is the outcome written for exactly this hand-off and no production site filed it.
+ *
+ * Read from what the render already holds, after the film's clips are known: every content key the
+ * picture editor approved for a sentence (`approvedKeysByRender`) against the real shots that
+ * sentence holds (`placedKeys`). An approved key that is not in the film while the sentence holds
+ * another picture was replaced by that picture, and the winner is named in the reason.
+ *
+ * What it refuses to do, each on purpose:
+ *   · a sentence that holds NO picture files nothing — that is a loss, and `[FitPlacement]` names it
+ *   · a record that was never ADOPTED files nothing — "replaced" is for a clip that was in use
+ *   · a record that already has an ending keeps it — a clip the technical check refused, a transform
+ *     that failed, a vision refusal, are not re-described as a hand-off (`hasOutcomeFor`)
+ *   · a key the ledger cannot find files nothing — no record is invented to carry the outcome
+ *   · the same loser is filed once: the second pass finds the REPLACED and stops (`hasOutcomeFor`)
+ */
+export function recordReplacedApprovals(
+  dedup: object,
+  sentences: ReadonlyArray<{ sceneIndex: number; beatIndex: number }>,
+  placedKeys: (sceneIndex: number, beatIndex: number) => ReadonlySet<string>,
+  ledger: VisualSourceLedger | undefined
+): Array<{ sceneIndex: number; beatIndex: number; loser: string; winner: string }> {
+  const filed: Array<{ sceneIndex: number; beatIndex: number; loser: string; winner: string }> = [];
+  if (!ledger) return filed;
+  const approvedByBeat = approvedKeysByRender.get(dedup);
+  if (!approvedByBeat) return filed;
+  /** A picture the film holds under ANY sentence was not replaced — it was placed elsewhere. */
+  const inFilm = new Set(sentences.flatMap(({ sceneIndex, beatIndex }) => [...placedKeys(sceneIndex, beatIndex)]));
+  for (const { sceneIndex, beatIndex } of sentences) {
+    const approved = approvedByBeat.get(`${sceneIndex}:${beatIndex}`);
+    if (!approved || approved.size === 0) continue;
+    const placed = [...placedKeys(sceneIndex, beatIndex)].filter(Boolean);
+    if (placed.length === 0) continue;
+    const winner = placed.find((k) => approved.has(k)) ?? placed[0]!;
+    for (const loser of approved) {
+      if (inFilm.has(loser)) continue;
+      /** The ADOPTED record for this key: a moment is one root plus the copies made for its sentences. */
+      const record = ledger
+        .allRecords()
+        .filter((r) => r.contentKey === loser && r.adoptedAt != null)
+        .sort((a, b) => (a.adoptedAt ?? 0) - (b.adoptedAt ?? 0))[0];
+      if (!record) continue;
+      if (ledger.hasOutcomeFor(record.localPath, loser)) continue;
+      recordAssetOutcome(ledger, record.localPath, "replaced_by_candidate", `s${sceneIndex}b${beatIndex} winner=${winner}`, loser);
+      console.log(`[ApprovedReplaced] s${sceneIndex}b${beatIndex} loser=${loser} winner=${winner} — filed replaced_by_candidate`);
+      filed.push({ sceneIndex, beatIndex, loser, winner });
+    }
+  }
+  return filed;
+}
+
+/**
  * P4 — FIT → ADOPTED → PLACED → TIMELINE → RENDER in one line at the end of the render. The approvals
  * and placements are the check's (every source); the YouTube stages are the lifecycle's own rows, whose
  * losses `[YouTubeLifecycleInvariant]` names one by one. Nothing is recounted here.
@@ -23711,11 +23836,22 @@ export function formatFitChainLine(
    */
   const unlinked = yt?.youtubeContentKeyNotAssetIdentity ?? 0;
   const ytFit = !yt ? "UNKNOWN" : unlinked > 0 ? `UNKNOWN(${unlinked} of ${yt.youtubeTracked ?? "?"} rows not linked to their verdict)` : String(yt.youtubeVisionFitForThisBeat);
+  /**
+   * VIDEO 646 (B) — FINAL_VIDEO=0 next to RENDER=3 read as "three clips lost" on a render whose film the
+   * DeliveryGate had refused: no delivered file was ever checked. A count nobody could take is NOT_PROVEN,
+   * never a zero. Said only where it concerns a render input: a film with no YouTube render input has
+   * nothing unproven to report, and prints its count (0) as before.
+   */
+  const finalVideo = !yt
+    ? "UNKNOWN"
+    : (yt.youtubeRenderInputFinalVideoNotProven ?? 0) > 0
+      ? `NOT_PROVEN(${yt.youtubeRenderInputFinalVideoNotProven} render input(s); no delivered file was checked)`
+      : String(yt.youtubeFinalVideo);
   return (
     `[FitChain] all sources: judgedMoments=${judgedMoments ?? "UNKNOWN"} approvedMoments=${fit?.approved ?? "UNKNOWN"} placedShots=${fit?.placed ?? "UNKNOWN"}` +
     (yt
       ? ` | youtube rows: FIT=${ytFit} ADOPTED=${yt.youtubeAdopted} TIMELINE=${yt.youtubeCinematicSelected} ` +
-        `RENDER=${yt.youtubeRenderInput} FINAL_VIDEO=${yt.youtubeFinalVideo} vanishedAfterAdoption=${yt.youtubeVanishedAfterAdoption} downstreamGap=${yt.youtubeDownstreamGap}`
+        `RENDER=${yt.youtubeRenderInput} FINAL_VIDEO=${finalVideo} vanishedAfterAdoption=${yt.youtubeVanishedAfterAdoption} downstreamGap=${yt.youtubeDownstreamGap}`
       : " | youtube rows: UNKNOWN")
   );
 }
@@ -26707,6 +26843,8 @@ async function _runVideoPipelineInner(
       return new Set((vr?.clips ?? []).filter((c, i) => vr!.clipBeatIndices?.[i] === beatIndex && !isPipelineFallbackClip(c)).map((c) => clipContentKey(c)));
     };
     for (const line of formatFitPlacementCheck(visualDedup, allSentences, realShotsOf, realShotKeysOf)) console.log(line);
+    /** VIDEO 646 (C) — an approved picture whose sentence holds another is filed REPLACED in the lineage, once. */
+    recordReplacedApprovals(visualDedup, allSentences, realShotKeysOf, visualDedup.sourcingCache?.lineage);
     /** STEP 0 — an approved inventory moment counts only once it is in its sentence's result. */
     {
       const inv = inventoryTally(visualDedup);
@@ -29641,7 +29779,10 @@ async function _runVideoPipelineInner(
        * A third READER of registers that both already exist, joined on the content key both sides
        * carry. It files no event, keeps no state and refuses nothing.
        */
-      const youtubeLifecycle = lineage ? traceYoutubeLifecycle(lineage, visualDedup.beatRelevance) : [];
+      /** VIDEO 646 (B) — a refused delivery is quoted on the rows it leaves unproven, never read as a loss. */
+      const youtubeLifecycle = lineage
+        ? traceYoutubeLifecycle(lineage, visualDedup.beatRelevance, { refusal: delivered ? null : cinematicRefusalForGate })
+        : [];
       youtubeLifecycleForUsage = youtubeLifecycle;
       for (const line of formatYoutubeLifecycle(youtubeLifecycle)) {
         console.log(pipelineReport.add("sourcing", line));

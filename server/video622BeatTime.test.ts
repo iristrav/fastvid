@@ -51,7 +51,8 @@ describe("Video 622 — a sentence's share of its scene's time", () => {
 describe("Video 622 — a YouTube clip that reached the film is not reported as refused", () => {
   it("the lifecycle is read after the render, beside the film's own count", () => {
     const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const trace = src.indexOf("const youtubeLifecycle = lineage ? traceYoutubeLifecycle(lineage, visualDedup.beatRelevance) : [];");
+    /** VIDEO 646 (B) — the same single read, now told whether the delivery was proven. */
+    const trace = src.indexOf("traceYoutubeLifecycle(lineage, visualDedup.beatRelevance, { refusal: delivered ? null : cinematicRefusalForGate })");
     expect(trace).toBeGreaterThan(src.indexOf("footage = youtubeFootageInTimeline(measured.clips, origins, measured.basis);"));
     expect(src.match(/traceYoutubeLifecycle\(/g)?.length).toBe(1);
   });

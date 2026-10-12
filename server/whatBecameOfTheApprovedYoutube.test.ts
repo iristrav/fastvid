@@ -406,12 +406,26 @@ describe("a gate that refused an asset said so, and that is an ending", () => {
     expect(rows[0]!.violation).toBeNull();
   });
 
-  it("handed to the renderer and absent from its output is named, not left open", () => {
+  it("handed to the renderer and absent from the CHECKED output is named, not left open", () => {
+    /** VIDEO 646 (B) — "not in final" is sayable only once a delivered file was checked. */
+    const ledger = ledgerOf([{ contentKey: key("35"), stages: [...FOUND_TO_ADOPTED, "COMPOSE_SELECTED", "RENDER_INPUT"] }]);
+    ledger.markFinalVideo([]);
+    const rows = traceYoutubeLifecycle(ledger, emptyRelevance());
+    expect(rows[0]!.status).toBe("RENDER_INPUT_NOT_IN_FINAL");
+    expect(rows[0]!.finalVideoProven).toBe(true);
+  });
+
+  it("handed to the renderer with no delivered file ever checked is NOT_PROVEN, not a loss", () => {
+    /** VIDEO 646 (B) — the gate refused the film: nothing to be absent from. */
     const rows = traceYoutubeLifecycle(
       ledgerOf([{ contentKey: key("35"), stages: [...FOUND_TO_ADOPTED, "COMPOSE_SELECTED", "RENDER_INPUT"] }]),
-      emptyRelevance()
+      emptyRelevance(),
+      { refusal: "DeliveryGate: SENTENCE_COVERAGE_UNPROVEN" }
     );
-    expect(rows[0]!.status).toBe("RENDER_INPUT_NOT_IN_FINAL");
+    expect(rows[0]!.status).toBe("RENDER_INPUT_FINAL_VIDEO_NOT_PROVEN");
+    expect(rows[0]!.finalVideoProven).toBe(false);
+    expect(rows[0]!.violation).toBeNull();
+    expect(rows[0]!.reason).toContain("SENTENCE_COVERAGE_UNPROVEN");
   });
 
   it.each<LineageStage>(["REPLACED", "REMOVED"])("%s is its own recorded ending", (stage) => {
@@ -725,7 +739,7 @@ describe("§14 — a reader, and nothing more than a reader", () => {
   it("is wired into the render's own report, beside the trace it completes", () => {
     expect(PIPELINE).toContain('from "./youtubeLifecycleTrace"');
     /** VIDEO 622 — read after the render, where the film's own answer is known. */
-    const trace = PIPELINE.indexOf("lineage ? traceYoutubeLifecycle(lineage, visualDedup.beatRelevance) : []");
+    const trace = PIPELINE.indexOf("traceYoutubeLifecycle(lineage, visualDedup.beatRelevance, { refusal: delivered ? null : cinematicRefusalForGate })");
     expect(trace).toBeGreaterThan(0);
     expect(trace).toBeGreaterThan(PIPELINE.indexOf("youtubeFootageInTimeline(measured.clips"));
     for (const reader of [
