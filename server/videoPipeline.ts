@@ -306,7 +306,7 @@ import { dbRenderLockStore, dbYoutubeSearchBudgetStore } from "./db";
 import { newRenderId } from "./renderCorrelation";
 import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, maxBeatImageJudgementsPerRender, type BeatImageGateState } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
-import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, maxRelevanceLooksPerBeat, pictureJudgedOnBeat, youtubeForLastLook, giveLastLookTo, isYoutubeContentKey, pictureLookedAtOnBeat, youtubeLookedAtOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
+import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, grantLastLookAllowance, maxRelevanceLooksPerBeat, pictureJudgedOnBeat, youtubeForLastLook, giveLastLookTo, isYoutubeContentKey, pictureLookedAtOnBeat, youtubeLookedAtOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
 import {
   coverageOfAdoptEntry,
   formatBeatVisualProblems,
@@ -4163,6 +4163,11 @@ export function takeReadyLookaheadCandidates(dedup: object, turnKey: string): st
   return list.filter((p) => fs.existsSync(p));
 }
 
+/** VIDEO 649 (V2) — the ready list as it stands, without taking it (`takeReadyLookaheadCandidates` takes). */
+export function peekReadyLookaheadCandidates(dedup: object, turnKey: string): string[] {
+  return (readyLookaheadByRender.get(dedup)?.get(turnKey) ?? []).filter((p) => fs.existsSync(p));
+}
+
 export function lookaheadCandidateWasHanded(dedup: object, clipPath: string): boolean {
   return handedLookaheadByRender.get(dedup)?.has(clipPath) ?? false;
 }
@@ -4827,6 +4832,11 @@ export async function resolveWithinBeatTurn<T>(
 export const BEAT_FILL_MAX_EXTRA_CLIPS = 3;
 export const BEAT_FILL_MIN_SCOPE_MS = 15_000;
 export const BEAT_FILL_FETCH_MS = 12_000;
+/**
+ * VIDEO 649 (V3) — a late-approved picture shorter than its sentence is topped up right after it is
+ * placed: another FIT moment first, then the own archive, within this window of the scene's scope.
+ */
+export const BEAT_FILL_TOP_UP_MS = BEAT_FILL_MAX_EXTRA_CLIPS * BEAT_FILL_FETCH_MS + 5_000;
 /**
  * VIDEO 626 — A SENTENCE'S TURN IS ITS WHOLE TURN.
  *
@@ -21689,7 +21699,17 @@ async function resolveBeatClipForBeat(
   const approvedBefore = approvedPicksForBeat(dedup, sceneIndex, beat.index);
   let late: Promise<string | null> | undefined;
   const answer = (async (): Promise<string | null> => {
-    /** VIDEO 631 — a picture approved before the cap is still taken; see `ladderWithinCap`. */
+    /**
+     * VIDEO 631 — a picture approved before the cap is still taken; see `ladderWithinCap`.
+     *
+     * VIDEO 649 (V1) — the scope below is the sentence's whole turn (at least JUDGED_BEAT_TURN_MS),
+     * not the render budget's search slice. 649's "video search s0 b0 exceeded 53s": the slice
+     * (perBeatSearchMs, at most 40 s, plus the YouTube supplement) enclosed the ready looks, the own
+     * archive, the YouTube turn, the open sources and stock, while the sentence's turn was 180 s.
+     * YouTube got 7 to 26 s of the 120 s it asked for, cloud downloads were cancelled at the slice's
+     * edge, and stock, Wikimedia and the script image opened after it had ended (SCOPE_EXPIRED). The
+     * parent clamp keeps the scope inside the beat's resolve share; the slice remains the floor.
+     */
     const capped = await ladderWithinCap<string>(dedup, sceneIndex, beat.index, (track) =>
       withSceneFetchTimeout(
         () => track(beatPrimaryFetch(
@@ -21697,7 +21717,7 @@ async function resolveBeatClipForBeat(
           primary || personName, videoTitle, { ...beatAdoptOpts, keywords: beat.keywords },
           scenePersons, `b${beat.index}_primary`, "beat ladder"
         )),
-        beatWallWithYoutubeTurn(beatVideoSearchWallMs()),
+        Math.max(beatWallWithYoutubeTurn(beatVideoSearchWallMs()), JUDGED_BEAT_TURN_MS),
         `video search s${sceneIndex} b${beat.index}`
       )
     );
@@ -22607,6 +22627,8 @@ type LatePlacer = (clipPath: string, beatIndex: number) => Promise<{ hold: numbe
 const latePlacersByRender = new WeakMap<object, Map<number, LatePlacer>>();
 const assembledScenesByRender = new WeakMap<object, Set<number>>();
 const afterCloseLaddersByRender = new WeakMap<object, LateLadder[]>();
+/** VIDEO 649 (V2) — sentences on the final-look stage's second pass (`runFinalReadyYoutubeStage`), read by `finalReadyYoutubeLook`. */
+const secondPassByRender = new WeakMap<object, Set<string>>();
 const approvedAfterCloseByRender = new WeakMap<object, Set<string>>();
 
 /** The scene's loop is over, its film not assembled yet: its push stays available to its own sentences. */
@@ -22958,7 +22980,9 @@ export async function finalReadyYoutubeLook(
   /** How long a prepared clip plays; the 3 s minimum is the archive's own (`belowArchiveMinimumDuration`). */
   measure: (clip: string) => Promise<number> = probeDurationForMinimumRule,
   /** STEP 0 — which moments of the render's inventory this sentence may take (targeted, serving). */
-  inventoryCheck?: InventoryCheck
+  inventoryCheck?: InventoryCheck,
+  /** VIDEO 649 (V2) — the stage's second pass: moments handed to this sentence and never judged may pass its ceiling. */
+  opts: { lastLookAllowance?: boolean } = {}
 ): Promise<string | null> {
   const at = `[FinalReadyYouTube] s${sceneIndex}b${beatIndex}`;
   const own = takeReadyLookaheadCandidates(dedup, youtubeTurnKey(sceneIndex, beatIndex));
@@ -22983,6 +23007,30 @@ export async function finalReadyYoutubeLook(
    * sentence has left after its own unjudged ones, so the ceilings decide exactly as before.
    */
   const ownUnjudged = ready.filter((p) => !pictureLookedAtOnBeat(dedup.beatRelevance, p, clipContentKey(p), sceneIndex, beatIndex)).length;
+  /**
+   * VIDEO 649 (V2) — moments HANDED to this sentence and never judged get their last look even past the
+   * sentence's own look ceiling. 649's s1b0 had 8 of them ready on disk (s0b0: 3), its five looks were
+   * spent, and both sentences got a card while the picture editor still had 271 of its 285 s. The
+   * allowance is granted here, on the stage's SECOND pass only (`opts.lastLookAllowance`, after every
+   * sentence without a picture had its ordinary last look — the render's 120 are shared first), for
+   * exactly those moments (own turn + pending; never the leftovers of other sentences, never the
+   * inventory); the render's ceiling and the picture editor's budget bound it as before, and
+   * `grantLastLookAllowance` caps it on its own.
+   */
+  const handedUnjudged = [...new Set([...own, ...pending])].filter(
+    (p) => isYoutubeMomentPath(p) && !pictureLookedAtOnBeat(dedup.beatRelevance, p, clipContentKey(p), sceneIndex, beatIndex)
+  ).length;
+  const baseLooksLeft = Math.max(0, beatLooksLeft());
+  const secondPass = opts.lastLookAllowance || (secondPassByRender.get(dedup)?.has(youtubeTurnKey(sceneIndex, beatIndex)) ?? false);
+  if (secondPass && handedUnjudged > baseLooksLeft && dedup.beatRelevance) {
+    const extra = grantLastLookAllowance(dedup.beatRelevance, sceneIndex, beatIndex, handedUnjudged - baseLooksLeft);
+    if (extra > 0) {
+      console.log(
+        `${at} last-look allowance +${extra} — ${handedUnjudged} moment(s) handed to this sentence were never judged; ` +
+          `looked at within the render's ceiling and the picture editor's budget`
+      );
+    }
+  }
   const inventory = await youtubeInventoryForBeat(dedup, sceneIndex, beatIndex, {
     alreadyListed: ready,
     max: Math.max(0, looksLeft() - ownUnjudged),
@@ -23030,7 +23078,8 @@ export async function finalReadyYoutubeLook(
         console.log(`${at} not looked at — reason=${ceiling} (${ready.length} moment(s) left unjudged, ceilings unchanged)`);
         return null;
       }
-      const offered = [...judged, ...fresh];
+      /** VIDEO 649 (V2) — the second pass offers only what was never judged: a verdict already given stands. */
+      const offered = secondPass ? fresh : [...judged, ...fresh];
       const freshInventory = fresh.filter((p) => inventoryKeys.has(clipContentKey(p))).length;
       if (freshInventory > 0) {
         invTally.offered += freshInventory;
@@ -23407,6 +23456,18 @@ export function sentencesOfScene(
   return dedup.sceneBeatsBySceneIndex.get(sceneIndex) ?? result?.beats ?? [];
 }
 
+/** VIDEO 649 (V2) — moments handed to this sentence (its own turn's, and the ones assigned to it) that it never judged. */
+export function handedUnjudgedForBeat(
+  dedup: Partial<Pick<VisualDedupState, "beatRelevance" | "visionReviewPool" | "usedContentKeys">>,
+  sceneIndex: number,
+  beatIndex: number
+): number {
+  const key = youtubeTurnKey(sceneIndex, beatIndex);
+  return [...new Set([...peekReadyLookaheadCandidates(dedup, key), ...pendingYoutubeForBeat(dedup, sceneIndex, beatIndex)])].filter(
+    (p) => isYoutubeMomentPath(p) && !pictureLookedAtOnBeat(dedup.beatRelevance, p, clipContentKey(p), sceneIndex, beatIndex)
+  ).length;
+}
+
 /**
  * VIDEO 639/640 — the last YouTube stage before generated images and graphics, as the pipeline runs
  * it: FIX D (work already running gets its window), then FIX B/E/F (the last looks, side by side).
@@ -23531,7 +23592,12 @@ export async function runFinalReadyYoutubeStage(
    * first sentence to end without a fit takes it; a second extra round never runs.
    */
   let extraRoundUsed = false;
+  /** VIDEO 649 (V2) — sentences on the stage's second pass: that pass judges what is on disk for them and nothing more. */
+  const secondPassKeys = secondPassByRender.get(dedup) ?? new Set<string>();
+  secondPassByRender.set(dedup, secondPassKeys);
+  secondPassKeys.clear();
   const extraTargetedStockRound = async (sceneIndex: number, beatIndex: number, beat: SceneBeat): Promise<string | null> => {
+    if (secondPassKeys.has(youtubeTurnKey(sceneIndex, beatIndex))) return null;
     if (extraRoundUsed || !lateStock || targetedLeftOver.length === 0 || stageOver || budget?.stopped()) return null;
     if (budget && budget.leftMs() <= 0) return null;
     const ids = targetedLeftOver.filter((id) => lateStock.serves(id, sceneIndex, beat)).slice(0, lateVideosPerSentence);
@@ -23565,6 +23631,7 @@ export async function runFinalReadyYoutubeStage(
   const secondSectionTried = new Set<string>();
   let secondSectionsCut = 0;
   const secondSectionRound = async (sceneIndex: number, beatIndex: number, beat: SceneBeat): Promise<string | null> => {
+    if (secondPassKeys.has(youtubeTurnKey(sceneIndex, beatIndex))) return null;
     const second = lateStock?.secondSection;
     if (!second || !lateStock || stageOver || budget?.stopped()) return null;
     if (budget && budget.leftMs() <= 0) return null;
@@ -23606,7 +23673,9 @@ export async function runFinalReadyYoutubeStage(
   for (const { sceneIndex, beatIndex } of withoutPicture) {
     if (!lateApprovalPendingFor(dedup, sceneIndex, beatIndex)) open.add(youtubeTurnKey(sceneIndex, beatIndex));
   }
-  for (const { sceneIndex, beatIndex, beat } of withoutPicture) {
+  /** VIDEO 649 (V2) — the same queue for the first pass and the second (`secondPassKeys` says which a sentence is on). */
+  const queueLooks = (sentences: typeof withoutPicture, into: typeof finalLooks): void => {
+  for (const { sceneIndex, beatIndex, beat } of sentences) {
     if (lateApprovalPendingFor(dedup, sceneIndex, beatIndex)) continue;
     tally.queued++;
     let started = false;
@@ -23647,9 +23716,49 @@ export async function runFinalReadyYoutubeStage(
       await Promise.race([work, new Promise<void>((r) => (timer = setTimeout(r, limits.slotMs ?? FINAL_LOOK_TURN_MS)))]);
       if (timer) clearTimeout(timer);
     });
-    finalLooks.push({ sceneIndex, beatIndex, run, started: () => started });
+    into.push({ sceneIndex, beatIndex, run, started: () => started });
   }
+  };
+  queueLooks(withoutPicture, finalLooks);
   const still = await finalLooksWithin(dedup, finalLooks, budget ?? limits.looksMs ?? FINAL_LOOK_TURN_MS);
+  /**
+   * VIDEO 649 (V2) — A SECOND PASS FOR SENTENCES STILL WITHOUT A PICTURE THAT HOLD UNJUDGED MOMENTS.
+   *
+   * 649's s1b0 ended its last look with "not looked at — BEAT_LOOK_CEILING (8 moment(s) left unjudged)"
+   * and s0b0 with 3; both took a card while the picture editor had 271 of its 285 s left and the render
+   * 73 of its 120 looks. The first pass is unchanged — every sentence's ordinary ceiling, the render's
+   * looks shared in film order. Only then, and only while the render has looks and the picture editor
+   * time, the sentences that ended without a picture and still hold moments handed to them and never
+   * judged get one more look at exactly those (`lastLookAllowance`: the sentence's ceiling is passed by
+   * at most one more ceiling; the render's ceiling, the budget and the 3 s rule are not touched). No
+   * search, no download, no stock round, no second section: what is on disk for the sentence, judged.
+   */
+  const renderLooksLeft = maxBeatImageJudgementsPerRender() - (gate?.judgementAttempts ?? 0);
+  const secondPass = withoutPicture.filter(
+    ({ sceneIndex, beatIndex }) =>
+      /** A first look still running is not done with its moments; it is not queued twice. A look that approved is pending placement. */
+      !still.some((y) => y.sceneIndex === sceneIndex && y.beatIndex === beatIndex) &&
+      !lateApprovalPendingFor(dedup, sceneIndex, beatIndex) &&
+      handedUnjudgedForBeat(dedup, sceneIndex, beatIndex) > 0
+  );
+  if (secondPass.length > 0 && renderLooksLeft > 0 && !budget?.stopped() && !(budget && budget.leftMs() <= 0)) {
+    console.log(
+      `[FinalReadyYouTube] second pass — ${secondPass.length} sentence(s) still without a picture hold moments handed to them and ` +
+        `never judged (${secondPass.map((x) => `s${x.sceneIndex}b${x.beatIndex}`).join(", ")}): one more look each, past the sentence's ` +
+        `ceiling, within the render's ${renderLooksLeft} look(s) left and the picture editor's budget`
+    );
+    for (const { sceneIndex, beatIndex } of secondPass) {
+      secondPassKeys.add(youtubeTurnKey(sceneIndex, beatIndex));
+      open.add(youtubeTurnKey(sceneIndex, beatIndex));
+    }
+    const secondLooks: typeof finalLooks = [];
+    queueLooks(secondPass, secondLooks);
+    const stillAfterSecond = await finalLooksWithin(dedup, secondLooks, budget ?? limits.looksMs ?? FINAL_LOOK_TURN_MS);
+    for (const x of stillAfterSecond) {
+      if (!still.some((y) => y.sceneIndex === x.sceneIndex && y.beatIndex === x.beatIndex)) still.push(x);
+    }
+  }
+  secondPassKeys.clear();
   stageOver = true;
   open.clear();
   if (budget) {
@@ -25170,6 +25279,25 @@ async function fetchSceneVisualsInner(
         `${at} approved after the sentence's search was capped — ` +
           (ok ? "placed (no new look)" : "refused at the push (reason logged by [PushTrace])")
       );
+      /**
+       * VIDEO 649 (V3) — s1b1, s1b3, s2b1: one approved shot of 2–2.5 s under a 5.6–6.6 s sentence. The
+       * fill had run before the shot arrived (for s1b3 it stepped aside for it — F4) and never again, so
+       * the rest of the sentence was the next sentence's picture or a held frame, which the gate refuses.
+       * The seconds the shot leaves open are filled now: another FIT moment first, then the own archive.
+       */
+      if (ok) {
+        const covered = clipBeatIndices.reduce((sum, b, i) => (b === late.beatIndex ? sum + (beatDurations[i] ?? 0) : sum), 0);
+        if (beatFillSecondsNeeded(beat.holdSec, covered) > 0) {
+          console.log(`[BeatFill] s${scene.index}b${late.beatIndex}: the late picture covers ${covered.toFixed(1)}s of ${beat.holdSec.toFixed(1)}s — topping up`);
+          const keep = fillFor;
+          fillFor = { beat, clipsBefore: beatDurations.length, deadlineMs: Date.now() + Math.min(BEAT_FILL_TOP_UP_MS, remainingScopeMs()) };
+          try {
+            await fillBeatWithMoreClips();
+          } finally {
+            fillFor = keep;
+          }
+        }
+      }
     }
   };
   try {

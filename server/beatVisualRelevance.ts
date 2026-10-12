@@ -346,6 +346,12 @@ export type BeatRelevanceLedger = {
    * Optional so a ledger literal built elsewhere keeps compiling; absent means "nothing refused".
    */
   refusedAtPush?: Set<string>;
+  /**
+   * VIDEO 649 (V2) — `beatSlotKey` -> looks granted past the sentence's ceiling for its LAST look at
+   * moments handed to it and never judged (`grantLastLookAllowance`). Optional so a ledger literal
+   * built elsewhere keeps compiling; absent means "no allowance".
+   */
+  lastLookAllowanceByBeat?: Map<string, number>;
 };
 
 export function createBeatRelevanceLedger(): BeatRelevanceLedger {
@@ -356,6 +362,7 @@ export function createBeatRelevanceLedger(): BeatRelevanceLedger {
     spendByBeat: new Map(),
     finalSayRetried: new Set(),
     refusedAtPush: new Set(),
+    lastLookAllowanceByBeat: new Map(),
   };
 }
 
@@ -556,11 +563,46 @@ export function youtubeLookedAtOnBeat(
 
 /** Looks this sentence may still spend under the per-sentence ceiling (`maxRelevanceLooksPerBeat`). */
 export function looksLeftOnBeat(
-  ledger: Pick<BeatRelevanceLedger, "spendByBeat"> | undefined,
+  ledger: (Pick<BeatRelevanceLedger, "spendByBeat"> & Partial<Pick<BeatRelevanceLedger, "lastLookAllowanceByBeat">>) | undefined,
   sceneIndex: number,
   beatIndex: number
 ): number {
-  return maxRelevanceLooksPerBeat() - (ledger?.spendByBeat.get(`s${sceneIndex}b${beatIndex}`) ?? 0);
+  const slot = `s${sceneIndex}b${beatIndex}`;
+  return maxRelevanceLooksPerBeat() + lastLookAllowanceOnBeat(ledger, slot) - (ledger?.spendByBeat.get(slot) ?? 0);
+}
+
+/** VIDEO 649 (V2) — what `grantLastLookAllowance` granted this sentence; 0 without a grant. */
+export function lastLookAllowanceOnBeat(
+  ledger: Partial<Pick<BeatRelevanceLedger, "lastLookAllowanceByBeat">> | undefined,
+  slot: string
+): number {
+  return ledger?.lastLookAllowanceByBeat?.get(slot) ?? 0;
+}
+
+/**
+ * VIDEO 649 (V2) — THE LAST LOOK MAY PASS THE SENTENCE'S CEILING FOR MOMENTS HANDED TO IT AND NEVER JUDGED.
+ *
+ * The per-sentence ceiling bounds a sentence with many candidates. It was never meant to leave footage
+ * handed to the sentence, ready on disk, unjudged while the sentence takes a card: 649's s1b0 had eight
+ * such moments and five spent looks. The allowance is the number of those moments, capped in total at
+ * one more ceiling (`maxRelevanceLooksPerBeat()`), granted once per sentence by the last look only.
+ * The render's ceiling (`maxBeatImageJudgementsPerRender`) and the picture editor's own budget are not
+ * touched: they bound these looks exactly as before. Returns the looks granted by THIS call.
+ */
+export function grantLastLookAllowance(
+  ledger: Pick<BeatRelevanceLedger, "spendByBeat"> & Partial<Pick<BeatRelevanceLedger, "lastLookAllowanceByBeat">>,
+  sceneIndex: number,
+  beatIndex: number,
+  wanted: number
+): number {
+  if (!(wanted > 0)) return 0;
+  const slot = `s${sceneIndex}b${beatIndex}`;
+  const map = ledger.lastLookAllowanceByBeat ?? new Map<string, number>();
+  ledger.lastLookAllowanceByBeat = map;
+  const have = map.get(slot) ?? 0;
+  const granted = Math.max(0, Math.min(Math.floor(wanted), maxRelevanceLooksPerBeat() - have));
+  if (granted > 0) map.set(slot, have + granted);
+  return granted;
 }
 
 /** Whether this sentence already holds a verdict on this picture — a look at it would be free. */
@@ -875,13 +917,22 @@ export async function checkBeatRelevance(
   // ceiling first would make a beat that has already looked twice adopt a clip it KNOWS does not
   // fit — the budget exists to bound spending, not to launder verdicts already earned.
   const alreadyKnown = state.seen.get(cacheKey);
+  /** VIDEO 649 (V2) — the ceiling, plus what the last look was granted for moments handed to this sentence. */
+  const beatCeiling = maxRelevanceLooksPerBeat() + lastLookAllowanceOnBeat(ledger, slot);
   if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat() && !params.finalSay) {
     /**
-     * RONDE 619 — the cause was already named on the very next line and never counted with the
-     * skip. Render 597's `never_asked=60` held this decline and four others in one number.
+     * VIDEO 649 (V2) — past the sentence's own ceiling, a look granted by `grantLastLookAllowance`
+     * (the stage's second pass, for moments handed to the sentence and never judged) still runs;
+     * everything else is declined here exactly as before.
      */
-    noteJudgementSkipped(state, "BEAT_LOOK_CEILING");
-    return pass("BEAT_LOOK_CEILING", "unknown", `per-beat look ceiling reached (${spentOnBeat})`);
+    if (spentOnBeat >= beatCeiling) {
+      /**
+       * RONDE 619 — the cause was already named on the very next line and never counted with the
+       * skip. Render 597's `never_asked=60` held this decline and four others in one number.
+       */
+      noteJudgementSkipped(state, "BEAT_LOOK_CEILING");
+      return pass("BEAT_LOOK_CEILING", "unknown", `per-beat look ceiling reached (${spentOnBeat})`);
+    }
   }
   /**
    * VIDEO 631 — no new look once the sentence's turn is over. Its search was capped, so whatever
@@ -892,7 +943,7 @@ export async function checkBeatRelevance(
     noteJudgementSkipped(state, "BEAT_TURN_OVER");
     return pass("BEAT_TURN_OVER", "unknown", "the sentence's turn is over — no new look");
   }
-  if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat()) {
+  if (!alreadyKnown && spentOnBeat >= beatCeiling) {
     // RONDE 199: past the ceiling, deliberately, because this one is the beat's picture. See
     // `finalSay`. Printed so the extra spend is visible rather than inferred from a total.
     console.log(

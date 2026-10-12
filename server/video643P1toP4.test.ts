@@ -337,19 +337,32 @@ describe("P2 — the last look's stock, end to end (real cut files, the stand-in
     expect(offer.line).toContain("readyBeforePictures=2 readyAfter=3");
     const look = editor(d, () => false);
     await stage(filmId, d, look, offer.videoIds);
-    /** every sentence looked, none twice */
-    expect(look.mock.calls.map((c) => (c[0] as { index: number }).index).sort()).toEqual([0, 1, 2]);
+    /** every sentence looked on the first pass, none twice there; VIDEO 649 (V2) — the second pass may look again at what a sentence was handed and never judged */
+    const sentenceOf = (c: unknown[]) => (c[0] as { index: number }).index;
+    expect(look.mock.calls.slice(0, 3).map(sentenceOf).sort()).toEqual([0, 1, 2]);
+    expect([...new Set(look.mock.calls.map(sentenceOf))].sort()).toEqual([0, 1, 2]);
     const perSentence = look.mock.calls.map((c) => new Set((c[2] as string[]).map((p) => videoOf(d, p))));
     /** no sentence holds more than two videos (5 looks ÷ 3 moments), the first sentence is not the dump */
     for (const vids of perSentence) expect(vids.size).toBeLessThanOrEqual(2);
-    expect(perSentence.reduce((n, v) => n + v.size, 0)).toBe(5);
+    expect(new Set(perSentence.flatMap((v) => [...v])).size).toBe(5);
     /** each video offered to ONE sentence; every moment file once */
-    const all = perSentence.flatMap((v) => [...v]);
-    expect(new Set(all).size).toBe(all.length);
+    const sentencesOfVideo = new Map<string, Set<number>>();
+    look.mock.calls.forEach((c) => {
+      for (const p of c[2] as string[]) {
+        const set = sentencesOfVideo.get(videoOf(d, p)) ?? new Set<number>();
+        set.add(sentenceOf(c));
+        sentencesOfVideo.set(videoOf(d, p), set);
+      }
+    });
+    for (const [, sentences] of sentencesOfVideo) expect(sentences.size).toBe(1);
     const files = look.mock.calls.flatMap((c) => c[2] as string[]);
     expect(new Set(files).size).toBe(files.length);
-    /** the Judge's ceilings: ≤ 5 per sentence, and every look counted */
-    for (let b = 0; b < 3; b++) expect(d.beatRelevance.spendByBeat.get(`s0b${b}`) ?? 0).toBeLessThanOrEqual(5);
+    /**
+     * the Judge's ceilings: ≤ 5 per sentence on the first pass, and every look counted. VIDEO 649 (V2) —
+     * a sentence that ended without a picture and still held handed moments never judged gets one more
+     * look at them on the stage's second pass, past its ceiling by at most one more ceiling.
+     */
+    for (let b = 0; b < 3; b++) expect(d.beatRelevance.spendByBeat.get(`s0b${b}`) ?? 0).toBeLessThanOrEqual(5 + bvr.maxRelevanceLooksPerBeat());
     expect(d.beatImageGate.judgementAttempts).toBe([...d.beatRelevance.spendByBeat.values()].reduce((a, b) => a + b, 0));
     /** nothing searched or downloaded */
     expect(downloads.length).toBe(downloadsBefore);
@@ -401,16 +414,21 @@ describe("P2 — the last look's stock, end to end (real cut files, the stand-in
     stockMod.releaseYoutubeShotStock(filmId);
   }, 60_000);
 
-  it("a sentence with one look left gets one: the late stock never lifts the Judge's per-sentence ceiling", async () => {
-    vi.spyOn(console, "log").mockImplementation(() => {});
+  it("a sentence with one look left gets one on the first pass: the late stock never lifts the Judge's per-sentence ceiling there; what it left unjudged is the second pass's (VIDEO 649 V2)", async () => {
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((m: string) => void logs.push(String(m)));
     const filmId = 64304;
     await stock(filmId, ["oneLook0001"]);
     const d = state(1);
     d.beatRelevance.spendByBeat.set("s0b0", 4);
     const look = editor(d, () => false);
     await stage(filmId, d, look, vpm.lateStockToOffer(filmId, d as never, 0).videoIds);
-    expect(d.beatRelevance.spendByBeat.get("s0b0")).toBe(5);
+    /** first pass: exactly the one look left */
     expect((look.mock.calls[0]![2] as string[]).length).toBe(1);
+    /** second pass: the handed moments it never judged, past the ceiling by at most one more ceiling */
+    expect(logs.some((l) => l.startsWith("[FinalReadyYouTube] second pass — 1 sentence(s)"))).toBe(true);
+    expect(d.beatRelevance.spendByBeat.get("s0b0")).toBeGreaterThan(5);
+    expect(d.beatRelevance.spendByBeat.get("s0b0")).toBeLessThanOrEqual(5 + bvr.maxRelevanceLooksPerBeat());
     stockMod.releaseYoutubeShotStock(filmId);
   }, 60_000);
 
