@@ -198,8 +198,8 @@ or higher and a key with the Image & Video permission (a 402 stands the service 
 Tuning: `ELEVENLABS_VIDEO_MODEL_ID` (default `veo-3.1-fast-generate-001`),
 `ELEVENLABS_VIDEO_DURATION_SEC` (8), `ELEVENLABS_VIDEO_MAX_WAIT_MS` (300000),
 `ELEVENLABS_VIDEO_POLL_MS` (≥ 10000), `ELEVENLABS_VIDEO_EXTRA_JSON` (extra body fields for the
-model). When `ELEVENLABS_VIDEO_API_KEY` is unset the voice key `ELEVENLABS_API_KEY` is used for
-video too; that key must then carry the Image & Video permission.
+model). Only `ELEVENLABS_VIDEO_API_KEY` enables video; the voice key `ELEVENLABS_API_KEY` is never
+used for it, so an account without the plan is never asked.
 
 ---
 

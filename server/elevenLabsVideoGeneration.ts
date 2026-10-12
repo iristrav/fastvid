@@ -64,8 +64,8 @@ const MAX_CONSECUTIVE_POLL_ERRORS = 3;
 
 export type ElevenLabsVideoConfig = {
   key: string | null;
-  /** Which variable the key came from: the video key, or the voice key as its fallback. */
-  keySource: "video" | "voice" | null;
+  /** "video" when ELEVENLABS_VIDEO_API_KEY is set; null otherwise (the voice key is never used for video). */
+  keySource: "video" | null;
   modelId: string;
   durationSec: number;
   maxWaitMs: number;
@@ -75,13 +75,13 @@ export type ElevenLabsVideoConfig = {
 
 export function elevenLabsVideoConfig(env: NodeJS.ProcessEnv = process.env): ElevenLabsVideoConfig {
   /**
-   * ELEVENLABS_VIDEO_API_KEY when set; otherwise the voice key (ELEVENLABS_API_KEY), which works
-   * when that key carries the Image & Video permission — one key, two uses. A key without it is
-   * answered with 401/402/403 at create, stands the service down for 30 minutes and costs nothing.
+   * ELEVENLABS_VIDEO_API_KEY only. The voice key (ELEVENLABS_API_KEY) is deliberately NOT a
+   * fallback: the Image & Video API needs a Pro plan and a key with that permission, and an account
+   * without them answers 402 on every render — a useless paid-API call per film. Setting the video
+   * key is the operator's statement that the account can make video.
    */
   const videoKey = env.ELEVENLABS_VIDEO_API_KEY?.trim() || null;
-  const voiceKey = env.ELEVENLABS_API_KEY?.trim() || null;
-  const key = videoKey ?? voiceKey;
+  const key = videoKey;
   const dur = Number.parseFloat(env.ELEVENLABS_VIDEO_DURATION_SEC ?? "");
   const wait = Number.parseInt(env.ELEVENLABS_VIDEO_MAX_WAIT_MS ?? "", 10);
   const poll = Number.parseInt(env.ELEVENLABS_VIDEO_POLL_MS ?? "", 10);
@@ -97,7 +97,7 @@ export function elevenLabsVideoConfig(env: NodeJS.ProcessEnv = process.env): Ele
   }
   return {
     key,
-    keySource: videoKey ? "video" : voiceKey ? "voice" : null,
+    keySource: videoKey ? "video" : null,
     modelId: env.ELEVENLABS_VIDEO_MODEL_ID?.trim() || DEFAULT_VIDEO_MODEL_ID,
     durationSec: Number.isFinite(dur) && dur > 0 ? dur : DEFAULT_VIDEO_DURATION_SEC,
     maxWaitMs: Number.isFinite(wait) && wait >= VIDEO_POLL_MIN_MS ? wait : DEFAULT_VIDEO_MAX_WAIT_MS,

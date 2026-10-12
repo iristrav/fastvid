@@ -260,16 +260,8 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "video_generation",
     describes: "ElevenLabs video for a sentence no source, graphic or still could picture (GENERATED_VIDEO_FALLBACK) — optional, after every real source",
-    requires: [],
+    requires: ["ELEVENLABS_VIDEO_API_KEY"],
     fatal: false,
-    /** VIDEO 649 — the video key, or the voice key as its fallback (it must then carry the Image & Video permission). Names are reported, never values. */
-    satisfiedBy: (env) => {
-      if ((env.ELEVENLABS_VIDEO_API_KEY ?? "").trim()) return { available: true, detail: "ELEVENLABS_VIDEO_API_KEY set" };
-      if ((env.ELEVENLABS_API_KEY ?? "").trim()) {
-        return { available: true, detail: "falls back to ELEVENLABS_API_KEY — that key must carry the Image & Video permission, or the service answers 402 and stands down" };
-      }
-      return { available: false, detail: "missing ELEVENLABS_VIDEO_API_KEY (or ELEVENLABS_API_KEY as its fallback) — optional" };
-    },
   },
   {
     id: "storage",

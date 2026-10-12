@@ -96,16 +96,15 @@ describe("configuration", () => {
     expect(cfg.pollMs).toBe(el.VIDEO_POLL_MIN_MS);
     expect(el.elevenLabsVideoConfigured()).toBe(true);
   });
-  it("the video key first, the voice key as its fallback, none → the rung is off; an unreadable EXTRA_JSON is ignored, a readable one is merged", () => {
+  it("only the video key enables the rung — the voice key never does (no Pro plan: no 402 per film); EXTRA_JSON: unreadable ignored, readable merged", () => {
     expect(el.elevenLabsVideoConfig().keySource).toBe("video");
     vi.stubEnv("ELEVENLABS_VIDEO_API_KEY", "");
     vi.stubEnv("ELEVENLABS_API_KEY", "voice-key-2c9");
-    expect(el.elevenLabsVideoConfigured()).toBe(true);
-    expect(el.elevenLabsVideoConfig().key).toBe("voice-key-2c9");
-    expect(el.elevenLabsVideoConfig().keySource).toBe("voice");
+    expect(el.elevenLabsVideoConfigured()).toBe(false);
+    expect(el.elevenLabsVideoConfig().key).toBeNull();
+    expect(el.elevenLabsVideoConfig().keySource).toBeNull();
     vi.stubEnv("ELEVENLABS_API_KEY", "");
     expect(el.elevenLabsVideoConfigured()).toBe(false);
-    expect(el.elevenLabsVideoConfig().keySource).toBeNull();
     vi.stubEnv("ELEVENLABS_VIDEO_EXTRA_JSON", "{not json");
     expect(el.elevenLabsVideoConfig().extra).toEqual({});
     vi.stubEnv("ELEVENLABS_VIDEO_EXTRA_JSON", '{"resolution":"1080p"}');
@@ -230,16 +229,12 @@ describe("the generator — create, poll, download, strip audio", () => {
     for (const f of ["t5a.mp4", "t5b.mp4", "t5c.mp4"]) expect(fs.existsSync(out(f))).toBe(false);
   });
 
-  it("T7 no key at all: false before any request; with only the voice key the request carries that key", async () => {
+  it("T7 no video key: false before any request, even when the voice key is set", async () => {
     vi.stubEnv("ELEVENLABS_VIDEO_API_KEY", "");
-    vi.stubEnv("ELEVENLABS_API_KEY", "");
+    vi.stubEnv("ELEVENLABS_API_KEY", "voice-key-2c9");
     const { fn } = scripted([]);
     expect(await el.videoClipGenerator()("x y", out("t7.mp4"), { durationSec: 8, deadlineAtMs: soon() })).toBe(false);
     expect(fn).not.toHaveBeenCalled();
-    vi.stubEnv("ELEVENLABS_API_KEY", "voice-key-2c9");
-    const { calls } = scripted([{ status: 402 }]);
-    expect(await el.videoClipGenerator()("x y", out("t7b.mp4"), { durationSec: 8, deadlineAtMs: soon() })).toBe(false);
-    expect(calls[0]!.headers["xi-api-key"]).toBe("voice-key-2c9");
     expect(logs.join("\n")).not.toContain("voice-key-2c9");
   });
 });
@@ -285,8 +280,8 @@ describe("wiring — the same rung, the same route, nothing bypassed", () => {
 
   it("T7 preflight names the capability on the key alone; the env example and docs carry the variables", () => {
     expect(PREFLIGHT).toContain('id: "video_generation",');
-    expect(PREFLIGHT).toContain('if ((env.ELEVENLABS_VIDEO_API_KEY ?? "").trim()) return { available: true, detail: "ELEVENLABS_VIDEO_API_KEY set" };');
-    expect(PREFLIGHT).toContain("falls back to ELEVENLABS_API_KEY");
+    expect(PREFLIGHT).toContain('requires: ["ELEVENLABS_VIDEO_API_KEY"],');
+    expect(PREFLIGHT).not.toContain("falls back to ELEVENLABS_API_KEY");
     expect(ENV_EXAMPLE).toContain("# ELEVENLABS_VIDEO_API_KEY=");
     expect(ENV_EXAMPLE).toContain("# ELEVENLABS_VIDEO_MODEL_ID=veo-3.1-fast-generate-001");
     const docs = fs.readFileSync(path.join(__dirname, "..", "docs", "PRODUCTION_CONFIGURATION.md"), "utf8");

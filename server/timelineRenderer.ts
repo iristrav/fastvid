@@ -1255,15 +1255,32 @@ export async function renderTimeline(params: {
      */
     durationSec: r.handleSec > 0 ? r.handleSec : r.clip.transitionInSec,
   }));
+  /** VIDEO 649 — the join states its own converter per input; see `transitionInputNormalizer`. */
+  const graphNormalize = { widthPx: fmt.widthPx, heightPx: fmt.heightPx, fps: fmt.fps };
   const graph = buildTransitionGraph({
     durations: graphDurations,
     transitions: graphTransitions,
+    normalize: graphNormalize,
   });
 
   if (graph) {
     const argsFor = (filter: string): string[] => {
-      const a = ["-y", "-hide_banner", "-loglevel", "error"];
-      for (const seg of segments) a.push("-i", seg);
+      /**
+       * VIDEO 649 — `warning`, not `error`: ffmpeg says "Input stream #N:0 frame changed from … to …"
+       * at warning level, and that line is the one that names what a failed join tripped over.
+       * It reaches the log only through `ffmpegStderrSummary`, on failure.
+       */
+      const a = ["-y", "-hide_banner", "-loglevel", "warning"];
+      /**
+       * VIDEO 649 — `-reinit_filter 0` per input: when a frame's properties change mid-stream,
+       * ffmpeg's default is to tear the whole graph down and rebuild it — which `xfade` cannot
+       * survive (649/618: "[auto_scale_N] Failed to configure output pad | Error reinitializing
+       * filters!"; with the normaliser alone the rebuild succeeds but the fade's state is lost and
+       * the film ends early, silently). With reinit off the changed frame is handed to the graph
+       * as it stands, and the stated `scale` per input (see `transitionInputNormalizer`) absorbs
+       * it. Reproduced and proven in video649TransitionGraphNormalised.test.ts.
+       */
+      for (const seg of segments) a.push("-reinit_filter", "0", "-i", seg);
       a.push(
         "-filter_complex", filter,
         "-map", "[vout]",
@@ -1361,7 +1378,7 @@ export async function renderTimeline(params: {
       const rung: { filter: string; totalSec: number } | null =
         step === "planned"
           ? plannedGraph
-          : buildTransitionGraph({ durations: graphDurations, transitions: graphTransitions, step });
+          : buildTransitionGraph({ durations: graphDurations, transitions: graphTransitions, step, normalize: graphNormalize });
       if (!rung) continue;
       try {
         await runFfmpeg(argsFor(rung.filter), `transition graph (${step})`);

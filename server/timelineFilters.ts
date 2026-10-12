@@ -769,6 +769,32 @@ export const SIMPLE_TRANSITION_NAME = "fade";
  */
 export const SAME_COLOUR_TAGS = "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709";
 
+/**
+ * VIDEO 649 — THE JOIN'S OWN CONVERTER, STATED, INSTEAD OF THE ONE FFMPEG INSERTS.
+ *
+ * Renders 649 (twice) and 618 failed their planned AND simple transitions the same way, always on
+ * the last input: "[auto_scale_N] Failed to configure output pad | Error reinitializing filters! |
+ * Failed to inject frame into filter network: Resource temporarily unavailable". Every segment
+ * probed identical in header and first frame. That is ffmpeg reconfiguring the whole graph when a
+ * frame's properties change mid-stream — and the converter it inserted on its own (`auto_scale`)
+ * refusing the new configuration in front of `xfade`, which cannot be rebuilt mid-fade. The film
+ * then shipped with cuts ("RECOVERED via cut"). video649TransitionGraphNormalised.test.ts
+ * reproduces it with a segment that changes size and pixel format mid-stream.
+ *
+ * With `normalize` the graph states its converter per input — scale to the film's frame, square
+ * pixels, yuv420p, the film's frame rate — so a change inside a segment is absorbed by a filter
+ * that reconfigures itself, and no auto-inserted scale sits in front of the fade. The renderer
+ * pairs it with `-reinit_filter 0` per input (timelineRenderer `argsFor`): the normaliser alone
+ * lets ffmpeg rebuild the graph without error, but the fade's state is lost and the film ends
+ * early. Without `normalize` (tests, tools) the graph is byte-for-byte what it was.
+ */
+export function transitionInputNormalizer(n: { widthPx: number; heightPx: number; fps: number }): string {
+  const w = Math.max(2, Math.round(n.widthPx));
+  const h = Math.max(2, Math.round(n.heightPx));
+  const fps = Number.isFinite(n.fps) && n.fps > 0 ? Math.round(n.fps * 1000) / 1000 : 30;
+  return `scale=${w}:${h}:flags=bicubic,setsar=1,format=yuv420p,fps=${fps},`;
+}
+
 export function buildTransitionGraph(params: {
   durations: readonly number[];
   /** The transition INTO each segment. Index 0 is ignored: nothing precedes the first clip. */
@@ -778,10 +804,13 @@ export function buildTransitionGraph(params: {
    * function produced before the ladder existed.
    */
   step?: TransitionLadderStep;
+  /** VIDEO 649 — the film's frame; see `transitionInputNormalizer`. */
+  normalize?: { widthPx: number; heightPx: number; fps: number };
 }): { filter: string; totalSec: number } | null {
   const { durations, transitions } = params;
   const step: TransitionLadderStep = params.step ?? "planned";
   if (durations.length < 2) return null;
+  const norm = params.normalize ? transitionInputNormalizer(params.normalize) : "";
 
   const joins = durations.slice(1).map((_, i) => {
     const t = transitions[i + 1];
@@ -841,9 +870,13 @@ export function buildTransitionGraph(params: {
      */
     const trimSec = step === "cut" ? (joins[i - 1]?.sec ?? 0) : 0;
     steps.push(
-      trimSec > 0
-        ? `[${i}:v]trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
-        : `[${i}:v]settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
+      norm
+        ? trimSec > 0
+          ? `[${i}:v]${norm}trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
+          : `[${i}:v]${norm}settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
+        : trimSec > 0
+          ? `[${i}:v]trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
+          : `[${i}:v]settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
     );
   }
 

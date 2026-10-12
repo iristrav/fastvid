@@ -27240,6 +27240,13 @@ async function _runVideoPipelineInner(
        */
       (beat) => poolInventoryCheck(lateStockPool, videoId, beat)
     );
+    /**
+     * VIDEO 649 (V4) — what is approved and settled is placed BEFORE the fill stage asks about it.
+     * 649's s1b3 had its FIT approved during its scene and placed only in the final pass below; the
+     * fill stage in between saw a sentence without a picture and passed it over, so a 2.5 s shot
+     * stood alone under 6.2 s. The same non-final placement the fill stage itself uses for its FITs.
+     */
+    for (let si = 0; si < scenes.length; si++) await placeLate(si, false);
     /** VIDEO 643 (E) — the last looks are done: a sentence with a picture and ≥3 s uncovered asks for another FIT. */
     await runFinalBeatFillStage(visualDedup, allSentences, judgeBudget, {
       hasRealPicture: (sceneIndex, beatIndex) => realShotsOf(sceneIndex, beatIndex) > 0,

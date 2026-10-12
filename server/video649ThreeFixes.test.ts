@@ -280,3 +280,21 @@ describe("V3 — a late-approved picture shorter than its sentence is topped up 
     expect(fill).toContain("const covered = clipBeatIndices.reduce((sum, b, i) => (b === f.beat.index ? sum + (beatDurations[i] ?? 0) : sum), 0);");
   });
 });
+
+/* ───────────────────────── V4 — approved pictures are placed before the final fill stage asks ───────────────────────── */
+
+describe("V4 — settled late approvals are placed before the final fill stage, so a short late picture is topped up", () => {
+  it("wiring: every scene's non-final late placement runs right before runFinalBeatFillStage, and the final pass still follows", () => {
+    const fill = PIPE.indexOf("await runFinalBeatFillStage(visualDedup, allSentences, judgeBudget, {");
+    const place = PIPE.lastIndexOf("for (let si = 0; si < scenes.length; si++) await placeLate(si, false);", fill);
+    const finalPass = PIPE.indexOf("for (let si = 0; si < scenes.length; si++) await placeLate(si, true);", fill);
+    expect(fill).toBeGreaterThan(0);
+    expect(place).toBeGreaterThan(0);
+    expect(fill - place).toBeLessThan(600);
+    expect(finalPass).toBeGreaterThan(fill);
+    /** the fill stage itself still asks only sentences WITH a real picture and ≥ 3 s open */
+    expect(PIPE).toContain(
+      "(s) => io.hasRealPicture(s.sceneIndex, s.beatIndex) && io.secondsLeft(s.sceneIndex, s.beatIndex) >= BEAT_EXTRA_SHOT_MIN_SEC"
+    );
+  });
+});
