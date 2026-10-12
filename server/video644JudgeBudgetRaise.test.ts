@@ -24,7 +24,8 @@ import {
  */
 const read = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");
 /** VIDEO 647 — the judged turn is the YouTube turn (120 s). */
-const BASE_644_MS = 10_000 + 120_000;
+/** VIDEO 647 (F3) — the judged turn is the whole YouTube-first worst case (180 s). */
+const BASE_644_MS = 10_000 + 180_000;
 
 describe("VIDEO 644 — the picture editor's budget, half again on what 644 actually used", () => {
   it("per look: 30 s — what one look actually costs under load (646: 172.5 s for 6 looks)", () => {
@@ -36,8 +37,8 @@ describe("VIDEO 644 — the picture editor's budget, half again on what 644 actu
     const vp = read("videoPipeline.ts");
     expect(vp).toContain("const judgeBaseMs = Math.round((FINAL_REVIEW_WINDOW_MS + FINAL_LOOK_TURN_MS) * JUDGE_BASE_SCALE);");
     expect(vp).toContain("export const ARCHIVE_JUDGE_MIN_MS = 10_000;");
-    expect(vp).toContain("export const JUDGED_BEAT_TURN_MS = 120_000;");
-    expect(Math.round(BASE_644_MS * JUDGE_BASE_SCALE)).toBe(195_000);
+    expect(vp).toContain("export const JUDGED_BEAT_TURN_MS = YOUTUBE_FIRST_BEAT_WORST_MS;");
+    expect(Math.round(BASE_644_MS * JUDGE_BASE_SCALE)).toBe(285_000);
   });
 
   it("644 replayed: eleven looks are granted 82.5 s instead of 55 s, still under the same ceiling", () => {
@@ -47,7 +48,7 @@ describe("VIDEO 644 — the picture editor's budget, half again on what 644 actu
     expect(ceiling).toBe(Math.round(62.67 * JUDGE_CEILING_MS_PER_VIDEO_SEC));
     const b = createJudgeBudget({ baseMs: base, ceilingMs: ceiling, now: () => t });
     b.grant(11);
-    expect(b.grantedMs()).toBe(Math.max(195_000, 11 * JUDGE_MS_PER_LOOK));
+    expect(b.grantedMs()).toBe(Math.max(285_000, 11 * JUDGE_MS_PER_LOOK));
     expect(b.grantedMs()).toBeLessThan(ceiling);
     t = 55_003;
     expect(b.leftMs()).toBeGreaterThan(27_000);
@@ -64,7 +65,7 @@ describe("VIDEO 644 — the picture editor's budget, half again on what 644 actu
     const ceiling = judgeBudgetCeilingMs(52.46, Number.POSITIVE_INFINITY, base);
     const b = createJudgeBudget({ baseMs: base, ceilingMs: ceiling, now: () => t });
     b.grant(5);
-    expect(b.grantedMs()).toBe(195_000);
+    expect(b.grantedMs()).toBe(285_000);
     t = 65_000;
     expect(b.leftMs()).toBeGreaterThan(0);
     t = 79_000;

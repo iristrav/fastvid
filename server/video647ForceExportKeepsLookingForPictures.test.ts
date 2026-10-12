@@ -64,11 +64,11 @@ function lateRender(len: string, opts: { ttsMin?: number; overrunSec?: number; v
   };
 }
 
-/** A 646-shaped film at this length: a scene per 20 s, four sentences each, chunks of six scenes. */
+/** A 646-shaped film at this length: a scene per 20 s, three sentences each, chunks of six scenes. */
 function sentenceFloorDeadlineMs(len: string, videoSec: number): number {
   const scenes = Math.max(1, Math.round(videoSec / 20));
   const chunks: number[][] = [];
-  for (let i = 0; i < scenes; i += 6) chunks.push(Array(Math.min(6, scenes - i)).fill(4));
+  for (let i = 0; i < scenes; i += 6) chunks.push(Array(Math.min(6, scenes - i)).fill(3));
   const cap = Math.min(visualStageWallClockMin(len) * MIN, pictureStageWallClockCeilingMs(len));
   return judgeableVisualDeadlineMs(videoSec * 2.85 * 1000, chunks, cap);
 }
@@ -185,6 +185,7 @@ describe("4. a provider that never answers leaves the render finite", () => {
   it("past the ceiling the old floor holds, so a late rescue is still one bounded minute", () => {
     const w = emptySceneRescueWindowMs({ deadlineLeftMs: -1, sentencesPerEmptyScene: [6], sceneParallelism: 3, ceilingLeftMs: -5 * MIN });
     expect(w).toBe(EMPTY_SCENE_RESCUE_MIN_MS);
-    expect(YOUTUBE_FIRST_TURN_MS).toBe(JUDGED_BEAT_TURN_MS);
+    expect(JUDGED_BEAT_TURN_MS).toBe(YOUTUBE_FIRST_BEAT_WORST_MS);
+    expect(YOUTUBE_FIRST_TURN_MS).toBeLessThan(JUDGED_BEAT_TURN_MS);
   });
 });

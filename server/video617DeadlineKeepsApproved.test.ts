@@ -68,7 +68,7 @@ describe("Video 617. a scene still running at the visual deadline keeps what it 
   it("wiring: the scene registers its own lists; the deadline reads a copy of them; a late return still writes nothing", () => {
     const inner = PIPE.slice(PIPE.indexOf("async function fetchSceneVisualsInner("));
     expect(inner).toMatch(
-      /const clips: string\[\] = \[\];\s*const beatDurations: number\[\] = \[\];[\s\S]{0,200}const clipBeatIndices: number\[\] = \[\];\s*\(dedup\.sceneClipsSoFar \?\?= new Map\(\)\)\.set\(scene\.index, \{ clips, beatDurations, clipBeatIndices \}\);/
+      /const clips: string\[\] = \[\.\.\.\(soFar\?\.clips \?\? \[\]\)\];\s*const beatDurations: number\[\] = \[\.\.\.\(soFar\?\.beatDurations \?\? \[\]\)\];[\s\S]{0,200}const clipBeatIndices: number\[\] = \[\.\.\.\(soFar\?\.clipBeatIndices \?\? \[\]\)\];\s*\(dedup\.sceneClipsSoFar \?\?= new Map\(\)\)\.set\(scene\.index, \{ clips, beatDurations, clipBeatIndices \}\);/
     );
     expect(PIPE).toContain("const kept = sceneClipsKeptAtDeadline(visualDedup.sceneClipsSoFar?.get(scenes[si]!.index));");
     /** The kept clips fill the slot first; an unfinished scene with nothing approved is still a gap. */

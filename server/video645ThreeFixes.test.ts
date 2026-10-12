@@ -42,7 +42,7 @@ describe("F1 — the picture editor's budget", () => {
   it("the constants: 30 s per look and a base scaled by 1.5 (195 s from 10 s + 120 s) — VIDEO 647", () => {
     expect(JUDGE_MS_PER_LOOK).toBe(30_000);
     expect(JUDGE_BASE_SCALE).toBe(1.5);
-    expect(Math.round((10_000 + 120_000) * JUDGE_BASE_SCALE)).toBe(195_000);
+    expect(Math.round((10_000 + 180_000) * JUDGE_BASE_SCALE)).toBe(285_000);
   });
 
   it("one budget object, built with the scaled base and the default per-look grant, is handed to the last looks AND the extra-shot fill", () => {

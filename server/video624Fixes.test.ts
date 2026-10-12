@@ -204,7 +204,8 @@ describe("4. no piece runs past its source; an empty sentence is filled", () => 
 
   it("the fill asks for a sentence that found nothing, on the main subject", () => {
     const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const body = src.slice(src.indexOf("const fillBeatWithMoreClips = async"), src.indexOf("const fillBeatWithMoreClips = async") + 2600);
+    /** VIDEO 647 (F4) — the fill now also yields to an approved picture on its way, so the window is a little wider. */
+    const body = src.slice(src.indexOf("const fillBeatWithMoreClips = async"), src.indexOf("const fillBeatWithMoreClips = async") + 3400);
     expect(body).not.toContain("if (pushed.length === 0) return;");
     expect(body).toContain("const subject = found ? null : mainSubject;");
     expect(body).toContain("ownArchiveBeatClip({ ...asked, holdSec: rest }");

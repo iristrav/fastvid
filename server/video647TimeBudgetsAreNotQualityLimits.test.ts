@@ -99,8 +99,9 @@ describe("VIDEO 647 — the picture editor's budget is sized on what a look real
 });
 
 describe("VIDEO 647 — the picture stage gives every judged sentence its YouTube turn", () => {
-  it("a judged sentence's turn is the YouTube turn, so a scene is not cut while its beats still have one", () => {
-    expect(JUDGED_BEAT_TURN_MS).toBe(YOUTUBE_FIRST_TURN_MS);
+  it("a judged sentence's turn is the whole YouTube-first worst case, so a scene is not cut while its beats still have one", () => {
+    expect(JUDGED_BEAT_TURN_MS).toBe(YOUTUBE_FIRST_BEAT_WORST_MS);
+    expect(JUDGED_BEAT_TURN_MS).toBeGreaterThan(YOUTUBE_FIRST_TURN_MS);
     expect(FINAL_LOOK_TURN_MS).toBe(JUDGED_BEAT_TURN_MS);
   });
 

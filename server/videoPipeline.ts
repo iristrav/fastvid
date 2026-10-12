@@ -4765,7 +4765,15 @@ export function visualDeadlineForVideoMs(perSceneTotalMs: number, videoSec: numb
  * not 45 s of it. 646: 12 sentences, visual deadline 270 s (6 × 45 s), one of three scenes cut off at
  * the deadline with its beats unsourced; their rescues then opened inside an ended budget.
  */
-export const JUDGED_BEAT_TURN_MS = 120_000;
+/**
+ * VIDEO 647 (F3) — 120 s was the YouTube turn alone. In render 647 scene 1 (6 sentences, 600 s)
+ * gave s1b1 a 70 s share; its YouTube phase (pool wait, four looks) spent the search share, and
+ * the archive, open-source and stock rungs opened inside an ended scope ("SCOPE_EXPIRED archive
+ * s1 b1 — opened 1s after the enclosing budget had already ended") while the stage still had
+ * four minutes. A judged sentence's turn is the whole YouTube-first worst case: the YouTube turn
+ * plus the fallback minimum (`YOUTUBE_FIRST_BEAT_WORST_MS`, 180 s).
+ */
+export const JUDGED_BEAT_TURN_MS = YOUTUBE_FIRST_BEAT_WORST_MS;
 
 export function judgeableVisualDeadlineMs(
   baseMs: number,
@@ -22374,6 +22382,8 @@ export async function visualJudgeRefusesPush(
           `film with the vision requirement suspended; this beat may not claim an own approved picture`
       );
     }
+    /** VIDEO 647 (F1) — the editor's "fits" for THIS sentence, given here, reaches the timeline's approval ledger. */
+    if (beatIndex != null && vision === "APPROVED" && contentKey) noteApprovedKeyForBeat(dedup, sceneIndex, beatIndex, contentKey);
     return false;
   }
 
@@ -22690,6 +22700,33 @@ export async function placeApprovedAfterSceneClosed(
   return placed;
 }
 
+/**
+ * VIDEO 647 (F1) — THE PICTURE EDITOR'S "FITS" AT THE PUSH IS AN APPROVAL LIKE ANY OTHER.
+ *
+ * Render 647: four sentences got their picture from the own archive through the fill
+ * (`fillBeatWithMoreClips` → `pushSceneClip`), the picture editor said "fits" at the push
+ * ("[BeatRelevance] s0b2 push fits …"), and the DeliveryGate refused every one of them as
+ * "footage without the picture editor's approval": the approval existed, but only
+ * `noteApprovedPickForBeat` (the adopt loop, the archive-first route) wrote the ledger the
+ * timeline reads (`pictureApprovedForBeat` → `contentApproval: "judge_fit"`). This is that write
+ * alone — the count and the key, nothing about late placement — for every route that approves
+ * a picture for a sentence. A key already filed is not counted twice.
+ */
+export function noteApprovedKeyForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey?: string): void {
+  const key = `${sceneIndex}:${beatIndex}`;
+  const keys = approvedKeysByRender.get(dedup) ?? new Map<string, Set<string>>();
+  approvedKeysByRender.set(dedup, keys);
+  const set = keys.get(key) ?? new Set<string>();
+  if (contentKey && set.has(contentKey)) return;
+  const byBeat = approvedPicksByRender.get(dedup) ?? new Map<string, number>();
+  approvedPicksByRender.set(dedup, byBeat);
+  byBeat.set(key, (byBeat.get(key) ?? 0) + 1);
+  if (contentKey) {
+    set.add(contentKey);
+    keys.set(key, set);
+  }
+}
+
 export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey?: string): void {
   /** VIDEO 634 s0b2 — approved 62 s after its scene closed: not placed, and said so (no timing change). */
   if (sceneIsClosed(dedup, sceneIndex)) {
@@ -22702,17 +22739,7 @@ export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatI
       noteApprovedNotPlaced(dedup, sceneIndex, beatIndex, "approved after scene closed — not placed");
     }
   }
-  const byBeat = approvedPicksByRender.get(dedup) ?? new Map<string, number>();
-  approvedPicksByRender.set(dedup, byBeat);
-  const key = `${sceneIndex}:${beatIndex}`;
-  byBeat.set(key, (byBeat.get(key) ?? 0) + 1);
-  if (contentKey) {
-    const keys = approvedKeysByRender.get(dedup) ?? new Map<string, Set<string>>();
-    approvedKeysByRender.set(dedup, keys);
-    const set = keys.get(key) ?? new Set<string>();
-    set.add(contentKey);
-    keys.set(key, set);
-  }
+  noteApprovedKeyForBeat(dedup, sceneIndex, beatIndex, contentKey);
 }
 
 /**
@@ -24781,13 +24808,15 @@ async function fetchSceneVisuals(
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
   sceneAudioPath?: string,
   /** VIDEO 621 — search every beat on this subject only; see `rescueEmptyScenesOnMainSubject`. */
-  rescueSubject?: string
+  rescueSubject?: string,
+  /** VIDEO 647 (F2) — only these sentences; the scene's other clips are kept as they are. */
+  onlyBeatIndices?: ReadonlySet<number>
 ): Promise<SceneVisualsResult> {
   const heartbeatLabel = `fetchSceneVisuals s${scene.index}`;
   setWorkerHeartbeat(heartbeatLabel);
   try {
     return await fetchSceneVisualsInner(
-      scene, workDir, videoTitle, dedup, onBeatProgress, sceneAudioPath, rescueSubject
+      scene, workDir, videoTitle, dedup, onBeatProgress, sceneAudioPath, rescueSubject, onlyBeatIndices
     );
   } finally {
     clearWorkerHeartbeat(heartbeatLabel);
@@ -24801,7 +24830,8 @@ async function fetchSceneVisualsInner(
   dedup: VisualDedupState,
   onBeatProgress?: (beatIndex: number, beatTotal: number, phase?: BeatProgressPhase) => void,
   sceneAudioPath?: string,
-  rescueSubject?: string
+  rescueSubject?: string,
+  onlyBeatIndices?: ReadonlySet<number>
 ): Promise<SceneVisualsResult> {
   videoTitle = coerceVisionString(videoTitle);
   
@@ -24861,10 +24891,22 @@ async function fetchSceneVisualsInner(
     }));
     console.log(`[MainSubject] Scene ${scene.index}: ${beats.length} beat(s) searched on "${rescue}" only`);
   }
-  const clips: string[] = [];
-  const beatDurations: number[] = [];
+  /**
+   * VIDEO 647 (F2) — the per-sentence rescue runs this search for the sentences that have no
+   * picture, in a scene that has pictures for its other sentences. The scene's beats stay recorded
+   * in full above (`applyVoiceAlignmentToBeats`); only the SEARCH is narrowed. The clips the scene
+   * already has seed the working lists, so the fill reads them as found and the deadline keep
+   * (`sceneClipsSoFar`) never loses them.
+   */
+  const soFar = onlyBeatIndices ? dedup.sceneClipsSoFar?.get(scene.index) : undefined;
+  if (onlyBeatIndices) {
+    beats = beats.filter((b) => onlyBeatIndices.has(b.index));
+    console.log(`[MainSubject] Scene ${scene.index}: sentence rescue for ${beats.map((b) => `b${b.index}`).join(", ") || "nothing"}`);
+  }
+  const clips: string[] = [...(soFar?.clips ?? [])];
+  const beatDurations: number[] = [...(soFar?.beatDurations ?? [])];
   /** VIDEO 626 — the sentence each pushed clip was approved for, parallel to `clips`. */
-  const clipBeatIndices: number[] = [];
+  const clipBeatIndices: number[] = [...(soFar?.clipBeatIndices ?? [])];
   (dedup.sceneClipsSoFar ??= new Map()).set(scene.index, { clips, beatDurations, clipBeatIndices });
   const archiveBeatFilled = new Set<number>();
 
@@ -25039,6 +25081,11 @@ async function fetchSceneVisualsInner(
     const found = clipBeatIndices.includes(f.beat.index);
     const subject = found ? null : mainSubject;
     if (!found && !subject) return;
+    /** VIDEO 647 (F4) — s0b2: the fill ran before its two YouTube FITs were placed and an archive clip took their place. YouTube before archive. */
+    if (!found && approvedPicksForBeat(dedup, scene.index, f.beat.index) > 0) {
+      console.log(`[BeatFill] s${scene.index}b${f.beat.index}: an approved picture is on its way — not filled from the own archive`);
+      return;
+    }
     const asked: SceneBeat = subject
       ? { ...f.beat, searchQuery: subject, powerWord: subject, keywords: [subject], visualDescription: undefined }
       : f.beat;
@@ -26684,6 +26731,91 @@ async function _runVideoPipelineInner(
           }
           console.log(
             `[MainSubject] Scene ${scenes[si]!.index}: ${(sceneVisualResults[si]?.clips ?? []).length} picture(s) of "${mainSubject}"`
+          );
+        }
+      }
+    }
+
+    /**
+     * VIDEO 647 (F2) — A SENTENCE WITHOUT A PICTURE IN A SCENE THAT HAS PICTURES GETS ITS OWN RESCUE.
+     *
+     * Render 647: scene 1 had pictures for five sentences and none for s1b1 (eight candidates, all
+     * refused). The rescue above is for EMPTY scenes, so s1b1 was never searched again: FinalReady
+     * (no search), the fill (archive, refused), a generated image (HTTP 402) and then a chapter card,
+     * which the gate refused. Here every scene of the chunk that has pictures is searched once more
+     * for the sentences that have none — the same scene search, on the main subject, narrowed to
+     * those sentences, inside the same window rule as the empty-scene rescue. The scene's other
+     * clips are kept; what the rescue adds is merged under its own sentence.
+     */
+    if (mainSubject) {
+      const missingByScene: Array<{ si: number; beatIdx: number[] }> = [];
+      for (let si = chunk.start; si < chunk.end; si++) {
+        const scene = scenes[si]!;
+        if (scene.isChapterCard) continue;
+        const result = sceneVisualResults[si];
+        if (!(result?.clips ?? []).some((c) => c && !isPipelineFallbackClip(c))) continue;
+        const missing = beatsWithoutPicture(sentencesOfScene(visualDedup, scene.index, result), result?.clipBeatIndices ?? []).map((b) => b.index);
+        if (missing.length > 0) missingByScene.push({ si, beatIdx: missing });
+      }
+      const mergeInto = (si: number, r: SceneVisualsResult | undefined): void => {
+        if (!r) return;
+        const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
+        target.clipBeatIndices ??= [];
+        r.clips.forEach((c, i) => {
+          const beatIndex = r.clipBeatIndices?.[i];
+          /** VIDEO 626 — a clip whose sentence is not known is not handed to any sentence. */
+          if (!c || beatIndex == null || target.clips.includes(c)) return;
+          target.clips.push(c);
+          target.beatDurations.push(r.beatDurations[i] ?? 0);
+          target.clipBeatIndices!.push(beatIndex);
+        });
+      };
+      if (missingByScene.length > 0) {
+        const windowMs = emptySceneRescueWindowMs({
+          deadlineLeftMs: visualDeadlineAtMs - Date.now(),
+          sentencesPerEmptyScene: missingByScene.map((m) => m.beatIdx.length),
+          sceneParallelism: perf.sceneParallelism,
+          ceilingLeftMs: pictureStageLeftMs(),
+        });
+        console.log(
+          `[MainSubject] video=${videoId} sentence(s) without a picture in scene(s) with pictures: ` +
+            missingByScene.map((m) => `s${scenes[m.si]!.index}:b${m.beatIdx.join("/")}`).join(", ") +
+            ` — searching those sentences on "${mainSubject}" only, ${Math.round(windowMs / 1000)}s`
+        );
+        let sentenceRescueClosed = false;
+        try {
+          await withSceneFetchTimeout(
+            () =>
+              Promise.all(
+                missingByScene.map(({ si, beatIdx }) =>
+                  visualLimit(async () => {
+                    const r = await fetchSceneVisuals(
+                      scenes[si]!, workDir, topicContext, visualDedup, undefined, audioPaths[si], mainSubject, new Set(beatIdx)
+                    ).catch((err: Error) => {
+                      console.warn(`[MainSubject] Scene ${scenes[si]!.index}: sentence rescue failed: ${err.message?.slice(0, 120)}`);
+                      return null;
+                    });
+                    if (!sentenceRescueClosed && r) { mergeInto(si, r); returnedInTime.add(si); }
+                  })
+                )
+              ),
+            windowMs,
+            `Sentence rescue chunk ${chunkIdx + 1}/${chunks.length}`
+          );
+        } catch (err) {
+          console.warn(`[MainSubject] video=${videoId} sentence rescue: time is up:`, (err as Error).message?.slice(0, 120));
+          visualDedup.lock = Promise.resolve();
+        }
+        sentenceRescueClosed = true;
+        for (const { si, beatIdx } of missingByScene) {
+          /** what the editor approved before the window closed is kept (the same keep as at the deadline) */
+          mergeInto(si, sceneClipsKeptAtDeadline(visualDedup.sceneClipsSoFar?.get(scenes[si]!.index)));
+          const still = beatsWithoutPicture(
+            sentencesOfScene(visualDedup, scenes[si]!.index, sceneVisualResults[si]),
+            sceneVisualResults[si]?.clipBeatIndices ?? []
+          ).filter((b) => beatIdx.includes(b.index)).length;
+          console.log(
+            `[MainSubject] Scene ${scenes[si]!.index}: sentence rescue — ${beatIdx.length - still} of ${beatIdx.length} sentence(s) now have a picture`
           );
         }
       }

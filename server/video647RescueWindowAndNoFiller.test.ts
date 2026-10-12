@@ -35,7 +35,7 @@ import {
   YOUTUBE_FIRST_BEAT_WORST_MS,
   YOUTUBE_FIRST_TURN_MS,
   maxPipelineWallClockHardMin,
-  pipelineEmergencyFinishMs,
+  pictureStageWallClockCeilingMs,
   visualStageWallClockMin,
   youtubeDownloadTimeoutMs,
 } from "./sourcingPolicy";
@@ -103,7 +103,8 @@ describe("2. a long film is not cut by a per-second budget", () => {
     const chunks: number[][] = [];
     for (let i = 0; i < scenes; i += chunkSize) chunks.push(Array(Math.min(chunkSize, scenes - i)).fill(perScene));
     const floor = chunks.length * perScene * JUDGED_BEAT_TURN_MS;
-    const cap = Math.min(visualStageWallClockMin(len) * 60_000, pipelineEmergencyFinishMs(len));
+    /** VIDEO 647 (F3): the cap is the picture stage's own, never force-export */
+    const cap = Math.min(visualStageWallClockMin(len) * 60_000, pictureStageWallClockCeilingMs(len));
     const deadline = judgeableVisualDeadlineMs(byLength, chunks, cap);
     expect(deadline).toBeGreaterThan(byLength);
     expect(deadline).toBe(Math.max(byLength, Math.min(floor, cap)));

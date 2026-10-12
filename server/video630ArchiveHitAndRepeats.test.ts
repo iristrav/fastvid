@@ -134,7 +134,7 @@ describe("P1 — the archive hit is judged before it ends the beat", () => {
   });
 
   it("F. the 1600ff1 timing is untouched (VIDEO 647: the judged turn is the YouTube turn)", () => {
-    expect(PIPE).toContain("const JUDGED_BEAT_TURN_MS = 120_000;");
+    expect(PIPE).toContain("const JUDGED_BEAT_TURN_MS = YOUTUBE_FIRST_BEAT_WORST_MS;");
     expect(PIPE).toContain("const YOUTUBE_STOCK_WAIT_MAX_MS = 180_000;");
     expect(PIPE).toContain("Math.max(1, Math.round(beatWallMs * BEAT_RESOLVE_SHARE)),");
   });
