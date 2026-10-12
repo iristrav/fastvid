@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 import {
@@ -26,7 +26,34 @@ import { MAX_JUDGEMENTS_PER_BEAT } from "./beatImageRelevanceGate";
 
 const state = () => createBeatShortlistState();
 
-describe("one source cannot fill a beat's shortlist", () => {
+/**
+ * VIDEO 649 — the operator's rule: ONE SOURCE MAY FILL A SENTENCE (one YouTube video may picture
+ * every sentence, several shots each, no seconds twice). The per-source share is therefore the
+ * whole shortlist by default; the MECHANISM below is unchanged and is exercised with the share
+ * narrowed to the judgement budget, exactly as `MAX_BEAT_SHORTLIST_PER_SOURCE` still allows.
+ */
+describe("VIDEO 649 — by default one source may fill the whole shortlist", () => {
+  beforeEach(() => { delete process.env.MAX_BEAT_SHORTLIST_PER_SOURCE; });
+  it("the share is the list", () => {
+    expect(maxShortlistPerBeatPerSource()).toBe(maxShortlistPerBeat());
+    const s = state();
+    const cap = maxShortlistPerBeat();
+    let taken = 0;
+    for (let i = 0; i < cap; i++) if (admitToShortlist(s, 0, 0, `youtube_cc:v@${i}`, cap, "youtube_cc").admitted) taken++;
+    expect(taken, "one video fills every slot").toBe(cap);
+    const refused = admitToShortlist(s, 0, 0, "youtube_cc:v@more", cap, "youtube_cc");
+    expect(refused.admitted).toBe(false);
+    expect(refused.reason, "the list is full, not the source's share").toBe("SHORTLIST_FULL");
+  });
+  it("the operator can still narrow the share", () => {
+    process.env.MAX_BEAT_SHORTLIST_PER_SOURCE = "2";
+    expect(maxShortlistPerBeatPerSource()).toBe(2);
+  });
+});
+
+describe("one source cannot fill a beat's shortlist (with the share narrowed to the judgement budget)", () => {
+  beforeEach(() => { process.env.MAX_BEAT_SHORTLIST_PER_SOURCE = String(MAX_JUDGEMENTS_PER_BEAT); });
+  afterEach(() => { delete process.env.MAX_BEAT_SHORTLIST_PER_SOURCE; });
   it("THE FIRST SOURCE NO LONGER TAKES EVERY SLOT", () => {
     const s = state();
     const cap = maxShortlistPerBeat();
@@ -76,7 +103,7 @@ describe("one source cannot fill a beat's shortlist", () => {
   it("NO SLOT IS WASTED when only one source has anything", () => {
     /**
      * The RONDE 170 lesson this is careful not to repeat. The editor judges at most
-     * MAX_JUDGEMENTS_PER_BEAT candidates; the per-source cap is exactly that number, so a beat
+     * MAX_JUDGEMENTS_PER_BEAT candidates; with the share narrowed to exactly that number, a beat
      * served by one source alone still reaches the full judgement budget.
      */
     expect(maxShortlistPerBeatPerSource()).toBe(MAX_JUDGEMENTS_PER_BEAT);

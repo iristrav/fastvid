@@ -25,6 +25,11 @@ WORKDIR /app
 # Copy package files first (for better Docker layer caching)
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --no-frozen-lockfile
+# VIDEO 649 — pnpm 10 does not run a dependency's install script, so the bundled ffmpeg-static
+# binary (the transition join's reserve when the system ffmpeg cannot configure its filter graph)
+# is fetched here. A failed download never fails the build: the system ffmpeg stays first choice.
+RUN node node_modules/ffmpeg-static/install.js \
+  || echo "[Dockerfile] ffmpeg-static binary not fetched — the transition join has no other build to fall back to"
 
 # Copy all source files
 COPY . .

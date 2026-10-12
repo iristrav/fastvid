@@ -29,9 +29,16 @@ function envInt(name: string, fallback: number, min: number, max: number): numbe
   return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
 }
 
-/** How many moments of one YouTube video a beat's picture editor is shown (3–5 asked; 3 by default). */
+/**
+ * How many moments of one YouTube video a beat's picture editor is shown.
+ *
+ * VIDEO 649 — the operator's rule: one video may picture every sentence of the film, several shots
+ * per sentence, as long as no seconds are shown twice (`visualDedupRegistry` keeps that). Five by
+ * default (was three), at most eight, so a 5–8 s sentence can be covered by two or three distinct
+ * shots of the one video that fits it.
+ */
 export function youtubeMomentsPerVideo(): number {
-  return envInt("YOUTUBE_MOMENTS_PER_VIDEO", 3, 1, 5);
+  return envInt("YOUTUBE_MOMENTS_PER_VIDEO", 5, 1, 8);
 }
 
 /** The most the download service fetches in one section. */

@@ -143,7 +143,8 @@ describe("§3 — the probe is wired to the failure, and repairs nothing", () =>
      */
     const at = SRC.indexOf("await runFfmpeg(argsFor(rung.filter)");
     expect(at).toBeGreaterThan(-1);
-    const body = SRC.slice(at, at + 1400);
+    /** VIDEO 649 — the ladder retries a refused graph once with the other ffmpeg build in between; the claim is unchanged. */
+    const body = SRC.slice(at, at + 3200);
     expect(body).toContain("catch (graphErr)");
     expect(body).toContain("await diagnoseSegmentShapes(graphErr);");
     expect(body, "a diagnosed failure must still fail").toContain("throw firstFailure;");

@@ -22884,11 +22884,14 @@ export function noteApprovedPickForBeat(dedup: object, sceneIndex: number, beatI
  *                             not judged it yet: its own sentence goes first
  *   approved_for_other        approved for another sentence still waiting for its placement
  *   claimed_by_other          another sentence's last look is judging it right now
- *   targeted_other_sentence   found by a search aimed at other sentences (FIX 1)
- *   video_unknown             its video cannot be identified, so "targeted" cannot be ruled out
  *   too_short                 shorter than the 3 s minimum (`belowArchiveMinimumDuration`)
+ *
+ * VIDEO 649 — the operator's rule: one video may picture every sentence, as long as no seconds are
+ * shown twice. A moment found by a search aimed at other sentences (FIX 1), or one whose video the
+ * pool cannot name, is therefore no longer left out: it is offered LAST (`targeted`), after the
+ * sentence's own and the moments that serve it, and the picture editor decides on its frames.
  */
-export type InventoryVerdict = { allowed: true; serves: boolean } | { allowed: false; reason: string };
+export type InventoryVerdict = { allowed: true; serves: boolean; targeted?: boolean } | { allowed: false; reason: string };
 export type InventoryCheck = (momentPath: string) => InventoryVerdict;
 
 /** Sentences whose last look is queued or running (`runFinalReadyYoutubeStage`): their own moments are theirs first. */
@@ -22963,7 +22966,7 @@ export async function youtubeInventoryForBeat(
   const excluded: Record<string, number> = {};
   const exclude = (why: string) => void (excluded[why] = (excluded[why] ?? 0) + 1);
   const seenKeys = new Set<string>();
-  const eligible: Array<{ path: string; serves: boolean; refusedElsewhere: boolean }> = [];
+  const eligible: Array<{ path: string; serves: boolean; targeted: boolean; refusedElsewhere: boolean }> = [];
   for (const [p, owners] of youtubeMomentsOfRender(dedup)) {
     const key = clipContentKey(p);
     if (listedKeys.has(key) || seenKeys.has(key)) continue;
@@ -22996,10 +22999,12 @@ export async function youtubeInventoryForBeat(
     eligible.push({
       path: p,
       serves: verdict.serves,
+      targeted: verdict.targeted === true,
       refusedElsewhere: contentRefusedOnAnotherBeat(dedup.beatRelevance, key, sceneIndex, beatIndex),
     });
   }
-  const rank = (e: (typeof eligible)[number]) => (e.serves ? 0 : 1) + (e.refusedElsewhere ? 2 : 0);
+  /** Serving first; then what another sentence refused; a moment aimed at other sentences last (VIDEO 649). */
+  const rank = (e: (typeof eligible)[number]) => (e.serves ? 0 : 1) + (e.refusedElsewhere ? 2 : 0) + (e.targeted ? 4 : 0);
   eligible.sort((a, b) => rank(a) - rank(b));
   const paths: string[] = [];
   const held = inventoryClaimsByRender.get(dedup) ?? new Map<string, string>();
@@ -23029,19 +23034,23 @@ export async function youtubeInventoryForBeat(
 /**
  * STEP 0 — the pipeline's inventory rule for one sentence, from the video's pool: a moment's video is
  * found back by its provider key; one found by a search aimed at named subjects (FIX 1, the stock's own
- * record or the pool's entity targets) only for the sentences it serves; a video the pool cannot name
- * is left out, because "targeted" cannot be ruled out for it.
+ * record or the pool's entity targets) serves the sentences it was made for.
+ *
+ * VIDEO 649 — the operator's rule (one video may picture every sentence; no seconds twice): a
+ * targeted moment is no longer refused for the other sentences, and a video the pool cannot name is
+ * no longer left out. Both are offered LAST (`targeted: true`), after the sentence's own moments and
+ * the ones that serve it; the picture editor's verdict on the frames is what admits them.
  */
 export function poolInventoryCheck(pool: VideoYoutubePool | null, filmId: number, beat: Pick<SceneBeat, "text">): InventoryCheck {
   return (momentPath) => {
     const key = clipContentKey(momentPath);
     const videoKey = key.includes("@") ? key.slice(0, key.indexOf("@")) : key;
     const id = pool?.candidates.find((c) => providerAssetKey("youtube_cc", c.videoId) === videoKey)?.videoId;
-    if (!pool || !id) return { allowed: false, reason: "video_unknown" };
+    if (!pool || !id) return { allowed: true, serves: false, targeted: true };
     const serves = poolRowsForBeat(pool, beat.text, [], "").some((r) => r.item.id.videoId === id && r.servesBeat === true);
     const targeted =
       stockVideoTargeted(filmId, id) || pool.candidates.some((c) => c.videoId === id && (pool.entityTargets ?? []).some((t) => t.n === c.from));
-    if (targeted && !serves) return { allowed: false, reason: "targeted_other_sentence" };
+    if (targeted && !serves) return { allowed: true, serves: false, targeted: true };
     return { allowed: true, serves };
   };
 }

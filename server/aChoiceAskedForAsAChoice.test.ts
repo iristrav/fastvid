@@ -170,7 +170,8 @@ describe("5. nothing that bounds the work was moved", () => {
     const gate = readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
     expect(gate).toContain('envInt("MAX_BEAT_IMAGE_JUDGEMENTS_PER_BEAT", 4, 1, 12)');
     expect(maxShortlistPerBeat()).toBe(8);
-    expect(maxShortlistPerBeatPerSource()).toBe(4);
+    /** VIDEO 649 — the operator's rule: one source may fill a sentence, so the share is the list. */
+    expect(maxShortlistPerBeatPerSource()).toBe(8);
   });
 
   it("the preparation and query ceilings are the numbers they were", () => {

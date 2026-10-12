@@ -332,12 +332,12 @@ describe("W1b — UNREVIEWED is a candidate, never an adopted picture", () => {
 });
 
 describe("T9. the ceilings are the ceilings", () => {
-  it("constants unchanged: 4 per beat, 5 looks per sentence, 120 per render, shortlist 8 / 4 per source", () => {
+  it("constants unchanged: 4 per beat, 5 looks per sentence, 120 per render, shortlist 8 / 8 per source (VIDEO 649: one source may fill a sentence)", () => {
     expect(MAX_JUDGEMENTS_PER_BEAT).toBe(4);
     expect(maxRelevanceLooksPerBeat()).toBe(5);
     expect(maxBeatImageJudgementsPerRender()).toBe(120);
     expect(maxShortlistPerBeat()).toBe(8);
-    expect(maxShortlistPerBeatPerSource()).toBe(4);
+    expect(maxShortlistPerBeatPerSource()).toBe(8);
     expect(FOOTAGE_SHARE_TIERS).toEqual([0.15, 0.3]);
   });
 

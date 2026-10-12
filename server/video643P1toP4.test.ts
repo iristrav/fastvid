@@ -247,6 +247,13 @@ describe("P2 — which open sentence a late stock video goes to", () => {
 });
 
 describe("P2 — the last look's stock, end to end (real cut files, the stand-in picture editor)", () => {
+  /**
+   * VIDEO 649 — the operator's rule raised the moments cut per video from three to five. These
+   * cases prove the SPREAD mechanism (videos shared out over sentences, each offered once) and were
+   * written against three moments per video; they run with that number, as the variable still allows.
+   */
+  beforeEach(() => { process.env.YOUTUBE_MOMENTS_PER_VIDEO = "3"; });
+  afterEach(() => { delete process.env.YOUTUBE_MOMENTS_PER_VIDEO; });
   let vpm: typeof import("./videoPipeline");
   let bvr: typeof import("./beatVisualRelevance");
   let stockMod: typeof import("./youtubeShotStock");

@@ -31,7 +31,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
-import { resolveFFmpegBin } from "./ffmpegBinary";
+import { alternateFFmpegBin, isGraphConfigurationRefusal, resolveFFmpegBin } from "./ffmpegBinary";
 import {
   DEFAULT_TEXT_STYLE,
   audioTrackOf,
@@ -636,9 +636,9 @@ export function ffmpegComplaint(err: unknown): string {
  * call site and absent at the next — which is how the transition graph came to be the one failure
  * nobody could read.
  */
-async function runFfmpeg(args: string[], what: string): Promise<void> {
+async function runFfmpeg(args: string[], what: string, bin: string = ffmpeg()): Promise<void> {
   try {
-    await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
+    await execFileAsync(bin, args, { maxBuffer: 1024 * 1024 * 16 });
   } catch (err) {
     const said = ffmpegComplaint(err);
     const original = (err as Error)?.message ?? String(err);
@@ -1374,6 +1374,8 @@ export async function renderTimeline(params: {
     let renderedGraph = plannedGraph;
     let ladderUsed: TransitionLadderStep = "planned";
     let firstFailure: unknown = null;
+    /** VIDEO 649 — set when the rung rendered with the other ffmpeg build on this host. */
+    let joinedByOtherBuild: string | null = null;
     for (const step of TRANSITION_LADDER) {
       const rung: { filter: string; totalSec: number } | null =
         step === "planned"
@@ -1395,8 +1397,36 @@ export async function renderTimeline(params: {
         );
         const said = ffmpegStderrSummary(graphErr);
         if (said) console.error(`[TransitionLadder] ${step} ffmpeg said: ${said}`);
+        /**
+         * VIDEO 649 — the build could not CONFIGURE the graph (see `isGraphConfigurationRefusal`):
+         * the same rung, once, with the other build on this host, before the ladder goes plainer.
+         * Same inputs, same filters, same output — only the binary differs. Any other failure, or
+         * no other build, and the ladder continues exactly as before.
+         */
+        const alt = isGraphConfigurationRefusal(said) ? alternateFFmpegBin() : null;
+        if (alt) {
+          console.error(
+            `[TransitionLadder] ${step}: this build could not configure its filter graph — the same rung once more with the other ffmpeg build (${alt})`
+          );
+          try {
+            await runFfmpeg(argsFor(rung.filter), `transition graph (${step}, other build)`, alt);
+            renderedGraph = rung;
+            ladderUsed = step;
+            joinedByOtherBuild = alt;
+            break;
+          } catch (altErr) {
+            console.error(
+              `[TransitionLadder] ${step} the other build failed too — ${ffmpegStderrSummary(altErr) || (altErr as Error).message.slice(0, 200)}`
+            );
+          }
+        }
         if (step === TRANSITION_LADDER[TRANSITION_LADDER.length - 1]) throw firstFailure;
       }
+    }
+    if (joinedByOtherBuild) {
+      const line = `transition_build: the system ffmpeg could not configure the transition graph; the joins were rendered by the other build on this host (${joinedByOtherBuild}) — same clips, same order, same length, the planned transitions`;
+      console.warn(`[TransitionLadder] RENDERED BY OTHER BUILD — ${line}`);
+      skipped.push(line);
     }
     if (ladderUsed !== "planned") {
       /**

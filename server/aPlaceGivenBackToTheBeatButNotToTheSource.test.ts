@@ -18,7 +18,7 @@
  * Render-wide that render: 59 places returned, 21 refusals for source share, 84 candidates never
  * put to the editor at all.
  */
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   admitToShortlist,
   createBeatShortlistState,
@@ -28,8 +28,15 @@ import {
   releaseShortlistSlot,
 } from "./beatShortlist";
 
+/**
+ * VIDEO 649 — the per-source share is the whole list by default (one source may fill a sentence);
+ * the release/credit MECHANISM this file proves needs a share smaller than the list, which the
+ * operator's `MAX_BEAT_SHORTLIST_PER_SOURCE` still provides.
+ */
+process.env.MAX_BEAT_SHORTLIST_PER_SOURCE = "4";
 const PER_SOURCE = maxShortlistPerBeatPerSource();
 const CAP = maxShortlistPerBeat();
+afterAll(() => { delete process.env.MAX_BEAT_SHORTLIST_PER_SOURCE; });
 
 /** Fill one source's share on a beat, then hand every one of those places back unjudged. */
 const takeAndReturn = (state: ReturnType<typeof createBeatShortlistState>, source: string) => {

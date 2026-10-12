@@ -18,7 +18,7 @@
  * here against the real implementation, and each one's answer is recorded as what it is: a bug, a
  * rule working as intended, or a competition legitimately lost.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   admitToShortlist,
@@ -58,7 +58,16 @@ function scopeWith(over: Partial<ComposeJudgeScope> = {}): ComposeJudgeScope {
 /* ═══════════════════ §5 — shortlist_full, and who spent the places ═══════════════════ */
 
 describe("the shortlist is a competition, and YouTube is allowed to enter it", () => {
-  it("MEASURED: the cap is 8 and one source may take at most 4 of it", () => {
+  /**
+   * VIDEO 649 — the operator's rule: ONE SOURCE MAY FILL A SENTENCE (one YouTube video may picture
+   * every sentence, several shots each, no seconds twice). The per-source share is the whole list
+   * by default; the share MECHANISM below is exercised with the share narrowed to four, as
+   * `MAX_BEAT_SHORTLIST_PER_SOURCE` still allows.
+   */
+  beforeEach(() => { process.env.MAX_BEAT_SHORTLIST_PER_SOURCE = "4"; });
+  afterEach(() => { delete process.env.MAX_BEAT_SHORTLIST_PER_SOURCE; });
+
+  it("MEASURED: the cap is 8; the share is the list by default and 4 when the operator narrows it", () => {
     /**
      * `shortlist_full:6` in render 593 is a COUNT OF REFUSALS, not a cap of six — six candidates
      * turned away from a beat whose bound is eight. Recorded here because the earlier forensics
@@ -67,6 +76,8 @@ describe("the shortlist is a competition, and YouTube is allowed to enter it", (
     expect(maxShortlistPerBeat()).toBe(8);
     expect(maxShortlistPerBeatPerSource()).toBe(4);
     expect(maxShortlistPerBeatPerSource()).toBeLessThan(maxShortlistPerBeat());
+    delete process.env.MAX_BEAT_SHORTLIST_PER_SOURCE;
+    expect(maxShortlistPerBeatPerSource()).toBe(maxShortlistPerBeat());
   });
 
   it("ONE SOURCE CANNOT TAKE THE WHOLE BEAT — the archive stops at its share", () => {

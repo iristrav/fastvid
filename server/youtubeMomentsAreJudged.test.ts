@@ -26,12 +26,14 @@ afterEach(() => {
 const shot = (s: number, e: number, handedOut = 0) => ({ path: `/x/${s}.mp4`, sourceStartSec: s, sourceEndSec: e, handedOut });
 
 describe("how many moments, from how much of the video", () => {
-  it("three moments by default, at most five", () => {
-    expect(youtubeMomentsPerVideo()).toBe(3);
-    process.env.YOUTUBE_MOMENTS_PER_VIDEO = "5";
+  it("five moments by default (VIDEO 649: one video may picture every sentence), at most eight", () => {
     expect(youtubeMomentsPerVideo()).toBe(5);
-    process.env.YOUTUBE_MOMENTS_PER_VIDEO = "9";
+    process.env.YOUTUBE_MOMENTS_PER_VIDEO = "3";
     expect(youtubeMomentsPerVideo()).toBe(3);
+    process.env.YOUTUBE_MOMENTS_PER_VIDEO = "8";
+    expect(youtubeMomentsPerVideo()).toBe(8);
+    process.env.YOUTUBE_MOMENTS_PER_VIDEO = "9";
+    expect(youtubeMomentsPerVideo()).toBe(5);
   });
 
   it("a 20 s section, never past the video's end nor the service's 120 s", () => {

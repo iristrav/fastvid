@@ -770,29 +770,48 @@ export const SIMPLE_TRANSITION_NAME = "fade";
 export const SAME_COLOUR_TAGS = "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709";
 
 /**
- * VIDEO 649 — THE JOIN'S OWN CONVERTER, STATED, INSTEAD OF THE ONE FFMPEG INSERTS.
+ * VIDEO 649 — THE JOIN'S COLOUR CONVERSIONS, STATED, INSTEAD OF THE ONES FFMPEG INSERTS.
  *
- * Renders 649 (twice) and 618 failed their planned AND simple transitions the same way, always on
- * the last input: "[auto_scale_N] Failed to configure output pad | Error reinitializing filters! |
- * Failed to inject frame into filter network: Resource temporarily unavailable". Every segment
- * probed identical in header and first frame. That is ffmpeg reconfiguring the whole graph when a
- * frame's properties change mid-stream — and the converter it inserted on its own (`auto_scale`)
- * refusing the new configuration in front of `xfade`, which cannot be rebuilt mid-fade. The film
- * then shipped with cuts ("RECOVERED via cut"). video649TransitionGraphNormalised.test.ts
- * reproduces it with a segment that changes size and pixel format mid-stream.
+ * Every render since at least 6 October (599, 618, 622, 649 ×3 …) failed its planned AND simple
+ * transitions the same way — "[auto_scale_N] Failed to configure output pad | Error reinitializing
+ * filters!" — and shipped with cuts. Every segment probed identical. The failure is not a frame
+ * changing mid-stream: it is the FIRST build of the filter graph, which ffmpeg does when the last
+ * input delivers its first frame (hence always "stream #<last>:0"). Measured locally with the
+ * production-shaped graph (20 inputs, 5 xfades, the rest concat): `xfade` accepts 4:4:4 planar
+ * formats only, so ffmpeg inserts a converter of its own at EVERY xfade/concat input
+ * (yuv420p → yuv444p) and one more at the end (back to yuv420p) — nineteen "auto_scale" filters —
+ * and the production build (Debian's ffmpeg 5.1; the tests run 6.1 and 7.0) refuses to configure
+ * one of them. video649TransitionGraphNormalised.test.ts counts those insertions.
  *
- * With `normalize` the graph states its converter per input — scale to the film's frame, square
- * pixels, yuv420p, the film's frame rate — so a change inside a segment is absorbed by a filter
- * that reconfigures itself, and no auto-inserted scale sits in front of the fade. The renderer
- * pairs it with `-reinit_filter 0` per input (timelineRenderer `argsFor`): the normaliser alone
- * lets ffmpeg rebuild the graph without error, but the fade's state is lost and the film ends
- * early. Without `normalize` (tests, tools) the graph is byte-for-byte what it was.
+ * With `normalize` the graph does the conversions itself and leaves ffmpeg nothing to insert:
+ * every input is scaled to the film's frame, square pixels, the film's frame rate, tagged, and
+ * handed to the joins as `TRANSITION_CHAIN_PIX_FMT` (4:4:4, what xfade works in); the last join
+ * is converted back to `TRANSITION_OUTPUT_PIX_FMT` for the encoder by a stated `scale`. On the
+ * `cut` rung (concat only) the chain stays yuv420p: nothing to convert. The graph is then the
+ * same filters on every ffmpeg version. Without `normalize` (tests, tools) the graph is
+ * byte-for-byte what it was.
  */
+export const TRANSITION_CHAIN_PIX_FMT = "yuv444p";
+export const TRANSITION_OUTPUT_PIX_FMT = "yuv420p";
+
+function normalizedFrame(n: { widthPx: number; heightPx: number; fps: number }): { w: number; h: number; fps: number } {
+  return {
+    w: Math.max(2, Math.round(n.widthPx)),
+    h: Math.max(2, Math.round(n.heightPx)),
+    fps: Number.isFinite(n.fps) && n.fps > 0 ? Math.round(n.fps * 1000) / 1000 : 30,
+  };
+}
+
+/** The per-input head: the film's frame, square pixels, the film's rate. The pixel format is set at the chain's tail. */
 export function transitionInputNormalizer(n: { widthPx: number; heightPx: number; fps: number }): string {
-  const w = Math.max(2, Math.round(n.widthPx));
-  const h = Math.max(2, Math.round(n.heightPx));
-  const fps = Number.isFinite(n.fps) && n.fps > 0 ? Math.round(n.fps * 1000) / 1000 : 30;
-  return `scale=${w}:${h}:flags=bicubic,setsar=1,format=yuv420p,fps=${fps},`;
+  const f = normalizedFrame(n);
+  return `scale=${f.w}:${f.h}:flags=bicubic,setsar=1,fps=${f.fps},`;
+}
+
+/** The stated converter after the last join: the 4:4:4 chain back to what the encoder is given. */
+export function transitionOutputConverter(n: { widthPx: number; heightPx: number; fps: number }): string {
+  const f = normalizedFrame(n);
+  return `scale=${f.w}:${f.h}:flags=bicubic,format=${TRANSITION_OUTPUT_PIX_FMT}`;
 }
 
 export function buildTransitionGraph(params: {
@@ -811,6 +830,10 @@ export function buildTransitionGraph(params: {
   const step: TransitionLadderStep = params.step ?? "planned";
   if (durations.length < 2) return null;
   const norm = params.normalize ? transitionInputNormalizer(params.normalize) : "";
+  /** The chain's pixel format, stated per input: 4:4:4 for the xfade rungs, the encoder's own on `cut`. */
+  const chainFmt = params.normalize ? (step === "cut" ? TRANSITION_OUTPUT_PIX_FMT : TRANSITION_CHAIN_PIX_FMT) : null;
+  const tags = chainFmt ? `${SAME_COLOUR_TAGS},format=${chainFmt}` : SAME_COLOUR_TAGS;
+  const convertBack = chainFmt != null && chainFmt !== TRANSITION_OUTPUT_PIX_FMT;
 
   const joins = durations.slice(1).map((_, i) => {
     const t = transitions[i + 1];
@@ -872,8 +895,8 @@ export function buildTransitionGraph(params: {
     steps.push(
       norm
         ? trimSec > 0
-          ? `[${i}:v]${norm}trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
-          : `[${i}:v]${norm}settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
+          ? `[${i}:v]${norm}trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,settb=AVTB,${tags}[t${i}]`
+          : `[${i}:v]${norm}settb=AVTB,${tags}[t${i}]`
         : trimSec > 0
           ? `[${i}:v]trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
           : `[${i}:v]settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`
@@ -885,7 +908,7 @@ export function buildTransitionGraph(params: {
   let elapsed = durations[0]!;
   for (let i = 1; i < durations.length; i++) {
     const join = joins[i - 1];
-    const out = i === durations.length - 1 ? "vout" : `v${i}`;
+    const out = i === durations.length - 1 ? (convertBack ? "vjoin" : "vout") : `v${i}`;
     /** On `cut` every join is a concat, and the handle it would have eaten is already trimmed. */
     const trimmed = step === "cut" ? durations[i]! - (join?.sec ?? 0) : durations[i]!;
     if (!join || step === "cut") {
@@ -902,6 +925,8 @@ export function buildTransitionGraph(params: {
     }
     label = out;
   }
+  /** VIDEO 649 — the stated way back to the encoder's format, so ffmpeg inserts no converter of its own. */
+  if (convertBack) steps.push(`[vjoin]${transitionOutputConverter(params.normalize!)}[vout]`);
   return { filter: steps.join(";"), totalSec: elapsed };
 }
 

@@ -222,6 +222,44 @@ const CAPABILITY_FAILURE_PATTERNS: ReadonlyArray<RegExp> = [
  * same way", which is the answer for the overwhelming majority of ffmpeg errors — and returning
  * false for those is the entire point. See the module note.
  */
+/**
+ * VIDEO 649 — THIS BUILD COULD NOT CONFIGURE THE FILTER GRAPH IT WAS GIVEN.
+ *
+ * "[auto_scale_N] Failed to configure output pad on auto_scale_N | Error reinitializing filters!"
+ * is Debian's ffmpeg 5.1 refusing, at the graph's first build, a converter it inserted itself
+ * (xfade works in 4:4:4; see `buildTransitionGraph`). Nothing about the inputs or the filters is
+ * wrong — the same graph renders on 6.1 and 7.0 — so it is a build matter, like a missing filter,
+ * and the one place that asks (`alternateFFmpegBin`, the transition ladder) may try the other
+ * build once. Deliberately narrow: a `scale` or `format` pad that would not configure, nothing else.
+ */
+export const GRAPH_CONFIGURATION_REFUSAL = /Failed to configure output pad on (?:auto_scale|Parsed_scale|Parsed_format)_\d+/;
+
+export function isGraphConfigurationRefusal(text: string | undefined | null): boolean {
+  return GRAPH_CONFIGURATION_REFUSAL.test((text ?? "").toString());
+}
+
+function samePath(a: string, b: string): boolean {
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    return a === b;
+  }
+}
+
+/**
+ * The OTHER build on this host: the bundled ffmpeg-static when the system build is in use, a system
+ * build when the bundled one is — present and able to run, or null. Not cached: it is asked only
+ * after a failure, and a binary that appeared or vanished since start-up should be seen as it is.
+ */
+export function alternateFFmpegBin(current: string = resolveFFmpegBin()): string | null {
+  const candidates = [staticFFmpegPath(), ...SYSTEM_FFMPEG_PATHS];
+  for (const c of candidates) {
+    if (!c || c === "ffmpeg" || !fs.existsSync(c) || samePath(c, current)) continue;
+    if (testBinary(c)) return c;
+  }
+  return null;
+}
+
 export function isCapabilityFailure(message: string | undefined | null): boolean {
   const text = (message ?? "").toString();
   if (!text) return false;

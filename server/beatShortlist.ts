@@ -88,8 +88,15 @@ export function maxShortlistPerBeat(): number {
  * source has anything still gets its full judgement budget from that source — no slot is wasted,
  * which is the RONDE 170 lesson this is careful not to repeat.
  */
+/**
+ * VIDEO 649 — the operator's rule: ONE SOURCE MAY FILL A SENTENCE. One YouTube video may picture
+ * every sentence of the film, with several shots per sentence, as long as no seconds are shown
+ * twice. So the per-source share is the whole shortlist by default (it was the judgement budget,
+ * half the list, RONDE 170/578 above); `MAX_BEAT_SHORTLIST_PER_SOURCE` still narrows it, and
+ * `SHORTLIST_SOURCE_SHARE` keeps its meaning whenever it does.
+ */
 export function maxShortlistPerBeatPerSource(): number {
-  return envInt("MAX_BEAT_SHORTLIST_PER_SOURCE", MAX_JUDGEMENTS_PER_BEAT, 1, 40);
+  return envInt("MAX_BEAT_SHORTLIST_PER_SOURCE", maxShortlistPerBeat(), 1, 40);
 }
 
 /**

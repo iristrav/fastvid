@@ -196,7 +196,7 @@ describe("STEP 0 — the render's own footage before any card", () => {
     expect(vp.graphicOnlyReasonFor({ rejections: createRejectionRegistry() } as never, 0, 1)).toBe("NO_CANDIDATES");
   });
 
-  it("TEST 5 — a targeted picture is never handed to another sentence; its own sentence still gets it", async () => {
+  it("TEST 5 — VIDEO 649: a targeted picture, or one whose video the pool cannot name, is offered to another sentence LAST, after what serves it", async () => {
     capture();
     const sentences = ["The family dinner was loud.", "Kendall walks the runway in Paris."];
     const pool = {
@@ -214,24 +214,29 @@ describe("STEP 0 — the render's own footage before any card", () => {
     } as unknown as VideoYoutubePool;
     const runway = moment("kendallRunwy", 60);
     const unknown = moment("notInThePool", 60);
-    /** The targeted moment was handed to s0b2 (a third sentence that got its picture); s0b0 and s0b1 are empty. */
+    const dinner = moment("dinnerVideo1", 30);
+    /** All three were handed to s0b2 (a third sentence that got its picture); s0b1 has its picture too; s0b0 is empty. */
     const d = renderState([beat(0, sentences[0]!), beat(1, sentences[1]!), beat(2, "a third sentence")]);
     closedScene(d);
-    handTo(d, 2, [runway, unknown]);
+    handTo(d, 2, [runway, unknown, dinner]);
     const look = editor(d, () => false);
-    await vp.runFinalReadyYoutubeStage(asDedup(d), [{ index: 0 }], [sceneResult([2])], look, FAST, undefined, (b) =>
+    await vp.runFinalReadyYoutubeStage(asDedup(d), [{ index: 0 }], [sceneResult([1, 2])], look, FAST, undefined, (b) =>
       vp.poolInventoryCheck(pool, 5501, b)
     );
-    /** s0b0 is not a sentence the Kendall search was made for: never offered there. */
-    expect(offeredTo(look, 0)).not.toContain(runway);
-    /** s0b1 is: offered there. A moment whose video the pool cannot name is offered nowhere. */
-    expect(offeredTo(look, 1)).toEqual([runway]);
-    expect([...offeredTo(look, 0), ...offeredTo(look, 1)]).not.toContain(unknown);
-    expect(vp.inventoryTally(d).excluded).toMatchObject({ targeted_other_sentence: 1, video_unknown: 2 });
-    /** The rule as a function: targeted → only where it serves; not targeted → anywhere, serving first. */
-    expect(vp.poolInventoryCheck(pool, 5501, { text: sentences[0]! })(runway)).toEqual({ allowed: false, reason: "targeted_other_sentence" });
+    /**
+     * The operator's rule (one video may picture every sentence; no seconds twice): s0b0 is shown
+     * everything on disk — the dinner video that serves it FIRST, then the Kendall moment a search
+     * aimed at s0b1 found, then the moment whose video the pool cannot name. Nothing is left out;
+     * the picture editor decides on the frames.
+     */
+    expect(offeredTo(look, 0)).toEqual([dinner, runway, unknown]);
+    expect(vp.inventoryTally(d).excluded).not.toHaveProperty("targeted_other_sentence");
+    expect(vp.inventoryTally(d).excluded).not.toHaveProperty("video_unknown");
+    /** The rule as a function: serving → first; targeted elsewhere or unknown → allowed, last. */
+    expect(vp.poolInventoryCheck(pool, 5501, { text: sentences[0]! })(runway)).toEqual({ allowed: true, serves: false, targeted: true });
     expect(vp.poolInventoryCheck(pool, 5501, { text: sentences[1]! })(runway)).toEqual({ allowed: true, serves: true });
-    expect(vp.poolInventoryCheck(null, 5501, { text: sentences[1]! })(runway)).toEqual({ allowed: false, reason: "video_unknown" });
+    expect(vp.poolInventoryCheck(pool, 5501, { text: sentences[0]! })(dinner)).toEqual({ allowed: true, serves: true });
+    expect(vp.poolInventoryCheck(null, 5501, { text: sentences[1]! })(runway)).toEqual({ allowed: true, serves: false, targeted: true });
   });
 });
 

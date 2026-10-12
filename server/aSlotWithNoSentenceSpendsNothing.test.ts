@@ -127,6 +127,7 @@ describe("the gates this round may not touch", () => {
     );
     const shortlist = readFileSync(join(__dirname, "beatShortlist.ts"), "utf8");
     expect(shortlist).toContain('envInt("MAX_BEAT_SHORTLIST", MAX_JUDGEMENTS_PER_BEAT * 2, 1, 40)');
-    expect(shortlist).toContain('envInt("MAX_BEAT_SHORTLIST_PER_SOURCE", MAX_JUDGEMENTS_PER_BEAT, 1, 40)');
+    /** VIDEO 649 — the operator's rule: one source may fill a sentence, so the share is the list by default. */
+    expect(shortlist).toContain('envInt("MAX_BEAT_SHORTLIST_PER_SOURCE", maxShortlistPerBeat(), 1, 40)');
   });
 });
