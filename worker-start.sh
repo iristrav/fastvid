@@ -44,7 +44,22 @@ fi
 
 FFMPEG_PATH=""
 
-if command -v ffmpeg >/dev/null 2>&1; then
+# VIDEO 649 — the bundled ffmpeg-static (7.0.2) is the build of choice: it renders the transition
+# graph the system ffmpeg (Debian 5.1) could not configure, and does everything else the same.
+# ffprobe is not bundled and stays with the system build (below).
+APP_DIR=$(cd "$(dirname "$0")" && pwd)
+BUNDLED_FFMPEG="$APP_DIR/node_modules/ffmpeg-static/ffmpeg"
+if [ -f "$BUNDLED_FFMPEG" ]; then
+  chmod +x "$BUNDLED_FFMPEG" 2>/dev/null || true
+  if "$BUNDLED_FFMPEG" -version >/dev/null 2>&1; then
+    FFMPEG_PATH="$BUNDLED_FFMPEG"
+    echo "[worker-start.sh] Using the bundled ffmpeg-static (build of choice): $FFMPEG_PATH — $("$BUNDLED_FFMPEG" -version 2>/dev/null | head -1)"
+  else
+    echo "[worker-start.sh] bundled ffmpeg-static present but cannot run — the system build is used"
+  fi
+fi
+
+if [ -z "$FFMPEG_PATH" ] && command -v ffmpeg >/dev/null 2>&1; then
   FFMPEG_PATH=$(command -v ffmpeg)
   echo "[worker-start.sh] Found ffmpeg in PATH: $FFMPEG_PATH"
 fi
@@ -69,8 +84,11 @@ fi
 if [ -n "$FFMPEG_PATH" ]; then
   echo "[worker-start.sh] FFmpeg ready: $FFMPEG_PATH"
   FFMPEG_DIR=$(dirname "$FFMPEG_PATH")
-  export PATH="$FFMPEG_DIR:$PATH"
   export FFMPEG_BIN="$FFMPEG_PATH"
+  # The bundled directory holds no ffprobe; PATH is extended only for a system directory.
+  if [ "$FFMPEG_PATH" != "$BUNDLED_FFMPEG" ]; then
+    export PATH="$FFMPEG_DIR:$PATH"
+  fi
   if [ -x "$FFMPEG_DIR/ffprobe" ]; then
     export FFPROBE_BIN="$FFMPEG_DIR/ffprobe"
     echo "[worker-start.sh] FFprobe ready: $FFPROBE_BIN"

@@ -67,16 +67,31 @@ export function staticFFmpegPath(): string {
   return (ffmpegStatic as unknown as string) || "ffmpeg";
 }
 
+/** The first line of `ffmpeg -version` ("ffmpeg version 7.0.2-static …"), or null when it will not run. */
+export function ffmpegVersionLine(binPath: string): string | null {
+  try {
+    const out = execSync(`"${binPath}" -version`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 });
+    return out.split("\n")[0]?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The binary this process should use.
  *
- * Order, and the reason for it, unchanged from the original in videoPipeline:
+ * VIDEO 649 — THE BUNDLED BUILD FIRST. The operator's decision after render 649: the bundled
+ * ffmpeg-static (7.0.2) renders the transition graph that Debian's system ffmpeg (5.1) could not
+ * configure in any render since 6 October, and every other step this pipeline asks of ffmpeg
+ * (cuts, scaling, mixing, libass captions, libx264) it does the same. The one filter it lacks,
+ * `drawtext`, has no live use: text is drawn by Remotion, captions by libass. So:
  *
  *   FFMPEG_BIN env  — an operator naming one explicitly always wins
- *   system paths    — these have libfreetype, so `drawtext` exists
- *   ffmpeg-static   — always present, no drawtext; the safe floor
+ *   ffmpeg-static   — the build of choice, when present and able to run
+ *   system paths    — the reserve (and the other build the transition ladder may try)
  *   which / nix / find — last resorts on hosts that put it somewhere else
  *
+ * ffprobe is not part of the bundle; probing stays with the system build (`FFPROBE_BIN`).
  * Memoised: `testBinary` spawns a process per candidate, and this is asked on every render.
  */
 let cachedBin: string | null = null;
@@ -90,27 +105,28 @@ export function resolveFFmpegBin(): string {
 function resolveFFmpegBinUncached(): string {
   const envPath = process.env.FFMPEG_BIN || "";
   if (envPath && fs.existsSync(envPath)) {
-    console.log(`[Fastvid] Using FFMPEG_BIN env: ${envPath}`);
+    console.log(`[Fastvid] Using FFMPEG_BIN env: ${envPath} (${ffmpegVersionLine(envPath) ?? "will not run"})`);
     return envPath;
   }
-  for (const p of SYSTEM_FFMPEG_PATHS) {
-    if (fs.existsSync(p) && testBinary(p)) {
-      console.log(`[Fastvid] Using system FFmpeg (drawtext-capable): ${p}`);
-      return p;
-    }
-  }
   const staticPath = staticFFmpegPath();
-  if (staticPath && fs.existsSync(staticPath)) {
+  if (staticPath && staticPath !== "ffmpeg" && fs.existsSync(staticPath)) {
     try {
       execSync(`chmod +x "${staticPath}"`, { shell: "/bin/sh" });
     } catch {
       /* already executable, or not ours to chmod */
     }
-    if (testBinary(staticPath)) {
-      console.warn(`[Fastvid] Using ffmpeg-static (NO drawtext support): ${staticPath}`);
+    const version = ffmpegVersionLine(staticPath);
+    if (version) {
+      console.log(`[Fastvid] Using the bundled ffmpeg-static (build of choice): ${staticPath} (${version})`);
       return staticPath;
     }
-    console.warn(`[Fastvid] ffmpeg-static exists but CANNOT RUN (missing glibc?): ${staticPath}`);
+    console.warn(`[Fastvid] ffmpeg-static exists but CANNOT RUN (missing glibc?): ${staticPath} — the system build is used`);
+  }
+  for (const p of SYSTEM_FFMPEG_PATHS) {
+    if (fs.existsSync(p) && testBinary(p)) {
+      console.log(`[Fastvid] Using system FFmpeg: ${p} (${ffmpegVersionLine(p) ?? "?"})`);
+      return p;
+    }
   }
   try {
     const systemPath = execSync("which ffmpeg", {
