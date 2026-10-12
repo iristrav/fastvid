@@ -39,10 +39,10 @@ const PIPE = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "ut
 /* ═══════════════════════════ F1 — the budget, on every judge path ═══════════════════════════ */
 
 describe("F1 — the picture editor's budget", () => {
-  it("the constants: 7.5 s per look and a base scaled by 1.5 (82.5 s from 10 s + 45 s)", () => {
-    expect(JUDGE_MS_PER_LOOK).toBe(7_500);
+  it("the constants: 30 s per look and a base scaled by 1.5 (195 s from 10 s + 120 s) — VIDEO 647", () => {
+    expect(JUDGE_MS_PER_LOOK).toBe(30_000);
     expect(JUDGE_BASE_SCALE).toBe(1.5);
-    expect(Math.round((10_000 + 45_000) * JUDGE_BASE_SCALE)).toBe(82_500);
+    expect(Math.round((10_000 + 120_000) * JUDGE_BASE_SCALE)).toBe(195_000);
   });
 
   it("one budget object, built with the scaled base and the default per-look grant, is handed to the last looks AND the extra-shot fill", () => {

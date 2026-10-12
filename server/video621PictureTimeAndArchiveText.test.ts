@@ -102,7 +102,9 @@ describe("Video 621 — a scene that finds nothing searches on the video's main 
     const leftEmptyAt = src.indexOf("no picture found — the timeline holds the previous shot");
     expect(rescueAt).toBeGreaterThan(0);
     expect(rescueAt).toBeLessThan(leftEmptyAt);
-    expect(src).toContain("Math.max(visualDeadlineAtMs - Date.now(), EMPTY_SCENE_RESCUE_MIN_MS)");
+    /** VIDEO 647 — the window is sized per sentence of the empty scenes; the deadline left and the 60 s floor are still inside it. */
+    expect(src).toContain("const windowMs = emptySceneRescueWindowMs({");
+    expect(src).toContain("deadlineLeftMs: visualDeadlineAtMs - Date.now(),");
     expect(src).toContain("scenes[si]!, workDir, topicContext, visualDedup, undefined, audioPaths[si], mainSubject");
   });
 

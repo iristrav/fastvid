@@ -88,7 +88,8 @@ export function pipelineProgressStallThresholdMs(
     return 10 * 60_000;
   }
   if (status === "generating_visuals") {
-    return mins <= 1 ? 25 * 60_000 : 35 * 60_000;
+    /** VIDEO 647 — the picture stage of a one-minute film may now take 20 min; the stall guard stays above it. */
+    return mins <= 1 ? 45 * 60_000 : 35 * 60_000;
   }
   if (status === "generating_effects") {
     return mins <= 1 ? 20 * 60_000 : 30 * 60_000;
@@ -113,7 +114,8 @@ export function maxPipelineWallClockMin(videoLength?: string | null): number {
     if (!isNaN(n) && n >= 8 && n <= 300) return n;
   }
   const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 20;
+  /** VIDEO 647 — 20 min left a one-minute film 8 min of pictures (646: deadline 270 s); 30 min leaves 16. */
+  if (mins <= 1) return 30;
   return Math.round(mins * pipelineMinutesPerVideoMinute());
 }
 
@@ -127,9 +129,33 @@ export function maxPipelineWallClockHardMin(videoLength?: string | null): number
   if (!pipelineWallClockLimitEnabled()) {
     return Math.round(PIPELINE_UNLIMITED_MS / 60_000);
   }
-  const mins = targetVideoDurationMinutes(videoLength);
-  if (mins <= 1) return 22;
+  /** VIDEO 647 — one rule for every length: the hard fail is the target times the grace factor. */
   return Math.ceil(maxPipelineWallClockMin(videoLength) * pipelineWallClockGraceFactor());
+}
+
+/**
+ * VIDEO 647 — THE PICTURE STAGE'S ONE TECHNICAL CEILING: THE HARD WALL CLOCK MINUS THE RENDER RESERVE.
+ *
+ * Force-export (`pipelineEmergencyFinishMs`, 60 % of the target) used to cap three things that
+ * are not polish: the visual deadline, the picture editor's ceiling and the rescue of the scenes
+ * that found nothing. A 3-minute film therefore stopped looking for pictures at 18 min while its
+ * own picture stage was allowed 24 and its hard fail sat at 39. Force-export is a landing flag —
+ * it skips polish — not a reason to stop searching, judging, downloading or placing a fit clip.
+ *
+ * Picture work now runs, at most, to the hard wall clock minus the render reserve — the larger of
+ * nine minutes and a fifth of the hard clock — measured from the render's start. That reserve is
+ * what compose, the gate and the upload need after the pictures are in. With the default grace
+ * (hard = target × 1.3) the ceiling is the target wall clock for a 1- or 3-minute film (30 min)
+ * and a little above it for longer films. Nothing here lengthens a provider timeout or a download
+ * clamp; it only decides which clock the picture stage is read against.
+ */
+export const PICTURE_STAGE_RENDER_RESERVE_MIN_MS = 9 * 60_000;
+export const PICTURE_STAGE_RENDER_RESERVE_SHARE = 0.2;
+
+export function pictureStageWallClockCeilingMs(videoLength?: string | null): number {
+  const hardMs = maxPipelineWallClockHardMin(videoLength) * 60_000;
+  const reserveMs = Math.max(PICTURE_STAGE_RENDER_RESERVE_MIN_MS, Math.round(hardMs * PICTURE_STAGE_RENDER_RESERVE_SHARE));
+  return Math.max(0, hardMs - reserveMs);
 }
 
 /** Near hard cap — finish compose before wall-clock hard fail (quality path keeps archive longer on 1-min). */
@@ -299,8 +325,9 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
   const total = maxPipelineWallClockMin(videoLength);
   const hard = maxPipelineWallClockHardMin(videoLength);
   const mins = targetVideoDurationMinutes(videoLength);
+  /** VIDEO 647 — 16 of the one-minute film's 30 min are pictures; force-export (18) and the hard fail (39) stay above it. */
   if (mins <= 1) {
-    return 8;
+    return 16;
   }
   return Math.max(8, Math.min(total - 6, Math.round(total * 0.88)));
 }
@@ -323,7 +350,8 @@ export function visualStageWallClockMin(videoLength?: string | null): number {
 function escalationThresholdMs(videoLength: string | null | undefined, fraction: number): number {
   return Math.round(maxPipelineWallClockMin(videoLength) * 60_000 * fraction);
 }
-const EMERGENCY_FRACTION = 0.45;
+/** VIDEO 647 — force-export at 60% of the target (was 45%): after the picture stage, never inside it. */
+const EMERGENCY_FRACTION = 0.6;
 
 /** Max ms per beat spent trying archive candidates before moving on. Beats are processed
  *  concurrently (fastBeatConcurrency) so this does NOT add up serially. Archive lookup

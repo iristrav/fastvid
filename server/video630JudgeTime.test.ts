@@ -22,13 +22,13 @@ import {
   withSceneFetchTimeout,
 } from "./videoPipeline";
 import { MAX_STOCK_VIDEOS } from "./youtubeShotStock";
-import { maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, visualStageWallClockMin, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender } from "./sourcingPolicy";
+import { maxPipelineWallClockHardMin, pictureStageWallClockCeilingMs, visualStageWallClockMin, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender } from "./sourcingPolicy";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** The short-video cap the pipeline passes: the visual stage wall clock, never past force-export. */
-const SHORT_CAP = Math.min(visualStageWallClockMin("1") * 60_000, pipelineEmergencyFinishMs("1"));
+/** The short-video cap the pipeline passes: the visual stage wall clock, never past the picture stage's ceiling (VIDEO 647: the target wall clock, not force-export). */
+const SHORT_CAP = Math.min(visualStageWallClockMin("1") * 60_000, pictureStageWallClockCeilingMs("1"));
 
 /**
  * What one sentence's own search gets, by the pipeline's own allocation: the chunk's share of the
@@ -49,11 +49,13 @@ describe("A — a short video with several sentences gets time to judge", () => 
     expect(searchShareOfFirstSentence(deadline, 3, 3, 4)).toBeGreaterThanOrEqual(30_000);
   });
 
-  it("video 630's shape (scenes of 4 and 8 sentences, then 5): 255 s became 480 s", () => {
+  it("video 630's shape (scenes of 4 and 8 sentences, then 5): 255 s became the short film's whole picture stage", () => {
     const base = visualDeadlineForVideoMs(85_000 * 3, 89.5);
     expect(Math.round(base / 1000)).toBe(255);
     const deadline = judgeableVisualDeadlineMs(base, [[4, 8], [5]], SHORT_CAP);
-    expect(deadline).toBe(480_000);
+    /** VIDEO 647 — 13 judged sentences × 120 s ask for more than the stage holds: the cap binds. */
+    expect(deadline).toBe(SHORT_CAP);
+    expect(deadline).toBeGreaterThan(480_000);
     /** The eight-sentence scene: about 16 s of search per sentence before, 30 s now. */
     expect(searchShareOfFirstSentence(base, 2, 3, 8)).toBeLessThan(16_000);
     expect(searchShareOfFirstSentence(deadline, 2, 3, 8)).toBeGreaterThanOrEqual(30_000);
@@ -133,9 +135,9 @@ describe("E/F — the hard limits stay, and a long video is still bounded", () =
     expect(YOUTUBE_STOCK_WAIT_MAX_MS).toBe(180_000);
   });
 
-  it("the picture time never passes the visual stage wall clock or force-export", () => {
+  it("the picture time never passes the visual stage wall clock or the picture stage's ceiling", () => {
     /** A long film: forty chunks of eight sentences would ask for four hours. */
-    const longCap = Math.min(visualStageWallClockMin("8-10") * 60_000, pipelineEmergencyFinishMs("8-10"));
+    const longCap = Math.min(visualStageWallClockMin("8-10") * 60_000, pictureStageWallClockCeilingMs("8-10"));
     const deadline = judgeableVisualDeadlineMs(0, Array.from({ length: 40 }, () => [8, 6]), longCap);
     expect(deadline).toBe(longCap);
     expect(deadline).toBeLessThan(maxPipelineWallClockHardMin("8-10") * 60_000);
@@ -148,7 +150,7 @@ describe("E/F — the hard limits stay, and a long video is still bounded", () =
   });
 
   it("the pipeline passes that cap, and the per-sentence floor is read from the chunks it walks", () => {
-    expect(PIPE).toContain("Math.min(visualStageTimeoutMs(videoLength, perf), pipelineEmergencyFinishMs(videoLength))");
+    expect(PIPE).toContain("Math.min(visualStageTimeoutMs(videoLength, perf), Math.max(JUDGED_BEAT_TURN_MS, pictureStageLeftMs()))");
     expect(PIPE).toContain("chunks.map((c) =>");
   });
 });
@@ -229,8 +231,13 @@ describe("production-realistic: render 630's shape, old and new picture time", (
     expect(before.placed).toBeLessThanOrEqual(5);
     expect(after.placed).toBeGreaterThanOrEqual(8);
     expect(after.placed - before.placed).toBeGreaterThanOrEqual(3);
-    /** Some of those were looks that finished after the search share: kept, not lost. */
-    expect(after.keptLate).toBeGreaterThan(0);
+    /**
+     * Some looks finish after the search share and are kept, not lost. VIDEO 647 widened the cap so far
+     * that this shape no longer produces a late look; the mechanism is exercised at the 480 s cap it was
+     * measured with.
+     */
+    const atOldCap = await runFilm(480_000);
+    expect(atOldCap.keptLate).toBeGreaterThan(0);
   }, 60_000);
 });
 

@@ -32,9 +32,14 @@
  * without their last look (`JUDGE_BUDGET_EXHAUSTED`), while the ceiling (188 s) was never approached.
  * A look costs more than 5 s when three run side by side against a remote vision model. Half again
  * per look, and half again on the base (`JUDGE_BASE_SCALE`), sized on what 644 actually used.
- * Both stay under the same ceiling: by the video's length, and never past the force-export moment.
+ * Both stay under the same ceiling: by the video's length, and never past the picture stage's ceiling
+ * (VIDEO 647: the hard wall clock minus the render reserve, no longer the force-export moment).
  */
-export const JUDGE_MS_PER_LOOK = 7_500;
+/**
+ * VIDEO 647 — one look costs ~29 s under load (646: 6 looks in 172.5 s), not 7.5 s. Granting a quarter
+ * of the real cost per look is how 646 queued 23 looks, judged 6 and left five sentences unreviewed.
+ */
+export const JUDGE_MS_PER_LOOK = 30_000;
 /**
  * VIDEO 644 — the base the picture editor starts with (`FINAL_REVIEW_WINDOW_MS + FINAL_LOOK_TURN_MS`,
  * 55 s) scaled once, here, rather than by moving the two constants it is built from: those name what
@@ -42,9 +47,10 @@ export const JUDGE_MS_PER_LOOK = 7_500;
  */
 export const JUDGE_BASE_SCALE = 1.5;
 /** The ceiling's floor and roof, and how it follows the video's length. */
-export const JUDGE_BUDGET_MIN_CEILING_MS = 180_000;
-export const JUDGE_BUDGET_MAX_CEILING_MS = 600_000;
-export const JUDGE_CEILING_MS_PER_VIDEO_SEC = 3_000;
+/** VIDEO 647 — 646's 23 queued looks at ~29 s each need ~11 min; a 3-min floor cut them at 6. */
+export const JUDGE_BUDGET_MIN_CEILING_MS = 900_000;
+export const JUDGE_BUDGET_MAX_CEILING_MS = 2_700_000;
+export const JUDGE_CEILING_MS_PER_VIDEO_SEC = 15_000;
 
 /** Why the final stage stopped waiting for the picture editor. */
 export const JUDGE_BUDGET_EXHAUSTED = "JUDGE_BUDGET_EXHAUSTED";

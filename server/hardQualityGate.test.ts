@@ -172,7 +172,7 @@ describe("sentence coverage (Eis A)", () => {
 
   it("9. the source order, budgets and cost limits are untouched", () => {
     const read = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");
-    expect(read("judgeBudget.ts")).toContain("export const JUDGE_MS_PER_LOOK = 7_500;");
+    expect(read("judgeBudget.ts")).toContain("export const JUDGE_MS_PER_LOOK = 30_000;");
     expect(read("judgeBudget.ts")).toContain("export const JUDGE_BASE_SCALE = 1.5;");
     expect(read("tunelioDownloader.ts")).toContain("export const TUNELIO_PAID_CALLS_PER_RENDER = 3;");
     expect(read("videoPipeline.ts")).toContain("export const SECOND_SECTIONS_PER_RENDER = 3;");

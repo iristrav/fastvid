@@ -17,7 +17,7 @@ describe("pipelineProgressStall", () => {
     // pipelineWallClockLimitEnabled in sourcingPolicy.ts.
     expect(pipelineWallClockLimitEnabled()).toBe(true);
     expect(pipelineProgressStallThresholdMs("1", "generating_script")).toBe(10 * 60_000);
-    expect(pipelineProgressStallThresholdMs("1", "generating_visuals")).toBe(25 * 60_000);
+    expect(pipelineProgressStallThresholdMs("1", "generating_visuals")).toBe(45 * 60_000);
     expect(pipelineProgressStallThresholdMs("1", "generating_effects")).toBe(20 * 60_000);
   });
 

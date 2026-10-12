@@ -23,11 +23,12 @@ import {
  * ceiling, the per-sentence and per-render look counts and the force-export bound do not move.
  */
 const read = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");
-const BASE_644_MS = 10_000 + 45_000;
+/** VIDEO 647 — the judged turn is the YouTube turn (120 s). */
+const BASE_644_MS = 10_000 + 120_000;
 
 describe("VIDEO 644 — the picture editor's budget, half again on what 644 actually used", () => {
-  it("per look: 7.5 s, half again on the 5 s that 644 measured as too little", () => {
-    expect(JUDGE_MS_PER_LOOK).toBe(7_500);
+  it("per look: 30 s — what one look actually costs under load (646: 172.5 s for 6 looks)", () => {
+    expect(JUDGE_MS_PER_LOOK).toBe(30_000);
   });
 
   it("base: scaled once, by 1.5, from the two constants it is built from — which do not move", () => {
@@ -35,8 +36,8 @@ describe("VIDEO 644 — the picture editor's budget, half again on what 644 actu
     const vp = read("videoPipeline.ts");
     expect(vp).toContain("const judgeBaseMs = Math.round((FINAL_REVIEW_WINDOW_MS + FINAL_LOOK_TURN_MS) * JUDGE_BASE_SCALE);");
     expect(vp).toContain("export const ARCHIVE_JUDGE_MIN_MS = 10_000;");
-    expect(vp).toContain("export const JUDGED_BEAT_TURN_MS = 45_000;");
-    expect(Math.round(BASE_644_MS * JUDGE_BASE_SCALE)).toBe(82_500);
+    expect(vp).toContain("export const JUDGED_BEAT_TURN_MS = 120_000;");
+    expect(Math.round(BASE_644_MS * JUDGE_BASE_SCALE)).toBe(195_000);
   });
 
   it("644 replayed: eleven looks are granted 82.5 s instead of 55 s, still under the same ceiling", () => {
@@ -46,7 +47,7 @@ describe("VIDEO 644 — the picture editor's budget, half again on what 644 actu
     expect(ceiling).toBe(Math.round(62.67 * JUDGE_CEILING_MS_PER_VIDEO_SEC));
     const b = createJudgeBudget({ baseMs: base, ceilingMs: ceiling, now: () => t });
     b.grant(11);
-    expect(b.grantedMs()).toBe(82_500);
+    expect(b.grantedMs()).toBe(Math.max(195_000, 11 * JUDGE_MS_PER_LOOK));
     expect(b.grantedMs()).toBeLessThan(ceiling);
     t = 55_003;
     expect(b.leftMs()).toBeGreaterThan(27_000);
@@ -63,14 +64,14 @@ describe("VIDEO 644 — the picture editor's budget, half again on what 644 actu
     const ceiling = judgeBudgetCeilingMs(52.46, Number.POSITIVE_INFINITY, base);
     const b = createJudgeBudget({ baseMs: base, ceilingMs: ceiling, now: () => t });
     b.grant(5);
-    expect(b.grantedMs()).toBe(82_500);
+    expect(b.grantedMs()).toBe(195_000);
     t = 65_000;
     expect(b.leftMs()).toBeGreaterThan(0);
     t = 79_000;
     expect(b.leftMs()).toBeGreaterThan(0);
     /** the 55 s base of 645 would have ended the wait before either verdict */
     let t2 = 0;
-    const old = createJudgeBudget({ baseMs: BASE_644_MS, ceilingMs: ceiling, now: () => t2 });
+    const old = createJudgeBudget({ baseMs: 55_000, perLookMs: 5_000, ceilingMs: ceiling, now: () => t2 });
     old.grant(5);
     expect(old.grantedMs()).toBe(55_000);
     t2 = 65_000;
@@ -83,7 +84,7 @@ describe("VIDEO 644 — the picture editor's budget, half again on what 644 actu
     const base = Math.round(BASE_644_MS * JUDGE_BASE_SCALE);
     expect(judgeBudgetCeilingMs(30, Number.POSITIVE_INFINITY, base)).toBe(JUDGE_BUDGET_MIN_CEILING_MS);
     expect(judgeBudgetCeilingMs(3_600, Number.POSITIVE_INFINITY, base)).toBe(JUDGE_BUDGET_MAX_CEILING_MS);
-    expect(judgeBudgetCeilingMs(600, 90_000, base)).toBe(90_000);
+    expect(judgeBudgetCeilingMs(600, 300_000, base)).toBe(300_000);
     /** Below the base the base is kept: what the stage had before this budget existed is never taken away. */
     expect(judgeBudgetCeilingMs(600, 10_000, base)).toBe(base);
     const b = createJudgeBudget({ baseMs: base, ceilingMs: judgeBudgetCeilingMs(62.67, Number.POSITIVE_INFINITY, base), now: () => 0 });

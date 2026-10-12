@@ -209,7 +209,7 @@ describe("F2 — a sentence's own picture approved after its scene closed, befor
     /** a pass per chunk once its scenes are in, before the main-subject rescue … */
     const chunkPass = PIPE.indexOf("for (let si = chunk.start; si < chunk.end; si++) await placeLate(si, false);");
     expect(chunkPass).toBeGreaterThan(PIPE.indexOf("sceneVisualResults[si] ??= { clips: [], beatDurations: [] };"));
-    expect(chunkPass).toBeLessThan(PIPE.indexOf("const windowMs = Math.max(visualDeadlineAtMs - Date.now(), EMPTY_SCENE_RESCUE_MIN_MS);"));
+    expect(chunkPass).toBeLessThan(PIPE.indexOf("const windowMs = emptySceneRescueWindowMs({"));
     /** … and the hard boundary: the last pass, before a generated image and before the planner reads the clips */
     const finalPass = PIPE.indexOf("for (let si = 0; si < scenes.length; si++) await placeLate(si, true);");
     expect(finalPass).toBeGreaterThan(chunkPass);

@@ -128,8 +128,8 @@ describe("A — the budget itself", () => {
   it("the ceiling follows the video's length, is never endless, never past force-export, never below what the stage had", () => {
     expect(judgeBudgetCeilingMs(57, Infinity, 55_000)).toBe(JUDGE_BUDGET_MIN_CEILING_MS);
     expect(judgeBudgetCeilingMs(600, Infinity, 55_000)).toBe(JUDGE_BUDGET_MAX_CEILING_MS);
-    expect(judgeBudgetCeilingMs(120, Infinity, 55_000)).toBe(360_000);
-    expect(judgeBudgetCeilingMs(120, 360_000, 55_000)).toBeGreaterThan(judgeBudgetCeilingMs(57, 360_000, 55_000));
+    expect(judgeBudgetCeilingMs(120, Infinity, 55_000)).toBe(1_800_000);
+    expect(judgeBudgetCeilingMs(120, Infinity, 55_000)).toBeGreaterThan(judgeBudgetCeilingMs(57, Infinity, 55_000));
     expect(judgeBudgetCeilingMs(600, 90_000, 55_000)).toBe(90_000);
     expect(judgeBudgetCeilingMs(600, -5_000, 55_000)).toBe(55_000);
     expect(Number.isFinite(judgeBudgetCeilingMs(Number.NaN, Infinity, 55_000))).toBe(true);
@@ -213,10 +213,10 @@ describe("A — the last looks are not cut off by a clock that is not the pictur
     expect(look.mock.calls[0]![0]).toEqual([mine, leftover]);
   });
 
-  it("wired: the pipeline gives the stage its own budget, bounded by length and force-export; nothing in it reads a scene's clock", () => {
+  it("wired: the pipeline gives the stage its own budget, bounded by length and the picture stage's ceiling; nothing in it reads a scene's clock", () => {
     expect(PIPE).toContain("const judgeBudget = createJudgeBudget({");
     expect(PIPE).toContain("ceilingMs: judgeBudgetCeilingMs(");
-    expect(PIPE).toContain("pipelineEmergencyFinishMs(videoLength) - Date.now(),");
+    expect(PIPE).toContain("pictureStageLeftMs(),");
     expect(PIPE).toContain("{ budget: judgeBudget },");
     for (const sig of ["export async function runFinalReadyYoutubeStage(", "export async function runFinalBeatFillStage(", "export async function finalLooksWithin("]) {
       expect(bodyOf(sig)).not.toMatch(/remainingScopeMs|BEAT_FILL_MIN_SCOPE_MS|sceneFetchScope/);

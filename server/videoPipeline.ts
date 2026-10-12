@@ -111,7 +111,7 @@ import {
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
 import { resetOverlayBudget } from "./archiveClipFilter";
-import { externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, maxBeatCapForVisualCadence, visualStageWallClockMin, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, type YoutubeLicenseMode, downloadStallTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeBeatBudgetMs, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_FALLBACK_MIN_MS, YOUTUBE_FIRST_PARALLEL_BEATS, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
+import { externalAssetIngestionEnabled, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveMaxImageClipsPerVideo, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, maxBeatCapForVisualCadence, visualStageWallClockMin, maxPipelineWallClockHardMin, pipelineEmergencyFinishMs, pictureStageWallClockCeilingMs, composeParallelismForVideo, ffmpegThreadFlag, montageSegmentParallelism, strictVoiceVisualMatchEnabled, archiveBeatBudgetMs, type YoutubeLicenseMode, downloadStallTimeoutMs, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeBeatBudgetMs, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_FALLBACK_MIN_MS, YOUTUBE_FIRST_PARALLEL_BEATS, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import { FOOTAGE_SHARE_TIERS, footageKeyOf, footageShareSoFar, noteFootageOnScreen, preferLessFilledFootage, recentUsageCounts, recentYoutubeUsage, recordArchiveVideoUsage, recordYoutubeVideoUsage, setRecentYoutubeUsageForFilm, youtubeSecondsShownRecently, youtubeSourceUsedRecently, type YoutubeUse } from "./usageDiversity";
 import { fetchCuratedArchiveBeatClip, isCuratedPreparedStillClip, curatedClipPathAssetId, curatedAssetContentKey, buildGeoStockSearchQueries, type CuratedCandidatePick, type ArchiveAssetRow, setCuratedClipPreparedHook, setCuratedAssetRefusedHook } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
@@ -4760,7 +4760,12 @@ export function visualDeadlineForVideoMs(perSceneTotalMs: number, videoSec: numb
  * its longest scene's sentences. It is never more than the stage was already allowed (the visual
  * stage wall clock) nor past force-export (the emergency threshold), so the render's own limits bind.
  */
-export const JUDGED_BEAT_TURN_MS = 45_000;
+/**
+ * VIDEO 647 — a sentence that is judged gets the YouTube turn it is promised (YOUTUBE_FIRST_TURN_MS),
+ * not 45 s of it. 646: 12 sentences, visual deadline 270 s (6 × 45 s), one of three scenes cut off at
+ * the deadline with its beats unsourced; their rescues then opened inside an ended budget.
+ */
+export const JUDGED_BEAT_TURN_MS = 120_000;
 
 export function judgeableVisualDeadlineMs(
   baseMs: number,
@@ -4962,6 +4967,44 @@ export function beatSecondsOnScreen(beat: { holdSec?: number; voiceStartSec?: nu
 
 /** VIDEO 621 — the least time a scene that found nothing gets for its main-subject search. */
 export const EMPTY_SCENE_RESCUE_MIN_MS = 60_000;
+
+/**
+ * VIDEO 647 — HOW LONG THE SCENES THAT FOUND NOTHING MAY SEARCH ON THE MAIN SUBJECT.
+ *
+ * Render 646 gave the rescue of its empty scenes `max(deadline left, 60 s)`. The deadline had
+ * passed, so twelve sentences shared 60 s, and their per-sentence scopes opened inside a budget
+ * that had already ended ("SCOPE_EXPIRED … opened 29s after the budget"). A rescue that cannot
+ * hold one YouTube turn per sentence is not a second search; it is a formality before refusal.
+ *
+ * The window is now sized on the work it has to hold: every sentence of every empty scene gets
+ * a full YouTube-first worst case (search, pool wait, download, verdict), scenes queued
+ * `sceneParallelism` at a time — and never less than before. The only ceiling is the picture
+ * stage's own: the hard wall clock minus the render reserve (`pictureStageWallClockCeilingMs`),
+ * the reserve kept for compose and export; past it the 60 s floor still holds, as it did (a scene
+ * without a picture is a refused film). Force-export does not shorten it. The scope ends the
+ * moment the searches finish, so a wide window costs nothing when the pictures come quickly.
+ */
+export function emptySceneRescueWindowMs(args: {
+  /** Time left on the visual deadline; negative when it has passed. */
+  deadlineLeftMs: number;
+  /** For each scene that found nothing, the number of sentences it has to picture. */
+  sentencesPerEmptyScene: readonly number[];
+  /** How many scenes search at once (`perf.sceneParallelism`). */
+  sceneParallelism: number;
+  /**
+   * Time left before the picture stage's technical ceiling — the hard wall clock minus the render
+   * reserve (`pictureStageWallClockCeilingMs`), never force-export; `Infinity` when no clock is running.
+   */
+  ceilingLeftMs: number;
+}): number {
+  const perSceneMs = args.sentencesPerEmptyScene.map((n) => Math.max(1, n) * YOUTUBE_FIRST_BEAT_WORST_MS);
+  const lanes = Math.max(1, Math.floor(args.sceneParallelism) || 1);
+  const rounds = Math.ceil(perSceneMs.length / lanes);
+  const neededMs = rounds * Math.max(0, ...perSceneMs);
+  const wantedMs = Math.max(args.deadlineLeftMs, EMPTY_SCENE_RESCUE_MIN_MS, neededMs);
+  if (!Number.isFinite(args.ceilingLeftMs)) return wantedMs;
+  return Math.min(wantedMs, Math.max(EMPTY_SCENE_RESCUE_MIN_MS, args.ceilingLeftMs));
+}
 
 export function chunkShareOfVisualTimeMs(timeLeftMs: number, chunkSceneCount: number, scenesLeft: number): number {
   if (!(timeLeftMs > 0)) return 0;
@@ -12311,8 +12354,9 @@ export async function fetchYouTubeCCClips(
   if (poolVideoId == null || !hasVideoYoutubePool(poolVideoId)) {
     console.log(`[YouTubeSearchPlan] video=${poolVideoId ?? "none"} scene=${sceneIndex} no video pool — no YouTube for this beat`);
   } else {
-    const wait = Math.max(0, Math.min(90_000, remainingScopeMs() - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS));
-    const pool = await awaitVideoYoutubePool(poolVideoId!, Number.isFinite(wait) ? wait : 90_000);
+    /** VIDEO 647 — a beat waits up to 3 min for the video's pool (was 90 s), still inside its own scope. */
+    const wait = Math.max(0, Math.min(180_000, remainingScopeMs() - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS));
+    const pool = await awaitVideoYoutubePool(poolVideoId!, Number.isFinite(wait) ? wait : 180_000);
     if (!pool) {
       console.log(`[YouTubeSearchPlan] video=${poolVideoId} scene=${sceneIndex} pool not ready within ${Math.round(wait / 1000)}s — no YouTube for this beat`);
     } else if (poolGaveNoYoutube(pool)) {
@@ -16538,7 +16582,7 @@ function ensurePipelineForceExport(dedup: VisualDedupState): void {
   if (!dedup.forceExportMode) {
     dedup.forceExportMode = true;
     console.warn(
-      `[Pipeline] Force-export mode (≥${Math.round(pipelineEmergencyFinishMs(dedup.videoLength) / 60_000)} min) — finishing with archive+stock then compose`
+      `[Pipeline] Force-export mode (≥${Math.round(pipelineEmergencyFinishMs(dedup.videoLength) / 60_000)} min) — polish is skipped; picture work keeps its own ceiling (hard wall clock minus the render reserve)`
     );
   }
 }
@@ -26323,12 +26367,20 @@ async function _runVideoPipelineInner(
       scenes.reduce((sum, s) => sum + (s.duration || 0), 0)
     );
     /** P5 / VIDEO 630 — and never less than one judged turn per sentence; see `judgeableVisualDeadlineMs`. */
+    /**
+     * VIDEO 647 — the picture stage is read against ONE technical clock: the hard wall clock minus
+     * the render reserve, from the render's start (`pictureStageWallClockCeilingMs`). Force-export no
+     * longer caps the deadline, the picture editor or the rescue; it only skips polish. The reserve
+     * above the ceiling, up to the hard fail, stays for compose, gate and upload.
+     */
+    const pictureStageCeilingAtMs = pipelineWallStartMs + pictureStageWallClockCeilingMs(videoLength);
+    const pictureStageLeftMs = (): number => pictureStageCeilingAtMs - Date.now();
     const visualDeadlineMs = judgeableVisualDeadlineMs(
       byLengthDeadlineMs,
       chunks.map((c) =>
         scenes.slice(c.start, c.end).filter((s) => !s.isChapterCard).map((s) => sentencesOf(s.text ?? "").length)
       ),
-      Math.min(visualStageTimeoutMs(videoLength, perf), pipelineEmergencyFinishMs(videoLength))
+      Math.min(visualStageTimeoutMs(videoLength, perf), Math.max(JUDGED_BEAT_TURN_MS, pictureStageLeftMs()))
     );
     const visualDeadlineAtMs = Date.now() + visualDeadlineMs;
     console.log(
@@ -26587,10 +26639,18 @@ async function _runVideoPipelineInner(
             `the narration returns to — no second search`
         );
       } else if (empty.length > 0 && mainSubject) {
-        const windowMs = Math.max(visualDeadlineAtMs - Date.now(), EMPTY_SCENE_RESCUE_MIN_MS);
+        /** VIDEO 647 — one YouTube turn per sentence of every empty scene; see `emptySceneRescueWindowMs`. */
+        const windowMs = emptySceneRescueWindowMs({
+          deadlineLeftMs: visualDeadlineAtMs - Date.now(),
+          sentencesPerEmptyScene: empty.map((si) => sentencesOf(scenes[si]!.text ?? "").length),
+          sceneParallelism: perf.sceneParallelism,
+          ceilingLeftMs: pictureStageLeftMs(),
+        });
         console.log(
           `[MainSubject] video=${videoId} scene(s) ${empty.map((si) => scenes[si]!.index).join(", ")} found nothing — ` +
-            `searching on "${mainSubject}" only, ${Math.round(windowMs / 1000)}s`
+            `searching on "${mainSubject}" only, ${Math.round(windowMs / 1000)}s ` +
+            `(${empty.reduce((n, si) => n + sentencesOf(scenes[si]!.text ?? "").length, 0)} sentence(s), ` +
+            `deadline ${Math.round((visualDeadlineAtMs - Date.now()) / 1000)}s left)`
         );
         let rescueClosed = false;
         try {
@@ -26745,7 +26805,7 @@ async function _runVideoPipelineInner(
     /**
      * VIDEO 643 (A) — the picture editor's own time for the last looks and the last extra shots: what
      * the stage had (window + one turn), growing with the looks it is given, never past the video's
-     * length bound nor the render's force-export moment (see `judgeBudget.ts`).
+     * length bound nor the picture stage's ceiling (see `judgeBudget.ts`, `pictureStageWallClockCeilingMs`; VIDEO 647).
      */
     /** VIDEO 644 — the base 644 used (55 s) cut eight sentences' last look; see `JUDGE_BASE_SCALE`. */
     const judgeBaseMs = Math.round((FINAL_REVIEW_WINDOW_MS + FINAL_LOOK_TURN_MS) * JUDGE_BASE_SCALE);
@@ -26753,7 +26813,7 @@ async function _runVideoPipelineInner(
       baseMs: judgeBaseMs,
       ceilingMs: judgeBudgetCeilingMs(
         scenes.reduce((sum, sc) => sum + (sc.duration || 0), 0),
-        (visualDedup.pipelineStartedMs ?? Date.now()) + pipelineEmergencyFinishMs(videoLength) - Date.now(),
+        pictureStageLeftMs(),
         judgeBaseMs
       ),
       /** A cancelled or superseded render does not wait for its picture editor (VIDEO 23: lock and slot back within a minute). */

@@ -25,7 +25,7 @@ const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8
 describe("RONDE 8A — one-minute sourcing ladder at 5/7/9 minutes", () => {
 
   it("emergency finish for a one-minute video is 9 minutes", () => {
-    expect(pipelineEmergencyFinishMs("1")).toBe(9 * 60_000);
+    expect(pipelineEmergencyFinishMs("1")).toBe(18 * 60_000);
   });
 });
 
