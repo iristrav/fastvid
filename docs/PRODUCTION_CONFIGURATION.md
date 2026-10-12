@@ -191,6 +191,16 @@ Billing (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRO_PRICE_ID`), e
 `REPLICATE_API_KEY`, `HIGGSFIELD_API_KEY`, `FAL_API_KEY`) are all optional. The generative
 providers are last-resort fallbacks after stock search fails.
 
+ElevenLabs video (VIDEO 649, `ELEVENLABS_VIDEO_API_KEY`, optional): a short generated video for a
+sentence no real source, graphic or still could picture, tried before the Stability still and
+after every real source, through the same picture editor and technical gate. Requires a Pro plan
+or higher and a key with the Image & Video permission (a 402 stands the service down for 30 min).
+Tuning: `ELEVENLABS_VIDEO_MODEL_ID` (default `veo-3.1-fast-generate-001`),
+`ELEVENLABS_VIDEO_DURATION_SEC` (8), `ELEVENLABS_VIDEO_MAX_WAIT_MS` (300000),
+`ELEVENLABS_VIDEO_POLL_MS` (≥ 10000), `ELEVENLABS_VIDEO_EXTRA_JSON` (extra body fields for the
+model). When `ELEVENLABS_VIDEO_API_KEY` is unset the voice key `ELEVENLABS_API_KEY` is used for
+video too; that key must then carry the Image & Video permission.
+
 ---
 
 ## 10. Verdicts

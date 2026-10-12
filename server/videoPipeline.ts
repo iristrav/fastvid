@@ -213,6 +213,16 @@ import {
   imageServiceStandingDown,
   stillImageGenerator,
 } from "./generatedImageFallback";
+import {
+  GENERATED_VIDEO_FALLBACK,
+  GENERATED_VIDEO_PROVIDER,
+  VIDEO_POLL_MIN_MS,
+  elevenLabsVideoConfig,
+  elevenLabsVideoConfigured,
+  generatedVideoCoversSentence,
+  videoClipGenerator,
+  videoServiceStandingDown,
+} from "./elevenLabsVideoGeneration";
 import { bindLineageLedger, bindRelevanceLedger, bindContentKeyResolver, createClipAdoptAudit, formatUnjudgedAdoptions, formatAdoptionEvidence } from "./clipAdoptAudit";
 import { UNVERIFIED_PROVIDER, VisualSourceLedger, formatAssetLifecycleAudit, formatAssetUsageSummary, formatAuditReport, formatFinalVisualReport, formatRenderManifest, formatSelectedButNotRendered, formatFillerOverAdoptedAsset, formatFunnelReport, formatProviderFunnelInvariant, formatProviderTrace, lifecyclesOf, neverJudgedCountsBySentence, formatLifecycleInvariants, formatSourceSummary, assertNoSelectedClipWithoutOutcome, recordAssetOutcome, ensureCuratedAssetLineageOn, type VisualLineageRecord } from "./visualSourceLineage";
 import {
@@ -8340,6 +8350,9 @@ async function fetchBeatGeneratedImage(
     return null;
   }
   fs.mkdirSync(workDir, { recursive: true });
+  /** VIDEO 649 — a moving picture first (ElevenLabs), the still second; see `fetchBeatGeneratedVideo`. */
+  const video = await fetchBeatGeneratedVideo(beat, scene, workDir, sceneIndex, dedup, videoTitle, prompt, sentence, plan?.visual_description, plan?.search_query);
+  if (video) return video;
   const base = `scene_${sceneIndex}_genimg_b${beat.index}`;
   const png = path.join(workDir, `${base}.png`);
   const assetId = createHash("sha256").update(prompt).digest("hex").slice(0, 16);
@@ -8385,6 +8398,93 @@ async function fetchBeatGeneratedImage(
   console.log(
     `[${GENERATED_IMAGE_FALLBACK}] ${where} used provider=${GENERATED_IMAGE_PROVIDER} ` +
       `prompt="${prompt.slice(0, 160)}"`
+  );
+  return clip;
+}
+
+/** The render keeps this much after a generation's window: the still, the cards and the render itself still need their time. */
+export const GENERATED_VIDEO_RENDER_RESERVE_MS = 3 * 60_000;
+
+/**
+ * VIDEO 649 — GENERATED_VIDEO_FALLBACK: ElevenLabs makes a short video for the sentence, under the
+ * decision and prompt `fetchBeatGeneratedImage` already made, then exactly the still's route:
+ * provider tag + lineage, `adoptClip` (TechnicalMediaGate → VisualJudge against this sentence →
+ * ledger), the scene's clip list under the sentence. Null (and no cost beyond a refused create)
+ * when there is no key, the service is standing down, the model's duration cannot cover the
+ * sentence, the render has no window left, the generation fails or times out, or the picture
+ * editor refuses it — the still is tried next in every one of those cases.
+ */
+async function fetchBeatGeneratedVideo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  dedup: VisualDedupState,
+  videoTitle: string | undefined,
+  prompt: string,
+  sentence: string,
+  visualDescription: string | null | undefined,
+  searchQuery: string | null | undefined
+): Promise<string | null> {
+  const where = `s${scene.index}b${beat.index}`;
+  if (!elevenLabsVideoConfigured()) return null;
+  if (videoServiceStandingDown()) {
+    console.log(`[${GENERATED_VIDEO_FALLBACK}] ${where} not generated — the video service refuses this account; the still is tried`);
+    return null;
+  }
+  const cfg = elevenLabsVideoConfig();
+  /** The hold the scene will give the clip (`generateMissingBeatImages` pushes `generatedStillSec`): the video must run at least that long, never held past its source. */
+  const neededSec = generatedStillSec(beat);
+  if (!generatedVideoCoversSentence(neededSec, cfg.durationSec)) {
+    console.log(
+      `[${GENERATED_VIDEO_FALLBACK}] ${where} not generated — the sentence needs ${neededSec.toFixed(2)}s and the model makes ${cfg.durationSec}s; the still is tried`
+    );
+    return null;
+  }
+  const remaining = get_activeBudgetTracker()?.remainingMs?.();
+  const windowMs = Math.min(cfg.maxWaitMs, remaining != null ? Math.max(0, remaining - GENERATED_VIDEO_RENDER_RESERVE_MS) : cfg.maxWaitMs);
+  if (windowMs < VIDEO_POLL_MIN_MS * 2) {
+    console.log(`[${GENERATED_VIDEO_FALLBACK}] ${where} not generated — ${Math.round(windowMs / 1000)}s left for a generation; the still is tried`);
+    return null;
+  }
+  const base = `scene_${sceneIndex}_genvid_b${beat.index}`;
+  const assetId = createHash("sha256").update(`${cfg.modelId}|${prompt}`).digest("hex").slice(0, 16);
+  const outPath = tagPathWithProviderAsset(path.join(workDir, `${base}.mp4`), GENERATED_VIDEO_PROVIDER, assetId, dedup.sourcingCache, {
+    sceneIndex,
+    beatIndex: beat.index,
+    title: (visualDescription ?? sentence).slice(0, 200),
+    mediaType: "video",
+    query: prompt.slice(0, 200),
+    searchRoute: "fetchBeatGeneratedVideo",
+  });
+  const startedAt = Date.now();
+  const made = await videoClipGenerator()(prompt, outPath, { durationSec: cfg.durationSec, deadlineAtMs: Date.now() + windowMs }).catch(() => false);
+  if (!made || !fs.existsSync(outPath) || fs.statSync(outPath).size < 1_000) {
+    recordProviderDownloadOutcome(dedup.sourcingCache, outPath, false, "the video service produced nothing");
+    console.log(`[${GENERATED_VIDEO_FALLBACK}] ${where} the video service produced nothing (${Math.round((Date.now() - startedAt) / 1000)}s) — the still is tried`);
+    return null;
+  }
+  recordProviderDownloadOutcome(dedup.sourcingCache, outPath, true);
+  dedup.clipAnnotationMeta.set(outPath, {
+    ...(dedup.clipAnnotationMeta.get(outPath) ?? {}),
+    providerText: { title: visualDescription ?? sentence },
+  });
+  const offered = [outPath];
+  const clip = await withBeatProvenance(beat, scene, () =>
+    adoptClip(offered, dedup, sceneIndex, beat.index, sentence, workDir, searchQuery ?? sentence, {
+      requireBeatMatch: false,
+      scriptAnchored: false,
+      sceneText: scene.text,
+      videoTitle,
+    })
+  );
+  if (!clip || !isRealVideoClip(clip)) {
+    console.log(`[${GENERATED_VIDEO_FALLBACK}] ${where} generated, but not approved for the sentence — not used; the still is tried`);
+    return null;
+  }
+  console.log(
+    `[${GENERATED_VIDEO_FALLBACK}] ${where} used provider=${GENERATED_VIDEO_PROVIDER} model=${cfg.modelId} ` +
+      `duration=${cfg.durationSec}s prompt="${prompt.slice(0, 160)}"`
   );
   return clip;
 }

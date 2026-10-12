@@ -8,7 +8,9 @@
  *   1  REAL / ARCHIVE / OPEN / STOCK   YouTube, own archive, open sources, stock, photos — the beat's
  *                                      sourcing ladder and the main-subject rescue (unchanged)
  *   2  DATA / MAP GRAPHIC              a graphic from the sentence as its picture (never pre-empted)
- *   3  AI GENERATED IMAGE              this module — logged GENERATED_IMAGE_FALLBACK
+ *   3a AI GENERATED VIDEO              VIDEO 649 — ElevenLabs (elevenLabsVideoGeneration.ts), logged
+ *                                      GENERATED_VIDEO_FALLBACK; same decision, prompt and route as 3b
+ *   3b AI GENERATED IMAGE              this module — logged GENERATED_IMAGE_FALLBACK
  *   4  CHAPTER CARD                    Remotion's drawn card — logged CHAPTER_CARD_FALLBACK
  *
  * The generated file then takes exactly the route an article screenshot takes: a still clip,
@@ -25,6 +27,7 @@
 import fs from "node:fs";
 
 import { classifyProviderFailure, formatProviderCooldown } from "./providerFailureClass";
+import { GENERATED_VIDEO_PROVIDER } from "./elevenLabsVideoGeneration";
 import { subjectWords } from "./youtubeNonFootage";
 
 export const GENERATED_IMAGE_FALLBACK = "GENERATED_IMAGE_FALLBACK";
@@ -199,7 +202,7 @@ export function generatedStillSec(beat: { holdSec?: number; voiceStartSec?: numb
   return Math.round((Math.max(beat.holdSec ?? 5, spoken, 1) + 1) * 1000) / 1000;
 }
 
-/** A generated still belongs to its own sentence only: it is never lent to another one as a fill. */
+/** A generated picture (still or video) belongs to its own sentence only: it is never lent to another one as a fill. */
 export function isGeneratedImageClip(clip: { source?: { provider?: string | null } | null }): boolean {
-  return clip.source?.provider === GENERATED_IMAGE_PROVIDER;
+  return clip.source?.provider === GENERATED_IMAGE_PROVIDER || clip.source?.provider === GENERATED_VIDEO_PROVIDER;
 }
