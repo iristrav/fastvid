@@ -296,6 +296,11 @@ async function main() {
    * for and what can be justified without a production render to check the verdict against.
    */
   try {
+    {
+      /** VIDEO 650 — the CPU count and the thread ceiling the ffmpeg graphs will meet, said at start. */
+      const { formatHostResources } = await import("./hostResources");
+      console.log(`[Worker] Host resources: ${formatHostResources()}`);
+    }
     const { productionPreflight, formatPreflight } = await import("./productionPreflight");
     const { execSync } = await import("child_process");
     const { ensureClipPipelinesLoaded } = await import("./localClipVision");

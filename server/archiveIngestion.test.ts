@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import { execSync } from "child_process";
 import os from "os";
@@ -44,6 +44,7 @@ async function ingestExternalClipToArchive(
 describe("ingestExternalClipToArchiveWithReason — F3-26 structured provenance + duplicate protection", () => {
   let tmpDir: string;
   let clipPath: string;
+  let encodedClip: string | null = null;
 
   beforeEach(() => {
     createMediaArchiveAssetMock.mockReset().mockResolvedValue(101);
@@ -65,10 +66,18 @@ describe("ingestExternalClipToArchiveWithReason — F3-26 structured provenance 
      * quality gate the old placeholder buffer was sized for — both gates are still exercised, and
      * the too-small case below keeps its own dedicated fixture.
      */
-    execSync(
-      `ffmpeg -y -f lavfi -i "testsrc=size=640x480:rate=25:duration=4" ` +
-        `-c:v libx264 -pix_fmt yuv420p -b:v 1200k "${clipPath}" 2>/dev/null`
-    );
+    /** encoded ONCE for the file and copied per test: six encodes under four test shards ran one test past its 5 s clock */
+    if (!encodedClip) {
+      encodedClip = path.join(os.tmpdir(), `f326-ingest-src-${process.pid}.mp4`);
+      execSync(
+        `ffmpeg -y -f lavfi -i "testsrc=size=640x480:rate=25:duration=4" ` +
+          `-c:v libx264 -pix_fmt yuv420p -b:v 1200k "${encodedClip}" 2>/dev/null`
+      );
+    }
+    fs.copyFileSync(encodedClip, clipPath);
+  });
+  afterAll(() => {
+    if (encodedClip) fs.rmSync(encodedClip, { force: true });
   });
 
   afterEach(() => {

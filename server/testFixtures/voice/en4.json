@@ -1,0 +1,33 @@
+{
+ "sentences": [
+  {
+   "text": "The first sentence is spoken here.",
+   "start": 0.3,
+   "end": 2.369
+  },
+  {
+   "text": "Then a second sentence, with a comma, of similar length.",
+   "start": 2.919,
+   "end": 6.459
+  },
+  {
+   "text": "And a shorter third.",
+   "start": 6.959,
+   "end": 8.037
+  },
+  {
+   "text": "Finally the narrator closes the scene with a slightly longer sentence than before.",
+   "start": 8.637,
+   "end": 12.796
+  }
+ ],
+ "totalSec": 13.196,
+ "pauses": [
+  0.55,
+  0.5,
+  0.6
+ ],
+ "voice": "en-us",
+ "speed": 165,
+ "commaPause": 0.25
+}

@@ -27,7 +27,9 @@ describe("versions: every save is kept and can be restored", () => {
 
   it("the migration that creates the table is in the journal", () => {
     const journal = JSON.parse(read("../drizzle/meta/_journal.json")) as { entries: Array<{ tag: string }> };
-    expect(journal.entries.at(-1)?.tag).toBe("0064_editor_timeline_snapshots");
+    /** in the journal — not necessarily last: 0065 (ai_video_generations) came after it */
+    expect(journal.entries.some((e) => e.tag === "0064_editor_timeline_snapshots")).toBe(true);
+    expect(journal.entries.findIndex((e) => e.tag === "0064_editor_timeline_snapshots")).toBe(64);
     expect(read("../drizzle/0064_editor_timeline_snapshots.sql")).toContain("CREATE TABLE IF NOT EXISTS `timeline_snapshots`");
   });
 });

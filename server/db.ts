@@ -14,7 +14,7 @@ import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineComposeGraceMs } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
-import { InsertInviteCode, InsertUser, InsertVideo, inviteCodes, users, videos, llmSpendByUser, renderJobs, renderLocks, youtubeVideoSearches, timelineSnapshots, type RenderJob } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, inviteCodes, users, videos, llmSpendByUser, renderJobs, renderLocks, youtubeVideoSearches, aiVideoGenerations, timelineSnapshots, type RenderJob } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import type { AssetSourceIdentity } from "./projectTimeline";
 
@@ -1635,6 +1635,54 @@ export async function updateRenderJobProgress(
   await db.update(renderJobs).set({ progressStep, progress }).where(eq(renderJobs.id, id));
 }
 
+/**
+ * VIDEO 650 — the running render's heartbeat: `updatedAt` written EXPLICITLY, because MySQL's
+ * ON UPDATE only moves it when another column changes, and a render that sits in "rendering" for
+ * ten minutes changes nothing. Only a job this worker still holds (`status = running`) is touched.
+ */
+export async function touchRunningRenderJob(id: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await db
+    .update(renderJobs)
+    .set({ updatedAt: new Date() })
+    .where(and(eq(renderJobs.id, id), eq(renderJobs.status, "running")));
+  return (affectedRowCount(result) ?? 0) > 0;
+}
+
+/**
+ * VIDEO 650 — a render job still `running` whose heartbeat stopped `staleMs` ago belongs to a
+ * worker that is gone (a redeploy, an OOM kill, a crash): it is failed with that reason, so the
+ * pipeline waiting on it (`awaitRenderJobOutcome`) gets FAILED instead of waiting out its budget,
+ * and the row cannot be mistaken for a render in progress by anything that counts active jobs.
+ * Guarded on status AND age in the UPDATE itself, so a job whose worker wrote a heartbeat between
+ * the read and the write keeps running. Returns the ids it failed.
+ */
+export async function sweepStaleRunningRenderJobs(staleMs: number, now = Date.now()): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const cutoff = new Date(now - staleMs);
+  const rows = await db
+    .select({ id: renderJobs.id, updatedAt: renderJobs.updatedAt })
+    .from(renderJobs)
+    .where(and(eq(renderJobs.status, "running"), sql`${renderJobs.updatedAt} < ${cutoff}`));
+  const failed: number[] = [];
+  for (const row of rows) {
+    const minutes = Math.round((now - new Date(row.updatedAt).getTime()) / 60_000);
+    const result = await db
+      .update(renderJobs)
+      .set({
+        status: "failed",
+        errorCode: "RENDER_FAILED",
+        errorMessage: `the worker rendering this job stopped reporting ${minutes} min ago (no heartbeat): it was lost to a restart, a crash or an out-of-memory kill`,
+        completedAt: new Date(),
+      })
+      .where(and(eq(renderJobs.id, row.id), eq(renderJobs.status, "running"), sql`${renderJobs.updatedAt} < ${cutoff}`));
+    if ((affectedRowCount(result) ?? 0) > 0) failed.push(row.id);
+  }
+  return failed;
+}
+
 export async function finishRenderJob(params: {
   id: number;
   status: "completed" | "failed" | "cancelled";
@@ -1918,6 +1966,30 @@ export async function browseMediaArchiveAssets(opts: {
 }
 
 /** Paginated active video assets — avoids loading the full archive for CLIP backfill. */
+/**
+ * VIDEO 650 — the generic footage library: every active, READY video asset carrying `tag`, in any
+ * archive. Read once per film by the generic footage fallback (genericFootageFallback.ts).
+ */
+export async function listActiveVideoArchiveAssetsByTag(tag: string, limit: number): Promise<MediaArchiveAsset[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const t = tag.trim().toLowerCase();
+  if (!t) return [];
+  return db
+    .select()
+    .from(mediaArchiveAssets)
+    .where(
+      and(
+        eq(mediaArchiveAssets.isActive, 1),
+        eq(mediaArchiveAssets.mediaType, "video"),
+        eq(mediaArchiveAssets.mediaStatus, "READY"),
+        sql`JSON_SEARCH(${mediaArchiveAssets.tags}, 'one', ${t}) IS NOT NULL`
+      )
+    )
+    .orderBy(asc(mediaArchiveAssets.id))
+    .limit(limit);
+}
+
 export async function listActiveVideoArchiveAssetsBatch(afterId: number, limit: number) {
   const db = await getDb();
   if (!db) return [];
@@ -2508,6 +2580,71 @@ export const dbYoutubeSearchBudgetStore: import("./youtubeSearchBudget").Youtube
     }
     if (Object.keys(set).length === 0) return;
     await db.update(youtubeVideoSearches).set(set).where(eq(youtubeVideoSearches.videoId, videoId));
+  },
+};
+
+/**
+ * VIDEO 650 (pre-deploy) — the AI-video spend ledger of one video, kept by the database. See
+ * replicateVideoGeneration.ts `PVideoSpendStore`. The whole mechanism is the conditional UPDATE in
+ * `claim`: it adds the request only while every ceiling still holds AFTER it, so two replicas
+ * asking at once both ask and the row decides. No video id, no database, no claim — no request.
+ */
+export const dbPVideoSpendStore: import("./replicateVideoGeneration").PVideoSpendStore = {
+  async load(videoId) {
+    const db = await getDb();
+    if (!db) return null;
+    const rows = await db.select().from(aiVideoGenerations).where(eq(aiVideoGenerations.videoId, videoId)).limit(1);
+    const r = rows[0];
+    if (!r) return null;
+    return { requests: r.requests, seconds: r.secondsRequested, costUsd: r.costMilliUsd / 1000 };
+  },
+
+  async claim(videoId, add, caps) {
+    if (!Number.isInteger(videoId) || videoId <= 0) return false;
+    const db = await getDb();
+    if (!db) return false;
+    try {
+      await db.insert(aiVideoGenerations).values({ videoId });
+    } catch {
+      /** The row already exists: the counts on it decide, below. */
+    }
+    const secs = Math.max(1, Math.ceil(add.seconds));
+    const costMilli = Math.max(0, Math.ceil(add.costUsd * 1000));
+    const maxCostMilli = Math.floor(caps.maxCostUsd * 1000);
+    const result = await db
+      .update(aiVideoGenerations)
+      .set({
+        requests: sql`${aiVideoGenerations.requests} + 1`,
+        secondsRequested: sql`${aiVideoGenerations.secondsRequested} + ${secs}`,
+        costMilliUsd: sql`${aiVideoGenerations.costMilliUsd} + ${costMilli}`,
+        lastModel: add.model.slice(0, 96),
+      })
+      .where(
+        and(
+          eq(aiVideoGenerations.videoId, videoId),
+          sql`${aiVideoGenerations.requests} < ${caps.maxRequests}`,
+          sql`${aiVideoGenerations.secondsRequested} + ${secs} <= ${caps.maxSeconds}`,
+          sql`${aiVideoGenerations.costMilliUsd} + ${costMilli} <= ${maxCostMilli}`
+        )
+      );
+    return affectedOne(result);
+  },
+
+  async reconcile(videoId, add) {
+    if (!Number.isInteger(videoId) || videoId <= 0) return;
+    const db = await getDb();
+    if (!db) return;
+    const secs = Math.max(0, Math.ceil(add.seconds));
+    const costMilli = Math.max(0, Math.ceil(add.costUsd * 1000));
+    if (secs === 0 && costMilli === 0) return;
+    /** unconditional: the seconds were returned and billed; no ceiling may refuse the record of them */
+    await db
+      .update(aiVideoGenerations)
+      .set({
+        secondsRequested: sql`${aiVideoGenerations.secondsRequested} + ${secs}`,
+        costMilliUsd: sql`${aiVideoGenerations.costMilliUsd} + ${costMilli}`,
+      })
+      .where(eq(aiVideoGenerations.videoId, videoId));
   },
 };
 

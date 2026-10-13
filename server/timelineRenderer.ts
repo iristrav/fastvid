@@ -31,6 +31,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
+import { formatHostResources } from "./hostResources";
 import { alternateFFmpegBin, isGraphConfigurationRefusal, resolveFFmpegBin } from "./ffmpegBinary";
 import {
   DEFAULT_TEXT_STYLE,
@@ -869,6 +870,8 @@ async function renderSegment(
     "-vf", vf,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
     "-pix_fmt", "yuv420p",
+    /** VIDEO 650 — the timeline's frame rate, stated on the encode as well as in the filter. */
+    "-r", String(fmt.fps),
     "-t", dur.toFixed(3),
     outPath
   );
@@ -1003,6 +1006,48 @@ async function measureIntegratedLufs(file: string): Promise<number | null> {
   }
 }
 
+/**
+ * VIDEO 650 — THE ONE ENCODE OF THE TRANSITION GRAPH, WITH ITS FRAME RATE AND ITS THREADS STATED.
+ *
+ * ── Frame rate ───────────────────────────────────────────────────────────────────────────────
+ * Every input is normalised to the timeline's fps inside the graph, but the cut rung trims each
+ * input and resets its timestamps (`trim,setpts`) AFTER that normaliser, and ffmpeg 7.0.2 then
+ * treats the frame rate as unknown and encodes at its default of 25. Video 650 was refused for
+ * exactly that ("fps 25 ≠ 30") after every transition rung had failed. The output frame rate is
+ * therefore stated on the encode itself, where no filter can lose it. Measured locally: the same
+ * cut graph gives 25/1 without `-r` and 30/1 with it, same length, same frames in order.
+ *
+ * ── Threads ──────────────────────────────────────────────────────────────────────────────────
+ * A graph with 27 inputs opens a decoder per input and a scaler per input, and each of those
+ * takes a thread pool sized by the host's CPU count. Measured: 316 threads on a 4-core host for
+ * 27 inputs, and under a thread limit the LAST scaler fails to configure its output pad with
+ * EAGAIN — the "Failed to configure output pad on Parsed_scale_156 … Resource temporarily
+ * unavailable" every production render since 6 October has shown, on both ffmpeg builds. The
+ * graph is sequential anyway (one join feeds the next), so one decoder thread per input and one
+ * filter thread cost nothing in speed and keep the count flat (181 threads for the same graph,
+ * which also passes under a 200-thread limit). The encoder keeps its own default threads.
+ *
+ * `-reinit_filter 0` per input: VIDEO 649 — a mid-stream property change is absorbed by the
+ * stated per-input scale rather than tearing the graph down (video649TransitionGraphNormalised).
+ */
+export function transitionGraphEncodeArgs(params: {
+  segments: readonly string[];
+  filter: string;
+  output: string;
+  fps: number;
+}): string[] {
+  const a = ["-y", "-hide_banner", "-loglevel", "warning", "-filter_threads", "1", "-filter_complex_threads", "1"];
+  for (const seg of params.segments) a.push("-threads", "1", "-reinit_filter", "0", "-i", seg);
+  a.push(
+    "-filter_complex", params.filter,
+    "-map", "[vout]",
+    "-r", String(params.fps),
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+    "-an", params.output
+  );
+  return a;
+}
+
 export async function renderTimeline(params: {
   timeline: ProjectTimeline;
   workDir: string;
@@ -1033,6 +1078,13 @@ export async function renderTimeline(params: {
    * file, that file is composited and the ASS pass does not run at all — see phase 3.
    */
   graphicsOverlay?: (timeline: ProjectTimeline) => Promise<GraphicsOverlayFile | null>;
+  /**
+   * VIDEO 650 — where the transition ladder starts. The render retry (renderJobWorker) asks for
+   * "cut": the plainest join, the one rung that has rendered every production film since
+   * 6 October, so a second attempt after a technical refusal does not spend its time on the two
+   * rungs that just failed. Omitted: the whole ladder, as always.
+   */
+  startRung?: TransitionLadderStep;
 }): Promise<RenderedTimeline> {
   const { timeline, workDir, outputPath } = params;
   const fmt = timeline.format;
@@ -1264,31 +1316,8 @@ export async function renderTimeline(params: {
   });
 
   if (graph) {
-    const argsFor = (filter: string): string[] => {
-      /**
-       * VIDEO 649 — `warning`, not `error`: ffmpeg says "Input stream #N:0 frame changed from … to …"
-       * at warning level, and that line is the one that names what a failed join tripped over.
-       * It reaches the log only through `ffmpegStderrSummary`, on failure.
-       */
-      const a = ["-y", "-hide_banner", "-loglevel", "warning"];
-      /**
-       * VIDEO 649 — `-reinit_filter 0` per input: when a frame's properties change mid-stream,
-       * ffmpeg's default is to tear the whole graph down and rebuild it — which `xfade` cannot
-       * survive (649/618: "[auto_scale_N] Failed to configure output pad | Error reinitializing
-       * filters!"; with the normaliser alone the rebuild succeeds but the fade's state is lost and
-       * the film ends early, silently). With reinit off the changed frame is handed to the graph
-       * as it stands, and the stated `scale` per input (see `transitionInputNormalizer`) absorbs
-       * it. Reproduced and proven in video649TransitionGraphNormalised.test.ts.
-       */
-      for (const seg of segments) a.push("-reinit_filter", "0", "-i", seg);
-      a.push(
-        "-filter_complex", filter,
-        "-map", "[vout]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-        "-an", silent
-      );
-      return a;
-    };
+    const argsFor = (filter: string): string[] =>
+      transitionGraphEncodeArgs({ segments, filter, output: silent, fps: fmt.fps });
     /**
      * RONDE 627 — when the join fails, measure the things the join compares.
      *
@@ -1376,7 +1405,11 @@ export async function renderTimeline(params: {
     let firstFailure: unknown = null;
     /** VIDEO 649 — set when the rung rendered with the other ffmpeg build on this host. */
     let joinedByOtherBuild: string | null = null;
-    for (const step of TRANSITION_LADDER) {
+    const ladderFrom = params.startRung ? TRANSITION_LADDER.indexOf(params.startRung) : 0;
+    if (params.startRung && ladderFrom > 0) {
+      console.warn(`[TransitionLadder] starting at "${params.startRung}" as asked — the rungs before it are not tried`);
+    }
+    for (const step of TRANSITION_LADDER.slice(Math.max(0, ladderFrom))) {
       const rung: { filter: string; totalSec: number } | null =
         step === "planned"
           ? plannedGraph
@@ -1393,7 +1426,8 @@ export async function renderTimeline(params: {
           await diagnoseSegmentShapes(graphErr);
         }
         console.error(
-          `[TransitionLadder] ${step} failed — ${(graphErr as Error).message.slice(0, 200)}`
+          `[TransitionLadder] ${step} failed — ${(graphErr as Error).message.slice(0, 200)} ` +
+            `| host: ${formatHostResources()}`
         );
         const said = ffmpegStderrSummary(graphErr);
         if (said) console.error(`[TransitionLadder] ${step} ffmpeg said: ${said}`);
@@ -1594,6 +1628,7 @@ export async function renderTimeline(params: {
          */
         "-filter_complex", "[0:v][1:v]overlay=format=auto:shortest=1[vout]",
         "-map", "[vout]",
+        "-r", String(fmt.fps),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
         "-an", withText],
       { maxBuffer: 1024 * 1024 * 16 }
@@ -1629,6 +1664,7 @@ export async function renderTimeline(params: {
       ffmpeg(),
       ["-y", "-hide_banner", "-loglevel", "error", "-i", silent,
         "-vf", filter,
+        "-r", String(fmt.fps),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
         "-an", withText],
       { maxBuffer: 1024 * 1024 * 16 }
@@ -1844,6 +1880,9 @@ export type RenderQualityCheck = {
   widthPx: number | null;
   heightPx: number | null;
   fps: number | null;
+  /** VIDEO 650 — the average rate over the whole file and the frame count, read beside r_frame_rate. */
+  avgFps: number | null;
+  frameCount: number | null;
   problems: string[];
 };
 
@@ -1879,20 +1918,39 @@ export async function checkRenderedFile(params: {
   let width: number | null = null;
   let height: number | null = null;
   let fps: number | null = null;
+  let avgFps: number | null = null;
+  let frameCount: number | null = null;
+  const rational = (rate: string | undefined): number | null => {
+    if (!rate?.includes("/")) return null;
+    const [n, d] = rate.split("/").map(Number);
+    return d ? Math.round((n / d) * 100) / 100 : null;
+  };
   if (exists && hasVideo) {
     try {
+      /**
+       * VIDEO 650 — three readings of the rate, not one. `r_frame_rate` is the container's claim,
+       * `avg_frame_rate` is frames over duration, `nb_frames` is the count. A file encoded at 25
+       * where 30 was asked shows all three (25/1, 25/1, 5/6 of the frames); a file whose timestamps
+       * merely look odd shows only the first. The check refuses on either rate, and the count is
+       * reported so the log can say which it was.
+       */
       const { stdout } = await execFileAsync(FFPROBE, [
         "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,r_frame_rate",
-        "-of", "default=nw=1:nk=1", params.filePath,
+        "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames",
+        "-of", "default=nw=1", params.filePath,
       ]);
-      const [w, h, rate] = stdout.trim().split("\n");
-      width = Number(w) || null;
-      height = Number(h) || null;
-      if (rate?.includes("/")) {
-        const [n, d] = rate.split("/").map(Number);
-        fps = d ? Math.round((n / d) * 100) / 100 : null;
+      /** keyed, because ffprobe prints entries in the stream's own field order, not the asked one */
+      const entries = new Map<string, string>();
+      for (const line of stdout.split("\n")) {
+        const eq = line.indexOf("=");
+        if (eq > 0) entries.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
       }
+      width = Number(entries.get("width")) || null;
+      height = Number(entries.get("height")) || null;
+      fps = rational(entries.get("r_frame_rate"));
+      avgFps = rational(entries.get("avg_frame_rate"));
+      const frames = entries.get("nb_frames") ?? "";
+      frameCount = /^\d+$/.test(frames) ? Number(frames) : null;
     } catch {
       problems.push("could not read stream properties");
     }
@@ -1901,6 +1959,7 @@ export async function checkRenderedFile(params: {
   if (width != null && width !== fmt.widthPx) problems.push(`width ${width} ≠ ${fmt.widthPx}`);
   if (height != null && height !== fmt.heightPx) problems.push(`height ${height} ≠ ${fmt.heightPx}`);
   if (fps != null && Math.abs(fps - fmt.fps) > 0.5) problems.push(`fps ${fps} ≠ ${fmt.fps}`);
+  if (avgFps != null && avgFps > 0 && Math.abs(avgFps - fmt.fps) > 0.5) problems.push(`avg fps ${avgFps} ≠ ${fmt.fps}`);
 
   const tol = params.durationToleranceSec ?? 1.0;
   if (duration != null && params.timeline.durationSec > 0) {
@@ -1922,6 +1981,8 @@ export async function checkRenderedFile(params: {
     widthPx: width,
     heightPx: height,
     fps,
+    avgFps,
+    frameCount,
     problems,
   };
 }

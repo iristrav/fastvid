@@ -11,7 +11,23 @@
  *                      those seconds are `stretched`, not cover;
  *   content_graphic    a graphic placed as THIS sentence's picture (`data.primaryVisual`, its
  *                      `sceneIndex`/`beatIndex`) that is NOT a chapter card: a chart, map, timeline,
- *                      counter … drawn from the sentence's facts.
+ *                      counter … drawn from the sentence's facts;
+ *   acceptable_footage VIDEO 650 — a clip the picture editor called ACCEPTABLE for THIS sentence (the
+ *                      subject shown, the situation not; `contentApproval === "judge_acceptable"`),
+ *                      adopted because no fit was found. Counted as cover and named on every row;
+ *   generic_footage    VIDEO 650 — rights-clear moving footage placed for THIS sentence as the floor
+ *                      under the sourcing ladder (`source.contentApproval === "generic_footage"`,
+ *                      genericFootageFallback.ts). Counted as cover and NAMED as generic on every row,
+ *                      because it is visual coverage and explicitly not a content fit;
+ *   synthetic_placeholder  PRE-DEPLOY — the subset of generic cover whose provider is the synthetic
+ *                      colour field (`source.provider === "synthetic_placeholder"`): an EMERGENCY
+ *                      placeholder, not footage. Still cover (the film is delivered), but named on the
+ *                      row, in `problems`, and by the delivery gate as a QUALITY PROBLEM.
+ *
+ * TIMING — `timing` says what the spoken windows rest on: "exact" (every sentence from the TTS word
+ * alignment), "approximate" (every sentence measured, at least one from the pauses in the scene's
+ * audio — `measured_silence`, a boundary inside a pause rather than a word timestamp), "unproven"
+ * (an estimated or missing window, or a sentence not covered). `proven` is true for "exact" only.
  *
  * What does NOT count: a chapter card (the blue-grey `PRIMARY_GROUND` of Graphics.tsx), a clip without
  * the approval mark (technically present, fit not established), a clip or graphic approved for ANOTHER
@@ -25,9 +41,12 @@
  */
 import type { ProjectTimeline, TimelineGraphic, TimelineSentence, TimelineVideoClip } from "./projectTimeline";
 import { graphicsTrack, videoTrack } from "./projectTimeline";
+import { isAiGeneratedProvider } from "./generatedImageFallback";
 
 export type SentenceCoverageStatus = "covered" | "partial" | "uncovered" | "unknown";
-export type SentencePictureKind = "approved_footage" | "content_graphic" | "chapter_card" | "unverified_footage" | "other_sentence_picture" | "stretched_footage" | "none";
+export type SentencePictureKind = "approved_footage" | "acceptable_footage" | "ai_generated_footage" | "content_graphic" | "generic_footage" | "synthetic_placeholder" | "chapter_card" | "unverified_footage" | "other_sentence_picture" | "stretched_footage" | "none";
+
+export type SentenceTimingVerdict = "exact" | "approximate" | "unproven";
 
 export type SentenceCoverageRow = {
   key: string;
@@ -37,11 +56,19 @@ export type SentenceCoverageRow = {
   startSec: number | null;
   endSec: number | null;
   spokenSec: number | null;
-  timingBasis: "measured" | "estimated" | "missing";
+  timingBasis: "measured" | "measured_silence" | "estimated" | "missing";
   status: SentenceCoverageStatus;
   /** Seconds of the spoken window under approved footage or a content graphic. */
   coveredSec: number;
   approvedFootageSec: number;
+  /** VIDEO 650 — a picture the judge called acceptable (subject shown, situation not), adopted without a fit. */
+  acceptableFootageSec: number;
+  /** The approved or acceptable seconds whose picture is AI-GENERATED (AI_GENERATED_PROVIDERS): cover, named as generated. */
+  aiGeneratedSec: number;
+  /** VIDEO 650 — rights-clear moving footage placed as the floor under the ladder: cover, not a content fit. */
+  genericFootageSec: number;
+  /** PRE-DEPLOY — the part of the generic cover that is the synthetic colour field: an emergency placeholder, NOT footage. */
+  syntheticPlaceholderSec: number;
   contentGraphicSec: number;
   /** Seconds under footage without the approval mark, or an approved picture without a sentence mark (fit not established). */
   unverifiedSec: number;
@@ -74,6 +101,8 @@ export type SentenceCoverageReport = {
   plannedCardSec: number;
   /** True only when every sentence is `covered` on measured timing: the one state that can pass the gate. */
   proven: boolean;
+  /** PRE-DEPLOY — what the windows rest on: exact (word timestamps), approximate (pauses), unproven. */
+  timing: SentenceTimingVerdict;
   problems: string[];
 };
 
@@ -171,6 +200,11 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
   const sentenceKeyOf = (o: { sceneIndex?: unknown; beatIndex?: unknown }): string | null =>
     typeof o.sceneIndex === "number" && typeof o.beatIndex === "number" ? `s${o.sceneIndex}b${o.beatIndex}` : null;
   const approved: Array<{ span: Span; forSentence: string | null }> = [];
+  const acceptable: Array<{ span: Span; forSentence: string | null }> = [];
+  /** the approved/acceptable spans whose picture a model generated — a subset, named apart */
+  const aiGenerated: Array<{ span: Span; forSentence: string | null }> = [];
+  const generic: Array<{ span: Span; forSentence: string | null }> = [];
+  const synthetic: Array<{ span: Span; forSentence: string | null }> = [];
   const unverified: Span[] = [];
   const stretched: Span[] = [];
   let stretchedClips = 0;
@@ -191,7 +225,14 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
       stretchedClips++;
     }
     if (c.source?.contentApproval === "judge_fit") approved.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
-    else unverified.push([start, shownEnd]);
+    else if (c.source?.contentApproval === "judge_acceptable") acceptable.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
+    else if (c.source?.contentApproval === "generic_footage") {
+      generic.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
+      if (c.source?.provider === "synthetic_placeholder") synthetic.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
+    } else unverified.push([start, shownEnd]);
+    if ((c.source?.contentApproval === "judge_fit" || c.source?.contentApproval === "judge_acceptable") && isAiGeneratedProvider(c.source?.provider)) {
+      aiGenerated.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
+    }
   }
   const contentGraphics: Array<{ span: Span; forSentence: string | null }> = graphics
     .filter(isContentGraphic)
@@ -214,6 +255,10 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
       timingBasis: s.startSec == null || s.endSec == null ? "missing" : s.timingBasis,
       coveredSec: 0,
       approvedFootageSec: 0,
+      acceptableFootageSec: 0,
+      aiGeneratedSec: 0,
+      genericFootageSec: 0,
+      syntheticPlaceholderSec: 0,
       contentGraphicSec: 0,
       unverifiedSec: 0,
       otherSentenceSec: 0,
@@ -230,13 +275,18 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
     /** approved FOR THIS sentence; a neighbour's approved picture or an unmarked one is not established here */
     const approvedIn = clip(approved.filter((a) => a.forSentence === key).map((a) => a.span), lo, hi);
     const graphicIn = clip(contentGraphics.filter((g) => g.forSentence === key).map((g) => g.span), lo, hi);
+    /** VIDEO 650 — an acceptable picture and generic footage placed FOR this sentence: cover, named below */
+    const acceptableIn = clip(acceptable.filter((g) => g.forSentence === key).map((g) => g.span), lo, hi);
+    const genericIn = clip(generic.filter((g) => g.forSentence === key).map((g) => g.span), lo, hi);
+    const syntheticIn = clip(synthetic.filter((g) => g.forSentence === key).map((g) => g.span), lo, hi);
+    const aiIn = clip(aiGenerated.filter((g) => g.forSentence === key).map((g) => g.span), lo, hi);
     const otherSentenceIn = clip(
-      [...approved.filter((a) => a.forSentence != null && a.forSentence !== key), ...contentGraphics.filter((g) => g.forSentence != null && g.forSentence !== key)].map((a) => a.span),
+      [...approved, ...acceptable, ...generic, ...contentGraphics].filter((a) => a.forSentence != null && a.forSentence !== key).map((a) => a.span),
       lo,
       hi
     );
-    const unmarkedIn = clip([...approved.filter((a) => a.forSentence == null), ...contentGraphics.filter((g) => g.forSentence == null)].map((a) => a.span), lo, hi);
-    const coverSpans = union([...approvedIn, ...graphicIn]);
+    const unmarkedIn = clip([...approved, ...acceptable, ...generic, ...contentGraphics].filter((a) => a.forSentence == null).map((a) => a.span), lo, hi);
+    const coverSpans = union([...approvedIn, ...graphicIn, ...acceptableIn, ...genericIn]);
     const rest = subtract(win, coverSpans);
     const unverifiedIn = clip([...unverified, ...unmarkedIn], lo, hi);
     const stretchedIn = clip(stretched, lo, hi);
@@ -246,6 +296,10 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
       ...base,
       coveredSec: r3(measure(coverSpans)),
       approvedFootageSec: r3(measure(approvedIn)),
+      acceptableFootageSec: r3(measure(subtract(acceptableIn, union([...approvedIn, ...graphicIn])))),
+      aiGeneratedSec: r3(measure(aiIn)),
+      genericFootageSec: r3(measure(subtract(genericIn, union([...approvedIn, ...graphicIn, ...acceptableIn])))),
+      syntheticPlaceholderSec: r3(measure(subtract(syntheticIn, union([...approvedIn, ...graphicIn, ...acceptableIn])))),
       contentGraphicSec: r3(measure(graphicIn)),
       unverifiedSec: r3(measure(clip(unverifiedIn, lo, hi).length ? subtract(unverifiedIn, coverSpans) : [])),
       otherSentenceSec: r3(measure(subtract(otherSentenceIn, coverSpans))),
@@ -256,6 +310,10 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
     const kinds: SentencePictureKind[] = [];
     if (row.approvedFootageSec > 0) kinds.push("approved_footage");
     if (row.contentGraphicSec > 0) kinds.push("content_graphic");
+    if (row.acceptableFootageSec > 0) kinds.push("acceptable_footage");
+    if (row.aiGeneratedSec > 0) kinds.push("ai_generated_footage");
+    if (row.genericFootageSec > 0) kinds.push("generic_footage");
+    if (row.syntheticPlaceholderSec > 0) kinds.push("synthetic_placeholder");
     if (row.cardSec > 0) kinds.push("chapter_card");
     if (row.unverifiedSec > 0) kinds.push("unverified_footage");
     if (row.otherSentenceSec > 0) kinds.push("other_sentence_picture");
@@ -285,8 +343,26 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
   });
 
   const count = (st: SentenceCoverageStatus) => rows.filter((r) => r.status === st).length;
-  const proven = rows.length > 0 && rows.every((r) => r.status === "covered" && r.timingBasis === "measured");
+  const allCovered = rows.length > 0 && rows.every((r) => r.status === "covered");
+  /** PRE-DEPLOY — exact only from word timestamps; windows cut at pauses are approximate, never "proven" */
+  const proven = allCovered && rows.every((r) => r.timingBasis === "measured");
+  const timing: SentenceTimingVerdict = proven
+    ? "exact"
+    : allCovered && rows.every((r) => r.timingBasis === "measured" || r.timingBasis === "measured_silence")
+      ? "approximate"
+      : "unproven";
   if (rows.some((r) => r.timingBasis === "estimated")) problems.push("spoken windows are estimated (no narration alignment): coverage in time cannot be proven");
+  const fromPauses = rows.filter((r) => r.timingBasis === "measured_silence");
+  if (fromPauses.length > 0) {
+    problems.push(`spoken windows of ${fromPauses.length} sentence(s) are measured from pauses in the audio (measured_silence), not word timestamps: timing is approximate`);
+  }
+  const placeholders = rows.filter((r) => r.syntheticPlaceholderSec > 0);
+  if (placeholders.length > 0) {
+    problems.push(
+      `synthetic placeholder (an emergency colour field, NOT footage) under ${placeholders.length} sentence(s), ` +
+        `${placeholders.reduce((t, r) => t + r.syntheticPlaceholderSec, 0).toFixed(2)}s (${placeholders.map((r) => r.key).join(",")}): a quality problem, not a picture choice`
+    );
+  }
   return {
     basis: "timeline",
     sentences: rows,
@@ -299,6 +375,7 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
     cardIntervals,
     plannedCardSec,
     proven,
+    timing,
     problems,
   };
 }
@@ -309,13 +386,14 @@ export function formatSentenceCoverage(videoId: number, report: SentenceCoverage
     (r) =>
       `[SentenceCoverage] video=${videoId} ${r.key} spoken=${r.startSec == null || r.endSec == null ? "unknown" : `${r.startSec.toFixed(2)}-${r.endSec.toFixed(2)}s`} ` +
       `timing=${r.timingBasis} status=${r.status} covered=${r.coveredSec.toFixed(2)}s kinds=${r.kinds.join("+")} ` +
-      `approvedFootage=${r.approvedFootageSec.toFixed(2)}s graphic=${r.contentGraphicSec.toFixed(2)}s card=${r.cardSec.toFixed(2)}s ` +
+      `approvedFootage=${r.approvedFootageSec.toFixed(2)}s graphic=${r.contentGraphicSec.toFixed(2)}s acceptable=${r.acceptableFootageSec.toFixed(2)}s ai=${r.aiGeneratedSec.toFixed(2)}s generic=${r.genericFootageSec.toFixed(2)}s card=${r.cardSec.toFixed(2)}s ` +
       `unverified=${r.unverifiedSec.toFixed(2)}s otherSentence=${r.otherSentenceSec.toFixed(2)}s stretched=${r.stretchedSec.toFixed(2)}s empty=${r.emptySec.toFixed(2)}s` +
+      (r.syntheticPlaceholderSec > 0 ? ` syntheticPlaceholder=${r.syntheticPlaceholderSec.toFixed(2)}s` : "") +
       (r.reasons.length ? ` reason="${r.reasons.join("; ")}"` : "")
   );
   lines.push(
     `[SentenceCoverage] video=${videoId} TOTAL sentences=${report.total} covered=${report.covered} partial=${report.partial} uncovered=${report.uncovered} unknown=${report.unknown} ` +
-      `stretchedClips=${report.stretchedClips} plannedCardSec=${report.plannedCardSec.toFixed(2)} proven=${report.proven ? "yes" : "no"}` +
+      `stretchedClips=${report.stretchedClips} plannedCardSec=${report.plannedCardSec.toFixed(2)} proven=${report.proven ? "yes" : "no"} timing=${report.timing}` +
       (report.problems.length ? ` problems="${report.problems.join("; ")}"` : "")
   );
   return lines;

@@ -98,6 +98,29 @@ export const RENDER_ERROR = {
 
 export type RenderErrorCode = (typeof RENDER_ERROR)[keyof typeof RENDER_ERROR];
 
+/* ═══════════════════════ VIDEO 650 — the heartbeat and the stale sweep ═══════════════════════ */
+
+/** How often a running render writes its heartbeat (db `touchRunningRenderJob`). */
+export const RENDER_JOB_HEARTBEAT_MS = 60_000;
+
+/** After this long without a heartbeat a running job is a lost job. Env RENDER_JOB_STALE_MIN, default 15. */
+export function renderJobStaleMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number.parseInt(env.RENDER_JOB_STALE_MIN ?? "", 10);
+  const minutes = Number.isFinite(n) && n >= 3 ? n : 15;
+  return minutes * 60_000;
+}
+
+/** Pure: which running rows are stale at `now`. The db sweep applies the same rule inside its UPDATE. */
+export function staleRunningRenderJobIds(
+  rows: ReadonlyArray<{ id: number; status: string; updatedAt: Date | string | null }>,
+  now: number,
+  staleMs: number
+): number[] {
+  return rows
+    .filter((r) => r.status === "running" && r.updatedAt != null && now - new Date(r.updatedAt).getTime() >= staleMs)
+    .map((r) => r.id);
+}
+
 /* ═══════════════════════ §2 — the fencing decision ═══════════════════════ */
 
 export type PublishVerdict =

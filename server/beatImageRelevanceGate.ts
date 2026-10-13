@@ -48,7 +48,20 @@ import type { ShotType } from "./cinematicEditingEngine/types";
 import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
 import type { LineFacts } from "./beatVisualIntent";
 
-export type BeatImageVerdict = "fits" | "does_not_fit" | "unknown";
+/**
+ * VIDEO 650 — the four answers, and the rule for each:
+ *
+ *   fits          the frame shows the subject AND the situation the line describes (`belongs`, both
+ *                 halves true, no guard refused it) — or b-roll admitted by `abstractLineRule`;
+ *   acceptable    the frame shows the SUBJECT and not the situation, and nothing in it contradicts
+ *                 the line (`acceptableRule`): usable as this sentence's picture only when no fit is
+ *                 found for it — adopted after every fit, before generic footage, named as such;
+ *   does_not_fit  the subject is not shown, or the frame contradicts the line, or a guard refused
+ *                 the approval (a guessed identity, a logo);
+ *   unknown       no answer could be had — a decline, a timeout, a malformed reply. Never adopted
+ *                 as a verified picture.
+ */
+export type BeatImageVerdict = "fits" | "acceptable" | "does_not_fit" | "unknown";
 
 /**
  * WHY THE GATE DID NOT LOOK — as a value, not as a sentence.
@@ -329,6 +342,8 @@ export type BeatImageGateState = {
   judgementAttempts: number;
   /** The model looked and said the picture belongs. The only outcome that is good news. */
   judgementsFits: number;
+  /** VIDEO 650 — answered "acceptable": the subject shown, the situation not. See `acceptableRule`. */
+  judgementsAcceptable: number;
   /** The model looked and said it does not belong. An answer — just not the one we wanted. */
   judgementsMismatch: number;
   /**
@@ -457,6 +472,7 @@ export function createBeatImageGateState(): BeatImageGateState {
     seen: new Map(),
     judgementAttempts: 0,
     judgementsFits: 0,
+    judgementsAcceptable: 0,
     judgementsMismatch: 0,
     judgementsFailed: 0,
     judgementsSkipped: 0,
@@ -472,6 +488,8 @@ export function createBeatImageGateState(): BeatImageGateState {
 export type JudgementTally = {
   attempts: number;
   fits: number;
+  /** VIDEO 650 — see `acceptableRule`. */
+  acceptable: number;
   mismatch: number;
   failed: number;
   skipped: number;
@@ -488,16 +506,17 @@ export type JudgementTally = {
  * adding fields together at the call site is exactly how "44 of 88" happened.
  */
 export function judgementTally(state: BeatImageGateState): JudgementTally {
-  const { judgementAttempts: attempts, judgementsFits: fits } = state;
+  const { judgementAttempts: attempts, judgementsFits: fits, judgementsAcceptable: acceptable } = state;
   const { judgementsMismatch: mismatch, judgementsFailed: failed, judgementsSkipped: skipped } = state;
   return {
     attempts,
     fits,
+    acceptable,
     mismatch,
     failed,
     skipped,
     answered: attempts - failed,
-    inconsistent: attempts !== fits + mismatch + failed,
+    inconsistent: attempts !== fits + acceptable + mismatch + failed,
   };
 }
 
@@ -662,7 +681,7 @@ export function approvalRestsOnAGuess(
   subject?: string,
   personAsRead?: (name: string) => string | null | undefined
 ): boolean {
-  if (judgement.verdict !== "fits") return false;
+  if (judgement.verdict !== "fits" && judgement.verdict !== "acceptable") return false;
   const people = namedPeople(beatText, subject, personAsRead);
   if (people.length === 0) return false;
   const reason = judgement.reason ?? "";
@@ -691,7 +710,7 @@ const ONLY_A_LOGO_RE =
   /^\s*(?:(?:a|an|the|close-?up of(?: a| the)?|image of(?: a| the)?)\s+)*(?:[\p{L}\d'’&.-]+\s+){0,3}(?:logo|logos|icon|icons|wordmark|emblem|brand mark)(?:\s+(?:on|against|in front of|over)\s+(?:a\s+|the\s+)?(?:[\p{L}-]+\s+){0,2}(?:background|wall|screen|sign|surface))?\s*[.!]?\s*$/iu;
 
 export function approvalIsOnlyALogo(judgement: Pick<BeatImageJudgement, "verdict" | "depicts">): boolean {
-  if (judgement.verdict !== "fits") return false;
+  if (judgement.verdict !== "fits" && judgement.verdict !== "acceptable") return false;
   const depicts = (judgement.depicts ?? "").trim();
   if (!depicts) return false;
   return depicts.split(/(?<=\.)\s+/).every((sentence) => ONLY_A_LOGO_RE.test(sentence) || /^the frames? (?:are|is) (?:consistent|the same)/i.test(sentence));
@@ -832,6 +851,34 @@ export function abstractLineRule<T extends Pick<BeatImageJudgement, "verdict" | 
 }
 
 /**
+ * VIDEO 650 — ACCEPTABLE: the subject shown, the situation not, nothing contradicting the line.
+ *
+ * The same answer `abstractLineRule` reads (`subject_matches: true`, `situation_matches: false`,
+ * no contradiction in what the model saw or said), for EVERY line rather than only an abstract one.
+ * Where the abstract-line rule applies it still wins (a fit by rule); everywhere else the answer
+ * was a plain refusal, and a sentence whose every candidate showed its subject ended as a card.
+ * Such a picture is now `acceptable`: never adopted ahead of a fit (visionAwareSelection.ts ranks
+ * it below FIT and UNREVIEWED), adopted when the sentence has no fit, and carried to the timeline as
+ * `contentApproval: "judge_acceptable"` so the coverage check and the report name it. The guards
+ * that run after this rule (a guessed identity, a logo) refuse an acceptable exactly as a fit.
+ */
+export const ACCEPTABLE_PREFIX = "acceptable — subject shown, situation not: ";
+
+export function acceptableRule<T extends Pick<BeatImageJudgement, "verdict" | "depicts" | "reason">>(
+  judgement: T,
+  answer: { subject_matches?: unknown; situation_matches?: unknown },
+  /** VIDEO 641 (L1) — a subject the model only GUESSED from the line is not a subject shown: no promotion, the situation refusal stands. */
+  guess?: { beatText: string; subject?: string; personAsRead?: (name: string) => string | null | undefined }
+): T {
+  if (judgement.verdict !== "does_not_fit") return judgement;
+  if (answer.subject_matches !== true || answer.situation_matches !== false) return judgement;
+  if (CONTRADICTION_RE.test(`${judgement.depicts ?? ""} ${judgement.reason ?? ""}`)) return judgement;
+  if (guess && approvalRestsOnAGuess({ ...judgement, verdict: "fits" }, guess.beatText, guess.subject, guess.personAsRead)) return judgement;
+  const reason = (judgement.reason ?? "").replace(SITUATION_PREFIX_RE, "");
+  return { ...judgement, verdict: "acceptable", reason: `${ACCEPTABLE_PREFIX}${reason}`.slice(0, 160) };
+}
+
+/**
  * THE SITUATION QUESTION, SETTLED — the rule and its one exception, in that order.
  *
  * `situationRule` first: an approval that shows the subject without the situation is refused.
@@ -839,11 +886,12 @@ export function abstractLineRule<T extends Pick<BeatImageJudgement, "verdict" | 
  * footage of the subject is admitted again. Each step logs what it changed, against the model's own
  * answer, so a log line always names the rule that wrote the verdict.
  */
-function settleSituationQuestion(
+export function settleSituationQuestion(
   judgementAsGiven: BeatImageJudgement,
   parsed: { subject_matches?: unknown; situation_matches?: unknown },
   line: LineFacts | undefined,
-  beatText: string
+  beatText: string,
+  guess?: { subject?: string; personAsRead?: (name: string) => string | null | undefined }
 ): BeatImageJudgement {
   /** OCTOBER 2026 (render 626) — see `situationRule`: the subject alone is not a fit. */
   const judgementAfterSituation = situationRule(judgementAsGiven, parsed);
@@ -861,7 +909,15 @@ function settleSituationQuestion(
         `evidence=${line?.evidenceRequirement} want=NONE reason="${judgementAsGiven.reason.slice(0, 100)}"`
     );
   }
-  return judgementAfterAbstractLine;
+  /** VIDEO 650 — see `acceptableRule`: what is left of a subject-only refusal is acceptable, not refused. */
+  const judgementAfterAcceptable = acceptableRule(judgementAfterAbstractLine, parsed, { beatText, subject: guess?.subject, personAsRead: guess?.personAsRead });
+  if (judgementAfterAcceptable !== judgementAfterAbstractLine) {
+    console.log(
+      `[BeatImageGate] subject shown, situation not — ACCEPTABLE (adopted only without a fit): ` +
+        `depicts="${judgementAsGiven.depicts.slice(0, 80)}"`
+    );
+  }
+  return judgementAfterAcceptable;
 }
 
 export function buildBeatImagePrompt(
@@ -1308,7 +1364,7 @@ export async function judgeBeatImage(params: {
       ...(provider ? { provider } : {}),
     };
     /** The situation question, settled: `situationRule` (render 626) and its one exception (render 644). */
-    const judgementAfterSituation = settleSituationQuestion(judgementAsGiven, parsed, params.line, beatText);
+    const judgementAfterSituation = settleSituationQuestion(judgementAsGiven, parsed, params.line, beatText, { subject: params.anchors?.subject, personAsRead: state.personAsRead });
     /** Video 614 — see `approvalRestsOnAGuess`. */
     const judgement = refuseGuessedIdentity(judgementAfterSituation, beatText, params.anchors?.subject, state.personAsRead);
     /** VIDEO 641 (L1) — compared with what reached this rule: a situation refusal is not an identity guess. */
@@ -1327,6 +1383,7 @@ export async function judgeBeatImage(params: {
     // judgement with an unwelcome result, not a failure — conflating the two is how a render
     // whose sourcing is wrong reads the same as a render whose model is down.
     if (judgement.verdict === "fits") state.judgementsFits++;
+    else if (judgement.verdict === "acceptable") state.judgementsAcceptable++;
     else state.judgementsMismatch++;
     state.seen.set(seenKey, judgement);
     /**

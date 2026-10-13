@@ -1,0 +1,39 @@
+{
+ "sentences": [
+  {
+   "text": "In 1912 vertrok de Titanic uit Southampton.",
+   "start": 0.3,
+   "end": 4.216
+  },
+  {
+   "text": "Aan boord waren meer dan tweeduizend mensen, onder wie veel emigranten.",
+   "start": 4.716,
+   "end": 9.704
+  },
+  {
+   "text": "Vier dagen later raakte het schip een ijsberg.",
+   "start": 10.154,
+   "end": 13.132
+  },
+  {
+   "text": "Binnen drie uur zonk het.",
+   "start": 13.732,
+   "end": 15.303
+  },
+  {
+   "text": "Slechts zevenhonderd mensen overleefden de ramp.",
+   "start": 15.803,
+   "end": 18.941
+  }
+ ],
+ "totalSec": 19.341,
+ "pauses": [
+  0.5,
+  0.45,
+  0.6,
+  0.5
+ ],
+ "voice": "nl",
+ "speed": 150,
+ "commaPause": 0.3
+}

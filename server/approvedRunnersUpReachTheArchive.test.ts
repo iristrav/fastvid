@@ -75,7 +75,7 @@ describe("the ingestion rule has a single writer", () => {
     const at = PIPE.indexOf("export function archiveMetadataForExternalClip(");
     expect(at, "the single metadata writer is gone").toBeGreaterThan(-1);
     const body = PIPE.slice(at, PIPE.indexOf("\n}", at));
-    expect(body).toContain("tags: [],");
+    expect(body).toContain('tags: c.source === REPLICATE_VIDEO_PROVIDER ? ["ai-generated"] : [],');
     expect(body).not.toContain("tags: beat.keywords");
   });
 });

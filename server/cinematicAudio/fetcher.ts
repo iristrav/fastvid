@@ -41,10 +41,16 @@ async function fetchFreesoundPreviewUrl(freesoundId: number): Promise<string | n
       {},
       8_000
     );
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      /** VIDEO 650 — the status, so a 401 (key), a 404 (sound gone) and a 429 (quota) read differently. */
+      console.warn(`[Freesound] sound=${freesoundId} preview lookup answered HTTP ${resp.status}`);
+      return null;
+    }
     const data = await resp.json() as { previews?: { "preview-hq-mp3"?: string } };
+    if (!data.previews?.["preview-hq-mp3"]) console.warn(`[Freesound] sound=${freesoundId} answered without a preview-hq-mp3 field`);
     return data.previews?.["preview-hq-mp3"] ?? null;
-  } catch {
+  } catch (err) {
+    console.warn(`[Freesound] sound=${freesoundId} preview lookup failed: ${(err as Error)?.message?.slice(0, 100)}`);
     return null;
   }
 }

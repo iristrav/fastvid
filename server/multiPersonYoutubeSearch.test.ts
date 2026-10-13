@@ -508,8 +508,16 @@ beforeAll(async () => {
 }, 60_000);
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 afterEach(() => vi.restoreAllMocks());
+/** One real encode per duration, then copies: the stock makes ~30 files, and thirty ffmpeg processes under four test shards ran past the 5 s clock. */
+const encoded = new Map<number, string>();
 const video = (file: string, seconds: number): string => {
-  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=gray:s=64x36:d=${seconds}`, "-c:v", "libx264", "-pix_fmt", "yuv420p", file]);
+  let src = encoded.get(seconds);
+  if (!src) {
+    src = path.join(dir, `_src_${seconds}s.mp4`);
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=gray:s=64x36:d=${seconds}`, "-c:v", "libx264", "-pix_fmt", "yuv420p", src]);
+    encoded.set(seconds, src);
+  }
+  fs.copyFileSync(src, file);
   return file;
 };
 

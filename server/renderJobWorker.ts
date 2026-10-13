@@ -46,6 +46,8 @@ import {
   publishEditedVideo,
   readVideoMetadataObject,
   updateRenderJobProgress,
+  touchRunningRenderJob,
+  sweepStaleRunningRenderJobs,
 } from "./db";
 import {
   LINEAGE_SNAPSHOT_METADATA_KEY,
@@ -73,6 +75,7 @@ import {
   SAFE_RENDER_ANSWERS,
 } from "./ffmpegFailureClass";
 import { safeRenderTimeline, formatSafeRender } from "./timelineRepair";
+import { RENDER_JOB_HEARTBEAT_MS, renderJobStaleMs } from "./renderJobs";
 import { formatOverlayInk } from "./graphicsOverlayInk";
 import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsOverlayDeps";
 import { storagePutFromFile } from "./storage";
@@ -487,6 +490,15 @@ export async function runRenderJob(params: {
   const phase = async (p: RenderPhase) => {
     await updateRenderJobProgress(job.id, p, progressForPhase(p));
   };
+  /**
+   * VIDEO 650 — the heartbeat. A phase lasts as long as ffmpeg takes, and between phases nothing
+   * wrote to the row; `sweepStaleRenderJobs` would have no way to tell a long render from a dead
+   * worker. Every minute the row's `updatedAt` is written for as long as this process holds the job.
+   */
+  const heartbeat = setInterval(() => {
+    void touchRunningRenderJob(job.id).catch(() => undefined);
+  }, RENDER_JOB_HEARTBEAT_MS);
+  heartbeat.unref?.();
 
   const fail = async (code: RenderErrorCode, message: string): Promise<RenderJobOutcome> => {
     await finishRenderJob({ id: job.id, status: "failed", errorCode: code, errorMessage: message });
@@ -685,14 +697,16 @@ export async function runRenderJob(params: {
 
     /* 5. ffmpeg, with the Remotion graphics layer laid over it when there is one */
     await phase("rendering");
-    const outputPath = path.join(workDir, "out.mp4");
+    /** `let`: the one bounded retry below delivers from its own file when the first one failed its check. */
+    let outputPath = path.join(workDir, "out.mp4");
     const renderDir = path.join(workDir, "render");
     const overlay = deps.graphicsOverlay({ workDir: renderDir });
-    const renderWith = (t: typeof timeline) =>
+    const renderWith = (t: typeof timeline, again?: { outputPath: string; startRung: "cut" }) =>
       deps.render({
         timeline: t,
         workDir: renderDir,
-        outputPath,
+        outputPath: again?.outputPath ?? outputPath,
+        startRung: again?.startRung,
         resolveMedia: async (clip) => rehydration.byClipId.get(clip.id) ?? null,
         resolveAudio: async (id) => audioByClip.get(id) ?? null,
         graphicsOverlay: overlay
@@ -733,6 +747,8 @@ export async function runRenderJob(params: {
      * the second names whatever the simplified graph tripped over on the way past it.
      */
     let rendered: Awaited<ReturnType<typeof renderTimeline>>;
+    /** The document the picture was actually rendered from — the plan, or its safe-render twin. */
+    let timelineRendered = timeline;
     try {
       rendered = await renderWith(timeline);
     } catch (renderErr) {
@@ -748,6 +764,7 @@ export async function runRenderJob(params: {
       await phase("rendering");
       try {
         rendered = await renderWith(safe.timeline);
+        timelineRendered = safe.timeline;
       } catch {
         throw renderErr;
       }
@@ -901,18 +918,76 @@ export async function runRenderJob(params: {
     }
 
     /* 6a. the ffprobe gate — measured, never assumed */
-    const check = await deps.check({
+    let check = await deps.check({
       filePath: outputPath,
       timeline,
       expectAudio: audioByClip.size > 0,
     });
     if (!check.ok) {
-      return await fail(
-        RENDER_ERROR.RENDER_FAILED,
-        `the rendered file failed its quality check: ${check.problems.join("; ")}`
+      /**
+       * VIDEO 650 — ONE bounded retry, and only for a TECHNICAL refusal.
+       *
+       * Video 650 was a complete, validated timeline — every sentence under approved footage —
+       * whose file came out at 25 fps instead of 30, and the check's refusal was the end of the
+       * video: there was no second render, and the pipeline's answer to a failed render job was a
+       * new sourcing round, which is the wrong remedy for an encoder fault. This block is the
+       * remedy that fits the fault:
+       *
+       *   · the SAME timeline, the SAME rehydrated media and audio, the SAME overlay — nothing is
+       *     sourced, downloaded or judged again;
+       *   · the plainest join (`startRung: "cut"`), the frame rate stated on every encode;
+       *   · a separate output file, so nothing of the first attempt is read by mistake;
+       *   · ONE attempt. A second failure ends the job with BOTH refusals in the message, the
+       *     first one first, because that is the one that names the fault.
+       *
+       * What this never retries: a refusal that is about the TIMELINE rather than the file. A
+       * sentence without footage, a clip without an archive handle, a card standing in for
+       * footage — those are the delivery gate's (step 6d, below) and a second encode of the same
+       * document cannot change them, so they do not come through here at all.
+       */
+      const firstProblems = check.problems.join("; ");
+      const { formatHostResources } = await import("./hostResources");
+      console.error(
+        `[RenderJob] job=${job.id} RENDER_CHECK_FAILED attempt=1 — ${firstProblems} — ` +
+          `one retry: same timeline, same media, same audio, plain cut joins | host: ${formatHostResources()}`
       );
+      const retryPath = path.join(workDir, "out_retry.mp4");
+      await phase("rendering");
+      let retryProblem: string | null = null;
+      try {
+        rendered = await renderWith(timelineRendered, { outputPath: retryPath, startRung: "cut" });
+      } catch (err) {
+        retryProblem = `the retry render threw: ${((err as Error)?.message ?? String(err)).slice(0, 300)}`;
+      }
+      if (retryProblem == null) {
+        check = await deps.check({ filePath: retryPath, timeline, expectAudio: audioByClip.size > 0 });
+        if (check.ok) {
+          outputPath = retryPath;
+          const line =
+            `render_retry: the first encode failed its quality check (${firstProblems}); the film ` +
+            `was rendered once more with plain cut joins — same clips, same order, same length, same audio`;
+          console.warn(`[RenderJob] job=${job.id} RENDER_RETRY_SUCCEEDED — ${line}`);
+          skippedFromSafeRender.push(line);
+        } else {
+          retryProblem = check.problems.join("; ");
+        }
+      }
+      if (retryProblem != null) {
+        return await fail(
+          RENDER_ERROR.RENDER_FAILED,
+          `technical render failure (the file, not the timeline): the rendered file failed its ` +
+            `quality check twice — first attempt: ${firstProblems}; retry (plain cut joins): ${retryProblem}`
+        );
+      }
     }
 
+    /** VIDEO 650 — the delivered file, measured, in one line a log reader can find. */
+    console.log(
+      `[RenderJob] job=${job.id} FINAL_FILE ${check.widthPx ?? "?"}x${check.heightPx ?? "?"} ` +
+        `fps=${check.fps ?? "?"} avgFps=${check.avgFps ?? "?"} frames=${check.frameCount ?? "?"} ` +
+        `duration=${check.durationSec?.toFixed(2) ?? "?"}s size=${check.sizeBytes}B audio=${check.hasAudio ? "yes" : "no"}` +
+        (outputPath.endsWith("out_retry.mp4") ? " (from the retry render)" : "")
+    );
     /**
      * 6b. DO THE TWO STREAMS LINE UP?
      *
@@ -1220,6 +1295,7 @@ export async function runRenderJob(params: {
   } catch (err) {
     return await fail(RENDER_ERROR.RENDER_FAILED, (err as Error).message ?? String(err));
   } finally {
+    clearInterval(heartbeat);
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch {
@@ -1273,13 +1349,31 @@ export async function processRenderJobTick(): Promise<void> {
   }
 }
 
+/** VIDEO 650 — fail the running jobs whose worker stopped reporting; see `sweepStaleRunningRenderJobs`. */
+export async function sweepStaleRenderJobs(): Promise<number[]> {
+  const staleMs = renderJobStaleMs();
+  try {
+    const ids = await sweepStaleRunningRenderJobs(staleMs);
+    for (const id of ids) {
+      console.error(`[RenderJob] job=${id} STALE_RUNNING_JOB_FAILED — no heartbeat for ${Math.round(staleMs / 60_000)} min; the worker that held it is gone`);
+    }
+    return ids;
+  } catch (err) {
+    console.warn("[RenderJob] stale sweep failed (DB may be unavailable):", (err as Error).message);
+    return [];
+  }
+}
+
 export function startRenderJobWorker(): void {
   if (pollTimer) return;
   const intervalMs = parseInt(process.env.RENDER_JOB_POLL_MS ?? "5000", 10);
   console.log(
-    `[RenderJob] worker started — ${maxConcurrentRenderJobs()}/process, poll every ${intervalMs}ms`
+    `[RenderJob] worker started — ${maxConcurrentRenderJobs()}/process, poll every ${intervalMs}ms, ` +
+      `heartbeat every ${RENDER_JOB_HEARTBEAT_MS / 1000}s, stale after ${Math.round(renderJobStaleMs() / 60_000)} min`
   );
-  void processRenderJobTick();
+  void sweepStaleRenderJobs().then(() => processRenderJobTick());
   pollTimer = setInterval(() => void processRenderJobTick(), intervalMs);
+  const sweep = setInterval(() => void sweepStaleRenderJobs(), 2 * 60_000);
+  sweep.unref?.();
 }
 

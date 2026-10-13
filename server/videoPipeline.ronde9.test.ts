@@ -64,7 +64,8 @@ describe("RONDE 9.2 — tags describe what is SHOWN, never what is SAID", () => 
     const idx = pipelineSrc.indexOf("export function archiveMetadataForExternalClip(");
     expect(idx, "the single metadata writer is gone — has a route grown its own again?").toBeGreaterThan(-1);
     const call = pipelineSrc.slice(idx, idx + 2400);
-    expect(call).toContain("tags: [],");
+    /** VIDEO 650 — the one tag a generated clip carries names it as generated; narration words still never become tags. */
+    expect(call).toContain('tags: c.source === REPLICATE_VIDEO_PROVIDER ? ["ai-generated"] : [],');
     expect(call).not.toContain("tags: beat.keywords");
     /** And there is exactly one of them, so "the single writer" is measured rather than assumed. */
     expect((pipelineSrc.match(/export function archiveMetadataForExternalClip\(/g) ?? []).length).toBe(1);

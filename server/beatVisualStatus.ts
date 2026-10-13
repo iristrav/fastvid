@@ -106,6 +106,8 @@ export type BeatCoverage =
 export type BeatVerification =
   /** The model looked and said it belongs. */
   | "verified_fit"
+  /** VIDEO 650 — the model looked and saw the subject without the situation; used only without a fit. */
+  | "verified_acceptable"
   /** The model looked and said it does not belong, and it was not used anyway. */
   | "verified_mismatch"
   /**
@@ -214,6 +216,7 @@ function verificationOf(decision: {
 }): BeatVerification {
   if (decision.reprieved) return "reprieved_after_refusal";
   if (decision.verdict === "fits") return "verified_fit";
+  if (decision.verdict === "acceptable") return "verified_acceptable";
   if (decision.verdict === "does_not_fit") return "verified_mismatch";
   /**
    * `unknown` used to cover BOTH "the model could not answer" AND "the gate declined to ask".
@@ -511,7 +514,7 @@ export function tallyBeatVisualStatuses(statuses: readonly BeatVisualStatus[]): 
     placeholder: 0, generated: 0, none: 0,
   };
   const byVerification: Record<BeatVerification, number> = {
-    verified_fit: 0, verified_mismatch: 0, reprieved_after_refusal: 0, unknown: 0, never_asked: 0,
+    verified_fit: 0, verified_acceptable: 0, verified_mismatch: 0, reprieved_after_refusal: 0, unknown: 0, never_asked: 0,
   };
   let verifiedOwnVisual = 0;
   for (const s of statuses) {

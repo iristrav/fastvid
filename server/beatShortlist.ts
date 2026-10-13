@@ -180,6 +180,8 @@ export type NotAskedReason =
 /** The five states a candidate's vision outcome can be in. Only APPROVED is a positive selection. */
 export type BeatVisionOutcome =
   | "APPROVED"
+  /** VIDEO 650 — the subject shown without the situation (acceptableRule); adopted only without a fit. */
+  | "ACCEPTABLE"
   | "REJECTED"
   | "UNCLEAR"
   | "NOT_ASKED"
@@ -204,6 +206,8 @@ export type BeatFunnel = {
   shortlisted: number;
   visionAsked: number;
   approved: number;
+  /** VIDEO 650 — the editor called it acceptable: the subject shown, the situation not. */
+  acceptable: number;
   rejected: number;
   unclear: number;
   unavailable: number;
@@ -328,6 +332,7 @@ export function beatFunnel(
     shortlisted: 0,
     visionAsked: 0,
     approved: 0,
+    acceptable: 0,
     rejected: 0,
     unclear: 0,
     unavailable: 0,
@@ -678,6 +683,7 @@ export function noteVisionOutcome(
   if (!state) return;
   const f = beatFunnel(state, sceneIndex, beatIndex);
   if (outcome === "APPROVED") f.approved += 1;
+  else if (outcome === "ACCEPTABLE") f.acceptable += 1;
   else if (outcome === "REJECTED") {
     f.rejected += 1;
     bumpReason(f, "REJECTED_BY_EDITOR");
@@ -801,6 +807,7 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
     shortlisted: 0,
     visionAsked: 0,
     approved: 0,
+    acceptable: 0,
     rejected: 0,
     unclear: 0,
     unavailable: 0,
@@ -815,6 +822,7 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
     total.shortlisted += f.shortlisted;
     total.visionAsked += f.visionAsked;
     total.approved += f.approved;
+    total.acceptable += f.acceptable;
     total.rejected += f.rejected;
     total.unclear += f.unclear;
     total.unavailable += f.unavailable;
@@ -834,7 +842,7 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
         `ranked=${f.ranked} rankRuns=${f.rankRuns}` +
         (f.rankRuns > 0 ? ` rankIn=${f.rankInput}` : "") +
         ` shortlisted=${f.shortlisted}/${cap} visionAsked=${f.visionAsked} ` +
-        `approved=${f.approved} rejected=${f.rejected} unclear=${f.unclear} ` +
+        `approved=${f.approved} acceptable=${f.acceptable} rejected=${f.rejected} unclear=${f.unclear} ` +
         `unavailable=${f.unavailable} notAsked=${f.notAsked}` +
         (f.judgedAtPush > 0 ? ` judgedAtPush=${f.judgedAtPush}` : "") +
         (f.refusedForCap > 0 ? ` cappedOut=${f.refusedForCap}` : "") +

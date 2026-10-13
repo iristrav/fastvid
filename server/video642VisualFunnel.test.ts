@@ -79,13 +79,26 @@ const quiet = () => {
 
 const SENTENCE = "Elon Musk walked through the Tesla factory.";
 let fileNo = 0;
-/** A real, decodable, busy video of `seconds` — big enough for the size floor. */
+/**
+ * A real, decodable, busy video of `seconds` — big enough for the size floor (ADOPT_MIN_BYTES_PER_SEC
+ * is 20 kB/s; this is ~100 kB/s). Mild grain, not the encoder's worst case: every adoption below runs
+ * the REAL fair-use transform (a 1080p x264 encode) and the archive ingestion on this file, and heavy
+ * temporal noise made each of those several seconds longer — the two tests at the end took 76 s alone
+ * and ran past their clock under four test shards. One encode, copied per moment.
+ */
+const rawSources = new Map<number, string>();
 function rawVideo(seconds: number): string {
   const raw = path.join(dir, `raw_${fileNo++}.mp4`);
-  execFileSync("ffmpeg", [
-    "-y", "-loglevel", "error", "-f", "lavfi", "-i", `testsrc=s=640x360:d=${seconds}:r=25,noise=alls=60:allf=t`,
-    "-c:v", "libx264", "-b:v", "3M", "-pix_fmt", "yuv420p", raw,
-  ]);
+  let src = rawSources.get(seconds);
+  if (!src) {
+    src = path.join(dir, `_raw_src_${seconds}s.mp4`);
+    execFileSync("ffmpeg", [
+      "-y", "-loglevel", "error", "-f", "lavfi", "-i", `testsrc=s=640x360:d=${seconds}:r=25,noise=alls=12:allf=t`,
+      "-c:v", "libx264", "-preset", "veryfast", "-b:v", "800k", "-minrate", "800k", "-maxrate", "800k", "-bufsize", "1600k", "-pix_fmt", "yuv420p", src,
+    ]);
+    rawSources.set(seconds, src);
+  }
+  fs.copyFileSync(src, raw);
   return raw;
 }
 /** A YouTube moment file exactly as `offerMoments` names it: provider tag and source seconds in the name. */

@@ -67,7 +67,7 @@ describe("Video 618 (3) — every line ffmpeg said, not only the first", () => {
     expect(run).toContain("stderr: (err as { stderr?: unknown } | null)?.stderr,");
     /** The message the classifier and the ladder already read is unchanged. */
     expect(run).toContain("said ? `${what}: ${said} — ${original}` : `${what}: ${original}`");
-    const ladder = RENDERER.slice(RENDERER.indexOf("for (const step of TRANSITION_LADDER) {"));
+    const ladder = RENDERER.slice(RENDERER.indexOf("for (const step of TRANSITION_LADDER.slice(Math.max(0, ladderFrom))) {"));
     expect(ladder).toContain("const said = ffmpegStderrSummary(graphErr);");
     expect(ladder).toContain("[TransitionLadder] ${step} ffmpeg said: ${said}");
     /** A diagnosed failure still fails, and still walks down the ladder. */

@@ -286,7 +286,7 @@ function absorb(f: RenderFacts, line: ParsedLine): boolean {
       if (/DELIVERY_GATE_PASS/.test(msg)) f.deliveryGate = "pass";
       else if (/DELIVERY_GATE_FAIL|DELIVERY_GATE_BLOCK|BLOCKED/.test(msg)) f.deliveryGate = "block";
       const failure = /^\s*([A-Z_]+) — (.*)$/.exec(msg);
-      if (failure && !/^(DELIVERY_GATE_PASS|DELIVERY_GATE_FAIL|COVERAGE|PLACEHOLDER|QUALITY_NOTE)$/.test(failure[1]!)) {
+      if (failure && !/^(DELIVERY_GATE_PASS|DELIVERY_GATE_FAIL|COVERAGE|PLACEHOLDER|QUALITY_NOTE|QUALITY_PROBLEM)$/.test(failure[1]!)) {
         const line = `${failure[1]}: ${failure[2]}`;
         if (!f.gateFailures.includes(line)) f.gateFailures.push(line);
       }

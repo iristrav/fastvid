@@ -456,6 +456,13 @@
       "when": 1788074500000,
       "tag": "0064_editor_timeline_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "5",
+      "when": 1788160900000,
+      "tag": "0065_video650_ai_video_generations",
+      "breakpoints": true
     }
   ]
 }

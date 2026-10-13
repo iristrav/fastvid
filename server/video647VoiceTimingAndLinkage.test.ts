@@ -115,7 +115,8 @@ describe("2. alignment → words → the scene's text → each sentence's own sp
   it("without a stored alignment there is no measured window: `measured` is read from voiceStartSec only", () => {
     const inputs = read("cinematicPipelineInputs.ts");
     expect(inputs).toContain("const measured = beat.voiceStartSec != null;");
-    expect(inputs).toContain('timingBasis: measured && beat.voiceEndSec != null ? "measured" : "estimated",');
+    /** VIDEO 650 — the measured basis has two sources, alignment and the scene audio's pauses; an estimate stays an estimate. */
+    expect(inputs).toContain('timingBasis: measured && beat.voiceEndSec != null ? (beat.voiceTimingSource === "silence" ? "measured_silence" : "measured") : "estimated",');
   });
 });
 

@@ -241,7 +241,8 @@ describe("the generator — create, poll, download, strip audio", () => {
 
 describe("wiring — the same rung, the same route, nothing bypassed", () => {
   const image = PIPE.slice(PIPE.indexOf("async function fetchBeatGeneratedImage("), PIPE.indexOf("\n}\n", PIPE.indexOf("async function fetchBeatGeneratedImage(")));
-  const video = PIPE.slice(PIPE.indexOf("async function fetchBeatGeneratedVideo("), PIPE.indexOf("\n}\n", PIPE.indexOf("async function fetchBeatGeneratedVideo(")));
+  /** VIDEO 650 — the rung is `fetchBeatGeneratedVideo` (ElevenLabs, then Replicate); the ElevenLabs body moved to `fetchBeatElevenLabsVideo`. */
+  const video = PIPE.slice(PIPE.indexOf("async function fetchBeatElevenLabsVideo("), PIPE.indexOf("\n}\n", PIPE.indexOf("async function fetchBeatElevenLabsVideo(")));
 
   it("T11 the video is tried inside fetchBeatGeneratedImage, after the shared decision and prompt, before the still", () => {
     const decision = image.indexOf("generatedImageDecision({");

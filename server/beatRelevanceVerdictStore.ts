@@ -42,7 +42,7 @@ import { getDb } from "./db";
 export type StoredVerdict = {
   /** `contentKey|beatIdentity` — see beatVisualRelevance.beatIdentityKey. */
   key: string;
-  verdict: "fits" | "does_not_fit";
+  verdict: "fits" | "acceptable" | "does_not_fit";
   depicts: string;
   reason: string;
 };
@@ -142,7 +142,7 @@ export async function lookupVerdict(key: string): Promise<StoredVerdict | null> 
     }
     const stored: StoredVerdict = {
       key,
-      verdict: String(row.verdict) === "does_not_fit" ? "does_not_fit" : "fits",
+      verdict: String(row.verdict) === "does_not_fit" ? "does_not_fit" : String(row.verdict) === "acceptable" ? "acceptable" : "fits",
       depicts: String(row.depicts ?? ""),
       reason: String(row.reason ?? ""),
     };
@@ -163,7 +163,7 @@ export async function lookupVerdict(key: string): Promise<StoredVerdict | null> 
  */
 export async function persistVerdict(
   key: string,
-  verdict: "fits" | "does_not_fit",
+  verdict: "fits" | "acceptable" | "does_not_fit",
   depicts: string,
   reason: string,
   model?: string
