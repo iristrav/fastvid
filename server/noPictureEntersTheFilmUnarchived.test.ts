@@ -273,9 +273,10 @@ describe("Tests 10–15 — the routes", () => {
      */
     /** Five before VIDEO 619; the two web-wide rescue stores left with their providers. */
     /** The scene pool and funnel routes left when the three candidate systems became one. */
-    /** VIDEO 650 — the generic floor pushes past the push gate and stores for itself: the gate, and that one floor. */
-    expect((PIPELINE.match(/await storeExternalClipForTimeline\(\{/g) ?? []).length).toBe(2);
-    expect(PIPELINE).toContain('route: "generic_floor",');
+    /** VIDEO 650 — the generic floor stored the synthetic colour field for itself (a second call site). */
+    /** VIDEO 651 — no longer: the colour field is never archived, so the gate is the one call site again. */
+    expect((PIPELINE.match(/await storeExternalClipForTimeline\(\{/g) ?? []).length).toBe(1);
+    expect(PIPELINE).not.toContain('route: "generic_floor",');
   });
 
   /**
