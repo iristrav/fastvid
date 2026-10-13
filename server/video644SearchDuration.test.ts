@@ -56,8 +56,8 @@ describe("H1 — the request (source text, like the existing search-request chec
     expect(search).toContain("if (resp.status === 429) pipeline.markYoutubeRateLimited();");
   });
 
-  it("the local Short rule is untouched as the second lock", () => {
+  it("the local length rule stays as the second lock, at the same four minutes as `medium`", () => {
     const NONFOOTAGE = fs.readFileSync(path.join(__dirname, "youtubeNonFootage.ts"), "utf8");
-    expect(NONFOOTAGE).toContain("export const YOUTUBE_SHORT_MAX_SEC = 180;");
+    expect(NONFOOTAGE).toContain("export const YOUTUBE_MIN_SOURCE_SEC = 240;");
   });
 });
