@@ -155,8 +155,9 @@ describe("FIX 2 — no approval → the normal fallback; a film with footage has
   }, 120_000);
 
   it("5. an approved still is the sentence's picture when no video beats it (render 631 s2b0)", () => {
-    const ladder = PIPE.slice(PIPE.indexOf("const approvedStill = still && !isPipelineFallbackClip(still) ? still : null;"));
+    const ladder = PIPE.slice(PIPE.indexOf("const approvedStill = (still && !isPipelineFallbackClip(still) ? still : null) ?? approvedHistoricalStill;"));
     expect(ladder.length).toBeGreaterThan(0);
+    expect(ladder.length, "the line is found, not the whole file").toBeLessThan(PIPE.length);
     const end = ladder.indexOf("/** The own archive's clip for a beat");
     const body = ladder.slice(0, end);
     expect(body).toContain("if (!canUseLicensedStockBeat(dedup)) return approvedStill;");

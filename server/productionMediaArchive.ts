@@ -52,6 +52,7 @@ import * as path from "path";
 import { createHash } from "crypto";
 
 import { mediaIsUsable, probeMediaFacts, type MediaFacts } from "./assetRehydrator";
+import { SYNTHETIC_PLACEHOLDER_PROVIDER } from "./genericFootageFallback";
 
 /* ═══════════════════════ what the store can say ═══════════════════════ */
 
@@ -323,6 +324,17 @@ export async function storeForProduction(params: {
     );
     return o;
   };
+
+  /**
+   * 0 — VIDEO 651: the synthetic colour field is never archived. Render 651 stored one as asset
+   * 60649, where a later film could be offered it as "archive footage". It is not footage, so it
+   * has no place in the archive, whoever asks.
+   */
+  if (provider === SYNTHETIC_PLACEHOLDER_PROVIDER) {
+    return reject(
+      failure("ARCHIVE_INGEST_REFUSED", "a synthetic placeholder (colour field, not footage) is never archived", "REJECTED")
+    );
+  }
 
   /* 1 — the file the caller says it has. */
   let sizeBytes = 0;

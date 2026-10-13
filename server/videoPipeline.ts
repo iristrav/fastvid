@@ -218,7 +218,6 @@ import {
   GENERIC_FOOTAGE_FALLBACK,
   GENERIC_FOOTAGE_PROVIDER,
   SYNTHETIC_MIN_SEC,
-  SYNTHETIC_PLACEHOLDER_LICENSE,
   SYNTHETIC_PLACEHOLDER_PROVIDER,
   SYNTHETIC_PLACEHOLDER_TITLE,
   clipHasMotion,
@@ -2518,6 +2517,16 @@ async function archiveHitRefusedByPictureEditor(
 }
 
 /**
+ * VIDEO 651 — whether the historical route keeps a photo it found: only a real file (not a
+ * pipeline fallback) that the picture editor approved for THIS sentence. A photo that was merely
+ * adopted without that approval is not kept, so the quality bar for the sentence is unchanged.
+ */
+export function keepsApprovedHistoricalStill(dedup: object, sceneIndex: number, beatIndex: number, clip: string): boolean {
+  if (!clip || isPipelineFallbackClip(clip)) return false;
+  return pictureApprovedForBeat(dedup, sceneIndex, beatIndex, clipContentKey(clip));
+}
+
+/**
  * ARCHIVE FIRST, SUPPLIERS SECOND — AND VIDEO ALWAYS COMES BEFORE A PICTURE.
  *
  * The own archive is asked first. When it holds a video for this beat, that is the answer and no
@@ -2714,6 +2723,16 @@ export async function fetchBeatArchivalThenPexels(
     return ownArchiveClip;
   }
 
+  /**
+   * VIDEO 651 — AN APPROVED PHOTO IS NOT THROWN AWAY BECAUSE IT IS NOT A VIDEO.
+   *
+   * Render 651, s1b0: the picture editor approved a photograph here (FIT), it was adopted and
+   * marked "on its way" — and this branch kept only a VIDEO, so the photo was dropped without a
+   * word, the fill waited for it, and the sentence ended on the emergency colour field. The same
+   * rule as video 631 below: an approved still is the sentence's picture unless a video beats it.
+   * Only a photo the picture editor approved FOR THIS SENTENCE is kept; nothing else changes.
+   */
+  let approvedHistoricalStill: string | null = null;
   if (historicalDoc) {
     const internet = await fetchBeatInternetStillsFirst(
       beat,
@@ -2731,15 +2750,23 @@ export async function fetchBeatArchivalThenPexels(
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: internet still (historical, no video found)`);
       return internet;
     }
+    if (internet && keepsApprovedHistoricalStill(dedup, sceneIndex, beat.index, internet)) {
+      approvedHistoricalStill = internet;
+      console.log(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: approved photo kept (historical, no video found) — ` +
+          `${path.basename(internet)} is the sentence's picture unless a video beats it`
+      );
+    }
   }
 
-  /** VIDEO 619 — a screenshot of a news article about the beat, at most two per film. */
-  const article = await fetchBeatArticleScreenshot(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, videoTitle, adoptOpts, tag
-  );
+  /** VIDEO 619 — a screenshot of a news article about the beat, at most two per film (not over an approved photo). */
+  const article = approvedHistoricalStill
+    ? null
+    : await fetchBeatArticleScreenshot(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, videoTitle, adoptOpts, tag);
   if (article) return article;
 
-  const still = await fetchBeatAuthenticStills(
+  /** Only photos are asked for below: with an approved photo in hand there is nothing to look for. */
+  const still = approvedHistoricalStill ? null : await fetchBeatAuthenticStills(
     beat,
     scene,
     workDir,
@@ -2760,7 +2787,7 @@ export async function fetchBeatArchivalThenPexels(
    * chains that used to pick it up are gone, so render 631's s2b0 lost its approved Brandenburg Gate.
    * Licensed stock video is still tried first; this is what is returned when there is none.
    */
-  const approvedStill = still && !isPipelineFallbackClip(still) ? still : null;
+  const approvedStill = (still && !isPipelineFallbackClip(still) ? still : null) ?? approvedHistoricalStill;
 
   /** A picture found from the script's own words — historical topics asked for it above already. */
   if (!approvedStill && !historicalDoc && canUseGlobalStillPhoto(dedup)) {
@@ -8358,9 +8385,9 @@ async function generateMissingBeatImages(
  * synthetic colour field this process renders. Each candidate is measured before it is placed — a
  * valid video stream, not mostly black, MOVING (freezedetect), long enough for the sentence — and a
  * candidate that fails is named and the next source tried; a sentence that ends with nothing is an
- * explicit error line, never a silent card. Every placed clip gets an archive handle (the archive
- * row for an archive clip; `storeExternalClipForTimeline` for a synthetic one) because the delivery
- * gate requires one, and a `generic_footage` mark in its own ledger.
+ * explicit error line, never a silent card. An archive clip carries its archive row as its handle;
+ * the synthetic colour field is NOT archived (VIDEO 651 — it is not footage, and a film resting on
+ * it is refused anyway). Every placed clip gets a `generic_footage` mark in its own ledger.
  */
 export async function placeGenericMovingFallbacks(
   scenes: Scene[],
@@ -8472,25 +8499,13 @@ export async function placeGenericMovingFallbacks(
           dedup.sourcingCache?.lineage?.attachArchiveAssetToPath(outPath, archiveId, clipContentKey(outPath));
           usedIds.add(archiveId);
         } else {
-          const facts: ExternalClipArchiveFacts = {
-            source: SYNTHETIC_PLACEHOLDER_PROVIDER, providerAssetId: String(assetLabel), title: SYNTHETIC_PLACEHOLDER_TITLE,
-            mediaType: "video", license: SYNTHETIC_PLACEHOLDER_LICENSE, durationSec: measuredSec,
-          };
-          const stored = await storeExternalClipForTimeline({
-            clipPath: outPath,
-            facts,
-            /** NOT tagged `generic`: a placeholder must never be picked as the archive's generic footage for a later film */
-            metadata: { ...archiveMetadataForExternalClip(facts, { beatQuery: "", personContext: false, topics: [] }), tags: ["placeholder"] },
-            lineage: dedup.sourcingCache?.lineage,
-            workDir,
-            sceneIndex: scene.index,
-            beatIndex: beat.index,
-            /** the floor pushes straight into the scene's clips, past the push gate, so it stores here */
-            route: "generic_floor",
-          });
-          if (stored.status !== "stored") {
-            console.warn(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} ARCHIVE_HANDLE_MISSING ${stored.code} — the clip is placed, but the delivery gate refuses a clip without an archive asset`);
-          }
+          /**
+           * VIDEO 651 — the synthetic colour field is NOT stored in the archive. Render 651 filed it
+           * as asset 60649, where a later film could be offered it as archive footage. It is not
+           * cover (the delivery gate refuses a film resting on it either way), so it needs no
+           * archive handle; the archive store itself refuses it too (`storeForProduction`).
+           */
+          console.warn(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} synthetic placeholder not archived — it is not footage and the film is not delivered with it`);
         }
         markGenericFootageForBeat(dedup, scene.index, beat.index, clipContentKey(outPath));
         const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
