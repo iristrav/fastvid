@@ -16,6 +16,7 @@
  * (`youtubeShotCuts.ts`) and handed in; an unmeasured source is one shot, and says so.
  */
 import type { TimelineVideoClip } from "./projectTimeline";
+import { MIN_PIECE_SPEED } from "./longShotLimit";
 
 export const YOUTUBE_MAX_SHOT_SEC = 5;
 /** A piece shorter than this is a flash, not a shot. Shot segments below it are skipped. */
@@ -256,6 +257,22 @@ export function limitYoutubeShots(params: {
    */
   const sameSentence = (a: TimelineVideoClip, b: TimelineVideoClip) =>
     !(typeof a.beatIndex === "number" && typeof b.beatIndex === "number" && a.beatIndex !== b.beatIndex);
+  /**
+   * VIDEO 651 (job 56) — and only time its OWN source can fill. Render-job 56: s1b4's clip, 4.00 s
+   * of source, was handed 2.07 s by s1b3's YouTube clip; at 8.40 s on screen even the long-shot
+   * rule's slowest speed (`MIN_PIECE_SPEED`) ran out and its last 0.40 s held a still frame. A
+   * neighbour takes the time only when its source window, played no slower than that, covers its
+   * new length. A still has no source end; a clip whose window was never set keeps the old rule.
+   */
+  const canAbsorb = (c: TimelineVideoClip, extraSec: number) => {
+    if (c.kind === "image" || c.sourceOut == null) return true;
+    const window = c.sourceOut - (c.sourceIn ?? 0);
+    const slowest = c.speed != null && Math.abs(c.speed - 1) > EPS ? c.speed : MIN_PIECE_SPEED;
+    return dur(c) + extraSec <= window / slowest + EPS;
+  };
+  /** May this neighbour take `extraSec` of `clip`'s slot: not YouTube, same scene, same sentence, and its own source fills it. */
+  const mayTake = (clip: TimelineVideoClip, n: TimelineVideoClip | undefined, extraSec: number, id?: string): n is TimelineVideoClip =>
+    !!n && mayTakeTime(n, id ?? n.id) && sameScene(clip, n) && sameSentence(clip, n) && canAbsorb(n, extraSec);
 
   /* 1 — give the time over 5 s to the neighbouring non-YouTube shot in the same scene and sentence. */
   for (let i = 0; i < clips.length; i++) {
@@ -264,7 +281,7 @@ export function limitYoutubeShots(params: {
     const next = clips[i + 1];
     const prev = clips[i - 1];
     const excess = dur(clip) - maxSec;
-    if (next && mayTakeTime(next) && sameScene(clip, next) && sameSentence(clip, next)) {
+    if (mayTake(clip, next, excess)) {
       const cut = round(clip.timelineStart + maxSec);
       notes.push(
         `${clip.id}: ${dur(clip).toFixed(2)}s of YouTube → ${maxSec}s; ${next.id} starts ` +
@@ -272,7 +289,7 @@ export function limitYoutubeShots(params: {
       );
       clip.timelineEnd = cut;
       next.timelineStart = cut;
-    } else if (prev && mayTakeTime(prev) && sameScene(clip, prev) && sameSentence(clip, prev)) {
+    } else if (mayTake(clip, prev, excess)) {
       const cut = round(clip.timelineEnd - maxSec);
       notes.push(
         `${clip.id}: ${dur(clip).toFixed(2)}s of YouTube → ${maxSec}s; ${prev.id} holds ` +
@@ -308,13 +325,13 @@ export function limitYoutubeShots(params: {
        */
       const prevOut = out[out.length - 1];
       const next = clips[i + 1];
-      if (prevOut && mayTakeTime(prevOut, prevOut.id.replace(/_p\d+$/, "")) && sameScene(clip, prevOut)) {
+      if (mayTake(clip, prevOut, dur(clip), prevOut?.id.replace(/_p\d+$/, ""))) {
         prevOut.timelineEnd = clip.timelineEnd;
         adjustedIds.push(clip.id);
         notes.push(`${clip.id}: REFUSED (${plan.refused}) — ${prevOut.id} holds ${dur(clip).toFixed(2)}s longer instead`);
         continue;
       }
-      if (next && mayTakeTime(next) && sameScene(clip, next)) {
+      if (mayTake(clip, next, dur(clip))) {
         next.timelineStart = clip.timelineStart;
         adjustedIds.push(clip.id);
         notes.push(`${clip.id}: REFUSED (${plan.refused}) — ${next.id} starts ${dur(clip).toFixed(2)}s earlier instead`);
@@ -342,8 +359,8 @@ export function limitYoutubeShots(params: {
       const give = round(plan.pieces.slice(distinct).reduce((sum, p) => sum + p.durationSec, 0));
       const prevOut = out[out.length - 1];
       const next = clips[i + 1];
-      const takesTime = (c: TimelineVideoClip | undefined, id?: string) =>
-        !!c && mayTakeTime(c, id ?? c.id) && sameScene(clip, c);
+      /** VIDEO 651 (job 56) — only a neighbour of the same sentence whose own source fills the time. */
+      const takesTime = (c: TimelineVideoClip | undefined, id?: string) => mayTake(clip, c, give, id);
       if (takesTime(prevOut, prevOut?.id.replace(/_p\d+$/, ""))) {
         clip.timelineStart = round(clip.timelineStart + give);
         prevOut!.timelineEnd = clip.timelineStart;
