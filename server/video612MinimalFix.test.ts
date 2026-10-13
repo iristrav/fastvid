@@ -21,7 +21,7 @@ import {
   type PoolDeps,
 } from "./youtubeVideoPool";
 import { extractPersonNamesFromText, resolvePrimaryPersonLock, narrationWithoutHeadings, buildVerifiedQueryContextForBeat, buildBeatYoutubeQueries, youtubeQueriesForSentence, youtubeQueryPlanForSentence } from "./videoPipeline";
-import { sentenceOnlyYoutubeQueries, neighbourSentences, namesInSentence, youtubeResultIsShort, YOUTUBE_SHORT_MAX_SEC, sentenceNameWords } from "./youtubeNonFootage";
+import { sentenceOnlyYoutubeQueries, neighbourSentences, namesInSentence, youtubeResultIsShort, YOUTUBE_MIN_SOURCE_SEC, sentenceNameWords } from "./youtubeNonFootage";
 
 import { extractVisualSearchTags, extractBeatGeoPlaceTags, inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
 import { withSearchProvenance } from "./searchQueryContract";
@@ -518,12 +518,13 @@ describe("H. video 613 — failed stays failed; a failed run stops; Openverse cl
 /* ═══════════ I — a YouTube Short is never downloaded ═══════════ */
 
 describe("I. a YouTube Short is never downloaded, on any route", () => {
-  it("a Short is recognised by its hashtag or by a length of three minutes or less", () => {
+  it("a Short is recognised by its hashtag or by a length under four minutes", () => {
     expect(youtubeResultIsShort("Oh No khloe even didn't Notice kim kardashian Revenge😂 #yts")).toBe("shorts hashtag");
     expect(youtubeResultIsShort("Kim Kardashian interview", "#Shorts #kim")).toBe("shorts hashtag");
     expect(youtubeResultIsShort("Kim Kardashian interview", "", 45)).toContain("Short length");
-    expect(youtubeResultIsShort("Kim Kardashian interview", "", YOUTUBE_SHORT_MAX_SEC)).toContain("Short length");
-    expect(youtubeResultIsShort("Kim Kardashian interview", "", YOUTUBE_SHORT_MAX_SEC + 1)).toBeNull();
+    expect(youtubeResultIsShort("Kim Kardashian interview", "", 180)).toContain("Short length");
+    expect(youtubeResultIsShort("Kim Kardashian interview", "", YOUTUBE_MIN_SOURCE_SEC - 1)).toContain("Short length");
+    expect(youtubeResultIsShort("Kim Kardashian interview", "", YOUTUBE_MIN_SOURCE_SEC)).toBeNull();
     expect(youtubeResultIsShort("Rome: the rise of an empire (documentary)", "Full episode", 1500)).toBeNull();
     expect(youtubeResultIsShort("The short history of Rome")).toBeNull();
   });

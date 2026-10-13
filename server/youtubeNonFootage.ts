@@ -7,8 +7,12 @@
  * vertical Short with captions — and several like it. The operator's rule is absolute: no Short is
  * fetched at all. A Short is at most three minutes long; before a download, what can be known is
  * its length (from the video's details) and the hashtag its uploader gave it.
+ *
+ * After video 651 the operator's rule is wider: only YouTube videos of four minutes or longer, the
+ * same floor as the search's own `videoDuration=medium` (4–20 minutes). A video under four minutes
+ * is refused the way a Short is, on every route that measures a length.
  */
-export const YOUTUBE_SHORT_MAX_SEC = 180;
+export const YOUTUBE_MIN_SOURCE_SEC = 240;
 
 const SHORTS_TAG = /#(?:shorts?|ytshorts?|youtubeshorts?|yts)\b/i;
 
@@ -19,7 +23,7 @@ export function youtubeResultIsShort(
   durationSec?: number | null
 ): string | null {
   if (SHORTS_TAG.test(`${title ?? ""} ${description ?? ""}`)) return "shorts hashtag";
-  if (durationSec != null && durationSec > 0 && durationSec <= YOUTUBE_SHORT_MAX_SEC) return `${durationSec}s — Short length`;
+  if (durationSec != null && durationSec > 0 && durationSec < YOUTUBE_MIN_SOURCE_SEC) return `${durationSec}s — Short length (under 4 minutes)`;
   return null;
 }
 

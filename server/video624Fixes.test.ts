@@ -134,11 +134,13 @@ describe("3. never a Short", () => {
   });
   const long = async () => 600;
 
-  it("a hashtag, three minutes or less, or an unknown length: not downloaded", async () => {
+  it("a hashtag, under four minutes, or an unknown length: not downloaded", async () => {
     process.env.YOUTUBE_API_KEY = "test-key";
     expect(await youtubeShortAtTheDoor("aaaaaaaaaaa", "Crazy moment #shorts", long)).toMatch(/hashtag/);
     expect(await youtubeShortAtTheDoor("bbbbbbbbbbb", "A clip", async () => 45)).toMatch(/Short length/);
     expect(await youtubeShortAtTheDoor("ccccccccccc", "A clip", async () => 180)).toMatch(/Short length/);
+    expect(await youtubeShortAtTheDoor("ccccccccccd", "A clip", async () => 239)).toMatch(/Short length/);
+    expect(await youtubeShortAtTheDoor("ccccccccccf", "A clip", async () => 240)).toBeNull();
     expect(await youtubeShortAtTheDoor("ddddddddddd", "A clip", async () => 0)).toMatch(/length unknown/);
     expect(await youtubeShortAtTheDoor("eeeeeeeeeee", "A clip", async () => { throw new Error("quota"); })).toMatch(/length unknown/);
     expect(await youtubeShortAtTheDoor("fffffffffff", "A full documentary", long)).toBeNull();
