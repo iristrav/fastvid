@@ -573,9 +573,14 @@ describe("the DeliveryGate decides (Eis A + B)", () => {
     expect(gate).toContain("for (const f of hardVisualRuleFailures(input)) failures.push(f);");
     /** the sentences and the approval mark travel on the timeline from the pipeline */
     const inputs = fs.readFileSync(path.join(__dirname, "cinematicPipelineInputs.ts"), "utf8");
-    expect(inputs).toContain('timingBasis: measured && beat.voiceEndSec != null ? "measured" : "estimated",');
+    /** VIDEO 650 — a third basis: windows cut at the pauses measured in the scene audio (voiceTimingFromSilence.ts). */
+    expect(inputs).toContain('timingBasis: measured && beat.voiceEndSec != null ? (beat.voiceTimingSource === "silence" ? "measured_silence" : "measured") : "estimated",');
     const vp = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    expect(vp).toContain('contentApproval: pictureApprovedForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath)) ? ("judge_fit" as const) : ("unverified" as const),');
+    /** VIDEO 650 — the mark has a third value: generic footage is named as such, never as approved or unverified. */
+    expect(vp).toContain('contentApproval: pictureApprovedForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))');
+    expect(vp).toContain(': genericFootageForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))');
+    expect(vp).toContain('? ("generic_footage" as const)');
+    expect(vp).toContain(': ("unverified" as const),');
     expect(fs.readFileSync(path.join(__dirname, "cinematicPipeline.ts"), "utf8")).toContain("if (params.sentences?.length) timeline.sentences = params.sentences.map((s) => ({ ...s }));");
   });
 });

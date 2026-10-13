@@ -264,6 +264,12 @@ export const CAPABILITIES: readonly Capability[] = [
     fatal: false,
   },
   {
+    id: "video_generation_replicate",
+    describes: "Replicate prunaai/p-video-2 video for a sentence no source could picture (REPLICATE_VIDEO_FALLBACK) — optional, after every real source and ElevenLabs; the cost ceiling needs REPLICATE_PVIDEO_PRICE_PER_SEC_USD",
+    requires: ["REPLICATE_API_TOKEN"],
+    fatal: false,
+  },
+  {
     id: "storage",
     describes: "where the finished MP4 is written",
     requires: [],

@@ -680,7 +680,7 @@ export type AdoptionGuardVerdict =
  * looked at this picture under this narration and said yes. Everything else — refused, unreadable,
  * never asked — is not a yes, and the four are now distinguishable so the refusal can say which.
  */
-export type AdoptionVisionVerdict = "APPROVED" | "REJECTED" | "UNCLEAR" | "NOT_ASKED";
+export type AdoptionVisionVerdict = "APPROVED" | "ACCEPTABLE" | "REJECTED" | "UNCLEAR" | "NOT_ASKED";
 
 /**
  * The gate's own vocabulary, translated once so no call site has to remember the mapping.
@@ -708,6 +708,7 @@ export function visionVerdictFromGate(
   evaluated?: boolean
 ): AdoptionVisionVerdict {
   if (verdict === "fits") return "APPROVED";
+  if (verdict === "acceptable") return "ACCEPTABLE";
   if (verdict === "does_not_fit") return "REJECTED";
   /** The gate declined to look. Not an opinion about this picture — see above. */
   if (evaluated === false) return "NOT_ASKED";

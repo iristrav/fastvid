@@ -49,7 +49,7 @@
  */
 
 /** What the picture editor established about a candidate. Four answers, never folded. */
-export type VisionEvidence = "FIT" | "UNREVIEWED" | "UNCLEAR" | "MISMATCH";
+export type VisionEvidence = "FIT" | "UNREVIEWED" | "ACCEPTABLE" | "UNCLEAR" | "MISMATCH";
 
 /**
  * Selection order, best first. The array IS the priority — a tier's rank is its index — so the
@@ -58,6 +58,8 @@ export type VisionEvidence = "FIT" | "UNREVIEWED" | "UNCLEAR" | "MISMATCH";
 export const VISION_EVIDENCE_ORDER: readonly VisionEvidence[] = [
   "FIT",
   "UNREVIEWED",
+  /** VIDEO 650 — the subject shown without the situation: after every fit and every unreviewed candidate, before a shrug. */
+  "ACCEPTABLE",
   "UNCLEAR",
   "MISMATCH",
 ];
@@ -90,6 +92,7 @@ export function evidenceFromVerdict(input: {
 }): VisionEvidence {
   if (input.evaluated === false) return "UNREVIEWED";
   if (input.verdict === "fits") return "FIT";
+  if (input.verdict === "acceptable") return "ACCEPTABLE";
   if (input.verdict === "does_not_fit") return "MISMATCH";
   if (input.verdict === "unknown") return "UNCLEAR";
   return "UNREVIEWED";
@@ -411,6 +414,7 @@ export function evidenceCounts(pool: BeatReviewPool): Record<VisionEvidence, num
   const counts: Record<VisionEvidence, number> = {
     FIT: 0,
     UNREVIEWED: 0,
+    ACCEPTABLE: 0,
     UNCLEAR: 0,
     MISMATCH: 0,
   };
@@ -429,7 +433,7 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
   const lines: string[] = [];
   const total = {
     declared: 0, reviewed: 0, unusable: 0, neverReached: 0, refusedBeforeEditor: 0,
-    FIT: 0, UNREVIEWED: 0, UNCLEAR: 0, MISMATCH: 0,
+    FIT: 0, UNREVIEWED: 0, ACCEPTABLE: 0, UNCLEAR: 0, MISMATCH: 0,
   };
   for (const pool of beats) {
     const counts = evidenceCounts(pool);
@@ -453,7 +457,7 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
     lines.push(
       `[VisionSelection] s${pool.sceneIndex}b${pool.beatIndex} cap=${pool.cap} ` +
         `reviewPool=${pool.declared.length} reviewed=${pool.reviewed.length} ` +
-        `FIT=${counts.FIT} UNREVIEWED=${counts.UNREVIEWED} UNCLEAR=${counts.UNCLEAR} ` +
+        `FIT=${counts.FIT} UNREVIEWED=${counts.UNREVIEWED} ACCEPTABLE=${counts.ACCEPTABLE} UNCLEAR=${counts.UNCLEAR} ` +
         `MISMATCH=${counts.MISMATCH} unusable=${unusable.length} ` +
         `neverReached=${unasked.length} refusedBeforeEditor=${refused.length} finalShortlisted=${
           pool.reviewed.filter(isAvailableCandidate).length

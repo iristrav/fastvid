@@ -1,0 +1,14 @@
+{
+ "sentences": [
+  {
+   "text": "Only one sentence is spoken in this scene, nothing else.",
+   "start": 0.3,
+   "end": 3.85
+  }
+ ],
+ "totalSec": 4.25,
+ "pauses": [],
+ "voice": "en-gb",
+ "speed": 160,
+ "commaPause": 0.3
+}

@@ -16,7 +16,10 @@ export const STOCK_ARCHIVE_SLUG = "stock";
 export const YOUTUBE_ARCHIVE_SLUG = "youtube";
 export const OTHER_ARCHIVE_SLUG = "overig";
 
-export type AutoArchiveKind = "stock" | "youtube" | "other";
+/** VIDEO 650 — the system's own generated generic footage (genericFootageFallback.ts). */
+export const GENERIC_ARCHIVE_SLUG = "generic";
+
+export type AutoArchiveKind = "stock" | "youtube" | "other" | "generic";
 
 export const AUTO_ARCHIVES: Record<AutoArchiveKind, { slug: string; name: string; description: string; isActive: number }> = {
   stock: {
@@ -31,6 +34,15 @@ export const AUTO_ARCHIVES: Record<AutoArchiveKind, { slug: string; name: string
     slug: YOUTUBE_ARCHIVE_SLUG,
     name: "YouTube",
     description: "YouTube segments FastVid fetched and archived automatically.",
+    isActive: 1,
+  },
+  generic: {
+    slug: GENERIC_ARCHIVE_SLUG,
+    name: "Generieke beelden",
+    description:
+      "Rights-clear, non-specific moving footage: the floor under the sourcing ladder (VIDEO 650). " +
+      "Clips tagged `generic` here are offered to a sentence nothing else could picture; the " +
+      "synthetic colour fields FastVid renders itself are filed here too.",
     isActive: 1,
   },
   other: {
@@ -50,5 +62,8 @@ export function autoArchiveKind(meta: { sourcePlatform?: string | null; sourceNo
     return "stock";
   }
   if (platform === "youtube" || platform === "youtube_cc" || note.startsWith("youtube")) return "youtube";
+  if (platform === "generic_footage" || note.startsWith("generic_footage:")) return "generic";
+  /** the synthetic placeholder is filed with the generic clips so an operator finds and replaces it, never as footage */
+  if (platform === "synthetic_placeholder" || note.startsWith("synthetic_placeholder:")) return "generic";
   return "other";
 }

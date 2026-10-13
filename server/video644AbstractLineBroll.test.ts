@@ -38,6 +38,7 @@ import {
   createBeatImageGateState,
   judgeBeatImage,
   situationRule,
+  ACCEPTABLE_PREFIX,
 } from "./beatImageRelevanceGate";
 import {
   buildBeatVisualIntent,
@@ -361,20 +362,25 @@ describe("judgeBeatImage — the rule in its place", () => {
     expect(String(persisted.calls[0]![3]).startsWith(BROLL_PREFIX)).toBe(true);
   });
 
-  it("the same answer without line facts is refused exactly as before", async () => {
+  it("the same answer without line facts is not a fit — VIDEO 650: ACCEPTABLE, adopted only without a fit", async () => {
+    /** The b-roll rule still does not admit it (no line facts); the subject-only answer is now `acceptable` rather than a refusal. */
     answer.current = model644;
     const { j, state } = await judge(undefined);
-    expect(j.verdict).toBe("does_not_fit");
-    expect(j.reason).toBe(model644.reason.slice(0, 160));
+    expect(j.verdict).toBe("acceptable");
+    expect(j.reason).toBe(`${ACCEPTABLE_PREFIX}${model644.reason}`.slice(0, 160));
     expect(admitted()).toHaveLength(0);
-    expect(state.judgementsMismatch).toBe(1);
+    expect(state.judgementsMismatch).toBe(0);
+    expect(state.judgementsAcceptable).toBe(1);
   });
 
-  it("the same answer under a hard-evidence line, or a line that wants a specific picture, is refused", async () => {
+  it("the same answer under a hard-evidence line, or a line that wants a specific picture, is refused — not even ACCEPTABLE; a line with no evidence requirement is ACCEPTABLE", async () => {
     answer.current = model644;
     expect((await judge(HARD)).j.verdict).toBe("does_not_fit");
     expect((await judge(CONCRETE)).j.verdict).toBe("does_not_fit");
-    expect((await judge(NONE)).j.verdict).toBe("does_not_fit");
+    /** VIDEO 650 — no evidence requirement, no concrete claim: the subject-only picture is the sentence's fallback, never a FIT */
+    const { j } = await judge(NONE);
+    expect(j.verdict).toBe("acceptable");
+    expect(j.reason.startsWith(ACCEPTABLE_PREFIX)).toBe(true);
     expect(admitted()).toHaveLength(0);
   });
 
@@ -457,9 +463,13 @@ describe("wiring — the facts reach the judge on every pipeline route", () => {
     const abstract = gate.indexOf("const judgementAfterAbstractLine = abstractLineRule(judgementAfterSituation, parsed, line, beatText);");
     expect(situation).toBeGreaterThan(0);
     expect(abstract).toBeGreaterThan(situation);
-    expect(gate.slice(abstract, abstract + 700)).toContain("return judgementAfterAbstractLine;");
+    /** VIDEO 650 — one more step after the exception: what is still a subject-only refusal becomes acceptable. */
+    const acceptable = gate.indexOf("const judgementAfterAcceptable = acceptableRule(judgementAfterAbstractLine, parsed, { beatText, subject: guess?.subject, personAsRead: guess?.personAsRead }, line);");
+    expect(acceptable).toBeGreaterThan(abstract);
+    expect(gate.slice(acceptable, acceptable + 700)).toContain("return judgementAfterAcceptable;");
     /** In `judgeBeatImage`: the settled answer is what the identity guards receive. */
-    const settled = gate.indexOf("const judgementAfterSituation = settleSituationQuestion(judgementAsGiven, parsed, params.line, beatText);");
+    /** VIDEO 650 — the settle step also receives what the identity guard knows, so an acceptable never rests on a guessed subject. */
+    const settled = gate.indexOf("const judgementAfterSituation = settleSituationQuestion(judgementAsGiven, parsed, params.line, beatText, { subject: params.anchors?.subject, personAsRead: state.personAsRead });");
     const guards = gate.indexOf("const judgement = refuseGuessedIdentity(judgementAfterSituation, beatText, params.anchors?.subject, state.personAsRead);");
     expect(settled).toBeGreaterThan(abstract);
     expect(guards).toBeGreaterThan(settled);

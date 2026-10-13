@@ -158,7 +158,7 @@ describe("§3 — the ladder changes joins, never media", () => {
 
 describe("§4 — wired into the failure, and loud about it", () => {
   it("THE RENDERER LOOPS THE LADDER RATHER THAN CALLING ONCE", () => {
-    expect(SRC).toContain("for (const step of TRANSITION_LADDER) {");
+    expect(SRC).toContain("for (const step of TRANSITION_LADDER.slice(Math.max(0, ladderFrom))) {");
     expect(SRC).toContain("await runFfmpeg(argsFor(rung.filter), `transition graph (${step})`);");
   });
 

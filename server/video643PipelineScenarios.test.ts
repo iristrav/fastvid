@@ -194,9 +194,15 @@ describe("SCENARIO A — healthy: 12 sentences reach their own pictures, through
     handed.forEach((paths, i) => handTo(d, i, paths));
     const firstOf = new Map(handed.map((paths, i) => [i, paths[0]!]));
     const look = editor(d, (b, p) => p === firstOf.get(b));
+    /**
+     * VIDEO 650 — the budget runs on an injected clock. This scenario is about PLACEMENT (every FIT
+     * reaches its sentence), not about the editor's time: on a loaded host (the full suite in four
+     * shards on four cores) the 2 s base elapsed on the wall clock before twelve instantaneous fake
+     * looks had been scheduled, and the test failed on load alone. Scenario F keeps the real clock.
+     */
     await vp.runFinalReadyYoutubeStage(d as never, [{ index: 0 }], [{ clips: [], beatDurations: [], clipBeatIndices: [] }], look, {
       windowMs: 20,
-      budget: createJudgeBudget({ baseMs: 2_000, perLookMs: 500, ceilingMs: 20_000 }),
+      budget: createJudgeBudget({ baseMs: 2_000, perLookMs: 500, ceilingMs: 20_000, now: () => 1_000_000 }),
     });
     const placed = await vp.placeApprovedAfterSceneClosed(d, 0, { sceneReturned: true, final: true });
     expect(placed.length).toBe(12);
@@ -364,7 +370,8 @@ describe("SCENARIO D — one video serves two sentences; MISMATCH for A, FIT for
     const look = editor(d, (beat) => beat === 1);
     await vp.runFinalReadyYoutubeStage(d as never, [{ index: 0 }], [{ clips: [], beatDurations: [], clipBeatIndices: [] }], look, {
       windowMs: 20,
-      budget: createJudgeBudget({ baseMs: 2_000, perLookMs: 500, ceilingMs: 10_000 }),
+      /** VIDEO 650 — an injected clock, as in scenario A: the test is about the two judgements, not the editor's time. */
+      budget: createJudgeBudget({ baseMs: 2_000, perLookMs: 500, ceilingMs: 10_000, now: () => 1_000_000 }),
     });
     /** One fragment, two judgements: fragment × sentence. */
     expect(bvr.beatAlreadyRefusedPicture(d.beatRelevance, 0, 0, { clipPath: shared })).not.toBeNull();
@@ -442,7 +449,8 @@ describe("SCENARIO F (P3) — 30 sentences without a picture: three looks at onc
         active--;
       }
     });
-    const budget = createJudgeBudget({ baseMs: 50, perLookMs: 20, ceilingMs: 10_000 });
+    /** VIDEO 650 — the budget on an injected clock (see scenario A): what is measured is LOOKS, never wall time. */
+    const budget = createJudgeBudget({ baseMs: 50, perLookMs: 20, ceilingMs: 10_000, now: () => 1_000_000 });
     const t0 = Date.now();
     await vp.runFinalReadyYoutubeStage(d as never, [{ index: 0 }], [{ clips: [], beatDurations: [], clipBeatIndices: [] }], look, { windowMs: 20, budget });
     expect(Date.now() - t0).toBeLessThan(5_000);
@@ -467,7 +475,8 @@ describe("SCENARIO F (P3) — 30 sentences without a picture: three looks at onc
       if (!first.has(b)) first.set(b, p);
       return b < 2 && first.get(b) === p;
     });
-    const budget = createJudgeBudget({ baseMs: 50, perLookMs: 20, ceilingMs: 10_000 });
+    /** VIDEO 650 — the budget on an injected clock (see scenario A): what is measured is LOOKS, never wall time. */
+    const budget = createJudgeBudget({ baseMs: 50, perLookMs: 20, ceilingMs: 10_000, now: () => 1_000_000 });
     await vp.runFinalReadyYoutubeStage(d as never, [{ index: 0 }], [{ clips: [], beatDurations: [], clipBeatIndices: [] }], look, { windowMs: 20, budget });
     /** sentences 0 and 1: one look each (a FIT, four refunded); the 118 left go 5 a sentence, the last one 3; never past 120 */
     expect(d.beatImageGate.judgementsFits).toBe(2);

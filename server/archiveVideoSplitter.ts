@@ -881,6 +881,23 @@ async function extractedClipIsUsable(
   }
 }
 
+/**
+ * VIDEO 650 — ONE WRITER PER OUTPUT PATH.
+ *
+ * Two routes asking for the same cut at the same moment (a beat's own fetch and the late look, or
+ * two beats sharing a source) used to race on `outputPath`: both ran `ffmpeg -y` onto the same
+ * file, and the loser's failure branch unlinked the winner's finished clip. The cut is now encoded
+ * to a private temporary name and moved into place atomically, a failure removes only its own
+ * temporary file, and a second request for a path that is already being written waits for the
+ * first instead of starting a second encode.
+ */
+const segmentWritesInFlight = new Map<string, Promise<void>>();
+
+export function segmentWriteTempPath(outputPath: string): string {
+  const ext = path.extname(outputPath) || ".mp4";
+  return `${outputPath.slice(0, -ext.length)}.part-${process.pid}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+}
+
 export async function extractVideoSegment(
   inputPath: string,
   outputPath: string,
@@ -888,6 +905,26 @@ export async function extractVideoSegment(
   endSec: number,
   preferStreamCopy = false
 ): Promise<void> {
+  const inFlight = segmentWritesInFlight.get(outputPath);
+  if (inFlight) {
+    console.log(`[ArchiveSplit] ${path.basename(outputPath)} is already being written — waiting for that writer instead of starting a second one`);
+    return inFlight;
+  }
+  const run = extractVideoSegmentToTemp(inputPath, outputPath, startSec, endSec, preferStreamCopy).finally(() => {
+    segmentWritesInFlight.delete(outputPath);
+  });
+  segmentWritesInFlight.set(outputPath, run);
+  return run;
+}
+
+async function extractVideoSegmentToTemp(
+  inputPath: string,
+  finalPath: string,
+  startSec: number,
+  endSec: number,
+  preferStreamCopy = false
+): Promise<void> {
+  const outputPath = segmentWriteTempPath(finalPath);
   const durationSec = Math.max(0.05, endSec - startSec);
   const perClipTimeout = Math.round(
     Math.max(20_000, Math.min(120_000, durationSec * 4000 + 15_000))
@@ -912,7 +949,11 @@ export async function extractVideoSegment(
     try {
       const { stderr: ffstderr } = await exec(cmd, { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout });
       const fileSize = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
-      if (await extractedClipIsUsable(outputPath, fileSize, durationSec)) return;
+      if (await extractedClipIsUsable(outputPath, fileSize, durationSec)) {
+        /** the one move into place: a reader of `finalPath` sees nothing, or the whole file */
+        fs.renameSync(outputPath, finalPath);
+        return;
+      }
       // FFmpeg exited 0 but produced no usable output — log stderr so we can diagnose.
       const stderrSnip = (ffstderr ?? "").slice(-400).replace(/\n/g, " ").trim();
       console.warn(`[ArchiveSplit] ffmpeg exit0 unusable output (ss=${start} size=${fileSize}B): ${stderrSnip.slice(0, 350)}`);

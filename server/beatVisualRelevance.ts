@@ -753,6 +753,48 @@ export function maxRelevanceLooksPerBeat(): number {
 }
 
 /** Frames sampled across a clip. Cleaned up on every exit path, including the failures. */
+/**
+ * VIDEO 650 — a clip from which no frame could be taken is remembered WITH the file's size and
+ * modification time. The same unchanged file is not sampled again for the next sentence, and the
+ * next, and the next (video 650 asked one undecodable clip for 11 sentences); a file that changed on
+ * disk (re-downloaded, re-cut) is sampled again, because the refusal was about those bytes.
+ */
+const noFrameMemory = new Map<string, { size: number; mtimeMs: number }>();
+
+export function noFrameMemorySize(): number {
+  return noFrameMemory.size;
+}
+
+export function resetNoFrameMemoryForTests(): void {
+  noFrameMemory.clear();
+}
+
+export function clipKnownToGiveNoFrame(clipPath: string): boolean {
+  const known = noFrameMemory.get(clipPath);
+  if (!known) return false;
+  try {
+    const st = fs.statSync(clipPath);
+    if (st.size === known.size && st.mtimeMs === known.mtimeMs) return true;
+    noFrameMemory.delete(clipPath);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+export function noteClipGaveNoFrame(clipPath: string): void {
+  rememberNoFrame(clipPath);
+}
+
+function rememberNoFrame(clipPath: string): void {
+  try {
+    const st = fs.statSync(clipPath);
+    noFrameMemory.set(clipPath, { size: st.size, mtimeMs: st.mtimeMs });
+  } catch {
+    noFrameMemory.set(clipPath, { size: -1, mtimeMs: -1 });
+  }
+}
+
 async function sampleFrames(
   clipPath: string,
   workDir: string,
@@ -760,6 +802,13 @@ async function sampleFrames(
   tag: string
 ): Promise<string[]> {
   const out: string[] = [];
+  if (clipKnownToGiveNoFrame(clipPath)) {
+    console.warn(
+      `[BeatRelevance] s${ctx.sceneIndex}b${ctx.beatIndex} route=${tag}: ${path.basename(clipPath)} gave no frame earlier ` +
+        `and is unchanged on disk — not sampled again (it is sampled again only when the file changes)`
+    );
+    return out;
+  }
   for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
     const framePath = path.join(
       workDir,
@@ -787,10 +836,11 @@ async function sampleFrames(
    * this line names the beat that paid for it either way.
    */
   if (out.length === 0) {
+    rememberNoFrame(clipPath);
     console.warn(
       `[BeatRelevance] s${ctx.sceneIndex}b${ctx.beatIndex} route=${tag}: no frame could be sampled ` +
         `from ${path.basename(clipPath)} (onDisk=${fs.existsSync(clipPath)}) — this clip cannot be ` +
-        `judged, so it will read as NOT_ASKED`
+        `judged, so it will read as NOT_ASKED; remembered for this file until it changes`
     );
   }
   return out;
@@ -1911,12 +1961,14 @@ export function formatRelevanceSummary(
   ledger: BeatRelevanceLedger
 ): string {
   let fits = 0;
+  let acceptable = 0;
   let refused = 0;
   let reprieved = 0;
   let unknown = 0;
   for (const { decision } of ledger.byClipPath.values()) {
     if (decision.reprieved) reprieved++;
     if (decision.verdict === "fits") fits++;
+    else if (decision.verdict === "acceptable") acceptable++;
     else if (decision.verdict === "does_not_fit") refused++;
     else unknown++;
   }
@@ -1955,6 +2007,6 @@ export function formatRelevanceSummary(
     `(fits=${t.fits} does_not_fit=${t.mismatch}) failed=${t.failed} ` +
     `never_asked=${t.skipped}${skippedDetail}` +
     `${t.inconsistent ? " COUNTERS_INCONSISTENT" : ""} | ` +
-    `clips: fits=${fits} does_not_fit=${refused} (reprieved=${reprieved}) unknown=${unknown}`
+    `clips: fits=${fits} acceptable=${acceptable} does_not_fit=${refused} (reprieved=${reprieved}) unknown=${unknown}`
   );
 }

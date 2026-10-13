@@ -1,0 +1,27 @@
+{
+ "sentences": [
+  {
+   "text": "The first sentence is spoken here.",
+   "start": 0.3,
+   "end": 2.226
+  },
+  {
+   "text": "Then a second sentence, with a comma, of similar length.",
+   "start": 2.526,
+   "end": 5.659
+  },
+  {
+   "text": "And a shorter third.",
+   "start": 5.939,
+   "end": 6.957
+  }
+ ],
+ "totalSec": 7.357,
+ "pauses": [
+  0.3,
+  0.28
+ ],
+ "voice": "en-us",
+ "speed": 175,
+ "commaPause": 0.12
+}

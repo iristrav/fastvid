@@ -149,7 +149,7 @@ describe("§3 — the line does not grow when there is nothing to say", () => {
   it("and the rest of the line is exactly as it was", () => {
     const clean = summaryOf(() => {});
     expect(clean).toContain("[BeatRelevance] render summary — attempts=0 answered=0");
-    expect(clean).toContain("clips: fits=0 does_not_fit=0 (reprieved=0) unknown=0");
+    expect(clean).toContain("clips: fits=0 acceptable=0 does_not_fit=0 (reprieved=0) unknown=0");
   });
 });
 

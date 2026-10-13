@@ -197,7 +197,9 @@ describe("2. when ElevenLabs refuses the with-timestamps call, the log says so �
     expect(vp).toContain("[TtsAlign] off (${why}): the narration carries no word timing, so the beats are laid out, not measured");
     /** the only measured route: ElevenLabs timestamps → stored alignment → per-scene beats; no second timing method */
     expect(vp).toContain("if (wantAlign && alignParts.length === chunks.length) {");
-    expect(vp).toContain("/** Without the TTS's own timestamps the beats keep their planned holds: no second timing method. */");
+    /** VIDEO 650 — there is a second MEASURED method now (pauses in the scene audio); an estimate is still never written. */
+    expect(vp).toContain("VIDEO 650 — without the TTS's own timestamps, the scene's audio is MEASURED for its pauses");
+    expect(vp).toContain("laid out from their holds and recorded as `estimated`, which the delivery gate refuses");
   });
 });
 

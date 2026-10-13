@@ -64,10 +64,11 @@ describe("four answers, never folded into two", () => {
     expect(evidenceFromVerdict({})).toBe("UNREVIEWED");
   });
 
-  it("the priority is FIT, then unreviewed, then unclear, then mismatch", () => {
-    expect([...VISION_EVIDENCE_ORDER]).toEqual(["FIT", "UNREVIEWED", "UNCLEAR", "MISMATCH"]);
+  it("the priority is FIT, then unreviewed, then acceptable (VIDEO 650), then unclear, then mismatch", () => {
+    expect([...VISION_EVIDENCE_ORDER]).toEqual(["FIT", "UNREVIEWED", "ACCEPTABLE", "UNCLEAR", "MISMATCH"]);
     expect(evidenceTier("FIT")).toBeLessThan(evidenceTier("UNREVIEWED"));
-    expect(evidenceTier("UNREVIEWED")).toBeLessThan(evidenceTier("UNCLEAR"));
+    expect(evidenceTier("UNREVIEWED")).toBeLessThan(evidenceTier("ACCEPTABLE"));
+    expect(evidenceTier("ACCEPTABLE")).toBeLessThan(evidenceTier("UNCLEAR"));
     expect(evidenceTier("UNCLEAR")).toBeLessThan(evidenceTier("MISMATCH"));
   });
 

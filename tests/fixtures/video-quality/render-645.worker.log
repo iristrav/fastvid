@@ -1,0 +1,240 @@
+15:22:35.572 i [ScriptEngine] Visual plans: 4 scenes
+15:22:35.572 i [ScriptEngine] 🎯 Writing hook... (32%)
+15:22:36.836 i [ScriptEngine] Hook: "In 2008, Tesla built their first Roadster on a Lotus chassis. This wasn't just a…" (44 words)
+15:22:36.836 i [ScriptEngine] ✍️ Writing narration... (35%)
+15:22:37.885 i [ScriptEngine] Narrations written: 4 scenes (attempt 1/3)
+15:22:37.885 i [ScriptEngine] Word count: 169 (target: 126–154)
+15:22:37.885 i [ScriptEngine] 📏 Adjusting script length... (70%)
+15:22:39.285 i [ScriptEngine] Length adjusted: 169 → 133 words (target 140)
+15:22:39.285 i [ScriptEngine] 🔍 Quality review... (80%)
+15:22:41.095 i [ScriptEngine] Quality (attempt 1/3): 6.7/10 (PASS) — weaknesses: The script lacks depth in exploring the themes introduced, like the alliances and the response of the giants.; More specific examples and data could improve the clarity and engagement of the narrative.
+15:22:41.095 i [ScriptEngine] ✅ Script complete (95%)
+15:22:48.689 i [RenderLock] video=645 render=rmv3z2lb7 ACQUIRED expires=2026-10-11T16:02:48.547Z
+15:22:50.271 i [ProductionRoute] video=645 route=cinematic_timeline youtube=ready aiDirector=on searchGateStrict=on
+15:22:53.148 i [YouTubeSearchCall] video=645 render=none scene=-1 cacheHit=false quotaCall=true status=200 processCallsToday=1 query="Tesla Elon Musk automotive industry footage"
+15:22:53.440 i [YouTubeVideosList] video=645 ids=50 status=200 quotaUnits=1
+15:22:56.163 i [YouTubeFunnel] video=645 search=#1 raw=50 unique=50 alreadyInPool=0 judged=50 passed=10 rejected=40 reasons={title_genre=1 youtube_short=32 footage_type=7} UNKNOWN=0
+15:23:04.286 i [YouTubeVideosList] video=645 ids=18 status=200 quotaUnits=1
+15:23:06.792 i [YouTubeFunnel] video=645 search=archive raw=20 unique=20 alreadyInPool=2 judged=18 passed=13 rejected=5 reasons={footage_type=5} UNKNOWN=0
+15:23:08.267 i [YouTubeSearchCall] video=645 render=none scene=-1 cacheHit=false quotaCall=true status=200 processCallsToday=2 query="Mary Barra Bill Ford alliances Detroit Auto Show footage"
+15:23:08.338 i [YouTubeVideosList] video=645 ids=3 status=200 quotaUnits=1
+15:23:09.365 i [YouTubeFunnel] video=645 search=#2 raw=3 unique=3 alreadyInPool=0 judged=3 passed=1 rejected=2 reasons={youtube_short=2} UNKNOWN=0
+15:23:10.517 i [YouTubeSearchCall] video=645 render=none scene=-1 cacheHit=false quotaCall=true status=200 processCallsToday=3 query="General Motors footage"
+15:23:10.788 i [YouTubeVideosList] video=645 ids=50 status=200 quotaUnits=1
+15:23:13.185 i [YouTubeFunnel] video=645 search=#3 raw=50 unique=50 alreadyInPool=0 judged=50 passed=12 rejected=38 reasons={youtube_short=32 footage_type=6} UNKNOWN=0
+15:23:13.220 i [YouTubeStock] film=645 stocking 6 video(s) before the beats need them
+15:23:17.749 i [YouTubeTunelio] video=mr9kK0_7x08 step=create http=200 ms=4510 declared_bytes=119851042 quality=720p
+15:23:17.785 i [YouTubeTunelio] video=yJKWmZ6y2yI step=create http=200 ms=4560 declared_bytes=58232826 quality=720p
+15:23:19.886 i [YouTubeTunelio] video=jTtcPxSag50 step=create http=200 ms=6658 declared_bytes=53242694 quality=720p
+15:23:24.841 i [YouTubeTunelio] video=yJKWmZ6y2yI step=ready bytes=58207949 duration=294.3s size=1280x720 transfer_ms=7052 total_ms=11614 credits_left=70
+15:23:29.005 i [YouTubeDownload] video=yJKWmZ6y2yI scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_SUCCESS(5114728_bytes) cloudService=SET reason=tunelio
+15:23:34.921 i [YouTubeStock] film=645 video=yJKWmZ6y2yI ready in 22s — 5 shot(s)
+15:23:36.387 i [YouTubeTunelio] video=RTZdzFCmIgs step=create http=200 ms=1415 declared_bytes=287853706 quality=720p
+15:23:55.619 i [YouTubeTunelio] video=RTZdzFCmIgs step=ready bytes=287728810 duration=2545.8s size=1280x720 transfer_ms=19278 total_ms=20695 credits_left=60
+15:23:56.974 i [YouTubeTunelio] video=jTtcPxSag50 step=ready bytes=53165149 duration=907.8s size=854x480 transfer_ms=37089 total_ms=43752 credits_left=60
+15:24:00.763 i [YouTubeDownload] video=jTtcPxSag50 scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_SUCCESS(2564966_bytes) cloudService=SET reason=tunelio
+15:24:02.822 i [YouTubeDownload] video=RTZdzFCmIgs scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_SUCCESS(7689602_bytes) cloudService=SET reason=tunelio
+15:24:10.892 i [YouTubeStock] film=645 video=RTZdzFCmIgs ready in 36s — 5 shot(s)
+15:24:10.892 i [YouTubeStock] film=645 video=jTtcPxSag50 ready in 58s — 7 shot(s)
+15:24:11.925 i [YouTubeTunelio] video=Q4VGQPk2Dl8 step=create http=200 ms=819 declared_bytes=76601394 quality=720p
+15:24:11.925 i [YouTubeTunelio] video=blW-Fa4a10g step=create http=200 ms=745 declared_bytes=55796177 quality=720p
+15:24:20.368 i [YouTubeTunelio] video=Q4VGQPk2Dl8 step=ready bytes=76450833 duration=1363.3s size=1280x720 transfer_ms=8688 total_ms=9513 credits_left=40
+15:24:20.976 i [YouTubeTunelio] video=blW-Fa4a10g step=ready bytes=55772296 duration=217.3s size=1280x720 transfer_ms=9227 total_ms=9974 credits_left=40
+15:24:26.599 i [YouTubeDownload] video=Q4VGQPk2Dl8 scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_SUCCESS(3113369_bytes) cloudService=SET reason=tunelio
+15:24:31.048 i [YouTubeTunelio] video=mr9kK0_7x08 step=ready bytes=119748943 duration=919.1s size=1280x720 transfer_ms=73285 total_ms=77799 credits_left=40
+15:24:34.185 i [YouTubeDownload] video=blW-Fa4a10g scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_SUCCESS(17899383_bytes) cloudService=SET reason=tunelio
+15:24:54.183 i [YouTubeDownload] video=mr9kK0_7x08 scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_SUCCESS(6290227_bytes) cloudService=SET reason=tunelio
+15:24:54.183 i [YouTubeStock] film=645 video=464puoD09dM stocked next — more sentences covered (4 ready so far)
+15:24:54.183 i [YouTubeStock] film=645 video=8_lfxPI5ObM stocked next — more sentences covered (5 ready so far)
+15:24:54.183 i [YouTubeStock] film=645 video=Gax2lQlQNeE stocked next — more sentences covered (6 ready so far)
+15:24:54.183 i [YouTubeStock] film=645 video=Q4VGQPk2Dl8 ready in 35s — 4 shot(s)
+15:24:54.183 i [YouTubeStock] film=645 video=blW-Fa4a10g ready in 39s — 6 shot(s)
+15:24:54.183 i [YouTubeStock] film=645 video=mr9kK0_7x08 ready in 98s — 5 shot(s)
+15:24:54.183 i [YouTubeStock] video=645 pictures start after 96s — stock_settled (stock videos=9 ready=6 failed=0 shots=32, limit 180s)
+15:24:54.183 i [YouTubeTunelio] video=464puoD09dM step=create http=200 ms=708 declared_bytes=100207611 quality=720p
+15:24:54.183 i [YouTubeTunelio] video=8_lfxPI5ObM step=create http=200 ms=1267 declared_bytes=36657064 quality=720p
+15:24:55.313 i [YouTubeTunelio] video=Gax2lQlQNeE step=create http=200 ms=2596 declared_bytes=54921260 quality=720p
+15:25:04.433 i [YouTubeStock] Scene 2: 1 ready video(s) that serve this sentence offered whatever their thumbnail rank — no download for those
+15:25:04.442 i [YouTubeStock] Scene 2: serving rows gave moments — non-serving rows not offered
+15:25:04.540 i [YouTubeStock] Scene 2: 1 ready video(s) that serve this sentence offered whatever their thumbnail rank — no download for those
+15:25:08.443 i [YouTubeStock] Scene 1: 2 ready video(s) that serve this sentence offered whatever their thumbnail rank — no download for those
+15:25:08.445 i [YouTubeStock] Scene 1: 2 ready video(s) that serve this sentence offered whatever their thumbnail rank — no download for those
+15:25:08.447 i [YouTubeStock] Scene 1: 3 ready video(s) that serve this sentence offered whatever their thumbnail rank — no download for those
+15:25:09.623 i [YouTubeTunelio] video=0IdQVD8qWc0 step=create http=200 ms=3906 declared_bytes=26641517 quality=720p
+15:25:09.855 i [YouTubeStock] Scene 2: serving rows gave moments — non-serving rows not offered
+15:25:10.895 i [YouTubeTunelio] video=0IdQVD8qWc0 step=download_failed ms=6305 — paid answer unusable: download request to <url>
+15:25:37.618 e [VisualCoverage] s1b0: no picture — gap rejected=0 topRejects=none
+15:25:39.666 i [YouTubeTunelio] video=464puoD09dM step=ready bytes=100115047 duration=823.7s size=1280x720 transfer_ms=52849 total_ms=53558 credits_left=0
+15:25:39.910 i [YouTubeTunelio] video=8_lfxPI5ObM step=ready bytes=36631719 duration=294.1s size=1280x720 transfer_ms=49234 total_ms=50503 credits_left=0
+15:25:41.086 i [YouTubeTunelio] video=Gax2lQlQNeE step=ready bytes=54895384 duration=229.6s size=1280x720 transfer_ms=45773 total_ms=49410 credits_left=0
+15:25:44.994 e [VisualCoverage] s2b0: no picture — gap rejected=0 topRejects=none
+15:25:45.056 e [VisualCoverage] s0b0: no picture — gap rejected=0 topRejects=none
+15:25:52.705 i [YouTubeDownload] video=464puoD09dM scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_SUCCESS(4894429_bytes) cloudService=SET reason=tunelio
+15:25:52.705 i [YouTubeDownload] video=8_lfxPI5ObM scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_SUCCESS(9538254_bytes) cloudService=SET reason=tunelio
+15:26:01.846 i [YouTubeDownload] video=Gax2lQlQNeE scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_SUCCESS(6623951_bytes) cloudService=SET reason=tunelio
+15:26:09.017 i [YouTubeStock] film=645 video=20FBN3tdJUg stocked next — more sentences covered (7 ready so far)
+15:26:09.017 i [YouTubeStock] film=645 video=8_lfxPI5ObM ready in 80s — 5 shot(s)
+15:26:09.017 i [YouTubeTunelio] video=20FBN3tdJUg step=credits balance=0 < 10 — route skipped for 10 min
+15:26:13.123 i [YouTubeStock] film=645 video=464puoD09dM ready in 87s — 7 shot(s)
+15:26:14.096 i [YouTubeStock] film=645 video=Gax2lQlQNeE ready in 82s — 6 shot(s)
+15:26:26.059 i [YouTubeDownload] video=0IdQVD8qWc0 scene=2 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_FAILED(download_failed:download request to <url>),cloud:DOWNLOAD_SUCCESS(5204363_bytes) cloudService=SET reason=cloud_service
+15:26:30.031 e [VisualCoverage] s1b1: no picture — gap rejected=6 topRejects=entity_evidence:4,invalid_duration_before_review:2
+15:26:33.551 i [YouTubeStock] Scene 2: serving rows gave moments — non-serving rows not offered
+15:26:49.564 e [VisualCoverage] s0b1: no picture — gap rejected=0 topRejects=none
+15:26:55.274 i [YouTubeDownload] video=20FBN3tdJUg scene=-1 status=DOWNLOAD_SUCCESS attempts=tunelio:DOWNLOAD_FAILED(insufficient_credits:balance 0 < 10),cloud:DOWNLOAD_SUCCESS(3525557_bytes) cloudService=SET reason=cloud_service
+15:27:00.803 i [YouTubeStock] film=645 video=20FBN3tdJUg ready in 52s — 7 shot(s)
+15:27:04.267 e [VisualCoverage] s2b1: no picture — gap rejected=0 topRejects=none
+15:28:16.989 e [VisualCoverage] s2b2: no picture — gap rejected=0 topRejects=none
+15:29:03.182 e [VisualCoverage] s1b3: no picture — gap rejected=2 topRejects=beat_image_gate:1,invalid_duration_before_review:1
+15:29:04.139 e [VisualCoverage] s0b3: no picture — gap rejected=0 topRejects=none
+15:29:22.437 i [JudgeBudget] started base=55000ms ceiling=180000ms perLook=5000ms sentencesWithoutPicture=6 carried=0 — the picture editor's own time, apart from the scene budgets
+15:29:22.437 i [LateStock] offer=6 (readyBeforePictures=3 readyAfter=3 withShotsOfferedBefore=3) skipped={no_usable_shot:too_short=1}
+15:29:22.448 i [LateStock] video=20FBN3tdJUg not assigned — every open sentence already holds what its looks can judge
+15:30:24.935 e [JudgeBudget] s1b1 review still running when the picture editor's own budget (55000ms of 180000ms) ran out — film goes on (JUDGE_BUDGET_EXHAUSTED)
+15:30:24.935 e [JudgeBudget] s2b0 review still running when the picture editor's own budget (55000ms of 180000ms) ran out — film goes on (JUDGE_BUDGET_EXHAUSTED)
+15:30:24.935 i [JudgeBudget] granted=55000ms used=62090ms left=0ms ceiling=180000ms queued=11 judged=5 FIT=0 MISMATCH=6 stop=JUDGE_BUDGET_EXHAUSTED notReviewed=[s1b1,s2b0]
+15:30:35.917 i [AssetUsageSummary] provider=elon musk found=0 validated=5 selected=0 downloaded=14 assigned=1 rendered=NOT_VERIFIED neverFetched=0 fetchedUnused=NOT_VERIFIED
+15:30:35.917 i [AssetUsageSummary] provider=youtube_cc found=0 validated=18 selected=5 downloaded=40 assigned=5 rendered=NOT_VERIFIED neverFetched=0 fetchedUnused=NOT_VERIFIED
+15:30:35.918 i [AssetUsageSummary] provider=TOTAL found=0 validated=24 selected=5 downloaded=67 assigned=7 rendered=NOT_VERIFIED neverFetched=0 fetchedUnused=NOT_VERIFIED
+15:30:35.918 i [AssetUsageSummary] provider=stability found=0 validated=0 selected=0 downloaded=0 assigned=0 rendered=NOT_VERIFIED neverFetched=0 fetchedUnused=NOT_VERIFIED
+15:30:35.918 i [AssetUsageSummary] provider=youtube found=0 validated=1 selected=0 downloaded=13 assigned=1 rendered=NOT_VERIFIED neverFetched=0 fetchedUnused=NOT_VERIFIED
+15:30:35.920 i [BeatFunnel] s0b0 retrieved=11 eligible=11 ranked=10 rankRuns=2 rankIn=11 shortlisted=4/8 visionAsked=9 approved=0 rejected=9 unclear=0 unavailable=0 notAsked=2 repeatAsks=5 reasons=REJECTED_BY_EDITOR×9,VISION_BUDGET_EXHAUSTED×2
+15:30:35.920 i [BeatFunnel] s0b1 retrieved=6 eligible=5 ranked=6 rankRuns=1 rankIn=6 shortlisted=3/8 visionAsked=4 approved=1 rejected=3 unclear=0 unavailable=0 notAsked=1 slotsReturned=1 repeatAsks=1 reasons=REJECTED_BY_EDITOR×3,PREPARATION_FAILURE×1
+15:30:35.920 i [BeatFunnel] s0b2 retrieved=6 eligible=5 ranked=6 rankRuns=1 rankIn=6 shortlisted=3/8 visionAsked=3 approved=2 rejected=1 unclear=0 unavailable=0 notAsked=2 slotsReturned=2 reasons=PREPARATION_FAILURE×2,REJECTED_BY_EDITOR×1
+15:30:35.920 i [BeatFunnel] s0b3 retrieved=10 eligible=2 ranked=4 rankRuns=2 rankIn=10 shortlisted=2/8 visionAsked=2 approved=0 rejected=2 unclear=0 unavailable=0 notAsked=0 reasons=REJECTED_BY_EDITOR×2
+15:30:35.920 i [BeatFunnel] s1b0 retrieved=5 eligible=2 ranked=5 rankRuns=1 rankIn=5 shortlisted=2/8 visionAsked=2 approved=0 rejected=2 unclear=0 unavailable=0 notAsked=0 reasons=REJECTED_BY_EDITOR×2
+15:30:35.920 i [BeatFunnel] s1b1 retrieved=9 eligible=0 ranked=9 rankRuns=2 rankIn=9 shortlisted=0/8 visionAsked=0 approved=0 rejected=0 unclear=0 unavailable=0 notAsked=0 judgedAtPush=1 reasons=NO_ELIGIBLE_CANDIDATES×1
+15:30:35.920 i [BeatFunnel] s1b2 retrieved=9 eligible=3 ranked=6 rankRuns=1 rankIn=9 shortlisted=3/8 visionAsked=3 approved=1 rejected=2 unclear=0 unavailable=0 notAsked=0 reasons=REJECTED_BY_EDITOR×2
+15:30:35.920 i [BeatFunnel] shortlist cap=8 per beat (MAX_JUDGEMENTS_PER_BEAT=4)
+15:30:35.922 i [BeatFunnel] TOTAL beats=11 retrieved=75 eligible=43 shortlisted=26 visionAsked=38 approved=5 rejected=33 unclear=0 unavailable=0 notAsked=5 judgedAtPush=5 cappedOut=0
+15:30:35.922 i [BeatFunnel] declines=38 blind=0 starved=5 settled=33 — REJECTED_BY_EDITOR×33 PREPARATION_FAILURE×3 VISION_BUDGET_EXHAUSTED×2
+15:30:35.922 i [BeatFunnel] s1b3 retrieved=6 eligible=5 ranked=5 rankRuns=1 rankIn=6 shortlisted=4/8 visionAsked=5 approved=1 rejected=4 unclear=0 unavailable=0 notAsked=0 judgedAtPush=1 repeatAsks=1 reasons=REJECTED_BY_EDITOR×4
+15:30:35.922 i [BeatFunnel] s2b0 retrieved=7 eligible=2 ranked=5 rankRuns=2 rankIn=7 shortlisted=1/8 visionAsked=2 approved=0 rejected=2 unclear=0 unavailable=0 notAsked=0 judgedAtPush=1 repeatAsks=1 reasons=REJECTED_BY_EDITOR×2
+15:30:35.922 i [BeatFunnel] s2b1 retrieved=3 eligible=2 ranked=3 rankRuns=1 rankIn=3 shortlisted=1/8 visionAsked=2 approved=0 rejected=2 unclear=0 unavailable=0 notAsked=0 judgedAtPush=1 repeatAsks=1 reasons=REJECTED_BY_EDITOR×2
+15:30:35.922 i [BeatFunnel] s2b2 retrieved=3 eligible=6 ranked=3 rankRuns=1 rankIn=3 shortlisted=3/8 visionAsked=6 approved=0 rejected=6 unclear=0 unavailable=0 notAsked=0 judgedAtPush=1 repeatAsks=3 reasons=REJECTED_BY_EDITOR×6
+15:30:41.249 e [APPROVED_NOT_PLACED] s2b0 reason=approved after scene closed — not placed
+15:30:48.107 i [EDL] HELD vc_1785215f61: held 0.001s to reach vc_b156c4b929 — a beat between them has no usable picture
+15:30:48.107 i [EDL] HELD vc_1785215f61_graphic1: 4.417s without a picture of its own — the sentence's picture is the graphic gfx_d4911a2932 (chapter_card)
+15:30:48.107 i [EDL] HELD vc_773c6f4c31: 6.080s planned from 3.560s of source — ends with its source
+15:30:48.107 i [EDL] HELD vc_773c6f4c31: held 2.520s to reach vc_773c6f4c31_graphic4 — a beat between them has no usable picture
+15:30:48.107 i [EDL] HELD vc_805fe21b8b: 6.949s planned from 3.270s of source — ends with its source
+15:30:48.107 i [EDL] HELD vc_805fe21b8b: held 3.678s to reach vc_773c6f4c31 — a beat between them has no usable picture
+15:30:48.107 i [EDL] HELD vc_b156c4b929_graphic2: 8.065s without a picture of its own — the sentence's picture is the graphic gfx_564a64a1fa (chapter_card)
+15:30:48.108 i [EDL] HELD vc_773c6f4c31_graphic4: 3.722s without a picture of its own — the sentence's picture is the graphic gfx_d91df7e346 (chapter_card)
+15:30:48.108 i [EDL] HELD vc_b156c4b929_graphic3: 6.949s without a picture of its own — the sentence's picture is the graphic gfx_6abe65e14c (chapter_card)
+15:30:48.108 i [EDL] LOST beat s0b1: camera "camera_drift" did not reach the clip
+15:30:48.108 i [EDL] LOST beat s0b1: the planner's trim was not carried across
+15:30:48.108 i [EDL] LOST the EDL made 6 shot decision(s) and the timeline has 10 clip(s)
+15:30:48.112 i [Timeline] stored video=645 version=1 schema=1 durationSec=52.46
+15:30:50.042 i [RenderJob] video=645 job=48 attempt=1 timelineVersion=1 route=cinematic_timeline queued
+15:30:50.294 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:Q4VGQPk2Dl8 provider=youtube_cc sourceId=Q4VGQPk2Dl8 clip=vc_b156c4b929_p1 start=8.84 duration=2.21 origin=REAL_ASSET local=true
+15:30:50.294 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:mr9kK0_7x08 provider=youtube_cc sourceId=mr9kK0_7x08 clip=vc_1785215f61_graphic1 start=0.00 duration=4.42 origin=REAL_ASSET local=false
+15:30:50.294 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:mr9kK0_7x08 provider=youtube_cc sourceId=mr9kK0_7x08 clip=vc_1785215f61_p1 start=4.42 duration=2.21 origin=REAL_ASSET local=true
+15:30:50.294 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:mr9kK0_7x08 provider=youtube_cc sourceId=mr9kK0_7x08 clip=vc_1785215f61_p2 start=6.63 duration=2.21 origin=REAL_ASSET local=true
+15:30:50.294 i [RenderJob] video=645 job=48 rendering in-process clips=17 alreadyLocal=11
+15:30:50.297 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:Q4VGQPk2Dl8 provider=youtube_cc sourceId=Q4VGQPk2Dl8 clip=vc_b156c4b929_graphic2_p1 start=13.25 duration=4.03 origin=REAL_ASSET local=false
+15:30:50.297 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:Q4VGQPk2Dl8 provider=youtube_cc sourceId=Q4VGQPk2Dl8 clip=vc_b156c4b929_graphic2_p2 start=17.29 duration=4.03 origin=REAL_ASSET local=false
+15:30:50.297 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:Q4VGQPk2Dl8 provider=youtube_cc sourceId=Q4VGQPk2Dl8 clip=vc_b156c4b929_graphic3_p1 start=21.32 duration=3.47 origin=REAL_ASSET local=false
+15:30:50.297 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:Q4VGQPk2Dl8 provider=youtube_cc sourceId=Q4VGQPk2Dl8 clip=vc_b156c4b929_graphic3_p2 start=24.79 duration=3.47 origin=REAL_ASSET local=false
+15:30:50.297 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:Q4VGQPk2Dl8 provider=youtube_cc sourceId=Q4VGQPk2Dl8 clip=vc_b156c4b929_p2 start=11.04 duration=2.21 origin=REAL_ASSET local=true
+15:30:50.297 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:mr9kK0_7x08 provider=youtube_cc sourceId=mr9kK0_7x08 clip=vc_805fe21b8b_p1 start=28.27 duration=2.32 origin=REAL_ASSET local=true
+15:30:50.299 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:RTZdzFCmIgs provider=youtube_cc sourceId=RTZdzFCmIgs clip=vc_773c6f4c31_p1 start=35.21 duration=3.04 origin=REAL_ASSET local=true
+15:30:50.299 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:RTZdzFCmIgs provider=youtube_cc sourceId=RTZdzFCmIgs clip=vc_773c6f4c31_p2 start=38.25 duration=3.04 origin=REAL_ASSET local=true
+15:30:50.299 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:mr9kK0_7x08 provider=youtube_cc sourceId=mr9kK0_7x08 clip=vc_805fe21b8b_p2 start=30.58 duration=2.32 origin=REAL_ASSET local=true
+15:30:50.299 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:mr9kK0_7x08 provider=youtube_cc sourceId=mr9kK0_7x08 clip=vc_805fe21b8b_p3 start=32.90 duration=2.32 origin=REAL_ASSET local=true
+15:30:50.301 i [FinalRenderAsset] render=645 job=48 asset=elon musk:58507 provider=elon musk sourceId=58507 clip=vc_64606c94e8 start=45.02 duration=3.72 origin=REAL_ASSET local=true
+15:30:50.301 i [FinalRenderAsset] render=645 job=48 asset=youtube:60279 provider=youtube sourceId=60279 clip=vc_1136808ff7 start=48.74 duration=3.72 origin=REAL_ASSET local=true
+15:30:50.301 i [FinalRenderAsset] render=645 job=48 asset=youtube_cc:RTZdzFCmIgs provider=youtube_cc sourceId=RTZdzFCmIgs clip=vc_773c6f4c31_graphic4 start=41.29 duration=3.72 origin=REAL_ASSET local=false
+15:37:14.526 e [RenderJob] job=48 not carried: transition_handle clip vc_1136808ff7: the source has less than 0.60s before its in-point, so the dissolve starts on the in-point instead of ending on it — the clip's length is unaffected
+15:37:14.526 e [RenderJob] job=48 not carried: transition_handle clip vc_64606c94e8: the source has less than 0.60s before its in-point, so the dissolve starts on the in-point instead of ending on it — the clip's length is unaffected
+15:37:14.526 e [RenderJob] job=48 not carried: transition_handle clip vc_805fe21b8b_p1: the source has less than 0.60s before its in-point, so the dissolve starts on the in-point instead of ending on it — the clip's length is unaffected
+15:37:14.526 e [RenderJob] job=48 not carried: transition_handle clip vc_b156c4b929_p1: the source has less than 0.60s before its in-point, so the dissolve starts on the in-point instead of ending on it — the clip's length is unaffected
+15:37:14.526 e [RenderJob] job=48 not carried: transition_ladder: the planned transitions would not render, so the picture was joined with "cut" instead — same clips, same order, same length, plainer joins
+15:37:14.526 i [RenderJob] audioBed voice=1 music=3 ambient=3
+15:37:14.526 i [RenderJob] job=48 [Graphics] overlay=graphics_overlay.mov ink=ink inkFrames=93/210 maxAlpha=255 probeMs=10700
+15:37:14.526 i [RenderJob] job=48 executed clips=17 cameras=12/12 transitions=4 captions=0 texts=4 audioTracks=7 ducked=6 ffmpegCommands=20
+15:37:14.526 i [RenderJob] job=48 graphics drawn by remotion
+15:37:31.791 i [RenderJob] video=645 job=48 contentCheck ok=true black=0 freeze=0 silent=0 frames=4
+15:37:41.631 i [DeliveryGate] DELIVERY_GATE_PASS video=645 clips=17 fromArchive=6 route=cinematic_timeline timeline=present checks=assets+file
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_1785215f61_graphic1 archiveAssetId=60533 provider=youtube_cc providerAssetId=mr9kK0_7x08
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_1785215f61_p1 archiveAssetId=60533 provider=youtube_cc providerAssetId=mr9kK0_7x08
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_1785215f61_p2 archiveAssetId=60533 provider=youtube_cc providerAssetId=mr9kK0_7x08
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_805fe21b8b_p1 archiveAssetId=60533 provider=youtube_cc providerAssetId=mr9kK0_7x08
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_b156c4b929_graphic2_p1 archiveAssetId=60534 provider=youtube_cc providerAssetId=Q4VGQPk2Dl8
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_b156c4b929_graphic2_p2 archiveAssetId=60534 provider=youtube_cc providerAssetId=Q4VGQPk2Dl8
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_b156c4b929_graphic3_p1 archiveAssetId=60534 provider=youtube_cc providerAssetId=Q4VGQPk2Dl8
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_b156c4b929_graphic3_p2 archiveAssetId=60534 provider=youtube_cc providerAssetId=Q4VGQPk2Dl8
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_b156c4b929_p1 archiveAssetId=60534 provider=youtube_cc providerAssetId=Q4VGQPk2Dl8
+15:37:41.631 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_b156c4b929_p2 archiveAssetId=60534 provider=youtube_cc providerAssetId=Q4VGQPk2Dl8
+15:37:41.634 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_1136808ff7 archiveAssetId=60279 provider=youtube providerAssetId=60279
+15:37:41.634 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_64606c94e8 archiveAssetId=58507 provider=elon musk providerAssetId=58507
+15:37:41.634 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_773c6f4c31_graphic4 archiveAssetId=60535 provider=youtube_cc providerAssetId=RTZdzFCmIgs
+15:37:41.634 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_773c6f4c31_p1 archiveAssetId=60535 provider=youtube_cc providerAssetId=RTZdzFCmIgs
+15:37:41.634 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_773c6f4c31_p2 archiveAssetId=60535 provider=youtube_cc providerAssetId=RTZdzFCmIgs
+15:37:41.634 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_805fe21b8b_p2 archiveAssetId=60533 provider=youtube_cc providerAssetId=mr9kK0_7x08
+15:37:41.634 i [RenderJob] TIMELINE_ARCHIVE_REFERENCE video=645 clip=vc_805fe21b8b_p3 archiveAssetId=60533 provider=youtube_cc providerAssetId=mr9kK0_7x08
+15:37:46.228 i [RenderJob] job=48 video=645 timelineVersion=1 attempt=1 status=completed phase=completed output=edits/render_48_ea171e39.mp4 renderer=timelineRenderer published=true clips=17 duration=52.41s
+15:37:47.600 i [RenderJob] video=645 job=48 DELIVERED_BY=cinematic_timeline duration=52.41s
+15:37:47.601 i [AssetUsageSummary] provider=youtube_cc found=0 validated=19 selected=6 downloaded=40 assigned=6 rendered=4 neverFetched=0 fetchedUnused=36 (delivered)
+15:37:47.604 i [AssetUsageSummary] provider=TOTAL found=0 validated=25 selected=6 downloaded=67 assigned=8 rendered=6 neverFetched=0 fetchedUnused=61 (delivered)
+15:37:47.604 i [AssetUsageSummary] provider=elon musk found=0 validated=5 selected=0 downloaded=14 assigned=1 rendered=1 neverFetched=0 fetchedUnused=13 (delivered)
+15:37:47.604 i [AssetUsageSummary] provider=stability found=0 validated=0 selected=0 downloaded=0 assigned=0 rendered=0 neverFetched=0 fetchedUnused=0 (delivered)
+15:37:47.604 i [AssetUsageSummary] provider=youtube found=0 validated=1 selected=0 downloaded=13 assigned=1 rendered=1 neverFetched=0 fetchedUnused=12 (delivered)
+15:37:47.604 i [FeatureMatrix] ambience yes yes yes yes no
+15:37:47.604 i [FeatureMatrix] captions no no no no no reason=captions are switched off for this render
+15:37:47.604 i [FeatureMatrix] cinematic yes yes yes yes no
+15:37:47.604 i [FeatureMatrix] deliveredQC yes yes yes yes yes
+15:37:47.604 i [FeatureMatrix] ducking yes yes yes yes no
+15:37:47.604 i [FeatureMatrix] feature enabled planned executed delivered verified
+15:37:47.604 i [RenderJob] video=645 route=cinematic_timeline
+15:37:47.606 i [FeatureMatrix] eligibility yes yes yes yes no
+15:37:47.606 i [FeatureMatrix] graphics yes yes yes yes no
+15:37:47.606 i [FeatureMatrix] movement yes yes no no no reason=bands were planned and no candidate could be measured against them
+15:37:47.606 i [FeatureMatrix] music yes yes yes yes no
+15:37:47.606 i [FeatureMatrix] retrieval yes yes yes yes no
+15:37:47.606 i [FeatureMatrix] sfx yes no no no no reason=no beat was planned an object sound
+15:37:47.606 i [FeatureMatrix] shortlist yes yes yes yes no
+15:37:47.606 i [FeatureMatrix] transitions yes yes yes no no reason=nothing inspects the delivered file for transitions; its timeline asked for 4 transition(s)
+15:37:47.606 i [FeatureMatrix] vision yes yes yes yes no
+15:37:47.606 i [FeatureMatrix] visualIntent yes yes yes yes no
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s0b0 footage=none picture=none "In 2008, Tesla built their first Roadster on a Lotus chassis."
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s0b1 footage=4.42s clips=2 [youtube:mr9kK0_7x08 2.21s, youtube:mr9kK0_7x08 2.21s] "This wasn't just a quirky design choice—it was the beginning of"
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s0b2 footage=4.42s clips=2 [youtube:Q4VGQPk2Dl8 2.21s, youtube:Q4VGQPk2Dl8 2.21s] "a seismic shift that the automotive world never saw coming."
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s0b3 footage=none picture=none "Can a rookie player like Tesla truly upend an age-old industry juggern"
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s1b0 footage=none picture=none "The Detroit Auto Show was a cathedral for giants like Ford and General"
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s1b1 footage=none picture=none "Enter Tesla, rewriting the rules. Mary Barra and Bill Ford watched as "
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s1b2 footage=6.95s clips=3 [youtube:mr9kK0_7x08 2.32s, youtube:mr9kK0_7x08 2.32s, youtube:mr9kK0_7x08 2.32s] "But could Tesla truly seize the throne? In Los Angeles, Elon Musk unve"
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s1b3 footage=6.08s clips=2 [youtube:RTZdzFCmIgs 3.04s, youtube:RTZdzFCmIgs 3.04s] "for the masses—an announcement that electrified the industry. But how "
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s2b0 footage=none picture=none "Tesla's market cap, driven by Elon Musk's vision, soared"
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s2b1 footage=3.72s clips=1 [elon musk:asset 58507 3.72s] "past legacy giants, reshaping the industry's financial landscape."
+15:37:47.994 i [SENTENCE_PICTURE] video=645 s2b2 footage=3.72s clips=1 [youtube_via_archive:xbhqH17QD4g (asset 60279) 3.72s] "But the impact wasn't just financial—what comes next is even more tran"
+15:37:47.996 i [SENTENCE_PICTURE] video=645 TOTAL sentences=11 withFootage=6 withoutFootage=5
+15:37:48.123 i [QualityRescue] video=645 baseline poolSearchesBefore=0 poolUsableBefore=0 poolUsable=36 archiveUsable=13 prefetchedBefore=11 viaArchiveSec=3.72 — ARCHIVE_HEAD_START: prefetched footage was available
+15:37:48.123 i [QualityRescue] video=645 basis=rendered_timeline sentences=11 withRealMoving=6 (55%) filmSec=52.46 realMovingSec=29.31 (56%) stillSec=0 cardSec=23.15 greySec=0 | foundVideos=36 downloadedVideos=11 deliveredTransfers=11 judgedLooks=34 approvedPictures=5 placedShots=4 renderedShots=6 | losses: download={} judgeMismatch=26 approvedNotPlaced=1 {UNRECORDED=1} | inventory sentences=2 offered=2 approved=0 placed=0 excluded={owner_still_looking=40 refused_everywhere=32 targeted_other_sentence=20 seconds_in_film=15 refused_here=7 not_on_disk=5 claimed_by_other=1}
+15:37:48.123 i [YouTubeFunnel] render=645 downloads exits=11 transfers=11 delivered=11 failed=0 {} notStarted={} reused=0 skipped={} videos=11 videosDelivered=11 videosRefused=0 deliveredAfterRefusal=0
+15:37:48.871 i [PipelineReport]    retrieval             105.9s   12%  ████
+15:37:48.871 i [PipelineReport]    script                 143ms    0%  
+15:37:48.871 i [PipelineReport]    tts                    15.3s    2%  █
+15:37:48.871 i [PipelineReport]    upload                  0.0s    0%  
+15:37:48.871 i [PipelineReport]  CRITICAL PATH
+15:37:48.871 i [PipelineReport]  Compose parallelism: 2  Retrieve parallelism: 3  Montage segment parallelism: 2
+15:37:48.871 i [PipelineReport]  FFmpeg: preset=veryfast  CRF=18  max concurrent ffmpeg: ~4
+15:37:48.871 i [PipelineReport]  Total wall-clock: 898.6s  |  CPU cores: 48
+15:37:48.871 i [PipelineReport]  VIDEO RENDER PROFILE  videoId=645  len=1
+15:37:48.871 i [PipelineReport]  ✓ Encoder preset=veryfast (optimal range)
+15:37:48.871 i [PipelineReport] ────────────────────────────────────────────────────────────────────
+15:37:48.871 i [PipelineReport] ════════════════════════════════════════════════════════════════════
+15:37:48.872 i [PipelineReport]    Total instrumented              772.9s
+15:37:48.872 i [PipelineReport]    idle / unaccounted    777.2s   86%  ░░░░░░░░░░░░░░░░░░░░░░░░░░
+15:37:48.872 i [PipelineReport]    image_search                    757.8s  98%
+15:37:48.872 i [PipelineReport]    scene_generation                  48ms  0%
+15:37:48.872 i [PipelineReport]    voiceover                        15.1s  2%
+15:37:48.872 i [PipelineReport]  Bottleneck: retrieval (105.9s, 12% of wall time)
+15:37:48.872 i [PipelineReport]  INSTRUMENTED STAGE TOTALS (may overlap for parallel stages)
+15:37:48.872 i [PipelineReport] ────────────────────────────────────────────────────────────────────
+15:37:48.872 i [PipelineReport] ════════════════════════════════════════════════════════════════════
+15:37:49.080 i [RenderLock] video=645 render=rmv3z2lb7 RELEASED
+15:37:49.080 i [YouTubeStock] film=645 summary: videos=10 ready=10 failed=0 shots=57 offered=37
+15:40:35.908 i [YouTubeDownload] video=Gax2lQlQNeE scene=-1 status=DOWNLOAD_SUCCESS attempts=cloud:DOWNLOAD_SUCCESS(8592894_bytes) cloudService=SET reason=cloud_service
+15:40:40.202 e [YouTubeDownload] video=20FBN3tdJUg scene=-1 status=DOWNLOAD_FAILED attempts=cloud:DOWNLOAD_FAILED(http_502:other:{"detail":"file has no video stream (bytes=485362, salvage=n) cloudService=SET reason=cloud=http_502:other:{"detail":"file has no video stream (bytes=485362, salvage=n
+15:41:10.243 i [YouTubeDownload] video=0IdQVD8qWc0 scene=-1 status=DOWNLOAD_SUCCESS attempts=cloud:DOWNLOAD_SUCCESS(4386706_bytes) cloudService=SET reason=cloud_service

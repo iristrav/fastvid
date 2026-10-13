@@ -155,7 +155,7 @@ describe("RONDE 104 #5 — the durable verdict store", () => {
     expect(src).toContain('if (judgement.verdict !== "unknown") {');
     expect(src).toContain("void persistVerdict(seenKey,");
     const store = fs.readFileSync(path.join(__dirname, "beatRelevanceVerdictStore.ts"), "utf8");
-    expect(store).toContain('verdict: "fits" | "does_not_fit"');
+    expect(store).toContain('verdict: "fits" | "acceptable" | "does_not_fit"');
   });
 
   it("is keyed on the same (picture, narration) pair the render cache uses", () => {

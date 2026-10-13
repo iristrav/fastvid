@@ -143,9 +143,20 @@ describe("A — the last looks are not cut off by a clock that is not the pictur
     const placer = closedScene(d, 1);
     const [m1, m2, fit] = [moment(), moment(), moment()];
     handTo(d, 1, 0, [m1, m2, fit]);
-    const look = editor(d, 1, 0, (p) => p === fit, 600);
+    /**
+     * The budget's clock is the review's own: it advances by exactly what the picture editor took
+     * (600 ms per review), not by the host's scheduling — under four test shards the wall clock ran
+     * past the 3 s budget before the stand-in editor had been scheduled, and the test measured the
+     * host, not the stage. The stage's behaviour is unchanged; only what "time" means here is pinned.
+     */
+    let clock = 1_000_000;
+    const look = vi.fn(async (b: unknown, sc: number, paths: string[]) => {
+      const answer = await editor(d, 1, 0, (p) => p === fit, 600)(b, sc, paths);
+      clock += 600;
+      return answer;
+    });
     /** Scaled 643: the fixed window (100 ms ≈ 45 s) is shorter than the review (600 ms ≈ 133 s); 3 looks × 1 s = 3 s. */
-    const budget = createJudgeBudget({ baseMs: 100, perLookMs: 1_000, ceilingMs: 5_000 });
+    const budget = createJudgeBudget({ baseMs: 100, perLookMs: 1_000, ceilingMs: 5_000, now: () => clock });
     await vp.runFinalReadyYoutubeStage(asDedup(d), [{ index: 1 }], [noClips], look, { windowMs: 50, budget });
     expect(look).toHaveBeenCalledTimes(1);
     expect(vp.reviewTimedOutBeforeFinalize(d, 1, 0)).toBe(false);

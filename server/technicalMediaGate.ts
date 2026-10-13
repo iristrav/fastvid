@@ -363,12 +363,21 @@ export type MediaProbes = {
   /** Our own drawn placeholder: not a source picture, whatever it looks like. */
   isPipelineFallback(filePath: string): boolean;
   isMostlyBlack(filePath: string): Promise<boolean>;
+  /**
+   * VIDEO 650 — does a frame actually DECODE? `isValidVideo` asks ffprobe whether a video stream is
+   * declared; a truncated or corrupt file declares one and then yields no frame — the judge saw
+   * "no frame available", the adoption guard read NOT_ASKED, and the clip came round again for
+   * every sentence. `false` refuses the file for every sentence (`not_decodable`); `null` means the
+   * probe could not be taken (no binary, the budget ended) and refuses nothing.
+   */
+  decodesAFrame?(filePath: string): Promise<boolean | null>;
 };
 
 /** The probed checks, cheapest first. null means the file is technically usable. */
 export async function technicalMediaRefusal(filePath: string, probes: MediaProbes): Promise<string | null> {
   if (!(await probes.isValidVideo(filePath))) return "not_a_valid_video";
   if (probes.isPipelineFallback(filePath)) return "pipeline_fallback";
+  if (probes.decodesAFrame && (await probes.decodesAFrame(filePath)) === false) return "not_decodable";
   if (await probes.isMostlyBlack(filePath)) return "mostly_black";
   return null;
 }

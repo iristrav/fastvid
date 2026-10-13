@@ -290,8 +290,62 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
     const c = input.sentenceCoverage;
     hardRuleLines.push(
       `[DeliveryGate]   COVERAGE sentences=${c.total} covered=${c.covered} partial=${c.partial} uncovered=${c.uncovered} unknown=${c.unknown} ` +
-        `stretchedClips=${c.stretchedClips} plannedCardSec=${c.plannedCardSec.toFixed(2)} proven=${c.proven ? "yes" : "no"}`
+        `stretchedClips=${c.stretchedClips} plannedCardSec=${c.plannedCardSec.toFixed(2)} proven=${c.proven ? "yes" : "no"} timing=${c.timing ?? (c.proven ? "exact" : "unproven")}`
     );
+    /**
+     * PRE-DEPLOY — windows measured from pauses (a voice without word timing) are APPROXIMATE: the
+     * film is delivered on full visual coverage, and the timing is said to be approximate, never exact.
+     */
+    const fromPauses = c.sentences.filter((r) => r.timingBasis === "measured_silence");
+    if (fromPauses.length > 0) {
+      hardRuleLines.push(
+        `[DeliveryGate]   QUALITY_NOTE TIMING_APPROXIMATE sentences=${fromPauses.length} of ${c.total} ` +
+          `(${fromPauses.map((r) => r.key).join(",")}) — ` +
+          `spoken windows cut at measured pauses, not word timestamps; coverage holds for every sentence, its timing is approximate`
+      );
+    }
+    /**
+     * VIDEO 650 — generic footage is cover, and it is said so: a film delivered on it passes this
+     * gate (visual coverage) and is marked here as not a content fit, sentence by sentence.
+     */
+    const ai = c.sentences.filter((r) => (r.aiGeneratedSec ?? 0) > 0);
+    if (ai.length > 0) {
+      hardRuleLines.push(
+        `[DeliveryGate]   QUALITY_NOTE AI_GENERATED_FOOTAGE sentences=${ai.length} ` +
+          `sec=${ai.reduce((t, r) => t + (r.aiGeneratedSec ?? 0), 0).toFixed(2)} ` +
+          `(${ai.map((r) => r.key).join(",")}) — generated pictures approved for their sentences; not real footage`
+      );
+    }
+    const acceptable = c.sentences.filter((r) => (r.acceptableFootageSec ?? 0) > 0);
+    if (acceptable.length > 0) {
+      hardRuleLines.push(
+        `[DeliveryGate]   QUALITY_NOTE ACCEPTABLE_FOOTAGE sentences=${acceptable.length} ` +
+          `sec=${acceptable.reduce((t, r) => t + (r.acceptableFootageSec ?? 0), 0).toFixed(2)} ` +
+          `(${acceptable.map((r) => r.key).join(",")}) — the subject shown without the situation; adopted because no fit was found`
+      );
+    }
+    const generic = c.sentences.filter((r) => (r.genericFootageSec ?? 0) > 0);
+    if (generic.length > 0) {
+      hardRuleLines.push(
+        `[DeliveryGate]   QUALITY_NOTE GENERIC_FOOTAGE sentences=${generic.length} ` +
+          `sec=${generic.reduce((t, r) => t + (r.genericFootageSec ?? 0), 0).toFixed(2)} ` +
+          `(${generic.map((r) => r.key).join(",")}) — moving, rights-clear coverage, not a content fit`
+      );
+    }
+    /**
+     * PRE-DEPLOY — the synthetic colour field is an EMERGENCY placeholder, not footage. It is not cover
+     * (sentenceCoverage.ts): its sentence is uncovered and the film is refused above. This line names
+     * it as a QUALITY PROBLEM — never silently, never as a successful picture choice.
+     */
+    const placeholder = c.sentences.filter((r) => (r.syntheticPlaceholderSec ?? 0) > 0);
+    if (placeholder.length > 0) {
+      hardRuleLines.push(
+        `[DeliveryGate]   QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER sentences=${placeholder.length} ` +
+          `sec=${placeholder.reduce((t, r) => t + (r.syntheticPlaceholderSec ?? 0), 0).toFixed(2)} ` +
+          `(${placeholder.map((r) => r.key).join(",")}) — EMERGENCY fallback: a generated colour field, NOT footage and NOT a content choice; ` +
+          `no real generic clip was available (archive tag "generic"); not cover, so the film is not delivered — replace these shots`
+      );
+    }
   }
   if (input.placeholderCheck) {
     const p = input.placeholderCheck;

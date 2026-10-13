@@ -75,9 +75,12 @@ describe("the stated conversions", () => {
     expect(RENDERER).toContain("const graphNormalize = { widthPx: fmt.widthPx, heightPx: fmt.heightPx, fps: fmt.fps };");
     expect(RENDERER).toContain("    normalize: graphNormalize,");
     expect(RENDERER).toContain("buildTransitionGraph({ durations: graphDurations, transitions: graphTransitions, step, normalize: graphNormalize });");
-    const args = RENDERER.slice(RENDERER.indexOf("const argsFor = (filter: string): string[] => {"), RENDERER.indexOf("const diagnoseSegmentShapes"));
-    expect(args).toContain('const a = ["-y", "-hide_banner", "-loglevel", "warning"];');
-    expect(args).toContain('for (const seg of segments) a.push("-reinit_filter", "0", "-i", seg);');
+    /** VIDEO 650 — the one encode of the graph is a named function: frame rate stated, threads bounded. */
+    expect(RENDERER).toContain("transitionGraphEncodeArgs({ segments, filter, output: silent, fps: fmt.fps });");
+    const args = RENDERER.slice(RENDERER.indexOf("export function transitionGraphEncodeArgs("), RENDERER.indexOf("export async function renderTimeline("));
+    expect(args).toContain('const a = ["-y", "-hide_banner", "-loglevel", "warning", "-filter_threads", "1", "-filter_complex_threads", "1"];');
+    expect(args).toContain('for (const seg of params.segments) a.push("-threads", "1", "-reinit_filter", "0", "-i", seg);');
+    expect(args).toContain('"-r", String(params.fps),');
     expect(FILTERS).toContain("`[${i}:v]settb=AVTB,${SAME_COLOUR_TAGS}[t${i}]`");
   });
 });
@@ -103,7 +106,7 @@ describe("the other build on this host, for a graph this build cannot configure"
     if (fromStatic) expect(fs.realpathSync(fromStatic)).not.toBe(fs.realpathSync(staticFFmpegPath()));
   });
   it("wiring: the ladder retries the same rung once with the other build, only on that refusal, and says so", () => {
-    const ladder = RENDERER.slice(RENDERER.indexOf("for (const step of TRANSITION_LADDER) {"), RENDERER.indexOf("transitionsRendered = rendered.filter("));
+    const ladder = RENDERER.slice(RENDERER.indexOf("for (const step of TRANSITION_LADDER.slice(Math.max(0, ladderFrom))) {"), RENDERER.indexOf("transitionsRendered = rendered.filter("));
     expect(ladder).toContain("const alt = isGraphConfigurationRefusal(said) ? alternateFFmpegBin() : null;");
     expect(ladder).toContain("await runFfmpeg(argsFor(rung.filter), `transition graph (${step}, other build)`, alt);");
     expect(ladder).toContain("joinedByOtherBuild = alt;");

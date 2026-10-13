@@ -58,8 +58,10 @@ export type AssetSourceIdentity = {
    * sentence it stands under: "judge_fit" from the render's own approval ledger, "unverified"
    * when it was placed without that approval (a filler, a hold, an older timeline). Absent on
    * timelines written before the mark existed; the gate reads absent as unverified.
+   * VIDEO 650 — "generic_footage": rights-clear moving footage placed as the floor under the ladder
+   * (genericFootageFallback.ts): valid visual coverage, explicitly NOT a content fit.
    */
-  contentApproval?: "judge_fit" | "unverified";
+  contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage";
   /** A URL this system serves the media from, and will still serve tomorrow. */
   canonicalUrl?: string;
   /** The provider's direct media URL as it was at render time. May have expired since. */
@@ -636,8 +638,12 @@ export type TimelineSentence = {
   beatIndex: number;
   startSec: number | null;
   endSec: number | null;
-  /** "measured": TTS word alignment; "estimated": laid out from the planned hold (not proof). */
-  timingBasis: "measured" | "estimated";
+  /**
+   * "measured": TTS word alignment; "measured_silence": VIDEO 650 — cut at the pauses measured in
+   * the scene's own audio (voiceTimingFromSilence.ts), for a voice without word timing;
+   * "estimated": laid out from the planned hold (not proof).
+   */
+  timingBasis: "measured" | "measured_silence" | "estimated";
   text?: string;
 };
 

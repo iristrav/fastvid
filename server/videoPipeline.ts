@@ -188,7 +188,7 @@ import { optimizeShotSequence, shotSequenceOptimizerEnabled } from "./shotSequen
 import { applyVisualRhythm, buildRhythmProfile, visualRhythmEngineEnabled } from "./visualRhythmEngine";
 import { planSceneAudio } from "./cinematicAudio/planner";
 import { buildRenderFeatureMatrix, formatFeatureMatrix } from "./renderContract";
-import { audioTrackOf, captionTrack, graphicsTrack, videoTrack, type TimelineVideoClip } from "./projectTimeline";
+import { DEFAULT_FORMAT, audioTrackOf, captionTrack, graphicsTrack, videoTrack, type TimelineVideoClip } from "./projectTimeline";
 import type { TimelineGraphic } from "./projectTimeline";
 import { type StillStyleContext } from "./motionGraphicsEngine";
 import { PipelineStepTiming, recordPipelineTiming, timePipelineStep } from "./pipelineStepTiming";
@@ -214,6 +214,23 @@ import {
   stillImageGenerator,
 } from "./generatedImageFallback";
 import {
+  GENERIC_ARCHIVE_TAG,
+  GENERIC_FOOTAGE_FALLBACK,
+  GENERIC_FOOTAGE_PROVIDER,
+  SYNTHETIC_MIN_SEC,
+  SYNTHETIC_PLACEHOLDER_LICENSE,
+  SYNTHETIC_PLACEHOLDER_PROVIDER,
+  SYNTHETIC_PLACEHOLDER_TITLE,
+  clipHasMotion,
+  formatGenericFootagePlacement,
+  genericFootageDecision,
+  makeSyntheticMotionClip,
+  pickGenericArchiveAsset,
+  syntheticAssetId,
+  type GenericFootageSource,
+} from "./genericFootageFallback";
+import { measureSentenceWindows, type SilenceTimingResult } from "./voiceTimingFromSilence";
+import {
   GENERATED_VIDEO_FALLBACK,
   GENERATED_VIDEO_PROVIDER,
   VIDEO_POLL_MIN_MS,
@@ -223,6 +240,26 @@ import {
   videoClipGenerator,
   videoServiceStandingDown,
 } from "./elevenLabsVideoGeneration";
+import {
+  POLL_MIN_MS as REPLICATE_POLL_MIN_MS,
+  REPLICATE_VIDEO_FALLBACK,
+  REPLICATE_VIDEO_PROVIDER,
+  billableSeconds,
+  formatEffectiveRate,
+  getModelSchemaCached,
+  newPVideoSpend,
+  notePVideoRequest,
+  pVideoBudgetDecision,
+  pVideoDurationFor,
+  pVideoPrompt,
+  pVideoSpendStoreOverride,
+  replicateStandingDown,
+  replicateVideoConfig,
+  replicateVideoConfigured,
+  replicateVideoGenerator,
+  type GeneratedVideoResult,
+  type PVideoSpend,
+} from "./replicateVideoGeneration";
 import { bindLineageLedger, bindRelevanceLedger, bindContentKeyResolver, createClipAdoptAudit, formatUnjudgedAdoptions, formatAdoptionEvidence } from "./clipAdoptAudit";
 import { UNVERIFIED_PROVIDER, VisualSourceLedger, formatAssetLifecycleAudit, formatAssetUsageSummary, formatAuditReport, formatFinalVisualReport, formatRenderManifest, formatSelectedButNotRendered, formatFillerOverAdoptedAsset, formatFunnelReport, formatProviderFunnelInvariant, formatProviderTrace, lifecyclesOf, neverJudgedCountsBySentence, formatLifecycleInvariants, formatSourceSummary, assertNoSelectedClipWithoutOutcome, recordAssetOutcome, ensureCuratedAssetLineageOn, type VisualLineageRecord } from "./visualSourceLineage";
 import {
@@ -613,8 +650,13 @@ async function isValidVideoFileUncached(filePath: string, size: number): Promise
         filePath,
       ], 8_000);
       if (stdout.toString().trim().includes("video")) return true;
-    } catch {
-      /* try next probe binary */
+      /** VIDEO 650 — this binary ran and found no video stream: that is the answer. */
+      return false;
+    } catch (err) {
+      /** VIDEO 650 — the next binary only when this one could not run; a timeout falls to the header check below. */
+      if (binaryCannotRun(err)) continue;
+      if (/execFileRaw timeout/.test(String((err as Error)?.message ?? ""))) break;
+      return false;
     }
   }
   // ffprobe missing or timed out — accept files that look like MP4 and are non-trivial size.
@@ -674,12 +716,12 @@ async function probeVideoStreamMetaUncached(
         .split("\n")
         .map((l) => l.trim())
         .filter(Boolean);
-      if (lines.length < 2) continue;
+      if (lines.length < 2) return null;
       const width = parseInt(lines[0]!, 10);
       const height = parseInt(lines[1]!, 10);
       const durationSec = lines[2] ? parseFloat(lines[2]) : 0;
       if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
-        continue;
+        return null;
       }
       return {
         width,
@@ -8304,6 +8346,176 @@ async function generateMissingBeatImages(
   }
 }
 
+/**
+ * GENERIC_FOOTAGE_FALLBACK — VIDEO 650 — the moving floor under the ladder.
+ *
+ * Runs after `generateMissingBeatImages`, for every sentence that STILL has no picture: the sourcing
+ * ladder found nothing that fits, no graphic stands in, nothing was generated. Until now that sentence
+ * got a drawn chapter card, and a card is refused at delivery — so the film failed on a sentence that
+ * could have had moving coverage. See genericFootageFallback.ts for the rule and the two sources.
+ *
+ * Order per sentence: an archive clip tagged `generic` (an operator's rights-clear library), then a
+ * synthetic colour field this process renders. Each candidate is measured before it is placed — a
+ * valid video stream, not mostly black, MOVING (freezedetect), long enough for the sentence — and a
+ * candidate that fails is named and the next source tried; a sentence that ends with nothing is an
+ * explicit error line, never a silent card. Every placed clip gets an archive handle (the archive
+ * row for an archive clip; `storeExternalClipForTimeline` for a synthetic one) because the delivery
+ * gate requires one, and a `generic_footage` mark in its own ledger.
+ */
+export async function placeGenericMovingFallbacks(
+  scenes: Scene[],
+  sceneVisualResults: Array<SceneVisualsResult | undefined>,
+  dedup: VisualDedupState,
+  workDir: string
+): Promise<{ placed: number; failed: number }> {
+  const tally = { placed: 0, failed: 0 };
+  const videoId = getActiveVideoId() ?? 0;
+  let library: Array<{ id: number; title: string | null; mediaType: "video" | "image"; mediaStatus: string | null; isActive: number; durationSec: number | null; storageUrl: string; storageKey: string | null; mimeType: string }> | null = null;
+  const usedIds = new Set<number>();
+  for (let si = 0; si < scenes.length; si++) {
+    const scene = scenes[si]!;
+    if (scene.isChapterCard) continue;
+    const result = sceneVisualResults[si];
+    const beats = dedup.sceneBeatsBySceneIndex.get(scene.index) ?? result?.beats ?? [];
+    for (const beat of beatsWithoutPicture(beats, result?.clipBeatIndices ?? [])) {
+      const where = `s${scene.index}b${beat.index}`;
+      const decision = genericFootageDecision({ hasPicture: false, remainingMs: get_activeBudgetTracker()?.remainingMs?.() ?? null });
+      if (!decision.place) {
+        console.error(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} NOT PLACED — ${decision.reason}; the sentence has no moving coverage`);
+        tally.failed++;
+        continue;
+      }
+      const neededSec = generatedStillSec(beat);
+      const seed = videoId * 31 + scene.index * 7 + beat.index;
+      fs.mkdirSync(workDir, { recursive: true });
+      let placedPath: string | null = null;
+      const refusals: string[] = [];
+      for (const source of ["archive", "synthetic"] as GenericFootageSource[]) {
+        let outPath: string;
+        let assetLabel: string | number;
+        let archiveId: number | null = null;
+        let claimedSec: number;
+        if (source === "archive") {
+          try {
+            if (library === null) {
+              const { listActiveVideoArchiveAssetsByTag } = await import("./db");
+              library = await listActiveVideoArchiveAssetsByTag(GENERIC_ARCHIVE_TAG, 200);
+              console.log(`[${GENERIC_FOOTAGE_FALLBACK}] library: ${library.length} active generic clip(s) tagged "${GENERIC_ARCHIVE_TAG}" in the archive`);
+            }
+            const pick = pickGenericArchiveAsset(library, { neededSec, usedIds, seed });
+            if (!pick) {
+              refusals.push(`archive: no generic clip of ${neededSec.toFixed(2)}s or longer`);
+              continue;
+            }
+            const { loadArchiveAssetFile } = await import("./archiveAssetLoad");
+            const loaded = await loadArchiveAssetFile(pick);
+            if (!loaded.ok) {
+              refusals.push(`archive clip ${pick.id}: could not be loaded (${loaded.reason})`);
+              usedIds.add(pick.id);
+              continue;
+            }
+            outPath = tagPathWithProviderAsset(
+              path.join(workDir, `scene_${scene.index}_generic_b${beat.index}.mp4`),
+              GENERIC_FOOTAGE_PROVIDER, `archive-${pick.id}`, dedup.sourcingCache,
+              { sceneIndex: scene.index, beatIndex: beat.index, title: pick.title ?? `generic archive clip ${pick.id}`, mediaType: "video", searchRoute: "placeGenericMovingFallbacks", beatText: beat.text }
+            );
+            fs.copyFileSync(loaded.result.localPath, outPath);
+            loaded.result.cleanup?.();
+            assetLabel = pick.id;
+            archiveId = pick.id;
+            claimedSec = pick.durationSec ?? 0;
+          } catch (err) {
+            refusals.push(`archive: ${(err as Error)?.message?.slice(0, 120) ?? String(err)}`);
+            continue;
+          }
+        } else {
+          const id = syntheticAssetId(seed, neededSec);
+          /** PRE-DEPLOY — its own provider name: a placeholder is never filed or counted as footage */
+          outPath = tagPathWithProviderAsset(
+            path.join(workDir, `scene_${scene.index}_generic_b${beat.index}.mp4`),
+            SYNTHETIC_PLACEHOLDER_PROVIDER, id, dedup.sourcingCache,
+            { sceneIndex: scene.index, beatIndex: beat.index, title: SYNTHETIC_PLACEHOLDER_TITLE, mediaType: "video", searchRoute: "placeGenericMovingFallbacks", beatText: beat.text }
+          );
+          const made = await makeSyntheticMotionClip(FFMPEG_BIN, {
+            output: outPath, durationSec: neededSec, widthPx: DEFAULT_FORMAT.widthPx, heightPx: DEFAULT_FORMAT.heightPx, fps: DEFAULT_FORMAT.fps, seed,
+          });
+          if (!made.ok) {
+            recordProviderDownloadOutcome(dedup.sourcingCache, outPath, false, made.reason);
+            refusals.push(`synthetic: ${made.reason}`);
+            continue;
+          }
+          assetLabel = id;
+          claimedSec = Math.max(SYNTHETIC_MIN_SEC, neededSec);
+        }
+        /* measured, never assumed: a valid stream, long enough, not black, moving */
+        let refusal: string | null = null;
+        const meta = (await isValidVideoFile(outPath)) ? await probeVideoStreamMeta(outPath) : null;
+        const measuredSec = meta?.durationSec ?? 0;
+        if (!meta) refusal = "not a valid video";
+        else if (measuredSec + 0.05 < neededSec) refusal = `covers ${measuredSec.toFixed(2)}s of the ${neededSec.toFixed(2)}s needed`;
+        else if (await isMostlyBlackClip(outPath, measuredSec)) refusal = "mostly black";
+        else {
+          const motion = await clipHasMotion(FFMPEG_BIN, outPath);
+          if (!motion.moving) refusal = `not moving (${motion.detail})`;
+        }
+        if (refusal || !meta) {
+          refusal ??= "not a valid video";
+          recordProviderDownloadOutcome(dedup.sourcingCache, outPath, false, refusal);
+          refusals.push(`${source} ${assetLabel}: ${refusal}`);
+          if (archiveId != null) usedIds.add(archiveId);
+          try { fs.unlinkSync(outPath); } catch { /* already gone */ }
+          continue;
+        }
+        recordProviderDownloadOutcome(dedup.sourcingCache, outPath, true);
+        /* the archive handle the delivery gate requires */
+        if (archiveId != null) {
+          dedup.sourcingCache?.lineage?.attachArchiveAssetToPath(outPath, archiveId, clipContentKey(outPath));
+          usedIds.add(archiveId);
+        } else {
+          const facts: ExternalClipArchiveFacts = {
+            source: SYNTHETIC_PLACEHOLDER_PROVIDER, providerAssetId: String(assetLabel), title: SYNTHETIC_PLACEHOLDER_TITLE,
+            mediaType: "video", license: SYNTHETIC_PLACEHOLDER_LICENSE, durationSec: measuredSec,
+          };
+          const stored = await storeExternalClipForTimeline({
+            clipPath: outPath,
+            facts,
+            /** NOT tagged `generic`: a placeholder must never be picked as the archive's generic footage for a later film */
+            metadata: { ...archiveMetadataForExternalClip(facts, { beatQuery: "", personContext: false, topics: [] }), tags: ["placeholder"] },
+            lineage: dedup.sourcingCache?.lineage,
+            workDir,
+            sceneIndex: scene.index,
+            beatIndex: beat.index,
+            /** the floor pushes straight into the scene's clips, past the push gate, so it stores here */
+            route: "generic_floor",
+          });
+          if (stored.status !== "stored") {
+            console.warn(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} ARCHIVE_HANDLE_MISSING ${stored.code} — the clip is placed, but the delivery gate refuses a clip without an archive asset`);
+          }
+        }
+        markGenericFootageForBeat(dedup, scene.index, beat.index, clipContentKey(outPath));
+        const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
+        target.clips.push(outPath);
+        target.beatDurations.push(neededSec);
+        (target.clipBeatIndices ??= []).push(beat.index);
+        console.log(formatGenericFootagePlacement({ sceneIndex: scene.index, beatIndex: beat.index, source, assetId: assetLabel, durationSec: Math.max(claimedSec, measuredSec), neededSec }));
+        placedPath = outPath;
+        break;
+      }
+      if (placedPath) {
+        tally.placed++;
+        if (refusals.length) console.warn(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} before that: ${refusals.join("; ")}`);
+      } else {
+        tally.failed++;
+        console.error(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} FAILED — no moving coverage for this sentence: ${refusals.join("; ") || "no source answered"}`);
+      }
+    }
+  }
+  if (tally.placed > 0 || tally.failed > 0) {
+    console.log(`[${GENERIC_FOOTAGE_FALLBACK}] TOTAL placed=${tally.placed} failed=${tally.failed}`);
+  }
+  return tally;
+}
+
 async function fetchBeatGeneratedImage(
   beat: SceneBeat,
   scene: Scene,
@@ -8414,7 +8626,234 @@ export const GENERATED_VIDEO_RENDER_RESERVE_MS = 3 * 60_000;
  * sentence, the render has no window left, the generation fails or times out, or the picture
  * editor refuses it — the still is tried next in every one of those cases.
  */
+/**
+ * The generated-video rung: ElevenLabs first (VIDEO 649), Replicate p-video-2 second (VIDEO 650),
+ * each under the decision and prompt `fetchBeatGeneratedImage` already made; the still is tried
+ * when both yield nothing. Same sentence, same route (`adoptClip`), same marks.
+ */
 async function fetchBeatGeneratedVideo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  dedup: VisualDedupState,
+  videoTitle: string | undefined,
+  prompt: string,
+  sentence: string,
+  visualDescription: string | null | undefined,
+  searchQuery: string | null | undefined
+): Promise<string | null> {
+  const viaElevenLabs = await fetchBeatElevenLabsVideo(beat, scene, workDir, sceneIndex, dedup, videoTitle, prompt, sentence, visualDescription, searchQuery);
+  if (viaElevenLabs) return viaElevenLabs;
+  return fetchBeatReplicateVideo(beat, scene, workDir, sceneIndex, dedup, videoTitle, sentence, visualDescription, searchQuery);
+}
+
+/** VIDEO 650 — the film's Replicate spend, one ledger per render (see `pVideoBudgetDecision`). */
+const pVideoSpendByRender = new WeakMap<object, PVideoSpend>();
+const replicateNotConfiguredSaid = new WeakSet<object>();
+const replicateNoPriceSaid = new WeakSet<object>();
+
+export function pVideoSpendForRender(dedup: object): PVideoSpend {
+  const s = pVideoSpendByRender.get(dedup) ?? newPVideoSpend();
+  pVideoSpendByRender.set(dedup, s);
+  return s;
+}
+
+/**
+ * REPLICATE_VIDEO_FALLBACK — see replicateVideoGeneration.ts for the rule, the API and the bounds.
+ *
+ * Order inside: the four ceilings (nothing is sent past one of them), then the archive as the
+ * duplicate guard (a clip generated for this prompt by an earlier worker or an earlier attempt is
+ * reused, not generated again), then the request, then exactly the route every generated picture
+ * takes: `adoptClip` → technical gate → picture editor against THIS sentence → ledger → archive.
+ * The clip carries provider `replicate_pvideo` everywhere: the coverage check names it
+ * `ai_generated_footage`, the delivery gate's note names it, the fill never lends it elsewhere.
+ */
+async function fetchBeatReplicateVideo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  dedup: VisualDedupState,
+  videoTitle: string | undefined,
+  sentence: string,
+  visualDescription: string | null | undefined,
+  searchQuery: string | null | undefined
+): Promise<string | null> {
+  const where = `s${scene.index}b${beat.index}`;
+  if (!replicateVideoConfigured()) {
+    if (!replicateNotConfiguredSaid.has(dedup)) {
+      replicateNotConfiguredSaid.add(dedup);
+      console.log(`[${REPLICATE_VIDEO_FALLBACK}] not configured — REPLICATE_API_TOKEN is not set; the rung is skipped for this film`);
+    }
+    return null;
+  }
+  if (replicateStandingDown()) {
+    console.log(`[${REPLICATE_VIDEO_FALLBACK}] ${where} not requested — the service refused this account recently; the still is tried`);
+    return null;
+  }
+  const cfg = replicateVideoConfig();
+  /**
+   * FIRST-RENDER PREP — without a price the rung is OFF: nothing is sent to Replicate at all, not even
+   * the free model read. The ceilings below would refuse anyway; this makes "off" mean no network call.
+   */
+  if (cfg.pricePerSecUsd == null) {
+    if (!replicateNoPriceSaid.has(dedup)) {
+      replicateNoPriceSaid.add(dedup);
+      console.log(
+        `[${REPLICATE_VIDEO_FALLBACK}] disabled — REPLICATE_PVIDEO_PRICE_PER_SEC_USD is not set to a positive number; ` +
+          `no request is sent for this film (set the price confirmed on replicate.com/prunaai/p-video-2 to enable)`
+      );
+    }
+    return null;
+  }
+  const neededSec = generatedStillSec(beat);
+  /**
+   * GO/NO-GO CHECK — the duration is chosen FROM the model's schema (its enum or bounds), so the seconds
+   * claimed below are the seconds sent. The read is a free GET, cached per model.
+   */
+  const { schema: modelSchema } = await getModelSchemaCached(cfg.token!, cfg.model).catch(() => ({ schema: null }));
+  const durationSec = pVideoDurationFor(neededSec, cfg, modelSchema);
+  if (durationSec + 0.05 < neededSec) {
+    console.log(`[${REPLICATE_VIDEO_FALLBACK}] ${where} not requested — the model makes at most ${durationSec}s, the sentence needs ${neededSec.toFixed(2)}s; the still is tried`);
+    return null;
+  }
+  const spend = pVideoSpendForRender(dedup);
+  const prompt = pVideoPrompt({ sentence, visualDescription, searchQuery });
+  const assetId = createHash("sha256").update(`${cfg.model}|${prompt}|${durationSec}`).digest("hex").slice(0, 16);
+  const outPath = tagPathWithProviderAsset(path.join(workDir, `scene_${sceneIndex}_genvid_b${beat.index}_pvideo.mp4`), REPLICATE_VIDEO_PROVIDER, assetId, dedup.sourcingCache, {
+    sceneIndex,
+    beatIndex: beat.index,
+    title: `AI-generated (${cfg.model}): ${(visualDescription ?? sentence).slice(0, 160)}`,
+    mediaType: "video",
+    query: prompt.slice(0, 200),
+    searchRoute: "fetchBeatReplicateVideo",
+  });
+  fs.mkdirSync(workDir, { recursive: true });
+
+  /* the duplicate guard: the archive already holds this exact generation */
+  let reused = false;
+  try {
+    const { findMediaArchiveAssetByProviderAsset } = await import("./db");
+    const row = await findMediaArchiveAssetByProviderAsset(REPLICATE_VIDEO_PROVIDER, assetId);
+    if (row) {
+      const { loadArchiveAssetFile } = await import("./archiveAssetLoad");
+      const loaded = await loadArchiveAssetFile(row);
+      if (loaded.ok) {
+        fs.copyFileSync(loaded.result.localPath, outPath);
+        loaded.result.cleanup?.();
+        dedup.sourcingCache?.lineage?.attachArchiveAssetToPath(outPath, row.id, clipContentKey(outPath));
+        reused = true;
+        console.log(`[${REPLICATE_VIDEO_FALLBACK}] ${where} reused archive asset ${row.id} for this prompt — no new request`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[${REPLICATE_VIDEO_FALLBACK}] ${where} archive lookup failed: ${(err as Error)?.message?.slice(0, 100)}`);
+  }
+
+  if (!reused) {
+    let placedFile = false;
+    for (let attempt = 0; attempt <= cfg.maxRetries; attempt++) {
+      const decision = pVideoBudgetDecision(spend, cfg, durationSec, where);
+      if (!decision.allowed) {
+        console.warn(`[${REPLICATE_VIDEO_FALLBACK}] ${where} not requested — ceiling: ${decision.reason}`);
+        return null;
+      }
+      const remaining = get_activeBudgetTracker()?.remainingMs?.();
+      const windowMs = Math.min(cfg.maxWaitMs, remaining != null ? Math.max(0, remaining - GENERATED_VIDEO_RENDER_RESERVE_MS) : cfg.maxWaitMs);
+      if (windowMs < REPLICATE_POLL_MIN_MS * 3) {
+        console.log(`[${REPLICATE_VIDEO_FALLBACK}] ${where} not requested — ${Math.round(windowMs / 1000)}s left for a generation; the still is tried`);
+        return null;
+      }
+      /**
+       * PRE-DEPLOY — the ledger the film is bound by is the database's, across worker replicas and
+       * attempts: the request is CLAIMED there before it is sent, and a refused claim sends nothing.
+       */
+      const videoId = getActiveVideoId() ?? 0;
+      const store = pVideoSpendStoreOverride() ?? (await import("./db")).dbPVideoSpendStore;
+      const claimed = await store
+        .claim(videoId, { seconds: decision.billableSec, costUsd: decision.estimatedCostUsd, model: cfg.model }, { maxRequests: cfg.maxRequestsPerVideo, maxSeconds: cfg.maxSecondsPerVideo, maxCostUsd: cfg.maxCostPerVideoUsd })
+        .catch((err: unknown) => {
+          console.warn(`[${REPLICATE_VIDEO_FALLBACK}] ${where} the video's ledger could not be asked: ${(err as Error)?.message?.slice(0, 100)}`);
+          return false;
+        });
+      if (!claimed) {
+        console.warn(
+          `[${REPLICATE_VIDEO_FALLBACK}] ${where} not requested — the video's ledger (database, video=${videoId || "none"}) refused the claim: ` +
+            `the per-video ceilings are reached across attempts and replicas, there is no video id, or there is no database; nothing sent`
+        );
+        return null;
+      }
+      notePVideoRequest(spend, decision.billableSec, decision.estimatedCostUsd, where);
+      console.log(
+        `[${REPLICATE_VIDEO_FALLBACK}] ${where} requesting ${durationSec}s (needed ${neededSec.toFixed(2)}s, billed ${decision.billableSec}s) est=$${decision.estimatedCostUsd.toFixed(3)} ` +
+          `${formatEffectiveRate(cfg, decision.rate)} ` +
+          `film: requests=${spend.requests}/${cfg.maxRequestsPerVideo} seconds=${spend.secondsRequested.toFixed(0)}/${cfg.maxSecondsPerVideo} ` +
+          `cost=$${spend.costUsd.toFixed(3)}/$${cfg.maxCostPerVideoUsd.toFixed(2)} attempt=${attempt + 1}/${cfg.maxRetries + 1} (ledger claimed in the database)`
+      );
+      const startedAt = Date.now();
+      const made = await replicateVideoGenerator()(prompt, outPath, {
+        durationSec, deadlineAtMs: Date.now() + windowMs, format: DEFAULT_FORMAT, neededSec,
+      }).catch((err): GeneratedVideoResult => ({ ok: false as const, reason: `threw: ${(err as Error)?.message?.slice(0, 100)}`, predictionId: null, charged: false }));
+      if (made.ok) {
+        /**
+         * GO/NO-GO CHECK — billing follows the RETURNED clip, in whole seconds. A clip longer than the
+         * seconds claimed is recorded in the video's ledger (unconditionally: it is already spent), so
+         * every later claim of this video, on any worker, sees what was really used.
+         */
+        const returnedSec = made.outputDurationSec != null ? billableSeconds(made.outputDurationSec) : decision.billableSec;
+        if (returnedSec > decision.billableSec) {
+          const extraSec = returnedSec - decision.billableSec;
+          const extraCost = Number((extraSec * decision.rate.perSecUsd!).toFixed(4));
+          await store.reconcile(videoId, { seconds: extraSec, costUsd: extraCost }).catch((err: unknown) =>
+            console.warn(`[${REPLICATE_VIDEO_FALLBACK}] ${where} the ledger correction could not be written: ${(err as Error)?.message?.slice(0, 100)}`)
+          );
+          spend.secondsRequested += extraSec;
+          spend.costUsd = Number((spend.costUsd + extraCost).toFixed(4));
+          console.warn(
+            `[${REPLICATE_VIDEO_FALLBACK}] ${where} the returned clip bills ${returnedSec}s, ${decision.billableSec}s was claimed — ledger corrected +${extraSec}s +$${extraCost.toFixed(3)} ` +
+              `(film: seconds=${spend.secondsRequested.toFixed(0)}/${cfg.maxSecondsPerVideo} cost=$${spend.costUsd.toFixed(3)}/$${cfg.maxCostPerVideoUsd.toFixed(2)})`
+          );
+        }
+        placedFile = true;
+        break;
+      }
+      recordProviderDownloadOutcome(dedup.sourcingCache, outPath, false, made.reason);
+      console.warn(
+        `[${REPLICATE_VIDEO_FALLBACK}] ${where} produced nothing (${Math.round((Date.now() - startedAt) / 1000)}s) — ${made.reason} ` +
+          `(prediction=${made.predictionId ?? "none"} charged=${made.charged ? "yes" : "no"})`
+      );
+      /** a failure the service charged for is not retried — the same prompt would cost the same again; nor one that sending again cannot change */
+      if (made.charged || made.retryable === false) return null;
+    }
+    if (!placedFile) return null;
+    recordProviderDownloadOutcome(dedup.sourcingCache, outPath, true);
+  }
+  dedup.clipAnnotationMeta.set(outPath, {
+    ...(dedup.clipAnnotationMeta.get(outPath) ?? {}),
+    providerText: { title: `AI-generated (${cfg.model}): ${visualDescription ?? sentence}` },
+  });
+  const offered = [outPath];
+  const clip = await withBeatProvenance(beat, scene, () =>
+    adoptClip(offered, dedup, sceneIndex, beat.index, sentence, workDir, searchQuery ?? sentence, {
+      requireBeatMatch: false,
+      scriptAnchored: false,
+      sceneText: scene.text,
+      videoTitle,
+    })
+  );
+  if (!clip || !isRealVideoClip(clip)) {
+    console.log(`[${REPLICATE_VIDEO_FALLBACK}] ${where} generated, but not approved for the sentence — not used; the still is tried`);
+    return null;
+  }
+  console.log(
+    `[${REPLICATE_VIDEO_FALLBACK}] ${where} used provider=${REPLICATE_VIDEO_PROVIDER} model=${cfg.model} generated=true ` +
+      `coverageType=ai_generated_footage duration=${durationSec}s reused=${reused ? "yes" : "no"} prompt="${prompt.slice(0, 140)}"`
+  );
+  return clip;
+}
+
+async function fetchBeatElevenLabsVideo(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -10840,8 +11279,10 @@ async function probeHasAudioStream(filePath: string): Promise<boolean> {
         filePath,
       ], 8_000);
       return stdout.toString().trim().split("\n").some((l) => l.trim() === "audio");
-    } catch {
-      continue;
+    } catch (err) {
+      /** VIDEO 650 — the next binary only when this one could not run. */
+      if (binaryCannotRun(err)) continue;
+      return false;
     }
   }
   return false;
@@ -15960,7 +16401,44 @@ async function applyVoiceAlignmentToBeats(
   if (dedup && dedup.ttsSceneBeats.size > 0 && ttsWordAlignmentEnabled()) {
     return;
   }
-  /** Without the TTS's own timestamps the beats keep their planned holds: no second timing method. */
+  /**
+   * VIDEO 650 — without the TTS's own timestamps, the scene's audio is MEASURED for its pauses and
+   * the sentences cut there (voiceTimingFromSilence.ts). A measurement that cannot be taken, or that
+   * does not divide the audio the way the sentences divide the text, leaves the beats as they were:
+   * laid out from their holds and recorded as `estimated`, which the delivery gate refuses.
+   */
+  if (!sceneAudioPath || beats.length === 0 || beats.some((b) => b.voiceStartSec != null)) return;
+  if (!fs.existsSync(sceneAudioPath)) return;
+  const measured = await measureSentenceWindows(FFMPEG_BIN, sceneAudioPath, sceneDuration, beats).catch(
+    (err): SilenceTimingResult => ({ ok: false, reason: `silencedetect threw: ${(err as Error)?.message?.slice(0, 100)}`, pausesFound: 0 })
+  );
+  if (!measured.ok) {
+    console.warn(
+      `[VoiceTiming] scene=${sceneIndex ?? "?"} basis=estimated — ${measured.reason} ` +
+        `(pauses=${measured.pausesFound}, sentences=${beats.length}); the sentences keep their planned holds`
+    );
+    return;
+  }
+  beats.forEach((b, i) => {
+    const w = measured.windows[i]!;
+    b.voiceStartSec = w.startSec;
+    b.voiceEndSec = w.endSec;
+    b.holdSec = Math.max(0.5, Number((w.endSec - w.startSec).toFixed(3)));
+    b.voiceTimingSource = "silence";
+  });
+  /**
+   * PRE-DEPLOY — APPROXIMATE, never exact: a boundary cut at a pause lies inside that pause, so the
+   * uncertainty is half the pause (printed as ±); and the pauses chosen are the N−1 longest, accepted
+   * only when they are clearly longer than the longest pause NOT chosen (`margin`, else refused above).
+   * The basis stays `measured_silence` and the coverage report calls the timing approximate.
+   */
+  console.log(
+    `[VoiceTiming] scene=${sceneIndex ?? "?"} basis=measured_silence (APPROXIMATE, not word timestamps) ` +
+      `margin=${Number.isFinite(measured.marginRatio) ? measured.marginRatio.toFixed(2) : "n/a"} sentences=${beats.length} ` +
+      `pauses=${measured.pausesUsed}/${measured.pausesFound} audio=${sceneDuration.toFixed(2)}s windows=` +
+      measured.windows.map((w) => `${w.startSec.toFixed(2)}-${w.endSec.toFixed(2)}`).join(",") +
+      (measured.boundaries.length ? ` boundaries=${measured.boundaries.map((b) => `${b.cutSec.toFixed(2)}±${(b.pauseSec / 2).toFixed(2)}`).join(",")}` : "")
+  );
 }
 
 function ttsPlannedBeatToSceneBeat(
@@ -15996,6 +16474,7 @@ function ttsPlannedBeatToSceneBeat(
     holdSec: planned.holdSec,
     voiceStartSec: planned.voiceStartSec,
     voiceEndSec: planned.voiceEndSec,
+    voiceTimingSource: "tts_alignment",
     visualDescription,
   };
 }
@@ -16043,6 +16522,8 @@ interface SceneBeat {
   /** TTS-aligned window within scene voice (seconds). */
   voiceStartSec?: number;
   voiceEndSec?: number;
+  /** VIDEO 650 — the alignment's window, or one cut at pauses measured in the scene audio. */
+  voiceTimingSource?: "tts_alignment" | "silence";
 }
 
 export interface VisualDedupState {
@@ -16639,8 +17120,29 @@ function maxLicensedStockAttempts(dedup: VisualDedupState): number {
 /**
  * Whether we can spend a licensed stock (Pexels/Pixabay) clip on this beat.
  */
-function canUseLicensedStockBeat(dedup: VisualDedupState): boolean {
+function canUseLicensedStockBeat(
+  dedup: VisualDedupState,
+  /**
+   * VIDEO 650 — the cap is a PREFERENCE (fewer stock shots in a film), not a reason to leave a
+   * sentence without a picture. A caller holding the only clip a sentence has says so here, and
+   * the cap yields — once per sentence, in the log — rather than turning that clip into a card.
+   */
+  opts?: { sentenceWithoutPicture: boolean; where: string }
+): boolean {
   if (!dedup.perf.minimizeStockFootage) return true;
+  if (opts?.sentenceWithoutPicture) {
+    const capped =
+      dedup.perf.maxStockBeatsPerVideo <= 0 ||
+      dedup.stockBeatsUsed >= dedup.perf.maxStockBeatsPerVideo ||
+      dedup.sourcingCache.totals.stockDownloadAttempts >= maxLicensedStockAttempts(dedup);
+    if (capped) {
+      console.log(
+        `[StockBudget] cap lifted for ${opts.where} — the sentence has no other picture; a stock shot ` +
+          `beyond the ${dedup.perf.maxStockBeatsPerVideo}-beat preference rather than no footage`
+      );
+    }
+    return true;
+  }
   if (dedup.perf.maxStockBeatsPerVideo <= 0) return false;
   if (dedup.stockBeatsUsed >= dedup.perf.maxStockBeatsPerVideo) return false;
   /** The half render 569 was missing: what this render has already SPENT looking. */
@@ -17290,7 +17792,8 @@ async function probeClipMeanLuma(filePath: string, atSec: number): Promise<numbe
     } catch (err) {
       /** VIDEO 646 (E) — the budget ending is not a fault of this binary: the next one is not tried. */
       if (isScopeAbortError(err)) return null;
-      /* try next ffmpeg binary */
+      /** VIDEO 650 — nor is a frame that did not decode: the next binary only when this one could not run. */
+      if (!binaryCannotRun(err)) return null;
     }
   }
   return null;
@@ -17325,7 +17828,7 @@ async function probeClipRegionMeanLuma(
       return sum / buf.length;
     } catch (err) {
       if (isScopeAbortError(err)) return null;
-      /* try next ffmpeg binary */
+      if (!binaryCannotRun(err)) return null;
     }
   }
   return null;
@@ -17366,6 +17869,8 @@ const MEDIA_PROBES: MediaProbes = {
   isValidVideo: (f) => isValidVideoFile(f),
   isPipelineFallback: (f) => isPipelineFallbackClip(f),
   isMostlyBlack: (f) => isMostlyBlackClip(f),
+  /** VIDEO 650 — a declared stream is not a decodable one. */
+  decodesAFrame: (f) => clipDecodesAFrame(f),
 };
 
 async function isMostlyBlackClip(filePath: string, precomputedDurationSec?: number): Promise<boolean> {
@@ -17391,10 +17896,21 @@ async function isMostlyBlackClip(filePath: string, precomputedDurationSec?: numb
   // Curated archive clips: reject if too dark — threshold 25 (was 12, too permissive).
   // B&W archival clips have low luma by design; we still skip near-pitch-black ones.
   
-  // Railway: one luma sample — full blackdetect runs 3+ FFmpeg probes per clip
+  /**
+   * VIDEO 650 — Railway: THREE single-frame luma samples, dark when TWO of them are — never one
+   * frame deciding. One sample at 0.5 s refused a clip that opened on a fade from black and
+   * passed one that was black from the second second on; three cheap probes (start, middle, end)
+   * cost less than the full blackdetect scan below and answer the question the rule asks.
+   */
   if (IS_RAILWAY) {
-    const mid = await probeClipMeanLuma(filePath, 0.5);
-    return mid !== null && mid < 24;
+    const dur = precomputedDurationSec ?? (await probeVideoDurationSec(filePath));
+    const at = dur > 1.2
+      ? [...new Set([0.2, Number((dur / 2).toFixed(2)), Number(Math.max(0.3, dur - 0.35).toFixed(2))])]
+      : [0.2, Math.max(0.05, dur / 2)];
+    const samples = (await Promise.all(at.map((t) => probeClipMeanLuma(filePath, t)))).filter((m): m is number => m !== null);
+    if (samples.length === 0) return false;
+    const dark = samples.filter((m) => m < 24).length;
+    return samples.length === 1 ? dark === 1 : dark >= 2;
   }
   const dur = precomputedDurationSec ?? (await probeVideoDurationSec(filePath));
   const sampleTimes = [0.2, 0.9, 2.0];
@@ -19137,7 +19653,56 @@ export function pathsNotRefusedEarlier(
 export const STILL_FRIENDLY_FORMS: ReadonlySet<string> = new Set(["DATA_VISUALIZATION", "MAP", "DOCUMENT", "PHOTO", "GRAPHIC"]);
 
 export function refusalHoldsForEverySentence(reason: string): boolean {
-  return /^(not_a_valid_video|pipeline_fallback|mostly_black|below_size_floor|baked_edit_text|invalid_duration_before_review)/.test(reason);
+  /** VIDEO 650 — a file that decodes no frame is refused for every sentence, not re-offered to each. */
+  return /^(not_a_valid_video|not_decodable|pipeline_fallback|mostly_black|below_size_floor|baked_edit_text|invalid_duration_before_review)/.test(reason);
+}
+
+/**
+ * VIDEO 650 — a probe loop moves to the NEXT binary only when THIS binary could not run at all.
+ *
+ * Every probe here tries `FFPROBE_PATHS()` / `FFMPEG_PATHS()` in turn and used to treat any error
+ * as "try the next one" — so a corrupt file was probed by four binaries, each failing the same way
+ * and each costing a process, before the answer "no" was given. A binary that is missing or not
+ * executable is the only reason to try another; an exit code, a timeout or an aborted scope is the
+ * answer, from the first binary that ran.
+ */
+export function binaryCannotRun(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  if (code === "ENOENT" || code === "EACCES" || code === "ENOEXEC" || code === "EPERM") return true;
+  const msg = String((err as Error | null)?.message ?? "");
+  return /\b(ENOENT|EACCES|ENOEXEC)\b/.test(msg) && /spawn/.test(msg);
+}
+
+/** VIDEO 650 — see `MediaProbes.decodesAFrame`: one frame, decoded, or not. Memoised per file like the other probes. */
+const decodesFrameMemo = new Map<string, boolean>();
+async function clipDecodesAFrame(filePath: string): Promise<boolean | null> {
+  const memoKey = probeMemoKey(filePath);
+  if (memoKey !== null) {
+    const cached = decodesFrameMemo.get(memoKey);
+    if (cached !== undefined) return cached;
+  }
+  const answer = await clipDecodesAFrameUncached(filePath);
+  if (memoKey !== null && answer !== null) probeMemoSet(decodesFrameMemo, memoKey, answer);
+  return answer;
+}
+
+async function clipDecodesAFrameUncached(filePath: string): Promise<boolean | null> {
+  if (enclosingScopeHasEnded()) return null;
+  for (const bin of FFMPEG_PATHS()) {
+    try {
+      const { stdout: buf } = await execFileRaw(bin, [
+        "-y", "-threads", "1", "-ss", "0.20", "-i", filePath,
+        "-vframes", "1", "-vf", "scale=16:16,format=gray", "-f", "rawvideo", "-",
+      ], 12_000);
+      return buf.length > 0;
+    } catch (err) {
+      if (isScopeAbortError(err)) return null;
+      if (binaryCannotRun(err)) continue;
+      /** the binary ran: a timeout says nothing about the file; an exit code says the frame did not decode */
+      return /execFileRaw timeout/.test(String((err as Error)?.message ?? "")) ? null : false;
+    }
+  }
+  return null;
 }
 
 /** VIDEO 638 (G2) — the one reason a too-short YouTube moment leaves the review pool with. */
@@ -20925,7 +21490,7 @@ async function adoptClip(
           dedup.beatShortlist,
           sceneIndex,
           beatIndex,
-          beatEvidence === "FIT" ? "APPROVED" : beatEvidence === "UNCLEAR" ? "UNCLEAR" : "NOT_ASKED",
+          beatEvidence === "FIT" ? "APPROVED" : beatEvidence === "ACCEPTABLE" ? "ACCEPTABLE" : beatEvidence === "UNCLEAR" ? "UNCLEAR" : "NOT_ASKED",
           /**
            * P0-7 — the decline's own cause, read off the same ledger entry the evidence came from.
            *
@@ -21020,6 +21585,14 @@ async function adoptClip(
       noteAdoptedForBeat(dedup, contentKey, sceneIndex, beatIndex);
       /** VIDEO 631 — an approved picture is on its way; see `ladderWithinCap`. */
       if (beatEvidence === "FIT" && !requeuedAfterRefusal.has(p)) noteApprovedPickForBeat(dedup, sceneIndex, beatIndex, contentKey);
+      /** VIDEO 650 — an ACCEPTABLE picture reached adoption only because no FIT did: named on the timeline as such. */
+      if (beatEvidence === "ACCEPTABLE" && !requeuedAfterRefusal.has(p)) {
+        markAcceptableForBeat(dedup, sceneIndex, beatIndex, contentKey);
+        console.log(
+          `[VisionSelection] s${sceneIndex}b${beatIndex} adopting ACCEPTABLE ${path.basename(p)} — ` +
+            `the subject shown, the situation not; no FIT was found for this sentence`
+        );
+      }
       /**
        * RONDE 88A — ONE DECISION, BOTH REGISTRIES.
        *
@@ -21837,6 +22410,8 @@ async function resolveBeatClipForBeat(
     /** VIDEO 634 — an approved picture refused here used to vanish without a word. */
     if (pictureApprovedForBeat(dedup, sceneIndex, beat.index, clipContentKey(c))) {
       noteApprovedNotPlaced(dedup, sceneIndex, beat.index, `technical check refused the approved picture: ${refusal}`);
+      /** VIDEO 650 — and the "on its way" mark is released, so the fill and the late look do not wait for it. */
+      releaseApprovedPickForBeat(dedup, sceneIndex, beat.index, clipContentKey(c), `technical check: ${refusal}`);
     }
     return null;
   })();
@@ -21853,6 +22428,7 @@ async function resolveBeatClipForBeat(
       if (!refusal) return v;
       if (pictureApprovedForBeat(dedup, sceneIndex, beat.index, clipContentKey(v))) {
         noteApprovedNotPlaced(dedup, sceneIndex, beat.index, `technical check refused the approved picture: ${refusal}`);
+        releaseApprovedPickForBeat(dedup, sceneIndex, beat.index, clipContentKey(v), `technical check: ${refusal}`);
       }
       return null;
     },
@@ -22834,6 +23410,26 @@ export async function placeApprovedAfterSceneClosed(
  * alone — the count and the key, nothing about late placement — for every route that approves
  * a picture for a sentence. A key already filed is not counted twice.
  */
+/**
+ * VIDEO 650 — an approved picture the technical check then refused is no longer "on its way".
+ *
+ * `noteApprovedPickForBeat` counts an approval so the fill (`[BeatFill] an approved picture is on
+ * its way — not filled`) and the late look wait for it. When that picture is refused on technical
+ * grounds it will never arrive, and until now the count stayed: the sentence waited for a picture
+ * that could not come and ended as a card. The count and the key are taken back here, with the
+ * reason, and the ledgers that record the LOSS (`noteApprovedNotPlaced`) keep their line.
+ */
+export function releaseApprovedPickForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey: string, reason: string): boolean {
+  const key = `${sceneIndex}:${beatIndex}`;
+  const set = approvedKeysByRender.get(dedup)?.get(key);
+  if (!contentKey || !set?.has(contentKey)) return false;
+  set.delete(contentKey);
+  const byBeat = approvedPicksByRender.get(dedup);
+  if (byBeat) byBeat.set(key, Math.max(0, (byBeat.get(key) ?? 1) - 1));
+  console.warn(`[APPROVED_RELEASED] s${sceneIndex}b${beatIndex} reason="${reason}" — the sentence keeps looking; the fill no longer waits for this picture`);
+  return true;
+}
+
 export function noteApprovedKeyForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey?: string): void {
   const key = `${sceneIndex}:${beatIndex}`;
   const keys = approvedKeysByRender.get(dedup) ?? new Map<string, Set<string>>();
@@ -24172,6 +24768,49 @@ export function pictureApprovedForBeat(dedup: object, sceneIndex: number, beatIn
 }
 
 /**
+ * VIDEO 650 — the GENERIC FOOTAGE ledger: which clip was placed for which sentence as the floor
+ * under the ladder (`placeGenericMovingFallbacks`). Kept apart from the approval ledger on purpose:
+ * a generic clip is never "approved" for its sentence, and the timeline reads this ledger into
+ * `contentApproval: "generic_footage"`, so the coverage check and the report can name it as such.
+ */
+const genericKeysByRender = new WeakMap<object, Map<string, Set<string>>>();
+
+export function markGenericFootageForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey: string): void {
+  if (!contentKey) return;
+  const keys = genericKeysByRender.get(dedup) ?? new Map<string, Set<string>>();
+  genericKeysByRender.set(dedup, keys);
+  const k = `${sceneIndex}:${beatIndex}`;
+  const set = keys.get(k) ?? new Set<string>();
+  set.add(contentKey);
+  keys.set(k, set);
+}
+
+export function genericFootageForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey: string): boolean {
+  return Boolean(contentKey) && Boolean(genericKeysByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`)?.has(contentKey));
+}
+
+/**
+ * VIDEO 650 — the ACCEPTABLE ledger: a picture the judge called acceptable (the subject shown, the
+ * situation not — `acceptableRule`) that the adoption loop took because no fit was found for its
+ * sentence. Read into `contentApproval: "judge_acceptable"`; never into `judge_fit`.
+ */
+const acceptableKeysByRender = new WeakMap<object, Map<string, Set<string>>>();
+
+export function markAcceptableForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey: string): void {
+  if (!contentKey) return;
+  const keys = acceptableKeysByRender.get(dedup) ?? new Map<string, Set<string>>();
+  acceptableKeysByRender.set(dedup, keys);
+  const k = `${sceneIndex}:${beatIndex}`;
+  const set = keys.get(k) ?? new Set<string>();
+  set.add(contentKey);
+  keys.set(k, set);
+}
+
+export function pictureAcceptableForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey: string): boolean {
+  return Boolean(contentKey) && Boolean(acceptableKeysByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`)?.has(contentKey));
+}
+
+/**
  * VIDEO 631 RE-RUN (360046e) — A PICTURE APPROVED A MOMENT AFTER ITS SENTENCE CLOSED IS STILL PLACED.
  *
  *     19:11:44.852  [Pipeline] Scene 1 beat 3: video search capped … — s1b3: no picture — gap
@@ -24534,9 +25173,11 @@ async function judgeBeatClipRelevance(
       ? "never_asked"
       : decision.verdict === "fits"
         ? "accepted"
-        : decision.verdict === "does_not_fit"
-          ? "rejected"
-          : "unclear",
+        : decision.verdict === "acceptable"
+          ? "acceptable"
+          : decision.verdict === "does_not_fit"
+            ? "rejected"
+            : "unclear",
     /**
      * WHICH PICTURE, so one candidate cannot count as fifteen.
      *
@@ -24845,7 +25486,7 @@ export function archiveMetadataForExternalClip(
     // RONDE 9: NEVER the narration keywords — those describe what is SAID, not what is SHOWN, and
     // they poisoned the archive. Content-true tags come from Rekognition inside
     // ingestExternalClipToArchive; the provider's own title above stays the searchable text.
-    tags: [],
+    tags: c.source === REPLICATE_VIDEO_PROVIDER ? ["ai-generated"] : [],
     // RONDE 9b: Rekognition person-tagging runs ONLY for person-locked renders.
     personContext: opts.personContext,
     sourceNote: `${c.source}:${c.providerAssetId ?? "unknown"}`,
@@ -24856,7 +25497,8 @@ export function archiveMetadataForExternalClip(
     // literal, which is only a fallback for sources that do not expose one.
     licenseNote:
       c.license ??
-      (c.source === "pexels" ? "Pexels license" :
+      (c.source === REPLICATE_VIDEO_PROVIDER ? "AI-generated (Replicate prunaai/p-video-2) — generated=true, not real footage" :
+       c.source === "pexels" ? "Pexels license" :
        c.source === "pixabay" ? "Pixabay license" :
        c.source === "wikimedia" ? "CC BY-SA / CC0" :
        c.source === "internet_archive" ? "Internet Archive — see licenseUrl" :
@@ -24928,7 +25570,7 @@ async function storeExternalClipForTimeline(params: {
    * eager stores that run earlier and carry their route's own richer provenance, and the gate is
    * what makes it impossible for a route to skip the step altogether.
    */
-  route: "funnel" | "pool" | "rescue" | "push_gate";
+  route: "funnel" | "pool" | "rescue" | "push_gate" | "generic_floor";
 }): Promise<ProductionArchiveOutcome> {
   const { clipPath, facts, sceneIndex, beatIndex, route } = params;
   const stored = await storeForProduction({
@@ -25467,7 +26109,7 @@ async function fetchSceneVisualsInner(
         }),
         Math.max(1, Math.round(beatWallMs * BEAT_RESOLVE_SHARE)),
         beatDeadlineMs,
-        `scene ${scene.index} beat ${bi} visuals`
+        `scene ${scene.index} beat ${beat.index} visuals`
       );
       clip = resolved.value;
       if (resolved.error) {
@@ -25482,7 +26124,8 @@ async function fetchSceneVisualsInner(
     }
 
     if (clip && !isPipelineFallbackClip(clip)) {
-      if (isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup)) {
+      /** VIDEO 650 — this clip is the sentence's only picture: the stock preference yields to it. */
+      if (isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup, { sentenceWithoutPicture: true, where: `s${scene.index}b${beat.index}` })) {
         clip = null;
       } else {
         await withAdoptionIntent("beat_fetch", () => pushClip(clip!));
@@ -27297,6 +27940,8 @@ async function _runVideoPipelineInner(
 
     /** GENERATED_IMAGE_FALLBACK — after every source and the main-subject rescue: see `generateMissingBeatImages`. */
     await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);
+    /** GENERIC_FOOTAGE_FALLBACK — VIDEO 650 — the moving floor under everything above: see `placeGenericMovingFallbacks`. */
+    await placeGenericMovingFallbacks(scenes, sceneVisualResults, visualDedup, workDir);
 
     /**
      * A scene with no picture is a gap the timeline holds over. A film with no picture in ANY scene
@@ -27318,7 +27963,7 @@ async function _runVideoPipelineInner(
       const gate = visualDedup.beatImageGate;
       console.error(
         `[Pipeline] Scene ${scenes[si].index}: 0 bruikbare clips — vision attempts=${gate.judgementAttempts} ` +
-          `fits=${gate.judgementsFits} mismatch=${gate.judgementsMismatch} failed=${gate.judgementsFailed} ` +
+          `fits=${gate.judgementsFits} acceptable=${gate.judgementsAcceptable} mismatch=${gate.judgementsMismatch} failed=${gate.judgementsFailed} ` +
           `skipped=${gate.judgementsSkipped} providerUnavailable=${gate.judgementsProviderUnavailable} askImpossible=${gate.askImpossible}`
       );
       if (why) console.error(why);
@@ -27541,7 +28186,7 @@ async function _runVideoPipelineInner(
         if (t.attempts > 0 || t.skipped > 0) {
           console.log(
             `[Quality] Video ${videoId}: beat image gate — attempts=${t.attempts} ` +
-              `answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch}) ` +
+              `answered=${t.answered} (fits=${t.fits} acceptable=${t.acceptable} does_not_fit=${t.mismatch}) ` +
               `failed=${t.failed} never_asked=${t.skipped}`
           );
           // RONDE 115: and WHY, in one line — the fact that was previously spread over one log
@@ -29172,7 +29817,14 @@ async function _runVideoPipelineInner(
                         sourceInSec: record.sourceInSec,
                         sourceOutSec: record.sourceOutSec,
                         /** HARD QUALITY GATE — did the picture editor approve THIS clip for THIS sentence? Read from the render's own ledger. */
-                        contentApproval: pictureApprovedForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath)) ? ("judge_fit" as const) : ("unverified" as const),
+                        contentApproval: pictureApprovedForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))
+                          ? ("judge_fit" as const)
+                          /** VIDEO 650 — an acceptable picture and generic footage are named as such, never passed off as approved or left unverified. */
+                          : pictureAcceptableForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))
+                            ? ("judge_acceptable" as const)
+                            : genericFootageForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))
+                              ? ("generic_footage" as const)
+                              : ("unverified" as const),
                       }
                     : null,
                 };

@@ -98,6 +98,8 @@ export type ProductionBeat = {
    */
   voiceStartSec?: number;
   voiceEndSec?: number;
+  /** VIDEO 650 — where the window came from: the alignment, or the pauses measured in the scene audio. */
+  voiceTimingSource?: "tts_alignment" | "silence";
 };
 
 /**
@@ -146,7 +148,7 @@ export type AdoptionFacts = {
   sourceInSec?: number;
   sourceOutSec?: number;
   /** HARD QUALITY GATE — "judge_fit" when the picture editor approved this clip for this sentence (`pictureApprovedForBeat`). */
-  contentApproval?: "judge_fit" | "unverified";
+  contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage";
 };
 
 /**
@@ -1147,7 +1149,7 @@ export function buildCinematicSceneInputs(params: {
         beatIndex,
         startSec: Number((sceneOffsetSec + start).toFixed(3)),
         endSec: Number((sceneOffsetSec + end).toFixed(3)),
-        timingBasis: measured && beat.voiceEndSec != null ? "measured" : "estimated",
+        timingBasis: measured && beat.voiceEndSec != null ? (beat.voiceTimingSource === "silence" ? "measured_silence" : "measured") : "estimated",
         text: beat.text,
       });
       beatCursorSec = Math.max(beatCursorSec, end);

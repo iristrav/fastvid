@@ -1086,6 +1086,30 @@ export const youtubeVideoSearches = mysqlTable("youtube_video_searches", {
 export type YoutubeVideoSearch = typeof youtubeVideoSearches.$inferSelect;
 
 /**
+ * VIDEO 650 (pre-deploy) — THE AI-VIDEO SPEND OF ONE VIDEO, kept by the database.
+ *
+ * The Replicate rung (replicateVideoGeneration.ts) is bounded per video: requests, seconds asked
+ * for and estimated cost. A process ledger alone would start at zero again on a requeue after a
+ * deploy, a stale-job recovery or a second worker replica, so the row is the ledger: `claim`
+ * (db.ts `dbPVideoSpendStore`) adds one request through a conditional UPDATE that only succeeds
+ * while every ceiling still holds after it. Nothing is ever refunded — a failed or cancelled
+ * request stays counted, so the ledger can only over-estimate what Replicate charges.
+ */
+export const aiVideoGenerations = mysqlTable("ai_video_generations", {
+  id: int("id").autoincrement().primaryKey(),
+  videoId: int("videoId").notNull().references(() => videos.id, { onDelete: "cascade" }).unique(),
+  requests: int("requests").default(0).notNull(),
+  secondsRequested: int("secondsRequested").default(0).notNull(),
+  /** Estimated cost in thousandths of a dollar (integer arithmetic in the conditional UPDATE). */
+  costMilliUsd: int("costMilliUsd").default(0).notNull(),
+  lastModel: varchar("lastModel", { length: 96 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type AiVideoGeneration = typeof aiVideoGenerations.$inferSelect;
+
+/**
  * VIDEO 618 — YOUTUBE VIDEOS THAT DO NOT WORK, REMEMBERED ACROSS RENDERS.
  *
  * Three videos were refused by YouTube on every attempt, at every start point, by render and

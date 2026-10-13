@@ -79,6 +79,8 @@ export type BeatFunnelRecord = {
    * candidates the gate returned a verdict for, and never to more.
    */
   visionAccepted: number;
+  /** VIDEO 650 — the subject shown without the situation (see acceptableRule). */
+  visionAcceptable: number;
   visionRejected: number;
   visionUnclear: number;
   /**
@@ -163,6 +165,7 @@ export function beatRecord(
       selected: "none",
       placeholder: false,
       visionAccepted: 0,
+      visionAcceptable: 0,
       visionRejected: 0,
       visionUnclear: 0,
       visionNeverAsked: 0,
@@ -221,7 +224,7 @@ export function noteBeatVisionVerdict(
   audit: BeatOutcomeAudit | undefined,
   sceneIndex: number,
   beatIndex: number,
-  outcome: "accepted" | "rejected" | "unclear" | "never_asked",
+  outcome: "accepted" | "acceptable" | "rejected" | "unclear" | "never_asked",
   /**
    * WHICH PICTURE this verdict is about. See `countedCandidates`.
    *
@@ -259,6 +262,7 @@ export function noteBeatVisionVerdict(
   }
 
   if (outcome === "accepted") rec.visionAccepted++;
+  else if (outcome === "acceptable") rec.visionAcceptable++;
   else if (outcome === "rejected") rec.visionRejected++;
   else if (outcome === "unclear") rec.visionUnclear++;
   else rec.visionNeverAsked++;
@@ -456,7 +460,7 @@ export function formatBeatLedgerLine(rec: BeatFunnelRecord, coverage: BeatCovera
   return (
     `[BeatLedger] beat=s${rec.sceneIndex}b${rec.beatIndex} ` +
     `offered=${rec.offered} vision_evaluated=${evaluated} ` +
-    `vision_accepted=${rec.visionAccepted} vision_rejected=${rec.visionRejected} ` +
+    `vision_accepted=${rec.visionAccepted} vision_acceptable=${rec.visionAcceptable} vision_rejected=${rec.visionRejected} ` +
     `vision_unclear=${rec.visionUnclear} vision_never_asked=${rec.visionNeverAsked} ` +
     `vision_unavailable=${rec.visionUnavailable} vision_calls=${rec.visionJudged} ` +
     `eligible=${rec.eligible} adopted=${rec.adopted} ` +

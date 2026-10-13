@@ -28,6 +28,7 @@ import fs from "node:fs";
 
 import { classifyProviderFailure, formatProviderCooldown } from "./providerFailureClass";
 import { GENERATED_VIDEO_PROVIDER } from "./elevenLabsVideoGeneration";
+import { REPLICATE_VIDEO_PROVIDER } from "./replicateVideoGeneration";
 import { subjectWords } from "./youtubeNonFootage";
 
 export const GENERATED_IMAGE_FALLBACK = "GENERATED_IMAGE_FALLBACK";
@@ -202,7 +203,18 @@ export function generatedStillSec(beat: { holdSec?: number; voiceStartSec?: numb
   return Math.round((Math.max(beat.holdSec ?? 5, spoken, 1) + 1) * 1000) / 1000;
 }
 
+/**
+ * Every provider whose picture is AI-GENERATED: the Stability still, the ElevenLabs video and the
+ * Replicate p-video-2 video. Read by the coverage check (kind `ai_generated_footage`), the delivery
+ * gate's note and the fill rule below, so a generated picture is never presented as real footage.
+ */
+export const AI_GENERATED_PROVIDERS: ReadonlySet<string> = new Set([GENERATED_IMAGE_PROVIDER, GENERATED_VIDEO_PROVIDER, REPLICATE_VIDEO_PROVIDER]);
+
+export function isAiGeneratedProvider(provider: string | null | undefined): boolean {
+  return AI_GENERATED_PROVIDERS.has(String(provider ?? ""));
+}
+
 /** A generated picture (still or video) belongs to its own sentence only: it is never lent to another one as a fill. */
 export function isGeneratedImageClip(clip: { source?: { provider?: string | null } | null }): boolean {
-  return clip.source?.provider === GENERATED_IMAGE_PROVIDER || clip.source?.provider === GENERATED_VIDEO_PROVIDER;
+  return isAiGeneratedProvider(clip.source?.provider);
 }
