@@ -2152,6 +2152,35 @@ export async function updateMediaArchiveAsset(id: number, data: Partial<InsertMe
 }
 
 /**
+ * VIDEO 651 — the synthetic colour field does not belong in the archive. Render 651 filed one as
+ * asset 60649 (and the shot splitter may have cut it into pieces, which keep its source fields).
+ * Every such row still active is switched OFF here — `isActive = 0`, the column every candidate
+ * query already filters on — with the reason in `previewIssue`. Nothing is deleted.
+ */
+export const SYNTHETIC_PLACEHOLDER_ARCHIVE_ISSUE = "synthetic_placeholder";
+
+export async function deactivateSyntheticPlaceholderArchiveAssets(): Promise<{ deactivated: number[]; inactive: number[] }> {
+  const db = await getDb();
+  if (!db) return { deactivated: [], inactive: [] };
+  const isPlaceholder = or(
+    eq(mediaArchiveAssets.sourcePlatform, "synthetic_placeholder"),
+    like(mediaArchiveAssets.sourceNote, "synthetic_placeholder:%")
+  );
+  const rows = await db
+    .select({ id: mediaArchiveAssets.id, isActive: mediaArchiveAssets.isActive })
+    .from(mediaArchiveAssets)
+    .where(isPlaceholder);
+  const deactivated = rows.filter((r) => r.isActive === 1).map((r) => r.id);
+  if (deactivated.length > 0) {
+    await db
+      .update(mediaArchiveAssets)
+      .set({ isActive: 0, previewIssue: SYNTHETIC_PLACEHOLDER_ARCHIVE_ISSUE })
+      .where(inArray(mediaArchiveAssets.id, deactivated));
+  }
+  return { deactivated, inactive: rows.map((r) => r.id) };
+}
+
+/**
  * VIDEO 619 — rows written before the two-tag rule that still carry more than two automatic tags.
  * Operator-typed rows are never listed.
  */

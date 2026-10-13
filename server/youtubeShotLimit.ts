@@ -248,15 +248,23 @@ export function limitYoutubeShots(params: {
   const sameScene = (a: TimelineVideoClip, b: TimelineVideoClip) =>
     a.sceneIndex != null && a.sceneIndex === b.sceneIndex;
   const dur = (c: TimelineVideoClip) => c.timelineEnd - c.timelineStart;
+  /**
+   * VIDEO 651 — the neighbour's picture may only run on under ITS OWN sentence. Render 651: s1b1's
+   * 5.51 s YouTube clip was cut to 5 s and s1b0's clip held 0.51 s longer into s1b1, so s1b1
+   * showed another sentence's picture and the delivery gate refused the film. A neighbour of a
+   * different sentence does not take the time; the clip is cut into pieces (step 2) instead.
+   */
+  const sameSentence = (a: TimelineVideoClip, b: TimelineVideoClip) =>
+    !(typeof a.beatIndex === "number" && typeof b.beatIndex === "number" && a.beatIndex !== b.beatIndex);
 
-  /* 1 — give the time over 5 s to the neighbouring non-YouTube shot in the same scene. */
+  /* 1 — give the time over 5 s to the neighbouring non-YouTube shot in the same scene and sentence. */
   for (let i = 0; i < clips.length; i++) {
     const clip = clips[i]!;
     if (!isYoutube(clip) || clip.disabled || dur(clip) <= maxSec + EPS) continue;
     const next = clips[i + 1];
     const prev = clips[i - 1];
     const excess = dur(clip) - maxSec;
-    if (next && mayTakeTime(next) && sameScene(clip, next)) {
+    if (next && mayTakeTime(next) && sameScene(clip, next) && sameSentence(clip, next)) {
       const cut = round(clip.timelineStart + maxSec);
       notes.push(
         `${clip.id}: ${dur(clip).toFixed(2)}s of YouTube → ${maxSec}s; ${next.id} starts ` +
@@ -264,7 +272,7 @@ export function limitYoutubeShots(params: {
       );
       clip.timelineEnd = cut;
       next.timelineStart = cut;
-    } else if (prev && mayTakeTime(prev) && sameScene(clip, prev)) {
+    } else if (prev && mayTakeTime(prev) && sameScene(clip, prev) && sameSentence(clip, prev)) {
       const cut = round(clip.timelineEnd - maxSec);
       notes.push(
         `${clip.id}: ${dur(clip).toFixed(2)}s of YouTube → ${maxSec}s; ${prev.id} holds ` +

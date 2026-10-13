@@ -439,6 +439,21 @@ async function main() {
     console.warn("[YouTubePrefetch] could not start:", (err as Error).message)
   );
   /**
+   * VIDEO 651 — a synthetic colour field filed in the archive (render 651, asset 60649) is switched
+   * off before any sweep or render can read it. Deactivated, never deleted; the ids are logged.
+   */
+  try {
+    const { deactivateSyntheticPlaceholderArchiveAssets } = await import("./db");
+    const r = await deactivateSyntheticPlaceholderArchiveAssets();
+    console.log(
+      `[ArchiveHygiene] synthetic placeholder asset(s): deactivated now=${r.deactivated.length}` +
+        ` [${r.deactivated.join(",")}] — all inactive=[${r.inactive.join(",")}] (not deleted)`
+    );
+  } catch (err) {
+    console.warn("[ArchiveHygiene] synthetic placeholder sweep failed:", (err as Error)?.message?.slice(0, 160));
+  }
+
+  /**
    * VIDEO 619 — the archive stored before the shot rule is cut into single-shot pieces of at most
    * eleven seconds, a few videos at a time and only while nothing renders. See `archiveShotPieces`.
    */

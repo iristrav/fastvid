@@ -281,23 +281,23 @@ describe("VIDEO 650 — the pipeline places generic footage and names it on the 
     expect(body.indexOf('("generic_footage" as const)')).toBeLessThan(body.indexOf('("unverified" as const)'));
   });
 
-  it("every placed clip is measured (valid, long enough, not black, moving) and gets an archive handle", () => {
+  it("every placed clip is measured (valid, long enough, not black, moving); an archive clip keeps its archive handle", () => {
     const at = PIPELINE.indexOf("async function placeGenericMovingFallbacks(");
     const body = PIPELINE.slice(at, PIPELINE.indexOf("async function fetchBeatGeneratedImage(", at));
     for (const needle of [
       "isValidVideoFile(outPath)", "probeVideoStreamMeta(outPath)", "isMostlyBlackClip(outPath", "clipHasMotion(FFMPEG_BIN, outPath)",
-      "attachArchiveAssetToPath(outPath, archiveId", "storeExternalClipForTimeline({", "markGenericFootageForBeat(dedup, scene.index, beat.index, clipContentKey(outPath))",
+      "attachArchiveAssetToPath(outPath, archiveId", "markGenericFootageForBeat(dedup, scene.index, beat.index, clipContentKey(outPath))",
       "FAILED — no moving coverage for this sentence",
     ]) expect(body, needle).toContain(needle);
     /** archive first, synthetic second — the brief's order */
     expect(body.indexOf('["archive", "synthetic"]')).toBeGreaterThan(0);
-    /** PRE-DEPLOY — the synthetic branch carries its own provider name, title and licence, and is NOT tagged `generic` in the archive */
+    /** PRE-DEPLOY — the synthetic branch carries its own provider name and title */
     const synthetic = body.slice(body.indexOf("const id = syntheticAssetId(seed, neededSec);"));
     expect(synthetic).toContain("SYNTHETIC_PLACEHOLDER_PROVIDER, id, dedup.sourcingCache,");
     expect(synthetic).toContain("title: SYNTHETIC_PLACEHOLDER_TITLE");
-    expect(synthetic).toContain("source: SYNTHETIC_PLACEHOLDER_PROVIDER, providerAssetId: String(assetLabel), title: SYNTHETIC_PLACEHOLDER_TITLE,");
-    expect(synthetic).toContain("license: SYNTHETIC_PLACEHOLDER_LICENSE");
-    expect(synthetic).toContain('tags: ["placeholder"]');
+    /** VIDEO 651 — and it is NEVER stored in the archive (render 651 filed one as asset 60649) */
+    expect(body, "no route from the floor into the archive store").not.toContain("storeExternalClipForTimeline(");
+    expect(synthetic).toContain("synthetic placeholder not archived");
     expect(synthetic).not.toContain("tags: [GENERIC_ARCHIVE_TAG]");
     /** the archive branch keeps the generic provider and the archive row's id */
     expect(body).toContain("GENERIC_FOOTAGE_PROVIDER, `archive-${pick.id}`, dedup.sourcingCache,");
