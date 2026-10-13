@@ -281,6 +281,7 @@ import { statesAQuantity } from "./cinematicEditingEngine/motionGraphicsPlanner"
 import { videoMainSubject } from "./mainSubject";
 import { queryNames, sentencesOf } from "./youtubeVideoSearchPlanner";
 import { readPeopleInNarration } from "./personNames";
+import { noteSameVideoRefusal, sameVideoRefusedEnough, type SameVideoRefusals } from "./sameVideoRefusals";
 import { addStockSection, beatRowsInStockOrder, claimLateStock, stockSectionStarts, stockVideoTargeted, stockedVideoIds, STOCK_SECTION_SEC, isStocked, isStockReady, MAX_STOCK_ATTEMPTS, unofferedReadyStock, MAX_STOCK_VIDEOS, releaseYoutubeShotStock, STOCK_FIRST_BATCH, startYoutubeShotStock, stockOrder, stockSummary, stockVideoState, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
 import {
   chooseMoments,
@@ -13022,7 +13023,15 @@ export async function fetchYouTubeCCClips(
               ready: (r) => poolVideoId != null && idOf(r) != null && isStockReady(poolVideoId, idOf(r)!),
               serves: (r) => r.servesBeat === true,
               shownRecently: (r) => idOf(r) != null && youtubeSourceUsedRecently(poolVideoId, providerAssetKey("youtube_cc", idOf(r)!)),
+              /** VIDEO 652 — a targeted search's video goes to the sentences it was searched for only. */
+              targeted: (r) => poolVideoId != null && idOf(r) != null && stockVideoTargeted(poolVideoId, idOf(r)!),
             });
+            if (order.dropped.length > 0) {
+              console.log(
+                `[YouTubeStock] Scene ${sceneIndex}: ${order.dropped.length} targeted video(s) searched for other sentences ` +
+                  `not offered here (${order.dropped.map((r) => idOf(r)).join(",")})`
+              );
+            }
             servingReadyRows = new Set(order.first);
             if (order.first.length > 0) {
               console.log(
@@ -21105,6 +21114,8 @@ async function adoptClip(
       contentRefusedOnAnotherBeat(dedup.beatRelevance, clipContentKey(q), sceneIndex, beatIndex);
     const visitedInLoop = new Set<string>();
     const postponedBehindFresher = new Set<string>();
+    /** VIDEO 652 — refused moments per YouTube video in this sentence's turn (`sameVideoRefusedEnough`). */
+    const sameVideoRefusals: SameVideoRefusals = new Map();
     /** W1 — candidates that gave this sentence's last look to a YouTube candidate (once each). */
     const gaveLastLookToYoutube = new Set<string>();
     /**
@@ -21245,6 +21256,11 @@ async function adoptClip(
         logAdoptTiming(`refused:${reason}`);
         return true;
       };
+      /** VIDEO 652 — two moments of this video were refused for this sentence: its others are not judged here. */
+      if (!requeuedAfterRefusal.has(p) && sameVideoRefusedEnough(sameVideoRefusals, clipContentKey(p))) {
+        refuse("same_video_refused_on_sentence");
+        continue;
+      }
       /**
        * ONE ROUTE — the FILE first (TechnicalMediaGate), then what it SHOWS (VisualJudge), then the
        * usage budgets. Nothing in this loop decides on content by itself any more.
@@ -21445,6 +21461,7 @@ async function adoptClip(
       ) {
         noteAdoptStep("judge", judgeStartedMs);
         logAdoptTiming("judge:refused");
+        noteSameVideoRefusal(sameVideoRefusals, contentKey);
         registerRejection(dedup.rejections, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);
         noteVisionAsked(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
         noteVisionOutcome(dedup.beatShortlist, sceneIndex, beatIndex, "REJECTED");

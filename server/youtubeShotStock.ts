@@ -344,23 +344,38 @@ export function stockedRowsFirst<T>(rows: readonly T[], ready: (row: T) => boole
  *
  * `first` only ever holds stock (at most the film's few stocked videos), so it cannot grow the
  * number of downloads; the caller applies its usual limits to `rest`.
+ *
+ * VIDEO 652 — A TARGETED SEARCH'S VIDEO BELONGS TO THE SENTENCES IT WAS SEARCHED FOR. Search #3 asked
+ * "Lotus chassis" for s0b0; its ready answer ("video of lotus 30 mk 1 chassis 12") was then the first
+ * row of s1b4 (about Elon Musk) and s0b2, because ready stock that serves nothing still came before
+ * every download — four of s1b4's five looks went to a 1970s Lotus race. The late stock already keeps
+ * a targeted video to its own sentences ("not handed to another sentence"); the beat's own turn now
+ * does the same: a targeted row that does not serve this sentence is not offered to it (`dropped`).
  */
 export function beatRowsInStockOrder<T>(
   rows: readonly T[],
-  is: { ready: (row: T) => boolean; serves: (row: T) => boolean; shownRecently: (row: T) => boolean }
-): { first: T[]; rest: T[] } {
+  is: {
+    ready: (row: T) => boolean;
+    serves: (row: T) => boolean;
+    shownRecently: (row: T) => boolean;
+    /** Found by a targeted search (`stockVideoTargeted`). Absent: no row is targeted. */
+    targeted?: (row: T) => boolean;
+  }
+): { first: T[]; rest: T[]; dropped: T[] } {
   const first: T[] = [];
   const otherReady: T[] = [];
   const servingDownload: T[] = [];
   const otherDownload: T[] = [];
   const servingShown: T[] = [];
   const shown: T[] = [];
+  const dropped: T[] = [];
   for (const r of rows) {
-    if (is.shownRecently(r)) (is.serves(r) ? servingShown : shown).push(r);
+    if (is.targeted?.(r) && !is.serves(r)) dropped.push(r);
+    else if (is.shownRecently(r)) (is.serves(r) ? servingShown : shown).push(r);
     else if (is.ready(r)) (is.serves(r) ? first : otherReady).push(r);
     else (is.serves(r) ? servingDownload : otherDownload).push(r);
   }
-  return { first, rest: [...servingDownload, ...otherReady, ...otherDownload, ...servingShown, ...shown] };
+  return { first, rest: [...servingDownload, ...otherReady, ...otherDownload, ...servingShown, ...shown], dropped };
 }
 
 export type StockTake =
