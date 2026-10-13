@@ -140,9 +140,16 @@ describe("Video 622 — the same YouTube seconds are not played twice in a row",
     expect(plan.pieces.length).toBeGreaterThan(plan.distinct!);
   });
 
+  /**
+   * VIDEO 651 (job 56) — a neighbour takes the time only when its OWN source fills it (played no
+   * slower than 0.5×): the archive shots below hold 30 s of source, so 17 s on screen is real
+   * footage. A 5 s archive shot asked to fill 17 s would hold a still frame — see the test after.
+   */
+  const withSource = (c: Clip, sourceSec: number): Clip => ({ ...c, sourceOut: (c.sourceIn ?? 0) + sourceSec });
+
   it("a shot beside it in the same scene takes the time the source cannot fill", () => {
     const { clips, notes } = limitYoutubeShots({
-      clips: [clip("archive", 0, 5), clip("yt", 5, 21)],
+      clips: [withSource(clip("archive", 0, 5), 30), clip("yt", 5, 21)],
       youtube: new Map([["yt", fourSeconds]]),
     });
     const yt = clips.filter((c) => c.id.startsWith("yt"));
@@ -155,13 +162,24 @@ describe("Video 622 — the same YouTube seconds are not played twice in a row",
 
   it("the shot after it takes the time when there is none before it", () => {
     const { clips } = limitYoutubeShots({
-      clips: [clip("yt", 0, 16), clip("archive", 16, 20)],
+      clips: [clip("yt", 0, 16), withSource(clip("archive", 16, 20), 30)],
       youtube: new Map([["yt", fourSeconds]]),
     });
     const yt = clips.filter((c) => c.id.startsWith("yt"));
     expect(new Set(yt.map((c) => c.sourceIn)).size).toBe(yt.length);
     expect(clips[clips.length - 1]!.timelineStart).toBe(yt[yt.length - 1]!.timelineEnd);
     expect(clips[clips.length - 1]!.timelineEnd).toBe(20);
+  });
+
+  it("VIDEO 651 — a shot whose own source cannot fill the time does not take it (no still frame)", () => {
+    const { clips, notes } = limitYoutubeShots({
+      clips: [clip("archive", 0, 5), clip("yt", 5, 21)],
+      youtube: new Map([["yt", fourSeconds]]),
+    });
+    /** 5 s of archive source cannot be 17 s on screen, even at 0.5×: it keeps its own 5 s */
+    expect(clips[0]!.timelineEnd).toBe(5);
+    expect(notes.join("\n")).not.toContain("archive holds");
+    expect(clips[clips.length - 1]!.timelineEnd, "the timeline keeps its length").toBe(21);
   });
 
   it("a shot in another scene does not take it — then the repeat stays, and is reported", () => {
