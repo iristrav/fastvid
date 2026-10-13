@@ -11,10 +11,11 @@ There are two sources, in this order:
 | source | provider name | what it is | how it is reported |
 |---|---|---|---|
 | **archive** | `generic_footage` | a real clip an operator put in the media archive under the tag `generic` | `QUALITY_NOTE GENERIC_FOOTAGE` — delivered, not a content fit |
-| **synthetic** | `synthetic_placeholder` | a slowly moving colour field FastVid renders itself with ffmpeg (`gradients` source) | `QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER` — delivered **with a quality problem**; it is an EMERGENCY placeholder, not footage |
+| **synthetic** | `synthetic_placeholder` | a slowly moving colour field FastVid renders itself with ffmpeg (`gradients` source) | `QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER` — **not cover**: the sentence stays uncovered and the film is **not delivered**; it is an EMERGENCY placeholder, not footage |
 
-The synthetic clip only exists so that a film is never refused for a sentence that has no picture at
-all (video 650). It is never presented as footage: its archive title is
+The synthetic clip is never cover and never presented as footage: a coloured field under a spoken
+sentence is no picture, so that sentence counts as uncovered and the delivery gate refuses the film.
+The clip makes the gap visible in the render instead of a blue-grey chapter card: its archive title is
 `EMERGENCY PLACEHOLDER — synthetic colour field (not footage)`, it is filed under the generic archive
 with the tag `placeholder` (not `generic`, so a later film can never pick it as real generic footage),
 the coverage row carries `kinds=generic_footage+synthetic_placeholder`, and the render log carries
@@ -57,4 +58,5 @@ the sentence's seconds without being held past its source), rotated by seed so t
 open on the same clip, and measured before it is placed (valid stream, not black, moving, long enough).
 
 A small set is enough: 10 to 20 clips of 8 to 20 s. Until the set exists, every sentence on the
-floor is a synthetic placeholder and every such film is delivered with `QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER`.
+floor is a synthetic placeholder, and every such film is refused with `QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER`
+(`SENTENCE_NOT_COVERED` at the delivery gate).

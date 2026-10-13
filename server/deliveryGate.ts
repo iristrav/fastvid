@@ -333,9 +333,9 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
       );
     }
     /**
-     * PRE-DEPLOY — the synthetic colour field is an EMERGENCY placeholder, not footage. The film is
-     * delivered (visual coverage holds), and this line says it is delivered with a QUALITY PROBLEM —
-     * never silently, never as a successful picture choice.
+     * PRE-DEPLOY — the synthetic colour field is an EMERGENCY placeholder, not footage. It is not cover
+     * (sentenceCoverage.ts): its sentence is uncovered and the film is refused above. This line names
+     * it as a QUALITY PROBLEM — never silently, never as a successful picture choice.
      */
     const placeholder = c.sentences.filter((r) => (r.syntheticPlaceholderSec ?? 0) > 0);
     if (placeholder.length > 0) {
@@ -343,7 +343,7 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
         `[DeliveryGate]   QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER sentences=${placeholder.length} ` +
           `sec=${placeholder.reduce((t, r) => t + (r.syntheticPlaceholderSec ?? 0), 0).toFixed(2)} ` +
           `(${placeholder.map((r) => r.key).join(",")}) — EMERGENCY fallback: a generated colour field, NOT footage and NOT a content choice; ` +
-          `no real generic clip was available (archive tag "generic"); delivered with a quality problem — replace these shots`
+          `no real generic clip was available (archive tag "generic"); not cover, so the film is not delivered — replace these shots`
       );
     }
   }

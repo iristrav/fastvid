@@ -21,8 +21,10 @@
  *                      because it is visual coverage and explicitly not a content fit;
  *   synthetic_placeholder  PRE-DEPLOY — the subset of generic cover whose provider is the synthetic
  *                      colour field (`source.provider === "synthetic_placeholder"`): an EMERGENCY
- *                      placeholder, not footage. Still cover (the film is delivered), but named on the
- *                      row, in `problems`, and by the delivery gate as a QUALITY PROBLEM.
+ *                      placeholder, not footage. NOT cover: a coloured field under a spoken sentence
+ *                      is no picture, so the sentence is uncovered (reason "synthetic placeholder …"),
+ *                      the delivery gate refuses the film, and the row, `problems` and the gate name
+ *                      it as a QUALITY PROBLEM — never passed off as a picture.
  *
  * TIMING — `timing` says what the spoken windows rest on: "exact" (every sentence from the TTS word
  * alignment), "approximate" (every sentence measured, at least one from the pauses in the scene's
@@ -286,7 +288,8 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
       hi
     );
     const unmarkedIn = clip([...approved, ...acceptable, ...generic, ...contentGraphics].filter((a) => a.forSentence == null).map((a) => a.span), lo, hi);
-    const coverSpans = union([...approvedIn, ...graphicIn, ...acceptableIn, ...genericIn]);
+    /** the synthetic colour field is placed as generic, but it is not a picture: never cover */
+    const coverSpans = union([...approvedIn, ...graphicIn, ...acceptableIn, ...subtract(genericIn, syntheticIn)]);
     const rest = subtract(win, coverSpans);
     const unverifiedIn = clip([...unverified, ...unmarkedIn], lo, hi);
     const stretchedIn = clip(stretched, lo, hi);
@@ -305,7 +308,7 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
       otherSentenceSec: r3(measure(subtract(otherSentenceIn, coverSpans))),
       stretchedSec: r3(measure(subtract(stretchedIn, coverSpans))),
       cardSec: r3(measure(subtract(cardsIn, coverSpans))),
-      emptySec: r3(measure(subtract(rest, [...unverifiedIn, ...otherSentenceIn, ...stretchedIn, ...cardsIn]))),
+      emptySec: r3(measure(subtract(rest, [...unverifiedIn, ...otherSentenceIn, ...stretchedIn, ...cardsIn, ...syntheticIn]))),
     };
     const kinds: SentencePictureKind[] = [];
     if (row.approvedFootageSec > 0) kinds.push("approved_footage");
@@ -321,6 +324,7 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
     if (row.emptySec > 0 || kinds.length === 0) kinds.push("none");
     const reasons: string[] = [];
     if (row.cardSec > 0) reasons.push(`chapter card placeholder ${row.cardSec.toFixed(2)}s`);
+    if (row.syntheticPlaceholderSec > 0) reasons.push(`synthetic placeholder (colour field, not footage) ${row.syntheticPlaceholderSec.toFixed(2)}s`);
     if (row.otherSentenceSec > 0) reasons.push(`picture approved for another sentence ${row.otherSentenceSec.toFixed(2)}s`);
     const unmarkedSec = r3(measure(subtract(clip(unmarkedIn, lo, hi), coverSpans)));
     if (unmarkedSec > 0) reasons.push(`approved picture without a sentence mark ${unmarkedSec.toFixed(2)}s`);
@@ -332,7 +336,7 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
 
     const full = row.coveredSec >= row.spokenSec! - EPS;
     /** something KNOWN not to be this sentence's picture: a card, a hold, nothing, or a neighbour's approved picture */
-    const knownGap = row.cardSec > 0 || row.emptySec > 0 || row.stretchedSec > 0 || row.otherSentenceSec > 0;
+    const knownGap = row.cardSec > 0 || row.syntheticPlaceholderSec > 0 || row.emptySec > 0 || row.stretchedSec > 0 || row.otherSentenceSec > 0;
     let status: SentenceCoverageStatus;
     if (row.timingBasis === "estimated" || measure(unknownIn) > 0) status = "unknown";
     else if (full) status = "covered";

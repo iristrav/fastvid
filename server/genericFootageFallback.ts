@@ -40,7 +40,8 @@ export const GENERIC_FOOTAGE_PROVIDER = "generic_footage";
  * PRE-DEPLOY CHECK — the synthetic colour field is NOT footage. It is the emergency floor for a
  * sentence that no real generic clip could cover either, and it carries its own provider name so
  * the coverage check, the delivery gate, the archive and every log line can name it as what it is:
- * a placeholder delivered with a QUALITY PROBLEM, never a successful picture choice. Real generic
+ * a placeholder that is NOT cover (its sentence stays uncovered, the delivery gate refuses the film)
+ * and is named as a QUALITY PROBLEM, never a successful picture choice. Real generic
  * footage is what an operator puts in the archive under the `generic` tag (see
  * docs/generic-footage.md): a small, rights-clear set, present on every worker through the archive.
  */
@@ -217,7 +218,7 @@ export function formatGenericFootagePlacement(p: {
     return (
       `[${GENERIC_FOOTAGE_FALLBACK}] s${p.sceneIndex}b${p.beatIndex} placed source=synthetic asset=${p.assetId} ` +
       `duration=${p.durationSec.toFixed(2)}s needed=${p.neededSec.toFixed(2)}s — EMERGENCY PLACEHOLDER (provider=${SYNTHETIC_PLACEHOLDER_PROVIDER}): ` +
-      `a generated colour field, NOT footage, NOT a content choice; the film is delivered with a QUALITY PROBLEM — ` +
+      `a generated colour field, NOT footage, NOT a content choice, NOT cover; a QUALITY PROBLEM that keeps the film from delivery — ` +
       `put real rights-clear clips in the archive under the "${GENERIC_ARCHIVE_TAG}" tag`
     );
   }
