@@ -61,16 +61,34 @@ describe("VIDEO 650 — acceptableRule", () => {
     }
   });
 
-  it("settleSituationQuestion: an abstract line's b-roll is a FIT by rule; a concrete line's subject-only picture is ACCEPTABLE", () => {
+  it("settleSituationQuestion: an abstract line's b-roll is a FIT by rule; a concrete line's subject-only picture stays REFUSED", () => {
     const answer = { subject_matches: true, situation_matches: false };
     const onAbstract = settleSituationQuestion(given(), answer, abstractLine, "Tesla kept building cars.");
     expect(onAbstract.verdict).toBe("fits");
     expect(onAbstract.reason.startsWith(BROLL_PREFIX)).toBe(true);
     const onConcrete = settleSituationQuestion(given(), answer, concreteLine, "In 2018 the SEC sued Tesla over a tweet.");
-    expect(onConcrete.verdict).toBe("acceptable");
-    expect(onConcrete.reason.startsWith(ACCEPTABLE_PREFIX)).toBe(true);
+    expect(onConcrete.verdict).toBe("does_not_fit");
+    expect(onConcrete.reason.startsWith(ACCEPTABLE_PREFIX)).toBe(false);
     /** both halves true: a fit, no prefix */
     expect(settleSituationQuestion(given(), { subject_matches: true, situation_matches: true }, concreteLine, "x").verdict).toBe("fits");
+  });
+
+  it("a line that needs its situation shown keeps the refusal — hard evidence, a specific picture, a concrete claim; an ordinary line gets ACCEPTABLE", () => {
+    const answer = { subject_matches: true, situation_matches: false };
+    const refused = () => situationRule(given(), answer);
+    const ordinary = "Tesla's approach changed how people think about cars.";
+    const hard = { evidenceRequirement: "hard", wantsSpecificPicture: false } as LineFacts;
+    const specific = { evidenceRequirement: "soft", wantsSpecificPicture: true } as LineFacts;
+    const none = { evidenceRequirement: "none", wantsSpecificPicture: false } as LineFacts;
+    expect(acceptableRule(refused(), answer, { beatText: ordinary }, hard).verdict).toBe("does_not_fit");
+    expect(acceptableRule(refused(), answer, { beatText: ordinary }, specific).verdict).toBe("does_not_fit");
+    /** a concrete claim in the line's own words, whatever the planner said */
+    expect(acceptableRule(refused(), answer, { beatText: "The settlement with the SEC was costly for Tesla." }, none).verdict).toBe("does_not_fit");
+    expect(acceptableRule(refused(), answer, { beatText: "The settlement with the SEC was costly for Tesla." }).verdict).toBe("does_not_fit");
+    /** the ordinary line keeps its fallback: with a soft, a none or no line fact at all */
+    expect(acceptableRule(refused(), answer, { beatText: ordinary }, abstractLine).verdict).toBe("acceptable");
+    expect(acceptableRule(refused(), answer, { beatText: ordinary }, none).verdict).toBe("acceptable");
+    expect(acceptableRule(refused(), answer, { beatText: ordinary }).verdict).toBe("acceptable");
   });
 
   it("the guards after the rule treat an acceptable like a fit: a guessed identity and a logo still refuse", () => {

@@ -861,6 +861,11 @@ export function abstractLineRule<T extends Pick<BeatImageJudgement, "verdict" | 
  * it below FIT and UNREVIEWED), adopted when the sentence has no fit, and carried to the timeline as
  * `contentApproval: "judge_acceptable"` so the coverage check and the report name it. The guards
  * that run after this rule (a guessed identity, a logo) refuse an acceptable exactly as a fit.
+ *
+ * Not for a line that needs its situation shown: a hard evidence requirement, a line that wants a
+ * specific picture, or a concrete claim (`CONCRETE_CLAIM_RE`). There the subject alone would stand
+ * for a fact it does not show, so the refusal stands and the sentence goes on down the ladder (to
+ * generic footage at the floor) — the same three locks `abstractLineRule` keeps.
  */
 export const ACCEPTABLE_PREFIX = "acceptable — subject shown, situation not: ";
 
@@ -868,10 +873,13 @@ export function acceptableRule<T extends Pick<BeatImageJudgement, "verdict" | "d
   judgement: T,
   answer: { subject_matches?: unknown; situation_matches?: unknown },
   /** VIDEO 641 (L1) — a subject the model only GUESSED from the line is not a subject shown: no promotion, the situation refusal stands. */
-  guess?: { beatText: string; subject?: string; personAsRead?: (name: string) => string | null | undefined }
+  guess?: { beatText: string; subject?: string; personAsRead?: (name: string) => string | null | undefined },
+  line?: LineFacts
 ): T {
   if (judgement.verdict !== "does_not_fit") return judgement;
   if (answer.subject_matches !== true || answer.situation_matches !== false) return judgement;
+  if (line?.evidenceRequirement === "hard" || line?.wantsSpecificPicture) return judgement;
+  if (guess?.beatText && CONCRETE_CLAIM_RE.test(guess.beatText)) return judgement;
   if (CONTRADICTION_RE.test(`${judgement.depicts ?? ""} ${judgement.reason ?? ""}`)) return judgement;
   if (guess && approvalRestsOnAGuess({ ...judgement, verdict: "fits" }, guess.beatText, guess.subject, guess.personAsRead)) return judgement;
   const reason = (judgement.reason ?? "").replace(SITUATION_PREFIX_RE, "");
@@ -910,7 +918,7 @@ export function settleSituationQuestion(
     );
   }
   /** VIDEO 650 — see `acceptableRule`: what is left of a subject-only refusal is acceptable, not refused. */
-  const judgementAfterAcceptable = acceptableRule(judgementAfterAbstractLine, parsed, { beatText, subject: guess?.subject, personAsRead: guess?.personAsRead });
+  const judgementAfterAcceptable = acceptableRule(judgementAfterAbstractLine, parsed, { beatText, subject: guess?.subject, personAsRead: guess?.personAsRead }, line);
   if (judgementAfterAcceptable !== judgementAfterAbstractLine) {
     console.log(
       `[BeatImageGate] subject shown, situation not — ACCEPTABLE (adopted only without a fit): ` +

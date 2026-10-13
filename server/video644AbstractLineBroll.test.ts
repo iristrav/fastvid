@@ -373,13 +373,14 @@ describe("judgeBeatImage — the rule in its place", () => {
     expect(state.judgementsAcceptable).toBe(1);
   });
 
-  it("the same answer under a hard-evidence line, or a line that wants a specific picture, is never a FIT — VIDEO 650: ACCEPTABLE", async () => {
+  it("the same answer under a hard-evidence line, or a line that wants a specific picture, is refused — not even ACCEPTABLE; a line with no evidence requirement is ACCEPTABLE", async () => {
     answer.current = model644;
-    for (const line of [HARD, CONCRETE, NONE]) {
-      const { j } = await judge(line);
-      expect(j.verdict).toBe("acceptable");
-      expect(j.reason.startsWith(ACCEPTABLE_PREFIX)).toBe(true);
-    }
+    expect((await judge(HARD)).j.verdict).toBe("does_not_fit");
+    expect((await judge(CONCRETE)).j.verdict).toBe("does_not_fit");
+    /** VIDEO 650 — no evidence requirement, no concrete claim: the subject-only picture is the sentence's fallback, never a FIT */
+    const { j } = await judge(NONE);
+    expect(j.verdict).toBe("acceptable");
+    expect(j.reason.startsWith(ACCEPTABLE_PREFIX)).toBe(true);
     expect(admitted()).toHaveLength(0);
   });
 
@@ -395,12 +396,11 @@ describe("judgeBeatImage — the rule in its place", () => {
     expect(admitted()).toHaveLength(0);
   });
 
-  it("the situation rule still takes the FIT away from subject-only footage when the line names a situation — VIDEO 650: it is ACCEPTABLE, not a fit", async () => {
+  it("the situation rule still refuses an approval of subject-only footage when the line names a situation", async () => {
     answer.current = { ...model644, belongs: true };
     const { j } = await judge(CONCRETE);
-    expect(j.verdict).toBe("acceptable");
-    expect(j.reason.startsWith(ACCEPTABLE_PREFIX)).toBe(true);
-    expect(j.reason).not.toContain("situation not shown:");
+    expect(j.verdict).toBe("does_not_fit");
+    expect(j.reason.startsWith("situation not shown: ")).toBe(true);
     expect(situationLines()).toHaveLength(1);
     expect(admitted()).toHaveLength(0);
   });
@@ -464,7 +464,7 @@ describe("wiring — the facts reach the judge on every pipeline route", () => {
     expect(situation).toBeGreaterThan(0);
     expect(abstract).toBeGreaterThan(situation);
     /** VIDEO 650 — one more step after the exception: what is still a subject-only refusal becomes acceptable. */
-    const acceptable = gate.indexOf("const judgementAfterAcceptable = acceptableRule(judgementAfterAbstractLine, parsed, { beatText, subject: guess?.subject, personAsRead: guess?.personAsRead });");
+    const acceptable = gate.indexOf("const judgementAfterAcceptable = acceptableRule(judgementAfterAbstractLine, parsed, { beatText, subject: guess?.subject, personAsRead: guess?.personAsRead }, line);");
     expect(acceptable).toBeGreaterThan(abstract);
     expect(gate.slice(acceptable, acceptable + 700)).toContain("return judgementAfterAcceptable;");
     /** In `judgeBeatImage`: the settled answer is what the identity guards receive. */
