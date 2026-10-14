@@ -2071,34 +2071,10 @@ export async function createMediaArchiveAsset(data: InsertMediaArchiveAsset) {
   if (!db) return undefined;
   const result = await db.insert(mediaArchiveAssets).values(withArchiveTagRule(data));
   const newId = (result as unknown as [{ insertId: number }])[0]?.insertId as number;
-
-  // Async on-ingest annotation — fire-and-forget, never blocks the insert.
-  if (newId && process.env.CLIP_ANNOTATOR_ENABLED !== "false") {
-    setImmediate(async () => {
-      try {
-        const { annotateAsset, ANNOTATION_VERSION } = await import("./clipAnnotator");
-        const dbConn = await getDb();
-        if (!dbConn) return;
-        const rows = await dbConn
-          .select()
-          .from(mediaArchiveAssets)
-          .where(eq(mediaArchiveAssets.id, newId))
-          .limit(1);
-        const asset = rows[0];
-        if (!asset || asset.annotationVersion === ANNOTATION_VERSION) return;
-        const annotation = await annotateAsset(asset);
-        await dbConn.update(mediaArchiveAssets).set({
-          annotationJson: annotation,
-          editorialScore: annotation.editorialScore.total,
-          annotationVersion: ANNOTATION_VERSION,
-        }).where(eq(mediaArchiveAssets.id, newId));
-        console.log(`[ClipAnnotator] Asset ${newId} geannoteerd bij ingestie (score ${annotation.editorialScore.total})`);
-      } catch (err) {
-        console.warn(`[ClipAnnotator] On-ingest annotatie mislukt voor asset ${newId}:`, (err as Error).message?.slice(0, 80));
-      }
-    });
-  }
-
+  /**
+   * No automatic description of the clip. Every new row used to get a gpt-4o annotation
+   * (~3–5 cents each, most clips never used); the owner tags the archive by hand instead.
+   */
   return newId;
 }
 

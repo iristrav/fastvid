@@ -42,7 +42,13 @@ const round = (n: number) => Number(n.toFixed(3));
  * renderer already honours): the same source, once, in order. VIDEO 636 lowered that floor to
  * `MIN_PIECE_SPEED`; below it the source still runs once and its last frame holds.
  */
-export const MIN_STRETCH_SPEED = 0.8;
+/**
+ * VIDEO 658 — NO SLOW MOTION, EVER (the owner's rule). Every shot of 658 played at 0.5–0.8× to stretch
+ * a 4 s source over a 6–8 s sentence. A shot now plays at normal speed; what its source cannot cover
+ * is covered by another picture of the sentence placed behind it (`coverRestOfSentences`), and only
+ * when there is none does its last frame hold, with the camera move keeping it alive.
+ */
+export const MIN_STRETCH_SPEED = 1;
 
 /**
  * VIDEO 636 — NO PIECE EVER COMES ROUND TO THE START OF ITS SOURCE.
@@ -54,7 +60,7 @@ export const MIN_STRETCH_SPEED = 0.8;
  * A source too short even for that runs once at that speed and its last frame holds the rest — a
  * still with the piece's camera move, never the opening again.
  */
-export const MIN_PIECE_SPEED = 0.5;
+export const MIN_PIECE_SPEED = MIN_STRETCH_SPEED;
 /** Where a piece whose source is used up starts: on the window's last frame. */
 const LAST_FRAME_SEC = 0.05;
 
@@ -101,6 +107,24 @@ export function limitLongShots(params: {
     const heldOnPurpose = clip.holdAtSourceOut === true && dur <= maxSec + EPS;
     if (clip.disabled || clip.editedByUser || heldOnPurpose || (dur <= maxSec + EPS && !pastItsSource)) {
       out.push(clip);
+      continue;
+    }
+    /**
+     * VIDEO 658 — A PHOTOGRAPH IS NEVER CUT INTO PIECES. Render 658 cut a 7.26 s photo into two
+     * pieces of 3.63 s, alternately pushing in and pulling out, so the same picture came on screen
+     * twice (the contact sheet flagged it). A photo has no seconds of its own to run out of: it stays
+     * one shot for its whole slot at normal speed, its own camera move carries it, and past the file
+     * the renderer holds the photo's frame (`holdAtSourceOut`).
+     */
+    if (clip.still) {
+      adjustedIds.push(clip.id);
+      notes.push(`${clip.id}: a photograph, ${dur.toFixed(2)}s on screen — one shot, never cut into pieces or slowed`);
+      out.push({
+        ...clip,
+        ...(clip.speed != null ? { speed: 1 } : {}),
+        ...(pastItsSource ? { holdAtSourceOut: true } : {}),
+        ...(!clip.camera ? { camera: pieceCamera(1) } : {}),
+      });
       continue;
     }
     /**

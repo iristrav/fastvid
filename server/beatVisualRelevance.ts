@@ -1295,6 +1295,44 @@ export function reprieveAsLastResort(
   return true;
 }
 
+/**
+ * VIDEO 658 — A PICTURE GENERATED FOR A SENTENCE IS USED FOR THAT SENTENCE. The owner's rule: it was
+ * made for exactly this line, so the picture editor's verdict does not decide it. Render 658 paid for
+ * an ElevenLabs video and two Stability stills and threw all three away ("nobody looked", "not
+ * approved"). Every refusal recorded for this file — under its own sentence and under the file
+ * itself — is reprieved on the record, so the compose barrier lets it through and the report names
+ * it as used after refusal. Returns how many verdicts were overruled.
+ */
+export function keepGeneratedForBeat(
+  ledger: Pick<BeatRelevanceLedger, "byBeat" | "byClipPath">,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number
+): number {
+  let overruled = 0;
+  const entries = [
+    ledger.byBeat.get(beatRelevanceBeatKey(sceneIndex, beatIndex, "path", clipPath)),
+    ledger.byClipPath.get(clipPath),
+  ];
+  for (const entry of new Set(entries)) {
+    if (!entry || entry.decision.verdict !== "does_not_fit" || entry.decision.reprieved) continue;
+    entry.decision = { ...entry.decision, allowed: true, reprieved: true };
+    overruled++;
+    console.log(
+      formatVisualFitDecision({
+        beatLabel: beatSlotKey(entry.ctx),
+        candidate: path.basename(clipPath),
+        verdict: entry.decision.verdict,
+        severity: mismatchSeverity(classifyMismatch({ depicts: entry.decision.depicts, reason: entry.decision.reason })),
+        decision: "REPRIEVED",
+        reason: "generated for this sentence: always used (owner's rule)",
+        fallback: true,
+      })
+    );
+  }
+  return overruled;
+}
+
 export function reprieveBeatClip(
   ledger: BeatRelevanceLedger,
   clipPath: string,

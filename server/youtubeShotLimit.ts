@@ -54,8 +54,11 @@ export type YoutubePiece = { inSec: number; durationSec: number; speed?: number;
 /** VIDEO 656 — how much source a held piece reads: one frame and a little, then that frame holds. */
 export const YOUTUBE_HOLD_READ_SEC = 0.05;
 
-/** The slowest a piece is played rather than repeat a window: the renderer's `MIN_FIT_SPEED`. */
-export const YOUTUBE_MIN_PIECE_SPEED = 0.5;
+/**
+ * The slowest a piece is played rather than repeat a window: the renderer's `MIN_FIT_SPEED`.
+ * VIDEO 658 — 1: no slow motion; a piece without footage of its own holds the last frame instead.
+ */
+export const YOUTUBE_MIN_PIECE_SPEED = 1;
 
 /** The source as a list of continuous shots `[start, end)`. */
 export function shotSegments(facts: YoutubeSourceFacts): Array<{ start: number; end: number }> {

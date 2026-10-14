@@ -461,8 +461,12 @@ export function oddSegmentsOut(
  * rotation a phone recording carries in its metadata (ffmpeg applies it on decode). Null when the
  * file cannot be read, which is not evidence either way.
  */
-/** VIDEO 635 — the slowest a shot is played to run its file once rather than loop its start. */
-export const MIN_FIT_SPEED = 0.5;
+/**
+ * VIDEO 635 — the slowest a shot is played to run its file once rather than loop its start.
+ * VIDEO 658 — 1: no slow motion (the owner's rule). A file shorter than its slot plays at normal
+ * speed and its last frame holds (`tpad`), with the clip's camera move keeping it alive.
+ */
+export const MIN_FIT_SPEED = 1;
 
 /**
  * The speed at which `clip` reads its file exactly to the end, when its own speed would read past

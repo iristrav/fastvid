@@ -327,6 +327,12 @@ export type TimelineVideoClip = {
   /** The scene/beat this clip illustrates, kept so a replacement can be offered from that beat. */
   sceneIndex?: number;
   beatIndex?: number;
+  /**
+   * VIDEO 658 — a photograph made into a video file. It has no seconds of its own to run out of:
+   * it stays one shot for its whole slot (never cut into pieces, never slowed), the camera move
+   * carries it. Absent on footage and on timelines written before the mark existed.
+   */
+  still?: boolean;
   /** A person put this here; the pipeline did not choose it. */
   editedByUser?: boolean;
   /** Switched off by the user without being deleted. */

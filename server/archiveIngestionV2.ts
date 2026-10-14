@@ -577,22 +577,3 @@ export function buildIngestionLog(
 
   return entries;
 }
-
-// ─── 7. Pipeline scheduling ───────────────────────────────────────────────────
-
-/**
- * Schedule the Archive Intelligence Pipeline for an asset asynchronously.
- * Safe to call from the upload path — does not block the HTTP response.
- */
-export function scheduleV2IntelligencePipeline(assetId: number): void {
-  void import("./archiveIntelligencePipeline")
-    .then(({ runArchiveIntelligencePipelineForAssetId }) =>
-      runArchiveIntelligencePipelineForAssetId(assetId)
-    )
-    .catch((err) =>
-      console.warn(
-        `[IngestionV2] background pipeline failed for asset ${assetId}:`,
-        (err as Error).message?.slice(0, 100)
-      )
-    );
-}

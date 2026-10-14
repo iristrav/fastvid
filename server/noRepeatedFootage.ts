@@ -22,8 +22,11 @@ import type { TimelineVideoClip } from "./projectTimeline";
 
 /** Below this, two windows touch rather than repeat: a cut point read twice on rounding. */
 export const OVERLAP_TOLERANCE_SEC = 0.25;
-/** The renderer's own floor (`MIN_FIT_SPEED` in timelineRenderer): past it, the last frame holds. */
-const SLOWEST = 0.5;
+/**
+ * The renderer's own floor (`MIN_FIT_SPEED` in timelineRenderer): past it, the last frame holds.
+ * VIDEO 658 — 1: no slow motion; the shot before plays on at normal speed, then holds its last frame.
+ */
+const SLOWEST = 1;
 const EPS = 0.001;
 /** A held frame reads one frame and a little of its source (the renderer clones it for the rest). */
 const HOLD_READ_SEC = 0.05;

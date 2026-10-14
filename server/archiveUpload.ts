@@ -71,14 +71,6 @@ function scheduleArchiveClipEmbedding(assetId: number, localPath: string): void 
     );
 }
 
-function scheduleIntelligencePipeline(assetId: number): void {
-  void import("./archiveIngestionV2")
-    .then(({ scheduleV2IntelligencePipeline }) => scheduleV2IntelligencePipeline(assetId))
-    .catch((err) =>
-      console.warn(`[IngestionV2] pipeline schedule failed for asset ${assetId}:`, (err as Error).message?.slice(0, 80))
-    );
-}
-
 export type ArchiveUploadInput = {
   archiveId: number;
   /** Raw file bytes. Use `inputPath` instead for large files to avoid loading GBs into RAM. */
@@ -207,7 +199,8 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const archiveNicheTags = normalizeMediaTags(archive.nicheTags ?? []);
   const parentSource = input.filename?.trim() || input.sourceNote?.trim() || null;
   const autoSplitScenes = input.autoSplitScenes ?? true;
-  const autoGenerateTags = input.autoGenerateTags ?? true;
+  /** Paid AI title + tags only when asked: the owner tags uploads by hand. */
+  const autoGenerateTags = input.autoGenerateTags ?? false;
 
   if (isVideo && autoSplitScenes) {
     // Pipeline: each clip is extracted → read → uploaded → file deleted before the next clip.
@@ -339,9 +332,7 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
 
       scheduleArchiveEmbeddingIndex(assetId);
       scheduleClipEmbeddingFromBuffer(assetId, clipBuffer);
-      if (process.env.ARCHIVE_INGESTION_V2_ENABLED !== "false") {
-        scheduleIntelligencePipeline(assetId);
-      }
+      // No automatic description (archive intelligence pipeline): the owner tags uploads by hand.
 
       savedCount += 1;
       progress({
@@ -671,7 +662,7 @@ async function handleArchiveBinaryUpload(req: Request, res: Response) {
       tags,
       mixKind,
       autoSplitScenes: parseBoolQuery(req.query.autoSplitScenes, true),
-      autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, true),
+      autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, false),
       jobId,
     };
 
@@ -880,7 +871,7 @@ async function handleArchiveAssemble(req: Request, res: Response) {
       tags,
       mixKind,
       autoSplitScenes: parseBoolQuery(req.query.autoSplitScenes, true),
-      autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, true),
+      autoGenerateTags: parseBoolQuery(req.query.autoGenerateTags, false),
       jobId,
     };
 

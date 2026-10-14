@@ -338,7 +338,7 @@ export function MediaArchiveAdmin() {
   const [uploadTags, setUploadTags] = useState("");
   const [uploadMixKind, setUploadMixKind] = useState<MixKind>("photo");
   const [autoSplitScenes, setAutoSplitScenes] = useState(true);
-  const [autoGenerateTags, setAutoGenerateTags] = useState(true);
+  const [autoGenerateTags, setAutoGenerateTags] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<ArchiveUploadProgress | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -642,7 +642,7 @@ export function MediaArchiveAdmin() {
                     onChange={(e) => setAutoGenerateTags(e.target.checked)}
                     className="rounded border-white/20 bg-white/5 text-purple-600 focus:ring-purple-500"
                   />
-                  AI title + search tags from image (LLM vision)
+                  AI title + search tags from image (LLM vision — paid per clip)
                 </label>
                 <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
                   <input

@@ -1837,8 +1837,8 @@ export const appRouter = router({
       filename: z.string().max(256).optional(),
       /** Video only: auto-detect scene changes and store multiple clips (default on). */
       autoSplitScenes: z.boolean().default(true),
-      /** Analyze image / video frame with AI for title + tags (default on, needs LLM_API_KEY). */
-      autoGenerateTags: z.boolean().default(true),
+      /** Analyze image / video frame with AI for title + tags (paid; off unless asked — the owner tags by hand). */
+      autoGenerateTags: z.boolean().default(false),
     })).mutation(async ({ input }) => {
       try {
         const buffer = Buffer.from(input.fileBase64, "base64");

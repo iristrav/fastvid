@@ -193,7 +193,7 @@ import type { TimelineGraphic } from "./projectTimeline";
 import { type StillStyleContext } from "./motionGraphicsEngine";
 import { PipelineStepTiming, recordPipelineTiming, timePipelineStep } from "./pipelineStepTiming";
 import { type BeatGeoRegion } from "./vidrushQuality";
-import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, onScreenTextRefusesBeforeVision, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveAsLastResort, reprieveBeatClip, softMismatchCandidatesForBeat, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
+import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, onScreenTextRefusesBeforeVision, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, keepGeneratedForBeat, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveAsLastResort, reprieveBeatClip, softMismatchCandidatesForBeat, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
 import type { RejectionRegistry } from "./rejectionRegistry";
 import { registerRejection, createRejectionRegistry, beatRejectCount, beatRejectReasons, noteRepeatedRefusal } from "./rejectionRegistry";
 // RONDE 70: one funnel line per beat, for every beat. Counting only — see beatOutcomeAudit.ts.
@@ -211,7 +211,6 @@ import {
   generatedImagePrompt,
   generatedStillSec,
   imageServiceStandingDown,
-  pictureEditorUnavailableReason,
   stillImageGenerator,
 } from "./generatedImageFallback";
 import {
@@ -2821,6 +2820,29 @@ export async function fetchBeatArchivalThenPexels(
 }
 
 /** The own archive's clip for a beat, bounded by the archive's own per-beat budget. */
+/**
+ * VIDEO 658 — WHAT THE OWN ARCHIVE IS ASKED FOR A SENTENCE THAT FOUND NOTHING: the film's subject AND
+ * the sentence's own words, for every topic alike.
+ *
+ * VIDEO 624 asked on the main subject alone and dropped the sentence's own query, visual description
+ * and keywords. 658 ("In the 1960s, NASA was leading ocean exploration…") therefore asked the archive
+ * for "NASA" on every sentence and got the same James Webb clean-room clips five times, all refused —
+ * the ocean was never in the question. The subject is ADDED to what the sentence says, never put in
+ * its place: an archive clip that matches both ranks first, one that matches only the subject still
+ * comes after it, and the picture editor judges the result against the sentence as before.
+ */
+export function ownArchiveFillAsk(beat: SceneBeat, subject: string): SceneBeat {
+  const has = (s: string | undefined) => Boolean(s && s.toLowerCase().includes(subject.toLowerCase()));
+  const query = beat.searchQuery?.trim();
+  const keywords = [...new Set([...(beat.keywords ?? []), subject].map((k) => k.trim()).filter(Boolean))];
+  return {
+    ...beat,
+    searchQuery: query ? (has(query) ? query : `${subject} ${query}`) : subject,
+    powerWord: beat.powerWord?.trim() || subject,
+    keywords,
+  };
+}
+
 async function ownArchiveBeatClip(
   beat: SceneBeat,
   scene: Scene,
@@ -8363,27 +8385,13 @@ export async function generateMissingBeatImages(
         console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — the image service refuses this account; the sentences keep their fallbacks`);
         return;
       }
-      /** VIDEO 652 — nobody can approve a generated picture now, so none is paid for. */
-      const noJudge = pictureEditorUnavailableReason({
-        visionPipelineUnavailable: visionPipelineIsUnavailable(),
-        askImpossible: dedup.beatImageGate?.askImpossible === true,
-      });
-      if (noJudge) {
-        console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — ${noJudge}; nothing is generated, the sentences keep their fallbacks`);
-        return;
-      }
       /**
-       * VIDEO 649/651 — this sentence's looks are spent: `adoptClip` stops before the picture editor
-       * (`[BeatShortlist] … stopped looking`), so a generated picture would be paid for and never
-       * looked at. 649 s0b0 and 651 s1b0 (twice) were made and refused exactly that way.
+       * VIDEO 658 — no approval is needed: a generated picture is always used for its sentence
+       * (`keepGeneratedForSentence`). The stops VIDEO 649/651/652 put here (the picture editor
+       * unreachable, the sentence's looks spent) only existed because an unapproved picture was
+       * thrown away after it was paid for; now it is placed, so they would only cost the sentence
+       * its picture.
        */
-      if (beatShortlistExhausted(dedup.beatShortlist, si, beat.index)) {
-        console.log(
-          `[${GENERATED_IMAGE_FALLBACK}] s${scene.index}b${beat.index} not generated — the sentence's ` +
-            `${maxShortlistPerBeat()} looks are spent, so nobody could approve a generated picture`
-        );
-        continue;
-      }
       const clip = await fetchBeatGeneratedImage(beat, scene, workDir, si, dedup, videoTitle, GENERATED_IMAGES_PER_FILM - made);
       if (!clip) continue;
       made++;
@@ -8669,6 +8677,243 @@ export async function placeGenericMovingFallbacks(
   return tally;
 }
 
+/** VIDEO 658 — the log name of a sentence's last seconds covered by another picture instead of slow motion. */
+export const COVER_REST = "CoverRest";
+/** Below this, the rest of a sentence is too short for another shot: the shot before it holds its last frame. */
+export const COVER_REST_MIN_SEC = 1;
+
+/** Where a YouTube moment file sits in its video, read from its own name (`_t<start>d<dur>__pid_youtube_cc-<id>`). */
+function youtubeMomentSpan(clipPath: string): { video: string; startSec: number; endSec: number } | null {
+  const m = /_t(\d+)d(\d+)__pid_youtube_cc-([0-9a-f]{16})/.exec(path.basename(clipPath));
+  if (!m) return null;
+  const startSec = Number(m[1]) / 10;
+  return { video: m[3]!, startSec, endSec: startSec + Number(m[2]) / 10 };
+}
+
+/**
+ * VIDEO 658 — the moments of the same YouTube video(s) as the sentence's own shots, among the
+ * candidates the sentence was handed: the shot right before or after an approved one shows the same
+ * subject from another angle. Nearest in the video first; files outside those videos are not offered.
+ */
+export function sameVideoNeighbours(placed: readonly string[], handed: readonly string[]): string[] {
+  const anchors = placed.map(youtubeMomentSpan).filter((a): a is NonNullable<typeof a> => a != null);
+  if (!anchors.length) return [];
+  const distance = (p: string): number => {
+    const s = youtubeMomentSpan(p);
+    if (!s) return Infinity;
+    let best = Infinity;
+    for (const a of anchors) {
+      if (a.video !== s.video) continue;
+      best = Math.min(best, Math.abs(s.startSec - a.endSec), Math.abs(a.startSec - s.endSec));
+    }
+    return best;
+  };
+  const placedKeys = new Set(placed.map((p) => path.basename(p).replace(/_transformed(?=\.mp4$)/, "")));
+  return [...new Set(handed)]
+    .filter((p) => !placedKeys.has(path.basename(p).replace(/_transformed(?=\.mp4$)/, "")))
+    .map((p) => ({ p, d: distance(p) }))
+    .filter((x) => Number.isFinite(x.d))
+    .sort((a, b) => a.d - b.d)
+    .map((x) => x.p);
+}
+
+export type CoverRestIo = {
+  checks: FallbackFileChecks;
+  /** A generic library clip of at least `neededSec`, on disk under this sentence's name, or null. */
+  genericClip: (sceneIndex: number, beatIndex: number, neededSec: number, seed: number) => Promise<{ path: string; durationSec: number } | null>;
+};
+
+/**
+ * VIDEO 658 — A SENTENCE LONGER THAN ITS SHOTS GETS ANOTHER PICTURE, NOT SLOW MOTION OR A REPEAT.
+ *
+ * Every shot of 658 was a single 3–4 s shot under a 5–8 s sentence, and the timeline closed the rest
+ * by playing it at 0.5–0.8× or showing it twice. The owner's rule: no slow motion, no repetition — put
+ * another picture behind it that belongs there. Once every source has had its turn, each sentence with
+ * a picture whose shots leave at least `COVER_REST_MIN_SEC` uncovered gets, behind its own shots:
+ *
+ *   1. another moment of the same YouTube video it was handed (`sameVideoNeighbours`): same subject,
+ *      other seconds — never one the picture editor refused, never seconds already in the film;
+ *   2. a neutral clip from the generic library (`generic_footage`, never the colour field).
+ *
+ * Only when neither exists does the shot before it hold its last frame (the timeline's floor, with a
+ * camera move), named here. Up to `BEAT_FILL_MAX_EXTRA_CLIPS` per sentence. No search, no download,
+ * no picture-editor look: every candidate was already on disk.
+ */
+export async function coverRestOfSentences(
+  scenes: Scene[],
+  sceneVisualResults: Array<SceneVisualsResult | undefined>,
+  dedup: VisualDedupState,
+  workDir: string,
+  io: CoverRestIo = productionCoverRestIo(dedup, workDir)
+): Promise<{ sameVideo: number; generic: number; held: number }> {
+  const tally = { sameVideo: 0, generic: 0, held: 0 };
+  const videoId = getActiveVideoId() ?? 0;
+  for (let si = 0; si < scenes.length; si++) {
+    const scene = scenes[si]!;
+    const vr = sceneVisualResults[si];
+    if (scene.isChapterCard || !vr) continue;
+    const beats = dedup.sceneBeatsBySceneIndex.get(scene.index) ?? vr.beats ?? [];
+    for (const beat of beats) {
+      const where = `s${scene.index}b${beat.index}`;
+      const ownOf = () => vr.clips.filter((_, i) => vr.clipBeatIndices?.[i] === beat.index);
+      if (!ownOf().length) continue;
+      const restOf = () => {
+        let covered = 0;
+        vr.clips.forEach((_, i) => {
+          if (vr.clipBeatIndices?.[i] === beat.index) covered += vr.beatDurations[i] ?? 0;
+        });
+        return (beat.holdSec ?? 0) - covered;
+      };
+      const handed = [
+        ...(dedup.beatCandidateCalls?.get(`${si}:${beat.index}`) ?? []),
+        ...(si !== scene.index ? dedup.beatCandidateCalls?.get(`${scene.index}:${beat.index}`) ?? [] : []),
+      ].flatMap((c) => c.paths);
+      const refusedHere = (p: string): boolean => {
+        const ledger = dedup.beatRelevance;
+        if (!ledger) return false;
+        if (beatAlreadyRefusedPicture(ledger, scene.index, beat.index, { contentKey: clipContentKey(p), clipPath: p })) return true;
+        const d = ledger.byClipPath.get(p)?.decision;
+        return d?.verdict === "does_not_fit" && !d.reprieved;
+      };
+      const push = (clipPath: string, durationSec: number, rest: number) => {
+        dedup.usedContentKeys.add(clipContentKey(clipPath));
+        vr.clips.push(clipPath);
+        vr.beatDurations.push(Number(Math.min(rest, durationSec).toFixed(2)));
+        (vr.clipBeatIndices ??= []).push(beat.index);
+      };
+      for (let added = 0; added < BEAT_FILL_MAX_EXTRA_CLIPS; added++) {
+        const rest = restOf();
+        if (!(rest >= COVER_REST_MIN_SEC)) break;
+        const neighbours = sameVideoNeighbours(ownOf(), handed).filter(
+          (p) => !isPipelineFallbackClip(p) && !assetUsedInVideo(dedup, { path: p, contentKey: clipContentKey(p) }) && !refusedHere(p)
+        );
+        const same = await firstUsableFallback(neighbours, dedup, io.checks);
+        if (same) {
+          push(same.path, same.durationSec, rest);
+          tally.sameVideo++;
+          console.log(
+            `[${COVER_REST}] ${where} ${rest.toFixed(2)}s left — added ${path.basename(same.path)} (${same.durationSec.toFixed(2)}s), ` +
+              `another moment of the same YouTube video, behind its own shot(s): no slow motion, no repeat`
+          );
+          continue;
+        }
+        const generic = await io.genericClip(scene.index, beat.index, rest, videoId * 31 + scene.index * 7 + beat.index + added * 1009);
+        if (generic) {
+          push(generic.path, generic.durationSec, rest);
+          tally.generic++;
+          console.log(
+            `[${COVER_REST}] ${where} ${rest.toFixed(2)}s left — added generic library clip ${path.basename(generic.path)} ` +
+              `(${generic.durationSec.toFixed(2)}s) behind its own shot(s): no other moment of its video was left`
+          );
+          continue;
+        }
+        tally.held++;
+        console.warn(
+          `[${COVER_REST}] ${where} ${rest.toFixed(2)}s left and no other picture for it (no unused moment of its video, ` +
+            `no generic clip) — the shot before holds its last frame with a camera move`
+        );
+        break;
+      }
+    }
+  }
+  if (tally.sameVideo || tally.generic || tally.held) {
+    console.log(`[${COVER_REST}] TOTAL sameVideo=${tally.sameVideo} generic=${tally.generic} heldLastFrame=${tally.held}`);
+  }
+  return tally;
+}
+
+/** The production `CoverRestIo`: the file checks of the fallbacks, and the generic library read once per render. */
+function productionCoverRestIo(dedup: VisualDedupState, workDir: string): CoverRestIo {
+  let library: Awaited<ReturnType<typeof import("./db").listActiveVideoArchiveAssetsByTag>> | null = null;
+  const usedIds = new Set<number>();
+  let n = 0;
+  return {
+    checks: DEFAULT_FALLBACK_CHECKS,
+    genericClip: async (sceneIndex, beatIndex, neededSec, seed) => {
+      const where = `s${sceneIndex}b${beatIndex}`;
+      try {
+        if (library === null) {
+          const { listActiveVideoArchiveAssetsByTag } = await import("./db");
+          library = await listActiveVideoArchiveAssetsByTag(GENERIC_ARCHIVE_TAG, 200);
+        }
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const pick = pickGenericArchiveAsset(library, { neededSec, usedIds, seed: seed + attempt });
+          if (!pick || usedIds.has(pick.id)) return null;
+          usedIds.add(pick.id);
+          const { loadArchiveAssetFile } = await import("./archiveAssetLoad");
+          const loaded = await loadArchiveAssetFile(pick);
+          if (!loaded.ok) continue;
+          fs.mkdirSync(workDir, { recursive: true });
+          const outPath = tagPathWithProviderAsset(
+            path.join(workDir, `scene_${sceneIndex}_generic_rest_b${beatIndex}_${++n}.mp4`),
+            GENERIC_FOOTAGE_PROVIDER, `archive-${pick.id}`, dedup.sourcingCache,
+            { sceneIndex, beatIndex, title: pick.title ?? `generic archive clip ${pick.id}`, mediaType: "video", searchRoute: "coverRestOfSentences" }
+          );
+          fs.copyFileSync(loaded.result.localPath, outPath);
+          loaded.result.cleanup?.();
+          const meta = (await isValidVideoFile(outPath)) ? await probeVideoStreamMeta(outPath) : null;
+          const sec = meta?.durationSec ?? 0;
+          const refusal = !meta
+            ? "not a valid video"
+            : (await isMostlyBlackClip(outPath, sec))
+              ? "mostly black"
+              : !(await clipHasMotion(FFMPEG_BIN, outPath)).moving
+                ? "not moving"
+                : null;
+          if (refusal) {
+            recordProviderDownloadOutcome(dedup.sourcingCache, outPath, false, refusal);
+            try { fs.unlinkSync(outPath); } catch { /* already gone */ }
+            continue;
+          }
+          recordProviderDownloadOutcome(dedup.sourcingCache, outPath, true);
+          dedup.sourcingCache?.lineage?.attachArchiveAssetToPath(outPath, pick.id, clipContentKey(outPath));
+          markGenericFootageForBeat(dedup, sceneIndex, beatIndex, clipContentKey(outPath));
+          return { path: outPath, durationSec: sec };
+        }
+      } catch (err) {
+        console.warn(`[${COVER_REST}] ${where} generic library unavailable: ${(err as Error)?.message?.slice(0, 120)}`);
+      }
+      return null;
+    },
+  };
+}
+
+/**
+ * VIDEO 658 — A PICTURE GENERATED FOR A SENTENCE IS ALWAYS USED FOR IT (the owner's rule).
+ *
+ * It was made from this sentence's own words, so the picture editor's verdict does not decide it.
+ * 658 paid for an ElevenLabs video and two Stability stills and threw all three away ("nobody
+ * looked", "not approved") — and then filled those sentences with random refused footage. Only the
+ * file itself can still stop it: it must exist, be a valid video, not be mostly black, and not be on
+ * screen already. Any refusal on the record is overruled there (`keepGeneratedForBeat`), so the
+ * compose barrier lets it through; the delivery report still shows it was not approved.
+ */
+async function keepGeneratedForSentence(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  outPath: string,
+  tag: string,
+  checks: FallbackFileChecks = DEFAULT_FALLBACK_CHECKS
+): Promise<string | null> {
+  const where = `s${sceneIndex}b${beatIndex}`;
+  const usable = await firstUsableFallback([outPath], dedup, checks);
+  if (!usable) {
+    console.warn(`[${tag}] ${where} generated, but the file cannot be used (missing, not a valid video, mostly black, or already on screen) — not used`);
+    return null;
+  }
+  const overruled = keepGeneratedForBeat(dedup.beatRelevance, outPath, sceneIndex, beatIndex);
+  dedup.usedContentKeys.add(clipContentKey(outPath));
+  console.log(
+    `[${tag}] ${where} used ${path.basename(outPath)} (${usable.durationSec.toFixed(2)}s) — generated for this sentence, ` +
+      `always used${overruled ? ` (the picture editor's refusal overruled)` : " (the picture editor did not look)"}`
+  );
+  return outPath;
+}
+
+/** Exposed for tests: the rule above without a render around it. */
+export const __keepGeneratedForSentence = keepGeneratedForSentence;
+
 async function fetchBeatGeneratedImage(
   beat: SceneBeat,
   scene: Scene,
@@ -8757,8 +9002,7 @@ async function fetchBeatGeneratedImage(
     })
   );
   if (!clip || !isRealVideoClip(clip)) {
-    console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} generated, but not approved for the sentence — not used`);
-    return null;
+    return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, GENERATED_IMAGE_FALLBACK);
   }
   console.log(
     `[${GENERATED_IMAGE_FALLBACK}] ${where} used provider=${GENERATED_IMAGE_PROVIDER} ` +
@@ -8996,8 +9240,7 @@ async function fetchBeatReplicateVideo(
     })
   );
   if (!clip || !isRealVideoClip(clip)) {
-    console.log(`[${REPLICATE_VIDEO_FALLBACK}] ${where} generated, but not approved for the sentence — not used; the still is tried`);
-    return null;
+    return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, REPLICATE_VIDEO_FALLBACK);
   }
   console.log(
     `[${REPLICATE_VIDEO_FALLBACK}] ${where} used provider=${REPLICATE_VIDEO_PROVIDER} model=${cfg.model} generated=true ` +
@@ -9071,8 +9314,7 @@ async function fetchBeatElevenLabsVideo(
     })
   );
   if (!clip || !isRealVideoClip(clip)) {
-    console.log(`[${GENERATED_VIDEO_FALLBACK}] ${where} generated, but not approved for the sentence — not used; the still is tried`);
-    return null;
+    return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, GENERATED_VIDEO_FALLBACK);
   }
   console.log(
     `[${GENERATED_VIDEO_FALLBACK}] ${where} used provider=${GENERATED_VIDEO_PROVIDER} model=${cfg.modelId} ` +
@@ -26138,9 +26380,7 @@ async function fetchSceneVisualsInner(
       console.log(`[BeatFill] s${scene.index}b${f.beat.index}: an approved picture is on its way — not filled from the own archive`);
       return;
     }
-    const asked: SceneBeat = subject
-      ? { ...f.beat, searchQuery: subject, powerWord: subject, keywords: [subject], visualDescription: undefined }
-      : f.beat;
+    const asked: SceneBeat = subject ? ownArchiveFillAsk(f.beat, subject) : f.beat;
     for (let extra = 0; extra < BEAT_FILL_MAX_EXTRA_CLIPS; extra++) {
       /** VIDEO 642 — this sentence's own seconds, read by sentence: a late pick of another sentence is not its cover. */
       const covered = clipBeatIndices.reduce((sum, b, i) => (b === f.beat.index ? sum + (beatDurations[i] ?? 0) : sum), 0);
@@ -28134,6 +28374,8 @@ async function _runVideoPipelineInner(
     await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);
     /** GENERIC_FOOTAGE_FALLBACK — VIDEO 650 — the moving floor under everything above: see `placeGenericMovingFallbacks`. */
     await placeGenericMovingFallbacks(scenes, sceneVisualResults, visualDedup, workDir);
+    /** VIDEO 658 — a sentence longer than its shots gets another picture behind them, not slow motion or a repeat. */
+    await coverRestOfSentences(scenes, sceneVisualResults, visualDedup, workDir);
 
     /**
      * A scene with no picture is a gap the timeline holds over. A film with no picture in ANY scene

@@ -939,6 +939,8 @@ export function translateEdl(params: {
     clips.push({
       id: clipId,
       kind: clip.assetType === "image" ? "image" : "video",
+      /** VIDEO 658 — a photograph stays one shot: see `TimelineVideoClip.still`. */
+      ...(isStill ? { still: true } : {}),
       source: identity,
       /**
        * RONDE 151 §7 — the planner's trim, composed with the trim the RENDER already applied.
