@@ -101,6 +101,27 @@ export function contentWords(q: string): string[] {
   return words(q).filter((w) => !STOP.has(w) && !PRODUCTION.has(w) && w !== "-" && w.length > 1);
 }
 
+/** Words that only count or measure: with numbers alone they name nothing a camera can film. */
+const AMOUNT_WORDS = new Set([
+  "hundred", "hundreds", "thousand", "thousands", "million", "millions", "billion", "billions",
+  "trillion", "trillions", "bn", "mn", "percent", "per", "cent", "dollar", "dollars", "usd",
+  "euro", "euros", "eur", "pound", "pounds", "gbp", "yen",
+]);
+
+/**
+ * VIDEO 654 — A YEAR, A NUMBER OR AN AMOUNT IS NOT A PICTURE.
+ *
+ * Render 654's planner listed "2014", "2020" and "$600 billion" as things to see. "2014" got one of
+ * the film's four YouTube searches ("2014 footage": music videos, an F-18, a tornado, a rocket test —
+ * one of them downloaded) while Toyota and Volkswagen, which a camera can film, were never searched.
+ * A subject whose every word is a number or an amount word names no picture; its sentence keeps its
+ * other subjects ("Tesla patents open-source"), and the year may still ride along inside one.
+ */
+export function namesOnlyANumber(subject: string): boolean {
+  const cw = contentWords(subject);
+  return cw.length > 0 && cw.every((w) => /^\d/.test(w) || AMOUNT_WORDS.has(w));
+}
+
 function stem(w: string): string {
   return w.length > 5 ? w.slice(0, 5) : w;
 }
@@ -612,6 +633,7 @@ export function validVisualNeeds(raw: unknown, analysis: VideoAnalysis, input: P
     }
     const cw = contentWords(subject);
     if (!cw.length) continue;
+    if (namesOnlyANumber(subject)) continue;
     /** Cut back to one word: only a word the script writes as a name. */
     if (cw.length === 1 && subject !== asked && !written.has(cw[0]!) && !names.has(cw[0]!)) continue;
     const key = cw.join(" ");

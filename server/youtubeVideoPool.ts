@@ -21,6 +21,7 @@ import { claimYoutubeSearch, MAX_YOUTUBE_SEARCHES_PER_VIDEO, type YoutubeSearchB
 import {
   analyzeVideo,
   contentWords,
+  namesOnlyANumber,
   planEntityQuery,
   planGapQuery,
   planPersonQuery,
@@ -424,7 +425,8 @@ export function scriptVisualNeeds(
   const out: Array<{ name: string; kind: NamedSubjectKind; beats: number[]; listed: boolean }> = [];
   for (const n of pool.visualNeeds ?? []) {
     const beats = n.beats.filter((b) => b >= 0 && b < pool.sentences.length);
-    if (!subjectKey(n.subject) || !beats.length) continue;
+    /** VIDEO 654 — a year, number or amount alone is not something to film (`namesOnlyANumber`). */
+    if (!subjectKey(n.subject) || !beats.length || namesOnlyANumber(n.subject)) continue;
     const same = out.find((o) => subjectKey(o.name) === subjectKey(n.subject));
     if (same) same.beats = [...new Set([...same.beats, ...beats])];
     else out.push({ name: n.subject.replace(/['’]s\b/gi, "").trim(), kind: "subject", beats, listed: true });
@@ -433,7 +435,7 @@ export function scriptVisualNeeds(
     for (const s of namedSubjects?.(sentence) ?? []) {
       const name = s.name.replace(/['’]s\b/gi, "").trim();
       const words = contentWords(name);
-      if (!words.length || (s.kind === "name" && words.length < 2)) continue;
+      if (!words.length || (s.kind === "name" && words.length < 2) || namesOnlyANumber(name)) continue;
       const holder =
         out.find((o) => subjectKey(o.name) === words.join(" ")) ??
         out.find((o) => o.listed && words.every((w) => contentWords(o.name).includes(w)));

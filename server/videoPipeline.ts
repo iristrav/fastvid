@@ -23253,6 +23253,17 @@ export async function visualJudgeRefusesPush(
 }
 
 /**
+ * VIDEO 654 — what the quality warnings say about unseen pictures, from the one counter that knows:
+ * clips actually taken without a verdict. A declined or failed ask is not an adoption.
+ */
+export function unseenAdoptionClause(byRoute: ReadonlyMap<string, number>): string {
+  const total = [...byRoute.values()].reduce((sum, n) => sum + Math.max(0, n), 0);
+  return total > 0
+    ? `${total} clip(s) zijn ONGEZIEN aangenomen`
+    : "niets is ongezien gebruikt: een clip zonder oordeel komt de film niet in";
+}
+
+/**
  * The render's own account of every picture that entered with the vision requirement suspended.
  *
  * Exported for the test suite: this is a pure string function over a counter, and the claim worth
@@ -28339,15 +28350,20 @@ async function _runVideoPipelineInner(
               `beeldgate-tellers kloppen niet: ${t.attempts} pogingen ≠ ${t.fits}+${t.mismatch}+${t.failed}`
             );
           }
+          /**
+           * VIDEO 654 — "ongezien aangenomen" is said only of clips that WERE taken without a
+           * verdict (`adoptedWithSuspendedVision`). An ask that was declined or failed is not an
+           * adoption: render 654 printed "die clips zijn ONGEZIEN aangenomen" over 12 declined
+           * looks on one sentence while `[UnjudgedFootage] adopted=0` stood a few lines below.
+           */
+          const unseen = unseenAdoptionClause(visualDedup.adoptedWithSuspendedVision);
           if (t.attempts > 0 && t.answered === 0) {
             qualityReport.warnings.push(
-              `beeldgate gaf GEEN ENKEL oordeel: ${t.attempts} pogingen, ${t.failed} mislukt — ` +
-                `elke clip in deze video is ONGEZIEN aangenomen`
+              `beeldgate gaf GEEN ENKEL oordeel: ${t.attempts} pogingen, ${t.failed} mislukt — ${unseen}`
             );
           } else if (t.failed >= Math.max(3, t.attempts * 0.25)) {
             qualityReport.warnings.push(
-              `beeldgate kon ${t.failed} van ${t.attempts} pogingen niet beantwoorden — ` +
-                `die clips zijn ONGEZIEN aangenomen`
+              `beeldgate kon ${t.failed} van ${t.attempts} pogingen niet beantwoorden — ${unseen}`
             );
           }
           /**
@@ -28357,8 +28373,8 @@ async function _runVideoPipelineInner(
            */
           if (t.skipped >= Math.max(3, t.attempts * 0.25)) {
             qualityReport.warnings.push(
-              `beeldgate is ${t.skipped} keer niet eens bevraagd (budget op, of geen ` +
-                `leesbaar beeld) — die clips zijn ONGEZIEN aangenomen`
+              `beeldgate is ${t.skipped} keer niet eens bevraagd (budget op, kijkplafond per zin, of geen ` +
+                `leesbaar beeld) — ${unseen}`
             );
           }
           /**
