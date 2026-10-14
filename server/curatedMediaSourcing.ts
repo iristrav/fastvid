@@ -64,7 +64,7 @@ import {
   updateMediaArchiveAsset,
 } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
-import { STOCK_ARCHIVE_SLUG } from "./stockArchive";
+import { GENERIC_ARCHIVE_SLUG, STOCK_ARCHIVE_SLUG } from "./stockArchive";
 import { preferLessUsed } from "./usageDiversity";
 import { throwIfActiveRenderCancelled } from "./videoGenerationCancel";
 import { countVisualTagHits, isCuratedHistoricalFootage, isCuratedInterviewAsset, judgeArchiveAsset, judgeArchiveAssetMaterial, judgeArchiveAssetScore, judgeOnScreenText, hasKnownBakedEditText } from "./visualJudge";
@@ -486,7 +486,8 @@ export async function rankArchivesForVisualQuery(
   anchorTags: string[] = [],
   opts?: { assetSampleSize?: number; assetsCache?: Map<number, ArchiveAssetRow[]> }
 ): Promise<RankedArchive[]> {
-  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1 && a.slug !== STOCK_ARCHIVE_SLUG);
+  /** VIDEO 656 — the generic library is the floor under the ladder, never a sentence's own footage. */
+  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1 && a.slug !== STOCK_ARCHIVE_SLUG && a.slug !== GENERIC_ARCHIVE_SLUG);
   if (!archives.length) return [];
 
   const combined = normalizeMediaTags([...queryTags, ...anchorTags]);
@@ -578,7 +579,8 @@ export async function resolveArchivesForVisualQuery(
     assetsCache?: Map<number, ArchiveAssetRow[]>;
   }
 ): Promise<Array<Awaited<ReturnType<typeof getAllMediaArchives>>[number]>> {
-  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1 && a.slug !== STOCK_ARCHIVE_SLUG);
+  /** VIDEO 656 — the generic library is the floor under the ladder, never a sentence's own footage. */
+  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1 && a.slug !== STOCK_ARCHIVE_SLUG && a.slug !== GENERIC_ARCHIVE_SLUG);
   if (archives.length === 0) return [];
   const allRelevant = opts?.allRelevant !== false;
 

@@ -465,6 +465,14 @@ async function main() {
       startArchiveShotSplitSweep(() => workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0)
     );
     console.log("[ArchivePieces] sweep started — archive videos are cut into shots of at most 11s while idle");
+    /**
+     * VIDEO 656 — the generic library (the floor under the sourcing ladder) fills itself from Pexels
+     * and Pixabay while idle, until it holds enough clips. See `genericLibraryFill`.
+     */
+    const { startGenericLibraryFill } = await import("./genericLibraryFill");
+    runAsBackgroundLlmWork(() =>
+      startGenericLibraryFill(() => workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0)
+    );
   }
 
   /**

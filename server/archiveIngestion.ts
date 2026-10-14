@@ -61,6 +61,13 @@ export type IngestMetadata = {
    * Pexels or Pixabay clip is admitted; without it RONDE 9's refusal stands.
    */
   stockArchive?: boolean;
+  /**
+   * VIDEO 656 — rights-clear, non-specific stock (Pexels, Pixabay) for the "Generieke beelden"
+   * archive: the floor under the sourcing ladder, offered only when nothing else can picture a
+   * sentence (genericLibraryFill.ts). Stored ACTIVE there, as `mixKind: "stock"`, under the
+   * caller's tags only — never a subject name, so RONDE 9's poisoning cannot come back.
+   */
+  genericArchive?: boolean;
 
   // F3-26: structured web-sourcing provenance (all optional — admin uploads and older callers
   // that don't have this data keep working unchanged).
@@ -353,13 +360,20 @@ async function ingestExternalClipToArchiveInner(
      * so curated sourcing never offers what is kept there; RONDE 9's poisoning cannot come back.
      */
     let stockArchiveId: number | null = null;
-    if (isStock && !metadata.stockArchive) {
+    let genericArchiveId: number | null = null;
+    if (isStock && metadata.genericArchive) {
+      const { ensureAutoMediaArchive } = await import("./db");
+      genericArchiveId = await ensureAutoMediaArchive("generic").catch(() => null);
+      if (genericArchiveId == null) {
+        return refuse("NO_ACTIVE_ARCHIVE", "the Generieke beelden archive could not be found or created");
+      }
+    } else if (isStock && !metadata.stockArchive) {
       console.log(
         `[Ingestion] Skipping ${metadata.sourcePlatform ?? metadata.sourceNote.split(":")[0]} clip — stock footage is never ingested into the curated archive`
       );
       return refuse("EXEMPT_SOURCE", `${platform || sourcePrefix.split(":")[0]} is stock footage`);
     }
-    if (isStock) {
+    if (isStock && genericArchiveId == null) {
       const { ensureStockMediaArchive } = await import("./db");
       stockArchiveId = await ensureStockMediaArchive().catch(() => null);
       if (stockArchiveId == null) {
@@ -373,6 +387,7 @@ async function ingestExternalClipToArchiveInner(
     if (
       metadata.mediaType === "video" &&
       stockArchiveId == null &&
+      genericArchiveId == null &&
       !metadata.alreadyOneShot &&
       !isArticleScreenshotFile(localPath)
     ) {
@@ -467,7 +482,7 @@ async function ingestExternalClipToArchiveInner(
     }
 
     // Resolve archive to ingest into
-    let archiveId = stockArchiveId ?? metadata.archiveId;
+    let archiveId = stockArchiveId ?? genericArchiveId ?? metadata.archiveId;
     if (!archiveId) {
       /**
        * RONDE 648 — by the kind of source, never "the most recently updated archive".
@@ -555,7 +570,8 @@ async function ingestExternalClipToArchiveInner(
       archiveId,
       title: metadata.title.slice(0, 512),
       mediaType: metadata.mediaType,
-      mixKind: stockArchiveId != null ? "stock" : metadata.mediaType === "video" ? "real_video" : "photo",
+      mixKind:
+        stockArchiveId != null || genericArchiveId != null ? "stock" : metadata.mediaType === "video" ? "real_video" : "photo",
       mimeType: metadata.mimeType,
       storageUrl: url,
       storageKey: key,

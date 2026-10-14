@@ -126,6 +126,10 @@ export type ProductionArchiveMetadata = {
   personContext?: boolean;
   /** RONDE 647 — stock, into the separate Stockbeelden archive. See `IngestMetadata`. */
   stockArchive?: boolean;
+  /** VIDEO 656 — rights-clear stock for the Generieke beelden archive. See `IngestMetadata`. */
+  genericArchive?: boolean;
+  /** VIDEO 656 — the caller cut this file to one shot already; it is stored as it is. */
+  alreadyOneShot?: boolean;
 };
 
 /**
