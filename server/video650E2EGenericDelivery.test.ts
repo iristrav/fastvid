@@ -69,10 +69,17 @@ beforeAll(async () => {
 }, 300_000);
 afterAll(() => { try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { /* not worth a failure */ } });
 
-function clip(i: number, url: string, approval: "judge_fit" | "generic_footage", provider: string): TimelineVideoClip {
+function clip(
+  i: number,
+  url: string,
+  approval: "judge_fit" | "judge_acceptable" | "generic_footage",
+  provider: string,
+  /** FIX 1+2 — the text check the pipeline writes on every picture it places. */
+  textCheck: "clean" | "unchecked" = "clean"
+): TimelineVideoClip {
   return {
     id: `vc_${i}`, kind: "video",
-    source: { provider, providerAssetId: `item/${i}`, mediaUrl: url, archiveAssetId: 59000 + i, contentApproval: approval },
+    source: { provider, providerAssetId: `item/${i}`, mediaUrl: url, archiveAssetId: 59000 + i, contentApproval: approval, textCheck },
     sourceIn: 0, sourceOut: 3, sceneIndex: 0, beatIndex: i, timelineStart: i * 3, timelineEnd: (i + 1) * 3,
     motion: "none", transitionIn: i === 0 ? "hard_cut" : "dissolve", transitionOut: "hard_cut", previewSource: "asset",
   };
@@ -85,11 +92,12 @@ describe("VIDEO 650 — a film delivered on the generic floor, end to end", () =
     expect(elevenLabsVideoConfigured()).toBe(false);
   });
 
-  it("REAL FFMPEG: one real sentence, one sentence on synthetic generic footage — rendered, checked at 30 fps, covered, allowed, published", async () => {
+  /** One real sentence and one sentence on the generic floor, rendered by the real worker. */
+  async function renderFloorFilm(floorApproval: "judge_acceptable" | "generic_footage", floorText: "clean" | "unchecked") {
     const t: ProjectTimeline = emptyTimeline(1, { ...DEFAULT_FORMAT, widthPx: 320, heightPx: 180, fps: 30 });
     t.tracks = [
-      /** both carry the local provider the worker harness (ronde148) rehydrates from disk; the generic mark is `contentApproval` */
-      { kind: "VIDEO", clips: [clip(0, REAL, "judge_fit", "loc"), clip(1, GENERIC, "generic_footage", "loc")] },
+      /** both carry the local provider the worker harness (ronde148) rehydrates from disk */
+      { kind: "VIDEO", clips: [clip(0, REAL, "judge_fit", "loc"), clip(1, GENERIC, floorApproval, "loc", floorText)] },
       { kind: "VOICE", clips: [] }, { kind: "MUSIC", clips: [] }, { kind: "SFX", clips: [] },
       { kind: "CAPTIONS", captions: [{ id: "cap_0", text: "Delivered on the floor", start: 0.5, end: 3, style: DEFAULT_CAPTION_STYLE, animation: "fade" }] },
       { kind: "TEXT", texts: [] }, { kind: "GRAPHICS", texts: [] },
@@ -114,6 +122,15 @@ describe("VIDEO 650 — a film delivered on the generic floor, end to end", () =
       },
     });
     spies.forEach((sp) => sp.mockRestore());
+    return { result, uploads, logs };
+  }
+
+  /**
+   * FIX 1+2 (14 October) — a generic clip is footage like any other: it reaches a pipeline film only
+   * after the picture editor judged it for its sentence (here: acceptable) and the text check passed.
+   */
+  it("REAL FFMPEG: one real sentence, one sentence on generic footage that passed both checks — rendered, checked at 30 fps, covered, allowed, published", async () => {
+    const { result, uploads, logs } = await renderFloorFilm("judge_acceptable", "clean");
     const seen = (needle: string) => logs.filter((l) => l.includes(needle)).slice(0, 4).join("\n") || "(no line)";
     if (process.env.V650_E2E_LOG) fs.writeFileSync(process.env.V650_E2E_LOG, logs.join("\n"));
     expect(result.ok, result.ok ? "" : `${result.code}: ${result.message}`).toBe(true);
@@ -128,10 +145,21 @@ describe("VIDEO 650 — a film delivered on the generic floor, end to end", () =
     expect(rational(st.avg_frame_rate)).toBeCloseTo(30, 1);
     expect(Math.abs(Number(st.nb_frames) - Number(st.duration) * 30)).toBeLessThanOrEqual(2);
     expect((await clipHasMotion(FFMPEG, uploads[0]!)).moving).toBe(true);
-    /** the coverage line names the generic sentence as such, and the gate said it allowed it */
-    expect(logs.some((l) => l.includes("[SentenceCoverage] video=1 s0b1") && l.includes("status=covered") && l.includes("kinds=generic_footage")), seen("s0b1")).toBe(true);
-    expect(logs.some((l) => l.includes("QUALITY_NOTE GENERIC_FOOTAGE sentences=1")), seen("QUALITY_NOTE")).toBe(true);
+    /** the coverage line names the floor sentence as acceptable footage, and the gate enforced both checks */
+    expect(logs.some((l) => l.includes("[SentenceCoverage] video=1 s0b1") && l.includes("status=covered") && l.includes("kinds=acceptable_footage")), seen("s0b1")).toBe(true);
+    expect(logs.some((l) => l.includes("QUALITY_NOTE ACCEPTABLE_FOOTAGE sentences=1")), seen("QUALITY_NOTE")).toBe(true);
+    expect(logs.some((l) => l.includes("DELIVERY_GATE_PASS") && l.includes("pictureChecks=enforced")), seen("DELIVERY_GATE")).toBe(true);
     expect(logs.some((l) => l.includes("FINAL_FILE 320x180 fps=30")), seen("FINAL_FILE")).toBe(true);
     expect(logs.some((l) => l.includes("[SentenceCoverage] video=1 s0b1") && l.includes("timing=measured_silence")), seen("s0b1")).toBe(true);
+  }, 600_000);
+
+  it("REAL FFMPEG: generic footage nobody judged for its sentence — the film is NOT delivered, and the gate names the missing check", async () => {
+    const { result, uploads } = await renderFloorFilm("generic_footage", "unchecked");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("PICTURE_NOT_CHECKED");
+    expect(result.message).toContain("clip=vc_1");
+    expect(filmUploads(uploads)).toHaveLength(0);
+    expect(dbState.published).toBeNull();
   }, 600_000);
 });

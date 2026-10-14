@@ -79,48 +79,32 @@ describe("Camera Planner (Phase 4)", () => {
     expect(cam.movement).toBe("camera_hold");
   });
 
-  it("chooses tilt_up for a vertical subject in an establishing/wide video shot", () => {
-    const cam = planCameraMovement(
-      shot("wide"),
-      makeCandidate({ assetType: "video", searchQuery: "skyscraper exterior" }),
-      pacing("neutral")
-    );
-    expect(cam.movement).toBe("tilt_up");
+  /**
+   * Real footage keeps its own motion (owner's rule): the cases that used to lay a synthetic tilt,
+   * pan, push or dolly over a video clip now hold. A held last frame is kept alive at render time
+   * instead (`holdTailCamera` in timelineRenderer).
+   */
+  it.each([
+    ["wide", "skyscraper exterior", "neutral", "was tilt_up"],
+    ["establishing", "aerial view of city", "neutral", "was tilt_down"],
+    ["wide", "city skyline panorama", "neutral", "was a pan"],
+    ["close_up", "", "dramatic", "was slow_push"],
+    ["medium", "", "exciting", "was virtual_dolly"],
+    ["detail", "", "neutral", "was slow_push"],
+  ] as const)("real footage on a %s shot (%s, %s pacing) holds — %s", (shotType, searchQuery, tone) => {
+    const cam = planCameraMovement(shot(shotType), makeCandidate({ assetType: "video", searchQuery }), pacing(tone));
+    expect(cam.movement).toBe("camera_hold");
+    expect(cam.intensity).toBe(0);
+    expect(cam.reason).toContain("real footage keeps its own motion");
   });
 
-  it("chooses tilt_down for an overhead/aerial shot", () => {
-    const cam = planCameraMovement(
-      shot("establishing"),
-      makeCandidate({ assetType: "video", searchQuery: "aerial view of city" }),
-      pacing("neutral")
-    );
-    expect(cam.movement).toBe("tilt_down");
-  });
-
-  it("chooses a pan for a horizontal subject, deterministically by candidateId", () => {
-    const cam1 = planCameraMovement(
-      shot("wide"),
-      makeCandidate({ assetType: "video", searchQuery: "city skyline panorama", candidateId: "abc" }),
-      pacing("neutral")
-    );
-    expect(["pan_left", "pan_right"]).toContain(cam1.movement);
-    // Same candidateId always yields the same direction (deterministic, not random).
-    const cam2 = planCameraMovement(
-      shot("wide"),
-      makeCandidate({ assetType: "video", searchQuery: "city skyline panorama", candidateId: "abc" }),
-      pacing("neutral")
-    );
-    expect(cam2.movement).toBe(cam1.movement);
-  });
-
-  it("chooses slow_push for a dramatic close-up on video", () => {
-    const cam = planCameraMovement(shot("close_up"), makeCandidate({ assetType: "video" }), pacing("dramatic"));
-    expect(cam.movement).toBe("slow_push");
-  });
-
-  it("chooses virtual_dolly for an exciting medium shot on video", () => {
-    const cam = planCameraMovement(shot("medium"), makeCandidate({ assetType: "video" }), pacing("exciting"));
-    expect(cam.movement).toBe("virtual_dolly");
+  it("a photograph still moves, subtly: Ken Burns, a push or a pull, never more than the planner's intensity", () => {
+    for (const shotType of ["wide", "close_up", "detail", "medium"] as const) {
+      const cam = planCameraMovement(shot(shotType), makeCandidate({ assetType: "image" }), pacing("neutral", 0.4));
+      expect(cam.movement).not.toBe("camera_hold");
+      expect(cam.intensity).toBeGreaterThan(0);
+      expect(cam.intensity).toBeLessThanOrEqual(0.5);
+    }
   });
 
   it("every decision carries a non-empty reason (NO RANDOMNESS requirement)", () => {
@@ -130,17 +114,17 @@ describe("Camera Planner (Phase 4)", () => {
 
   describe("cross-beat variety (Phase 9)", () => {
     it("swaps to a documented alternate when the decision would repeat the previous beat's movement", () => {
-      const first = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral"));
+      const first = planCameraMovement(shot("detail"), makeCandidate({ assetType: "image" }), pacing("neutral"));
       expect(first.movement).toBe("slow_push");
 
-      const second = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral"), first.movement);
+      const second = planCameraMovement(shot("detail"), makeCandidate({ assetType: "image" }), pacing("neutral"), first.movement);
       expect(second.movement).not.toBe("slow_push");
       expect(second.movement).toBe("zoom_in"); // slow_push's documented alternate
       expect(second.reason).toContain("Varied from the previous beat");
     });
 
     it("does not alter the decision when it differs from the previous beat's movement", () => {
-      const cam = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral"), "pan_left");
+      const cam = planCameraMovement(shot("detail"), makeCandidate({ assetType: "image" }), pacing("neutral"), "pan_left");
       expect(cam.movement).toBe("slow_push");
       expect(cam.reason).not.toContain("Varied from the previous beat");
     });
@@ -151,15 +135,15 @@ describe("Camera Planner (Phase 4)", () => {
     });
 
     it("is backward compatible — omitting previousMovement behaves exactly as before", () => {
-      const withUndefined = planCameraMovement(shot("close_up"), makeCandidate({ assetType: "video" }), pacing("dramatic"));
-      const withNull = planCameraMovement(shot("close_up"), makeCandidate({ assetType: "video" }), pacing("dramatic"), null);
+      const withUndefined = planCameraMovement(shot("close_up"), makeCandidate({ assetType: "image" }), pacing("dramatic"));
+      const withNull = planCameraMovement(shot("close_up"), makeCandidate({ assetType: "image" }), pacing("dramatic"), null);
       expect(withUndefined).toEqual(withNull);
-      expect(withUndefined.movement).toBe("slow_push");
+      expect(withUndefined.movement).toBe("zoom_in");
     });
 
     it("preserves the original intensity when swapping to the alternate movement", () => {
-      const first = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral", 0.7));
-      const second = planCameraMovement(shot("detail"), makeCandidate({ assetType: "video" }), pacing("neutral", 0.7), first.movement);
+      const first = planCameraMovement(shot("detail"), makeCandidate({ assetType: "image" }), pacing("neutral", 0.7));
+      const second = planCameraMovement(shot("detail"), makeCandidate({ assetType: "image" }), pacing("neutral", 0.7), first.movement);
       expect(second.intensity).toBe(first.intensity);
     });
   });

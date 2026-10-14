@@ -61,7 +61,8 @@ export type GraphicStage = (typeof GRAPHIC_STAGES)[number];
  *   DROPPED_UNSUPPORTED     no component in this build draws that type
  *   DROPPED_INVALID_PAYLOAD the type is drawable and THIS graphic's payload is not — a chart with
  *                           no series, a map point with no coordinate, a text card with no words
- *   DROPPED_DISABLED        a human switched it off in the editor
+ *   DROPPED_DISABLED        switched off on the timeline: by a human in the editor, or by the
+ *                           on-screen-text director with its reason (`disabledReason`)
  *   DROPPED_NOT_TRANSLATED  the planner emitted it and no timeline element carries it
  *   DROPPED_RENDER_ERROR    the renderer had it and did not draw it
  */
@@ -132,6 +133,8 @@ export type TimelineGraphicLike = {
   data?: Record<string, unknown>;
   label?: string | null;
   disabled?: boolean;
+  /** Why it is off, when the pipeline switched it off (`directOnScreenText`); absent for an editor's switch. */
+  disabledReason?: string;
 };
 
 export type GraphicsLifecycleInput = {
@@ -232,7 +235,18 @@ export function graphicsLifecycle(input: GraphicsLifecycleInput): GraphicsLifecy
       continue;
     }
     if (onTrack.disabled) {
-      lives.push({ ...base, outcome: "DROPPED_DISABLED", detail: "switched off in the editor" });
+      /**
+       * The reason it is off, as the timeline records it. "switched off in the editor" was written for
+       * every disabled graphic, so a graphic the on-screen-text director turned off (`too_much_text_at_once`,
+       * `graphic_budget_exceeded`, …) was reported as a person's choice and its cause never reached the log.
+       */
+      lives.push({
+        ...base,
+        outcome: "DROPPED_DISABLED",
+        detail: onTrack.disabledReason?.trim()
+          ? `switched off by the on-screen-text director: ${onTrack.disabledReason.trim()}`
+          : "switched off in the editor",
+      });
       continue;
     }
 
@@ -396,9 +410,13 @@ export function formatGraphicsLifecycle(
   for (const d of GRAPHIC_DROPS) {
     if (c[d] === 0) continue;
     const example = lifecycle.lives.find((l) => l.outcome === d);
+    /** Every reason a drop had, counted, so one example never stands for a mix of causes. */
+    const reasons = new Map<string, number>();
+    for (const l of lifecycle.lives) if (l.outcome === d && l.detail) reasons.set(l.detail, (reasons.get(l.detail) ?? 0) + 1);
     lines.push(
       `[Graphics] lifecycle render=${renderId} ${d}=${c[d]} — ` +
-        `e.g. beat ${example?.beatId} "${example?.plannedType}": ${example?.detail ?? "no detail"}`
+        `e.g. beat ${example?.beatId} "${example?.plannedType}": ${example?.detail ?? "no detail"}` +
+        (reasons.size > 1 ? ` (${[...reasons.entries()].map(([r, n]) => `${n}× ${r}`).join("; ")})` : "")
     );
   }
   if (lifecycle.unaccounted.length > 0) {

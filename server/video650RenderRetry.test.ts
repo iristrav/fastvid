@@ -111,6 +111,8 @@ function clip(i: number, url: string, approval: "judge_fit" | "none" = "judge_fi
       mediaUrl: url,
       archiveAssetId: 59000 + i,
       ...(approval === "judge_fit" ? { contentApproval: "judge_fit" as const } : {}),
+      /** FIX 1+2 — the pipeline writes the text check on every picture it places; this one passed it. */
+      textCheck: "clean" as const,
     },
     sourceIn: 0,
     sourceOut: 3,
@@ -258,13 +260,23 @@ describe("VIDEO 650 — one bounded render retry after a technical refusal", () 
    * problem now: the film is delivered on the first render. Still never retried — no second
    * encode can change the document.
    */
-  it("a finding about the TIMELINE (a sentence without approved footage) is never retried, and the film is delivered", async () => {
+  /**
+   * FIX 1+2 (14 October) — a film the pipeline made may not be delivered with a picture the picture
+   * editor never approved for its sentence. It is a finding about the TIMELINE, so it is still never
+   * retried: one render, no upload, the job fails once and names the missing check.
+   */
+  it("a finding about the TIMELINE (a sentence without approved footage) is never retried, and the film is NOT delivered", async () => {
     const { result, renderCalls, uploads } = await runWith({
       timeline: goodTimeline({ uncoveredSentence: true }),
       checks: ["real", "real"],
     });
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe(RENDER_ERROR.RENDER_FAILED);
+    expect(result.message).toContain("PICTURE_NOT_CHECKED");
+    expect(result.message).toContain("clip=vc_1");
     expect(renderCalls).toHaveLength(1);
-    expect(filmUploads(uploads)).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(0);
+    expect(dbState.finishCalls).toBe(1);
   }, 420_000);
 });

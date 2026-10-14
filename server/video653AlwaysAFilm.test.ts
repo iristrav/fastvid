@@ -232,17 +232,25 @@ describe("5. real footage the picture editor did not approve comes before generi
     }
   });
 
-  it("wiring: remembered at the editor's refusal and at UNREVIEWED, forgotten at the hard mismatch, placed before generic footage, never marked approved", () => {
+  /**
+   * FIX 1+2 (14 October) — remembered as before; but a remembered candidate is placed only after it
+   * passed both mandatory checks for its sentence (`firstCheckedFallback` + `check`), so it may now
+   * be placed approved. A refusal on record fails that check for free.
+   */
+  it("wiring: remembered at the editor's refusal and at UNREVIEWED, forgotten at the hard mismatch, checked before it is placed, before generic footage", () => {
     expect(PIPE).toContain('registerRejection(dedup.rejections, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);\n        /** VIDEO 653 — kept as this sentence\'s last real picture before the colour field. */\n        noteUnjudgedFallback(dedup, sceneIndex, beatIndex, p);');
     expect(PIPE).toContain("UNREVIEWED: no verdict on this sentence, so it stays a candidate");
     expect(PIPE).toMatch(/UNREVIEWED: no verdict on this sentence[\s\S]{0,300}noteUnjudgedFallback\(dedup, sceneIndex, beatIndex, p\);/);
     expect(PIPE).toMatch(/"hard_mismatch", sourceQuery\);\s*forgetUnjudgedFallback\(dedup, sceneIndex, beatIndex, p\);/);
     const place = PIPE.slice(PIPE.indexOf("export async function placeGenericMovingFallbacks("));
-    const unjudged = place.indexOf("const unjudged = await pickUnjudgedFallback(dedup, si, beat.index);");
+    const unjudged = place.indexOf("const unjudged = await firstCheckedFallback(");
     const generic = place.indexOf("const decision = genericFootageDecision(");
     expect(unjudged).toBeGreaterThan(0);
     expect(unjudged).toBeLessThan(generic);
     const block = place.slice(unjudged, generic);
+    expect(block).toContain("dedup.unjudgedFallbacks?.get(`${si}:${beat.index}`)");
+    expect(block).toContain("(p) => check(scene, beat, p, UNJUDGED_FOOTAGE_FALLBACK)");
+    /** never passed off as generic footage, and no approval is written here by hand — only the check writes it */
     expect(block).not.toMatch(/markGenericFootageForBeat|judge_fit|contentApproval/);
   });
 });

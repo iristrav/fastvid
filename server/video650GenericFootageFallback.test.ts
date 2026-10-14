@@ -265,7 +265,7 @@ describe("VIDEO 650 — the pipeline places generic footage and names it on the 
 
   it("the pass runs after the generated-image pass, before the film-without-picture refusal", () => {
     const gen = PIPELINE.indexOf("await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);");
-    const generic = PIPELINE.indexOf("await placeGenericMovingFallbacks(scenes, sceneVisualResults, visualDedup, workDir);");
+    const generic = PIPELINE.indexOf("await placeGenericMovingFallbacks(scenes, sceneVisualResults, visualDedup, workDir, topicContext);");
     const refusal = PIPELINE.indexOf("const firstEmptySi = filmWithoutPictureRefusal(");
     expect(gen).toBeGreaterThan(0);
     expect(generic).toBeGreaterThan(gen);

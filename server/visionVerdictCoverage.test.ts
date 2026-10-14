@@ -71,7 +71,8 @@ describe("the vision gate's answer is counted wherever it is asked", () => {
     /** Three — `generateGuaranteedBeatClip` and `beatClipPassesVisionGate` (only reached from the deleted curated-only `adoptArchiveBeatClip`) were deleted. */
     /** The scene pool and funnel routes left when the three candidate systems became one. */
     /** RONDE 656 — and the motion-graphic still route, which pushed a card past resolveBeatClip. */
-    expect(wrapped.length, "the gate's call sites are not all wrapped").toBe(1);
+    /** FIX 1+2 — plus `checkPictureForSentence`, the mandatory check every placed picture passes. */
+    expect(wrapped.length, "the gate's call sites are not all wrapped").toBe(2);
   });
 
   /** And the wrapper is the ONLY thing that calls the gate itself. */

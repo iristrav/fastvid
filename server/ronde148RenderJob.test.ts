@@ -165,6 +165,8 @@ function clip(i: number, url: string): TimelineVideoClip {
       archiveAssetId: 59000 + i,
       /** HARD QUALITY GATE — a deliverable film: the picture editor approved each clip for its sentence. */
       contentApproval: "judge_fit",
+      /** FIX 1+2 — and the text check looked at it: a pipeline timeline records both checks on every picture. */
+      textCheck: "clean",
     },
     /** HARD QUALITY GATE — the clip's own seconds of source (the sources are 4 s), so it is not a held frame. */
     sourceIn: 0,

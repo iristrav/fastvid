@@ -54,6 +54,10 @@ export type DeliveryClipFact = {
   fromArchive: boolean;
   /** Placeholder, colour card, text overlay — anything that depicts nothing. */
   isPlaceholder: boolean;
+  /** FIX 1+2 — the picture editor's mark for this clip's sentence, as the timeline carries it. */
+  contentApproval?: string | null;
+  /** FIX 1+2 — the on-screen-text check's result for this clip, as the timeline carries it. */
+  textCheck?: string | null;
 };
 
 /** What the delivered file itself was measured to be. Never taken from a database row. */
@@ -137,6 +141,13 @@ export type DeliveryGateInput = {
   sentenceCoverage?: SentenceCoverageReport | null;
   /** HARD QUALITY GATE — the MP4 placeholder scan. `null`: not run or unreadable — fail closed. */
   placeholderCheck?: PlaceholderCheckFacts | null;
+  /**
+   * FIX 1+2 — a film the PIPELINE assembled: every picture in it must show both mandatory checks
+   * (`contentApproval` judge_fit/judge_acceptable AND `textCheck` clean/overlay), and every spoken
+   * sentence must have a checked picture. Absent marks fail closed. Off for a render the owner asked
+   * for from the editor, whose pictures are the owner's own choice.
+   */
+  enforcePictureChecks?: boolean;
 };
 
 export type DeliveryGateFailureCode =
@@ -155,7 +166,11 @@ export type DeliveryGateFailureCode =
   | "SENTENCE_COVERAGE_UNPROVEN"
   | "CHAPTER_CARD_PLACEHOLDER"
   | "PLACEHOLDER_IN_FILE"
-  | "PLACEHOLDER_CHECK_INCOMPLETE";
+  | "PLACEHOLDER_CHECK_INCOMPLETE"
+  /** FIX 1+2 — a picture in a pipeline film without both mandatory checks. Blocking. */
+  | "PICTURE_NOT_CHECKED"
+  /** FIX 1+2 — a spoken sentence of a pipeline film with no checked picture at all. Blocking. */
+  | "SENTENCE_WITHOUT_CHECKED_PICTURE";
 
 export type DeliveryGateVerdict =
   | {
@@ -196,6 +211,21 @@ export const QUALITY_ONLY_DELIVERY_CODES: ReadonlySet<DeliveryGateFailureCode> =
 ]);
 
 /* ═══════════════════════ the gate ═══════════════════════ */
+
+/**
+ * FIX 1+2 — which mandatory check this clip cannot show, or null when it shows both. A clip that
+ * depicts nothing (`isPlaceholder`) is not a picture and is left to the placeholder rules.
+ */
+export function pictureCheckMissing(clip: Pick<DeliveryClipFact, "isPlaceholder" | "contentApproval" | "textCheck">): string | null {
+  if (clip.isPlaceholder) return null;
+  const content = clip.contentApproval === "judge_fit" || clip.contentApproval === "judge_acceptable";
+  const text = clip.textCheck === "clean" || clip.textCheck === "overlay";
+  if (content && text) return null;
+  const parts: string[] = [];
+  if (!content) parts.push(`no approval by the picture editor for its sentence (contentApproval=${clip.contentApproval ?? "absent"})`);
+  if (!text) parts.push(`no passed text check (textCheck=${clip.textCheck ?? "absent"})`);
+  return parts.join("; ");
+}
 
 export const DELIVERY_GATE_PASS = "DELIVERY_GATE_PASS";
 /** §22 — one line per clip, naming the archive asset the render actually used. */
@@ -274,6 +304,25 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
       failures.push({
         code: "CLIP_UNRESOLVED",
         detail: `clip=${clip.clipId} provider=${clip.provider} produced no readable file`,
+      });
+    }
+    /** FIX 1+2 — both mandatory checks, read from the timeline's own marks; a missing mark fails. */
+    if (input.enforcePictureChecks) {
+      const missing = pictureCheckMissing(clip);
+      if (missing) {
+        failures.push({
+          code: "PICTURE_NOT_CHECKED",
+          detail: `clip=${clip.clipId} provider=${clip.provider} ${missing}`,
+        });
+      }
+    }
+  }
+  if (input.enforcePictureChecks && input.sentenceCoverage) {
+    for (const row of input.sentenceCoverage.sentences) {
+      if (row.status !== "uncovered") continue;
+      failures.push({
+        code: "SENTENCE_WITHOUT_CHECKED_PICTURE",
+        detail: `${row.key} "${(row.text ?? "").slice(0, 60)}": no picture passed both mandatory checks for this sentence`,
       });
     }
   }
@@ -394,7 +443,8 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
   const summary =
     `clips=${input.clips.length} fromArchive=${fromArchive} route=${input.route} ` +
     `timeline=${input.timelineExists ? "present" : "absent"} ` +
-    `checks=${input.assetsOnly ? "assets" : "assets+file"}`;
+    `checks=${input.assetsOnly ? "assets" : "assets+file"}` +
+    (input.enforcePictureChecks ? ` pictureChecks=enforced` : "");
 
   const blocking = failures.filter((f) => !QUALITY_ONLY_DELIVERY_CODES.has(f.code));
   const qualityProblems = failures.filter((f) => QUALITY_ONLY_DELIVERY_CODES.has(f.code));

@@ -39,6 +39,8 @@ export type AdoptionRecordFacts = {
   archiveAssetId?: number;
   /** HARD QUALITY GATE — the picture editor's approval of this clip for its sentence, when the render knows it. */
   contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage";
+  /** FIX 1+2 — the on-screen-text check's result for this clip, when the render knows it. */
+  textCheck?: "clean" | "overlay" | "fills_picture" | "unchecked";
 };
 
 /**
@@ -167,6 +169,7 @@ export function identityFromAdoption(
   if (providerAssetId) identity.providerAssetId = providerAssetId;
   if (facts.archiveAssetId != null) identity.archiveAssetId = facts.archiveAssetId;
   if (facts.contentApproval) identity.contentApproval = facts.contentApproval;
+  if (facts.textCheck) identity.textCheck = facts.textCheck;
 
   /**
    * `sourceUrl` from the ledger is the provider's MEDIA url — `videoFile.link` for Pexels,

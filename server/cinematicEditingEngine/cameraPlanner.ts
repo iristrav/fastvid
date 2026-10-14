@@ -16,27 +16,6 @@
 import type { CandidateAsset } from "../visualMatchingV2/types";
 import type { CameraInstruction, CameraMovementType, PacingProfile, ShotInstruction } from "./types";
 
-const VERTICAL_SIGNALS = ["tower", "building", "skyscraper", "mountain", "cliff", "monument"];
-const HORIZONTAL_SIGNALS = ["skyline", "landscape", "panorama", "coastline", "horizon"];
-const OVERHEAD_SIGNALS = ["aerial", "overhead", "birds eye", "bird's eye", "from above"];
-
-function candidateSearchText(candidate: CandidateAsset): string {
-  return [candidate.searchQuery, candidate.title ?? "", candidate.description ?? ""].join(" ").toLowerCase();
-}
-
-function textMatchesAny(text: string, signals: string[]): string | null {
-  return signals.find((s) => text.includes(s)) ?? null;
-}
-
-/** Deterministic pan direction, varied across candidates for visual variety — same seeded-pick
- *  idea as montageTransitions.ts's pickMontageXfadeTransition, just hashed on candidateId
- *  instead of scene/join index since this planner doesn't see a join index. */
-function panDirection(candidateId: string): "pan_left" | "pan_right" {
-  let hash = 0;
-  for (const ch of candidateId) hash = (hash * 31 + ch.charCodeAt(0)) % 997;
-  return hash % 2 === 0 ? "pan_left" : "pan_right";
-}
-
 function hold(reason: string): CameraInstruction {
   return { movement: "camera_hold", intensity: 0, reason };
 }
@@ -57,7 +36,6 @@ function decideCameraMovement(
   candidate: CandidateAsset,
   pacing: PacingProfile
 ): CameraInstruction {
-  const searchText = candidateSearchText(candidate);
   const isStill = candidate.assetType === "image";
 
   if (pacing.tone === "educational" && ["close_up", "detail", "extreme_close_up"].includes(shot.shotType)) {
@@ -88,48 +66,13 @@ function decideCameraMovement(
     return moved("ken_burns", pacing.movementIntensity, "Still image with no stronger shot-type signal — Ken Burns is the safe default over a static frame.");
   }
 
-  // Video clip from here on.
-  if (["reaction", "cutaway", "b_roll"].includes(shot.shotType)) {
-    return hold(`${shot.shotType} footage already carries its own incidental motion — held static rather than layering synthetic movement on top.`);
-  }
-
-  const overhead = textMatchesAny(searchText, OVERHEAD_SIGNALS);
-  if (overhead && ["establishing", "wide"].includes(shot.shotType)) {
-    return moved("tilt_down", pacing.movementIntensity, `Candidate's search text matches "${overhead}" — a downward tilt matches an overhead/aerial framing.`);
-  }
-
-  if (["establishing", "wide"].includes(shot.shotType)) {
-    const vertical = textMatchesAny(searchText, VERTICAL_SIGNALS);
-    if (vertical) {
-      return moved("tilt_up", pacing.movementIntensity, `Candidate's search text matches "${vertical}" — a vertical subject reads best with an upward tilt.`);
-    }
-    const horizontal = textMatchesAny(searchText, HORIZONTAL_SIGNALS);
-    if (horizontal) {
-      const dir = panDirection(candidate.candidateId);
-      return moved(dir, pacing.movementIntensity, `Candidate's search text matches "${horizontal}" — a horizontal ${dir === "pan_left" ? "left" : "right"} pan matches a wide horizontal subject.`);
-    }
-    return moved("camera_drift", pacing.movementIntensity, `${shot.shotType} video shot with no directional cue — a subtle drift adds life without implying a direction the footage doesn't have.`);
-  }
-
-  if (["detail", "extreme_close_up"].includes(shot.shotType)) {
-    return moved("slow_push", pacing.movementIntensity, `${shot.shotType} shot — a slow push draws the viewer into the detail.`);
-  }
-
-  if (shot.shotType === "close_up") {
-    if (pacing.tone === "dramatic") {
-      return moved("slow_push", pacing.movementIntensity, "Dramatic pacing on a close-up — a slow push adds gravity to the moment.");
-    }
-    if (pacing.tone === "exciting") {
-      return moved("zoom_in", pacing.movementIntensity + 0.1, "Exciting pacing on a close-up — a quicker push-in adds emphasis.");
-    }
-    return hold("Neutral/educational pacing on a close-up — held static keeps the subject's expression clear and unfussy.");
-  }
-
-  if (shot.shotType === "medium" && pacing.tone === "exciting") {
-    return moved("virtual_dolly", pacing.movementIntensity, "Exciting pacing on an otherwise static medium shot — a virtual dolly adds energy the footage alone doesn't have.");
-  }
-
-  return hold(`${shot.shotType} video shot with no signal favoring movement — held static is the safe documentary default.`);
+  /**
+   * Video clip from here on. Real footage keeps its own motion: no synthetic pan, tilt, push or
+   * dolly is laid over it, whatever the shot type or pacing. A shot whose file is shorter than its
+   * slot is kept alive at render time instead (`timelineRenderer`, `holdTailCamera`), so the held
+   * last frame never stands still.
+   */
+  return hold(`${shot.shotType} video shot — real footage keeps its own motion; no synthetic camera movement is added.`);
 }
 
 /** Phase 9: each of `decideCameraMovement`'s branches picks the single best movement for its

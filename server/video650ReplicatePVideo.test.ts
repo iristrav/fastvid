@@ -569,6 +569,6 @@ describe("the pipeline: order, caps before requests, the archive as the duplicat
   it("without Replicate the other fallbacks stay: the still, generic footage and the card are untouched by the rung", () => {
     expect(PIPE).toContain("if (video) return video;");
     expect(PIPE).toContain("const base = `scene_${sceneIndex}_genimg_b${beat.index}`;");
-    expect(PIPE).toContain("await placeGenericMovingFallbacks(scenes, sceneVisualResults, visualDedup, workDir);");
+    expect(PIPE).toContain("await placeGenericMovingFallbacks(scenes, sceneVisualResults, visualDedup, workDir, topicContext);");
   });
 });

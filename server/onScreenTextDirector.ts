@@ -34,6 +34,7 @@
  */
 import type { ProjectTimeline, TimelineGraphic, TimelineText } from "./projectTimeline";
 import { graphicAnimationFor, readGeoPoint } from "./graphicsVocabulary";
+import { graphicOnScreenWindow, timelineWordTiming } from "./remotionProps";
 
 export const MIN_TEXT_ON_SCREEN_SEC = 2;
 export const MAX_TEXTS_AT_ONCE = 2;
@@ -164,6 +165,24 @@ function keyFor(kind: Kind, label: string): string {
 const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }): boolean =>
   a.start < b.end && b.start < a.end;
 
+type Span = { start: number; end: number };
+
+/**
+ * Where an element is really on screen. A graphic with an anchor word is drawn from the moment the
+ * voice says that word (`graphicOnScreenWindow`, the renderer's own function), not from its planned
+ * start at the sentence's beginning. A year, a name and a figure planned for one sentence used to be
+ * judged as three things at once and the figure, said seconds later, was switched off as
+ * `too_much_text_at_once` while nothing else was on screen beside it. A text, or a graphic with no
+ * anchor or no word timing, keeps its planned span exactly.
+ */
+function onScreenSpan(timeline: ProjectTimeline, words: ReturnType<typeof timelineWordTiming>): (e: { track: "text" | "graphic"; el: TimelineText | TimelineGraphic }) => Span {
+  return (e) => {
+    if (e.track !== "graphic" || typeof (e.el as TimelineGraphic).data?.anchorWord !== "string" || !words.length) return e.el;
+    const w = graphicOnScreenWindow(timeline, e.el as TimelineGraphic, words);
+    return { start: w.startSec, end: w.endSec };
+  };
+}
+
 function switchOff(e: Element, reason: string, out: TextDirection): void {
   e.el.disabled = true;
   e.el.disabledReason = reason;
@@ -221,6 +240,8 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
     out.converted.push(`${g.id} map_point → location_card (${place})`);
   }
 
+  /** Rule 6 judges "at the same time" on where each element is really on screen. */
+  const span = onScreenSpan(timeline, timelineWordTiming(timeline));
   const elements: Element[] = [
     ...texts
       .filter((t) => !t.disabled && t.text.trim())
@@ -369,7 +390,7 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
       accepted.push(e);
       continue;
     }
-    const concurrent = accepted.filter((a) => overlaps(a.el, e.el));
+    const concurrent = accepted.filter((a) => overlaps(span(a), span(e)));
     if (concurrent.some((a) => a.region === e.region && (a.track === "text" || e.track === "text"))) {
       switchOff(e, "same_place_same_time", out);
       continue;

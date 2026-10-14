@@ -193,7 +193,7 @@ import type { TimelineGraphic } from "./projectTimeline";
 import { type StillStyleContext } from "./motionGraphicsEngine";
 import { PipelineStepTiming, recordPipelineTiming, timePipelineStep } from "./pipelineStepTiming";
 import { type BeatGeoRegion } from "./vidrushQuality";
-import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, onScreenTextRefusesBeforeVision, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, keepGeneratedForBeat, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveAsLastResort, reprieveBeatClip, softMismatchCandidatesForBeat, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
+import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, onScreenTextRefusesBeforeVision, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveAsLastResort, reprieveBeatClip, softMismatchCandidatesForBeat, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
 import type { RejectionRegistry } from "./rejectionRegistry";
 import { registerRejection, createRejectionRegistry, beatRejectCount, beatRejectReasons, noteRepeatedRefusal } from "./rejectionRegistry";
 // RONDE 70: one funnel line per beat, for every beat. Counting only — see beatOutcomeAudit.ts.
@@ -211,6 +211,7 @@ import {
   generatedImagePrompt,
   generatedStillSec,
   imageServiceStandingDown,
+  pictureEditorUnavailableReason,
   stillImageGenerator,
 } from "./generatedImageFallback";
 import {
@@ -351,6 +352,17 @@ import {
 } from "./renderLock";
 import { dbRenderLockStore, dbYoutubeSearchBudgetStore } from "./db";
 import { newRenderId } from "./renderCorrelation";
+import {
+  MANDATORY_CHECKS,
+  contentCheckFromDecision,
+  formatMandatoryCheck,
+  removeClipsAt,
+  runMandatoryChecks,
+  textCheckFromVerdict,
+  type ContentCheck,
+  type MandatoryCheckOutcome,
+  type TextCheck,
+} from "./mandatoryPictureChecks";
 import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, maxBeatImageJudgementsPerRender, type BeatImageGateState } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
 import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, grantLastLookAllowance, maxRelevanceLooksPerBeat, pictureJudgedOnBeat, youtubeForLastLook, giveLastLookTo, isYoutubeContentKey, pictureLookedAtOnBeat, youtubeLookedAtOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
@@ -8385,16 +8397,42 @@ export async function generateMissingBeatImages(
         console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — the image service refuses this account; the sentences keep their fallbacks`);
         return;
       }
+      /** VIDEO 652 — nobody can approve a generated picture now, so none is paid for. */
+      const noJudge = pictureEditorUnavailableReason({
+        visionPipelineUnavailable: visionPipelineIsUnavailable(),
+        askImpossible: dedup.beatImageGate?.askImpossible === true,
+      });
+      if (noJudge) {
+        console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — ${noJudge}; nothing is generated, the sentences keep their fallbacks`);
+        return;
+      }
       /**
-       * VIDEO 658 — no approval is needed: a generated picture is always used for its sentence
-       * (`keepGeneratedForSentence`). The stops VIDEO 649/651/652 put here (the picture editor
-       * unreachable, the sentence's looks spent) only existed because an unapproved picture was
-       * thrown away after it was paid for; now it is placed, so they would only cost the sentence
-       * its picture.
+       * VIDEO 649/651 — this sentence's looks are spent: `adoptClip` stops before the picture editor
+       * (`[BeatShortlist] … stopped looking`), so a generated picture would be paid for and never
+       * looked at. 649 s0b0 and 651 s1b0 (twice) were made and refused exactly that way.
+       *
+       * FIX 1+2 (14 October) — this stop is back. A generated picture, like every other picture,
+       * reaches the film only with the picture editor's approval AND a text check
+       * (`runMandatoryChecks`); 031b17a's "always used" is withdrawn.
        */
+      if (beatShortlistExhausted(dedup.beatShortlist, si, beat.index)) {
+        console.log(
+          `[${GENERATED_IMAGE_FALLBACK}] s${scene.index}b${beat.index} not generated — the sentence's ` +
+            `${maxShortlistPerBeat()} looks are spent, so nobody could approve a generated picture`
+        );
+        continue;
+      }
       const clip = await fetchBeatGeneratedImage(beat, scene, workDir, si, dedup, videoTitle, GENERATED_IMAGES_PER_FILM - made);
       if (!clip) continue;
       made++;
+      /**
+       * FIX 1+2 — the picture editor approved it at the push; the text check looks at it here, before
+       * it stands under its sentence (a generated picture can carry garbled lettering).
+       */
+      if (!(await checkPictureForSentence(dedup, scene, beat, clip, workDir, videoTitle, GENERATED_IMAGE_FALLBACK)).pass) {
+        console.log(`[${GENERATED_IMAGE_FALLBACK}] s${scene.index}b${beat.index} generated, but it did not pass both mandatory checks — not used`);
+        continue;
+      }
       const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
       target.clips.push(clip);
       target.beatDurations.push(generatedStillSec(beat));
@@ -8480,6 +8518,202 @@ async function firstUsableFallback(
   return null;
 }
 
+/* ═══════════════════════ FIX 1+2 — the two mandatory checks, for every route ═══════════════════════ */
+
+/**
+ * The on-screen-text verdicts of this render, per picture (content key). Written where a text check
+ * really looked — the adopt loop's own check and `checkPictureForSentence` — never for an unanswered
+ * check, so an unchecked picture is asked again rather than remembered as clean.
+ */
+const textChecksByRender = new WeakMap<object, Map<string, TextCheck>>();
+
+export function noteTextCheck(dedup: object, contentKey: string, text: TextCheck): void {
+  if (!contentKey || text === "unchecked") return;
+  const map = textChecksByRender.get(dedup) ?? new Map<string, TextCheck>();
+  textChecksByRender.set(dedup, map);
+  map.set(contentKey, text);
+}
+
+export function textCheckForClip(dedup: object, contentKey: string): TextCheck | null {
+  return (contentKey && textChecksByRender.get(dedup)?.get(contentKey)) || null;
+}
+
+/** The picture editor's answer on record for THIS picture under THIS sentence — never another sentence's. */
+export function recordedContentForSentence(
+  dedup: Pick<VisualDedupState, "beatRelevance">,
+  sceneIndex: number,
+  beatIndex: number,
+  clipPath: string,
+  contentKey: string
+): ContentCheck {
+  if (pictureApprovedForBeat(dedup, sceneIndex, beatIndex, contentKey)) return "fit";
+  if (pictureAcceptableForBeat(dedup, sceneIndex, beatIndex, contentKey)) return "acceptable";
+  const ledger = dedup.beatRelevance;
+  const entry =
+    ledger?.byBeat.get(beatRelevanceBeatKey(sceneIndex, beatIndex, "path", clipPath)) ??
+    (contentKey ? ledger?.byBeat.get(beatRelevanceBeatKey(sceneIndex, beatIndex, "content", contentKey)) : undefined);
+  return contentCheckFromDecision(entry?.decision);
+}
+
+/** The colour field is not a picture: it is never judged, and the delivery gate refuses a film that holds it. */
+function isSyntheticPlaceholderClip(dedup: VisualDedupState, clipPath: string): boolean {
+  return (
+    path.basename(clipPath).includes(`__pid_${SYNTHETIC_PLACEHOLDER_PROVIDER}`) ||
+    dedup.sourcingCache?.lineage?.providerFor(clipPath, clipContentKey(clipPath)) === SYNTHETIC_PLACEHOLDER_PROVIDER
+  );
+}
+
+/** Below this much render time, no new look is started for a mandatory check (the picture then fails). */
+const MANDATORY_LOOK_MIN_MS = 30_000;
+
+/**
+ * FIX 1+2 — the one question every picture answers before it may stand under a sentence: did the
+ * picture editor approve it for THIS sentence, and did the text check look at it? See
+ * mandatoryPictureChecks.ts for the rule. A recorded answer is reused (the relevance ledger per clip
+ * and sentence, this render's text verdicts, an archive row's own clean text verdict, the shared text
+ * memo); only what is unknown is asked. A new look is taken past the sentence's own look ceiling
+ * (`finalSay` — this picture is about to be placed) but never past the render's ceiling or its clock.
+ */
+export async function checkPictureForSentence(
+  dedup: VisualDedupState,
+  scene: Pick<Scene, "index" | "text">,
+  beat: Pick<SceneBeat, "index" | "text">,
+  clipPath: string,
+  workDir: string,
+  videoTitle: string | undefined,
+  route: string
+): Promise<MandatoryCheckOutcome> {
+  const contentKey = clipContentKey(clipPath);
+  const outcome = await runMandatoryChecks({
+    recordedContent: () => recordedContentForSentence(dedup, scene.index, beat.index, clipPath, contentKey),
+    recordedText: () => {
+      const known = textCheckForClip(dedup, contentKey);
+      if (known) return known;
+      /** An archive row carries its own text verdict from its intake: 0 is "looked, no text". */
+      const archiveId = dedup.sourcingCache?.lineage?.resolve(clipPath, contentKey)?.archiveAssetId;
+      if (archiveId != null) {
+        for (const rows of dedup.archiveAssetsCache?.values() ?? []) {
+          const row = rows.find((r) => r.id === archiveId);
+          if (row) return row.hasBakedEditText === 0 ? "clean" : null;
+        }
+      }
+      return null;
+    },
+    checkText: async () => {
+      const verdict = await judgeOnScreenText({
+        path: clipPath,
+        mimeType: "video/mp4",
+        memoKey: onScreenTextVerdictKey(dedup, clipPath, contentKey),
+      }).catch(() => null);
+      const text = textCheckFromVerdict(verdict);
+      noteTextCheck(dedup, contentKey, text);
+      return text;
+    },
+    judgeContent: async () => {
+      const gate = dedup.beatImageGate;
+      if (!gate || gate.askImpossible || visionPipelineIsUnavailable()) return "not_judged";
+      if ((gate.judgementAttempts ?? 0) >= maxBeatImageJudgementsPerRender()) return "not_judged";
+      const remaining = get_activeBudgetTracker()?.remainingMs?.();
+      if (remaining != null && remaining < MANDATORY_LOOK_MIN_MS) return "not_judged";
+      const decision = await judgeBeatClipRelevance(dedup, scene.index, beat.index, {
+        clipPath,
+        contentKey,
+        ctx: beatVisualContext(beat, scene, videoTitle),
+        workDir,
+        state: gate,
+        ledger: dedup.beatRelevance,
+        route,
+        finalSay: true,
+      });
+      const content = contentCheckFromDecision(decision);
+      if (content === "fit") noteApprovedKeyForBeat(dedup, scene.index, beat.index, contentKey);
+      else if (content === "acceptable") markAcceptableForBeat(dedup, scene.index, beat.index, contentKey);
+      return content;
+    },
+  });
+  /**
+   * What the checks established is what the timeline records for this picture (`textCheckForClip`,
+   * `pictureApprovedForBeat`/`pictureAcceptableForBeat`). A pass on a verdict read from elsewhere —
+   * an archive row's own text verdict, the relevance ledger's entry — was recorded nowhere the
+   * timeline reads, so a checked picture reached the delivery gate as `textCheck=unchecked`.
+   */
+  if (outcome.pass) {
+    noteTextCheck(dedup, contentKey, outcome.text);
+    if (outcome.content === "fit") noteApprovedKeyForBeat(dedup, scene.index, beat.index, contentKey);
+    else if (outcome.content === "acceptable" && !pictureApprovedForBeat(dedup, scene.index, beat.index, contentKey)) {
+      markAcceptableForBeat(dedup, scene.index, beat.index, contentKey);
+    }
+  }
+  const tally = (dedup.mandatoryCheckTally ??= { checked: 0, passed: 0, failed: 0, askedText: 0, askedJudge: 0 });
+  tally.checked++;
+  if (outcome.pass) tally.passed++;
+  else tally.failed++;
+  if (outcome.askedText) tally.askedText++;
+  if (outcome.askedContent) tally.askedJudge++;
+  console.log(formatMandatoryCheck(`s${scene.index}b${beat.index}`, path.basename(clipPath), route, outcome));
+  return outcome;
+}
+
+/** How many unchecked candidates one sentence may have checked on an emergency rung. */
+const MANDATORY_FALLBACK_TRIES = 3;
+
+/** The first candidate that is technically usable AND passes both checks for the sentence; refused ones cost nothing. */
+async function firstCheckedFallback(
+  paths: readonly string[],
+  dedup: VisualDedupState,
+  checks: FallbackFileChecks,
+  passes: (clipPath: string) => Promise<boolean>
+): Promise<{ path: string; durationSec: number } | null> {
+  let tried = 0;
+  for (const p of paths) {
+    if (tried >= MANDATORY_FALLBACK_TRIES) break;
+    const usable = await firstUsableFallback([p], dedup, checks);
+    if (!usable) continue;
+    tried++;
+    if (await passes(p)) return usable;
+  }
+  return null;
+}
+
+/**
+ * FIX 1+2 — the safety net over every route: each picture placed for a sentence is put to
+ * `checkPictureForSentence`, and one that fails is taken out of the film (logged with its reason).
+ * Run before the emergency rungs (so a sentence that loses its picture can get a checked one) and
+ * once more after them (nothing should fail there; if something does, it leaves rather than ships).
+ */
+export async function enforceMandatoryChecks(
+  scenes: Scene[],
+  sceneVisualResults: Array<SceneVisualsResult | undefined>,
+  dedup: VisualDedupState,
+  workDir: string,
+  videoTitle: string | undefined,
+  stage: string
+): Promise<{ checked: number; removed: number }> {
+  const tally = { checked: 0, removed: 0 };
+  for (let si = 0; si < scenes.length; si++) {
+    const scene = scenes[si]!;
+    const vr = sceneVisualResults[si];
+    if (scene.isChapterCard || !vr) continue;
+    const beats = dedup.sceneBeatsBySceneIndex.get(scene.index) ?? vr.beats ?? [];
+    const failed = new Set<number>();
+    for (let i = 0; i < vr.clips.length; i++) {
+      const clipPath = vr.clips[i]!;
+      const beat = beats.find((b) => b.index === vr.clipBeatIndices?.[i]);
+      if (!beat || isPipelineFallbackClip(clipPath) || isSyntheticPlaceholderClip(dedup, clipPath)) continue;
+      tally.checked++;
+      const outcome = await checkPictureForSentence(dedup, scene, beat, clipPath, workDir, videoTitle, stage);
+      if (!outcome.pass) failed.add(i);
+    }
+    if (!failed.size) continue;
+    for (const p of removeClipsAt(vr, (_c, _b, i) => failed.has(i))) {
+      tally.removed++;
+      console.warn(`[${MANDATORY_CHECKS}] ${stage} removed ${path.basename(p)} from scene ${scene.index} — it did not pass both mandatory checks`);
+    }
+  }
+  console.log(`[${MANDATORY_CHECKS}] ${stage} TOTAL checked=${tally.checked} removed=${tally.removed}`);
+  return tally;
+}
+
 /** VIDEO 655 — the log name of a picture about the right thing, refused for not showing the exact moment, placed as the last resort. */
 export const RELATED_FOOTAGE_FALLBACK = "RELATED_FOOTAGE_FALLBACK";
 
@@ -8497,13 +8731,26 @@ export async function pickSoftMismatchFallback(
   return firstUsableFallback(softMismatchCandidatesForBeat(dedup.beatRelevance, sceneIndex, beatIndex), dedup, checks);
 }
 
+/** FIX 1+2 — does this picture pass both mandatory checks for this sentence? Injected so the rungs can be tested without a model. */
+export type SentencePictureCheck = (scene: Scene, beat: SceneBeat, clipPath: string, route: string) => Promise<boolean>;
+
+function productionPictureCheck(dedup: VisualDedupState, workDir: string, videoTitle: string | undefined): SentencePictureCheck {
+  return async (scene, beat, clipPath, route) =>
+    (await checkPictureForSentence(dedup, scene, beat, clipPath, workDir, videoTitle, route)).pass;
+}
+
 export async function placeGenericMovingFallbacks(
   scenes: Scene[],
   sceneVisualResults: Array<SceneVisualsResult | undefined>,
   dedup: VisualDedupState,
-  workDir: string
+  workDir: string,
+  videoTitle?: string,
+  check: SentencePictureCheck = productionPictureCheck(dedup, workDir, videoTitle),
+  /** Whether the timeline can draw a data graphic or map from this sentence's facts (`dataOrMapGraphicForBeat`). */
+  graphicStandsIn: (scene: Scene, beat: SceneBeat) => boolean = (scene, beat) => graphicCanStandInForBeat(dedup, scene, beat)
 ): Promise<{ placed: number; failed: number }> {
   const tally = { placed: 0, failed: 0 };
+  let leftToGraphic = 0;
   const videoId = getActiveVideoId() ?? 0;
   let library: Array<{ id: number; title: string | null; mediaType: "video" | "image"; mediaStatus: string | null; isActive: number; durationSec: number | null; storageUrl: string; storageKey: string | null; mimeType: string }> | null = null;
   const usedIds = new Set<number>();
@@ -8515,11 +8762,19 @@ export async function placeGenericMovingFallbacks(
     for (const beat of beatsWithoutPicture(beats, result?.clipBeatIndices ?? [])) {
       const where = `s${scene.index}b${beat.index}`;
       /**
-       * VIDEO 653 — real footage first: a file the picture editor refused or could not judge for
-       * THIS sentence beats generic footage and the colour field. Not approved, and never passed off
-       * as approved: the timeline carries no approval for it, so the delivery gate names it.
+       * VIDEO 653 — real footage first: a file the picture editor could not judge for THIS sentence
+       * beats generic footage and the colour field.
+       *
+       * FIX 1+2 — but only once it HAS been judged: each remembered candidate is put to both
+       * mandatory checks (`checkPictureForSentence`) before it is placed. One the picture editor
+       * refused for this sentence fails for free; the first that passes is placed, approved.
        */
-      const unjudged = await pickUnjudgedFallback(dedup, si, beat.index);
+      const unjudged = await firstCheckedFallback(
+        dedup.unjudgedFallbacks?.get(`${si}:${beat.index}`) ?? [],
+        dedup,
+        DEFAULT_FALLBACK_CHECKS,
+        (p) => check(scene, beat, p, UNJUDGED_FOOTAGE_FALLBACK)
+      );
       if (unjudged) {
         dedup.usedContentKeys.add(clipContentKey(unjudged.path));
         const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
@@ -8528,29 +8783,21 @@ export async function placeGenericMovingFallbacks(
         (target.clipBeatIndices ??= []).push(beat.index);
         console.log(
           `[${UNJUDGED_FOOTAGE_FALLBACK}] ${where} placed ${path.basename(unjudged.path)} (${unjudged.durationSec.toFixed(2)}s) — ` +
-            `real footage the picture editor did not approve for this sentence; delivered as a picture to check in the editor`
+            `real footage that was not judged in its own turn, judged now and passed both mandatory checks for this sentence`
         );
         tally.placed++;
         continue;
       }
       /**
-       * VIDEO 655 — then a picture about the right thing that the editor refused for not showing the
-       * exact moment (a Tesla under a sentence about Tesla's headquarters). Reprieved on the record so
-       * the compose barrier lets it through; still not approved, so the delivery gate names it.
+       * VIDEO 655's rung (a picture the editor REFUSED for not showing the exact moment, reprieved as
+       * the last resort) is gone — FIX 1+2: a picture refused for its sentence is never placed.
        */
-      const related = await pickSoftMismatchFallback(dedup, scene.index, beat.index);
-      if (related && reprieveAsLastResort(dedup.beatRelevance, related.path, scene.index, beat.index)) {
-        dedup.usedContentKeys.add(clipContentKey(related.path));
-        const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
-        target.clips.push(related.path);
-        target.beatDurations.push(Math.min(generatedStillSec(beat), related.durationSec));
-        (target.clipBeatIndices ??= []).push(beat.index);
+      const refusedRelated = softMismatchCandidatesForBeat(dedup.beatRelevance, scene.index, beat.index);
+      if (refusedRelated.length) {
         console.log(
-          `[${RELATED_FOOTAGE_FALLBACK}] ${where} placed ${path.basename(related.path)} (${related.durationSec.toFixed(2)}s) — ` +
-            `about the right subject, refused for not showing the exact moment; the last picture before the colour field, to check in the editor`
+          `[${RELATED_FOOTAGE_FALLBACK}] ${where} not used — ${refusedRelated.length} picture(s) about the right subject were refused ` +
+            `for this sentence, and a refused picture is never placed`
         );
-        tally.placed++;
-        continue;
       }
       const decision = genericFootageDecision({ hasPicture: false, remainingMs: get_activeBudgetTracker()?.remainingMs?.() ?? null });
       if (!decision.place) {
@@ -8562,8 +8809,18 @@ export async function placeGenericMovingFallbacks(
       const seed = videoId * 31 + scene.index * 7 + beat.index;
       fs.mkdirSync(workDir, { recursive: true });
       let placedPath: string | null = null;
+      let graphicIsPicture = false;
       const refusals: string[] = [];
       for (const source of ["archive", "synthetic"] as GenericFootageSource[]) {
+        /**
+         * The colour field is no picture: where a data graphic or map can be drawn from the sentence's
+         * own facts, the sentence is left without a clip so the timeline puts that graphic there
+         * (`primaryGraphicForBeat`) — the colour field used to take its place and the graphic never came.
+         */
+        if (source === "synthetic" && graphicStandsIn(scene, beat)) {
+          graphicIsPicture = true;
+          break;
+        }
         let outPath: string;
         let assetLabel: string | number;
         let archiveId: number | null = null;
@@ -8631,6 +8888,14 @@ export async function placeGenericMovingFallbacks(
           const motion = await clipHasMotion(FFMPEG_BIN, outPath);
           if (!motion.moving) refusal = `not moving (${motion.detail})`;
         }
+        /**
+         * FIX 1+2 — a real generic clip is footage like any other: it is judged for THIS sentence and
+         * text-checked before it is placed. The colour field is not a picture and is not asked about;
+         * the delivery gate refuses a film that holds it.
+         */
+        if (!refusal && meta && source === "archive" && !(await check(scene, beat, outPath, GENERIC_FOOTAGE_FALLBACK))) {
+          refusal = "did not pass both mandatory checks for this sentence";
+        }
         if (refusal || !meta) {
           refusal ??= "not a valid video";
           recordProviderDownloadOutcome(dedup.sourcingCache, outPath, false, refusal);
@@ -8665,14 +8930,20 @@ export async function placeGenericMovingFallbacks(
       if (placedPath) {
         tally.placed++;
         if (refusals.length) console.warn(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} before that: ${refusals.join("; ")}`);
+      } else if (graphicIsPicture) {
+        leftToGraphic++;
+        console.log(
+          `[${GENERIC_FOOTAGE_FALLBACK}] ${where} no colour field — a data graphic or map drawn from the sentence's own facts ` +
+            `is its picture on the timeline` + (refusals.length ? ` (before that: ${refusals.join("; ")})` : "")
+        );
       } else {
         tally.failed++;
         console.error(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} FAILED — no moving coverage for this sentence: ${refusals.join("; ") || "no source answered"}`);
       }
     }
   }
-  if (tally.placed > 0 || tally.failed > 0) {
-    console.log(`[${GENERIC_FOOTAGE_FALLBACK}] TOTAL placed=${tally.placed} failed=${tally.failed}`);
+  if (tally.placed > 0 || tally.failed > 0 || leftToGraphic > 0) {
+    console.log(`[${GENERIC_FOOTAGE_FALLBACK}] TOTAL placed=${tally.placed} failed=${tally.failed} graphicIsPicture=${leftToGraphic}`);
   }
   return tally;
 }
@@ -8719,6 +8990,8 @@ export function sameVideoNeighbours(placed: readonly string[], handed: readonly 
 
 export type CoverRestIo = {
   checks: FallbackFileChecks;
+  /** FIX 1+2 — both mandatory checks for this sentence; a picture that fails is not placed. */
+  check: SentencePictureCheck;
   /** A generic library clip of at least `neededSec`, on disk under this sentence's name, or null. */
   genericClip: (sceneIndex: number, beatIndex: number, neededSec: number, seed: number) => Promise<{ path: string; durationSec: number } | null>;
 };
@@ -8736,8 +9009,9 @@ export type CoverRestIo = {
  *   2. a neutral clip from the generic library (`generic_footage`, never the colour field).
  *
  * Only when neither exists does the shot before it hold its last frame (the timeline's floor, with a
- * camera move), named here. Up to `BEAT_FILL_MAX_EXTRA_CLIPS` per sentence. No search, no download,
- * no picture-editor look: every candidate was already on disk.
+ * camera move), named here. Up to `BEAT_FILL_MAX_EXTRA_CLIPS` per sentence. No search, no download:
+ * every candidate was already on disk. FIX 1+2 — each one passes both mandatory checks for THIS
+ * sentence (`io.check`) before it is placed; a recorded verdict is reused, an unknown one is asked.
  */
 export async function coverRestOfSentences(
   scenes: Scene[],
@@ -8787,7 +9061,7 @@ export async function coverRestOfSentences(
         const neighbours = sameVideoNeighbours(ownOf(), handed).filter(
           (p) => !isPipelineFallbackClip(p) && !assetUsedInVideo(dedup, { path: p, contentKey: clipContentKey(p) }) && !refusedHere(p)
         );
-        const same = await firstUsableFallback(neighbours, dedup, io.checks);
+        const same = await firstCheckedFallback(neighbours, dedup, io.checks, (p) => io.check(scene, beat, p, COVER_REST));
         if (same) {
           push(same.path, same.durationSec, rest);
           tally.sameVideo++;
@@ -8797,7 +9071,11 @@ export async function coverRestOfSentences(
           );
           continue;
         }
-        const generic = await io.genericClip(scene.index, beat.index, rest, videoId * 31 + scene.index * 7 + beat.index + added * 1009);
+        const offered = await io.genericClip(scene.index, beat.index, rest, videoId * 31 + scene.index * 7 + beat.index + added * 1009);
+        const generic = offered && (await io.check(scene, beat, offered.path, COVER_REST)) ? offered : null;
+        if (offered && !generic) {
+          console.log(`[${COVER_REST}] ${where} generic library clip ${path.basename(offered.path)} not used — it did not pass both mandatory checks for this sentence`);
+        }
         if (generic) {
           push(generic.path, generic.durationSec, rest);
           tally.generic++;
@@ -8822,13 +9100,14 @@ export async function coverRestOfSentences(
   return tally;
 }
 
-/** The production `CoverRestIo`: the file checks of the fallbacks, and the generic library read once per render. */
-function productionCoverRestIo(dedup: VisualDedupState, workDir: string): CoverRestIo {
+/** The production `CoverRestIo`: the file checks of the fallbacks, the mandatory checks, and the generic library read once per render. */
+export function productionCoverRestIo(dedup: VisualDedupState, workDir: string, videoTitle?: string): CoverRestIo {
   let library: Awaited<ReturnType<typeof import("./db").listActiveVideoArchiveAssetsByTag>> | null = null;
   const usedIds = new Set<number>();
   let n = 0;
   return {
     checks: DEFAULT_FALLBACK_CHECKS,
+    check: productionPictureCheck(dedup, workDir, videoTitle),
     genericClip: async (sceneIndex, beatIndex, neededSec, seed) => {
       const where = `s${sceneIndex}b${beatIndex}`;
       try {
@@ -8878,41 +9157,25 @@ function productionCoverRestIo(dedup: VisualDedupState, workDir: string): CoverR
   };
 }
 
-/**
- * VIDEO 658 — A PICTURE GENERATED FOR A SENTENCE IS ALWAYS USED FOR IT (the owner's rule).
- *
- * It was made from this sentence's own words, so the picture editor's verdict does not decide it.
- * 658 paid for an ElevenLabs video and two Stability stills and threw all three away ("nobody
- * looked", "not approved") — and then filled those sentences with random refused footage. Only the
- * file itself can still stop it: it must exist, be a valid video, not be mostly black, and not be on
- * screen already. Any refusal on the record is overruled there (`keepGeneratedForBeat`), so the
- * compose barrier lets it through; the delivery report still shows it was not approved.
- */
-async function keepGeneratedForSentence(
-  dedup: VisualDedupState,
-  sceneIndex: number,
-  beatIndex: number,
-  outPath: string,
-  tag: string,
-  checks: FallbackFileChecks = DEFAULT_FALLBACK_CHECKS
-): Promise<string | null> {
-  const where = `s${sceneIndex}b${beatIndex}`;
-  const usable = await firstUsableFallback([outPath], dedup, checks);
-  if (!usable) {
-    console.warn(`[${tag}] ${where} generated, but the file cannot be used (missing, not a valid video, mostly black, or already on screen) — not used`);
-    return null;
-  }
-  const overruled = keepGeneratedForBeat(dedup.beatRelevance, outPath, sceneIndex, beatIndex);
-  dedup.usedContentKeys.add(clipContentKey(outPath));
-  console.log(
-    `[${tag}] ${where} used ${path.basename(outPath)} (${usable.durationSec.toFixed(2)}s) — generated for this sentence, ` +
-      `always used${overruled ? ` (the picture editor's refusal overruled)` : " (the picture editor did not look)"}`
-  );
-  return outPath;
+/** The sentence's VisualIntent as the fallback rungs read it (the judge's text override first). */
+function fallbackIntentForBeat(dedup: VisualDedupState, scene: Scene, beat: SceneBeat) {
+  const sentence = dedup.beatJudgeTextOverride?.get(`${scene.index}:${beat.index}`) ?? beat.text;
+  const productionBeat = {
+    index: beat.index, text: sentence, searchQuery: beat.searchQuery, powerWord: beat.powerWord,
+    keywords: beat.keywords, holdSec: beat.holdSec, visualDescription: beat.visualDescription,
+  };
+  return intentFrom(productionBeat, scene.index, beat.index, null, {
+    people: (t) => extractPersonNamesFromText(t),
+    place: (t) => extractVisualPlacePhrase(t),
+    action: (t) => extractActionCue(t),
+    namedEntities: (t) => beatNamedEntitiesByKind(t),
+  });
 }
 
-/** Exposed for tests: the rule above without a render around it. */
-export const __keepGeneratedForSentence = keepGeneratedForSentence;
+/** Whether a data graphic or map drawn from the sentence's own facts can be its picture on the timeline. */
+export function graphicCanStandInForBeat(dedup: VisualDedupState, scene: Scene, beat: SceneBeat): boolean {
+  return dataOrMapGraphicForBeat(fallbackIntentForBeat(dedup, scene, beat), scene, 0, Math.max(beat.holdSec ?? 5, 1)) !== null;
+}
 
 async function fetchBeatGeneratedImage(
   beat: SceneBeat,
@@ -8925,16 +9188,7 @@ async function fetchBeatGeneratedImage(
 ): Promise<string | null> {
   const where = `s${scene.index}b${beat.index}`;
   const sentence = dedup.beatJudgeTextOverride?.get(`${scene.index}:${beat.index}`) ?? beat.text;
-  const productionBeat = {
-    index: beat.index, text: sentence, searchQuery: beat.searchQuery, powerWord: beat.powerWord,
-    keywords: beat.keywords, holdSec: beat.holdSec, visualDescription: beat.visualDescription,
-  };
-  const intent = intentFrom(productionBeat, scene.index, beat.index, null, {
-    people: (t) => extractPersonNamesFromText(t),
-    place: (t) => extractVisualPlacePhrase(t),
-    action: (t) => extractActionCue(t),
-    namedEntities: (t) => beatNamedEntitiesByKind(t),
-  });
+  const intent = fallbackIntentForBeat(dedup, scene, beat);
   const contract = dedup.documentaryPlan
     ? (await import("./documentaryPlanningEngine")).getRetrievalContract(dedup.documentaryPlan, sceneIndex, beat.index)
     : null;
@@ -9002,7 +9256,8 @@ async function fetchBeatGeneratedImage(
     })
   );
   if (!clip || !isRealVideoClip(clip)) {
-    return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, GENERATED_IMAGE_FALLBACK);
+    console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} generated, but not approved for the sentence — not used`);
+    return null;
   }
   console.log(
     `[${GENERATED_IMAGE_FALLBACK}] ${where} used provider=${GENERATED_IMAGE_PROVIDER} ` +
@@ -9240,7 +9495,8 @@ async function fetchBeatReplicateVideo(
     })
   );
   if (!clip || !isRealVideoClip(clip)) {
-    return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, REPLICATE_VIDEO_FALLBACK);
+    console.log(`[${REPLICATE_VIDEO_FALLBACK}] ${where} generated, but not approved for the sentence — not used; the still is tried`);
+    return null;
   }
   console.log(
     `[${REPLICATE_VIDEO_FALLBACK}] ${where} used provider=${REPLICATE_VIDEO_PROVIDER} model=${cfg.model} generated=true ` +
@@ -9314,7 +9570,8 @@ async function fetchBeatElevenLabsVideo(
     })
   );
   if (!clip || !isRealVideoClip(clip)) {
-    return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, GENERATED_VIDEO_FALLBACK);
+    console.log(`[${GENERATED_VIDEO_FALLBACK}] ${where} generated, but not approved for the sentence — not used; the still is tried`);
+    return null;
   }
   console.log(
     `[${GENERATED_VIDEO_FALLBACK}] ${where} used provider=${GENERATED_VIDEO_PROVIDER} model=${cfg.modelId} ` +
@@ -17125,6 +17382,8 @@ export interface VisualDedupState {
   archiveCandidatePool: CuratedCandidatePick[] | null;
   /** Cache archive asset lists within one video (speeds per-sentence search). */
   archiveAssetsCache: Map<number, ArchiveAssetRow[]>;
+  /** FIX 1+2 — what the mandatory checks did this render (`checkPictureForSentence`). */
+  mandatoryCheckTally?: { checked: number; passed: number; failed: number; askedText: number; askedJudge: number };
   /** RONDE 34: asset.id -> storageUrl, resolved from the caches above. "" means "looked, not found". */
   curatedStorageUrlById: Map<number, string>;
   /** Recent same-subject videos' uses per archive asset — tried after the less-used (usageDiversity). */
@@ -21728,6 +21987,8 @@ async function adoptClip(
           budget: beatClipTextFilterMaxChecks(),
         }).catch(() => null);
         noteAdoptStep("text", textStartedMs);
+        /** FIX 1+2 — a real text verdict is kept for this picture, so the mandatory check reuses it instead of asking again. */
+        noteTextCheck(dedup, contentKey, textCheckFromVerdict(text));
         /** P0 (video 630) — only text that IS the picture is refused here; see onScreenTextRefusesBeforeVision. */
         if (onScreenTextRefusesBeforeVision(text) && refuse("baked_edit_text_before_vision")) continue;
         if (text?.decision === "REJECT") {
@@ -28370,12 +28631,39 @@ async function _runVideoPipelineInner(
     /** VIDEO 642 — covered sentences, visible real shots and their seconds, apart; the target is a soft signal only. */
     console.log(formatVisualShotsLine(sceneVisualResults, (c) => !isStillPhotoClip(c) && !isPipelineFallbackClip(c)));
 
+    /**
+     * FIX 1+2 — every picture the sourcing placed passes both mandatory checks (the picture editor for
+     * its sentence, the text check) or leaves, BEFORE the emergency rungs, so a sentence that loses its
+     * picture can still get a checked one below.
+     */
+    await enforceMandatoryChecks(scenes, sceneVisualResults, visualDedup, workDir, topicContext, "after_sourcing");
     /** GENERATED_IMAGE_FALLBACK — after every source and the main-subject rescue: see `generateMissingBeatImages`. */
     await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);
     /** GENERIC_FOOTAGE_FALLBACK — VIDEO 650 — the moving floor under everything above: see `placeGenericMovingFallbacks`. */
-    await placeGenericMovingFallbacks(scenes, sceneVisualResults, visualDedup, workDir);
+    await placeGenericMovingFallbacks(scenes, sceneVisualResults, visualDedup, workDir, topicContext);
     /** VIDEO 658 — a sentence longer than its shots gets another picture behind them, not slow motion or a repeat. */
-    await coverRestOfSentences(scenes, sceneVisualResults, visualDedup, workDir);
+    await coverRestOfSentences(scenes, sceneVisualResults, visualDedup, workDir, productionCoverRestIo(visualDedup, workDir, topicContext));
+    /** FIX 1+2 — the safety net: every rung above checks before it places; whatever still fails leaves here. */
+    await enforceMandatoryChecks(scenes, sceneVisualResults, visualDedup, workDir, topicContext, "before_timeline");
+    {
+      const t = visualDedup.mandatoryCheckTally;
+      if (t) {
+        console.log(
+          `[${MANDATORY_CHECKS}] TOTAL pictures=${t.checked} passed=${t.passed} failed=${t.failed} ` +
+            `textChecksAsked=${t.askedText} judgeLooksAsked=${t.askedJudge}`
+        );
+      }
+      /** A sentence that ends with no checked picture is named; the delivery gate refuses the film for it. */
+      for (let si = 0; si < scenes.length; si++) {
+        const scene = scenes[si]!;
+        if (scene.isChapterCard) continue;
+        const vr = sceneVisualResults[si];
+        const beats = visualDedup.sceneBeatsBySceneIndex.get(scene.index) ?? vr?.beats ?? [];
+        for (const beat of beatsWithoutPicture(beats, vr?.clipBeatIndices ?? [])) {
+          console.error(`[${MANDATORY_CHECKS}] s${scene.index}b${beat.index} NO CHECKED PICTURE — no picture passed both mandatory checks for this sentence`);
+        }
+      }
+    }
 
     /**
      * A scene with no picture is a gap the timeline holds over. A film with no picture in ANY scene
@@ -30273,6 +30561,8 @@ async function _runVideoPipelineInner(
                             : genericFootageForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))
                               ? ("generic_footage" as const)
                               : ("unverified" as const),
+                        /** FIX 1+2 — the text check's result for this picture; "unchecked" when nobody looked. */
+                        textCheck: textCheckForClip(visualDedup, clipContentKey(clipPath)) ?? ("unchecked" as const),
                       }
                     : null,
                 };

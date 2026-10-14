@@ -52,7 +52,12 @@ const capture = () => {
 };
 const scene = { index: 0, text: "A sentence nothing could picture. And another.", visualCue: "", pexelsQuery: "", aiImagePrompt: "", duration: 8 };
 
-async function place(workDir: string) {
+/**
+ * FIX 1+2 — a real generic clip is placed only after both mandatory checks for its sentence. These
+ * cases are about the PLACEMENT, so the checks are given here: passing unless a case says otherwise
+ * (the checks themselves are tested in mandatoryPictureChecks.test.ts).
+ */
+async function place(workDir: string, passes = true) {
   fs.mkdirSync(workDir, { recursive: true });
   const dedup = vp.createVisualDedupState(vp.getPipelinePerfProfile("1"));
   dedup.sceneBeatsBySceneIndex.set(0, [
@@ -60,8 +65,12 @@ async function place(workDir: string) {
     { index: 1, text: "And another.", holdSec: 3, keywords: [] as string[] },
   ] as never);
   const results: Array<{ clips: string[]; beatDurations: number[]; clipBeatIndices: number[] } | undefined> = [{ clips: [], beatDurations: [], clipBeatIndices: [] }];
-  const tally = await vp.placeGenericMovingFallbacks([scene as never], results as never, dedup, workDir);
-  return { tally, results, dedup };
+  const asked: string[] = [];
+  const tally = await vp.placeGenericMovingFallbacks([scene as never], results as never, dedup, workDir, "Film", async (_s, _b, clipPath) => {
+    asked.push(path.basename(clipPath));
+    return passes;
+  });
+  return { tally, results, dedup, asked };
 }
 
 describe("PRE-DEPLOY — the generic floor prefers a REAL archive clip and names the synthetic field as an emergency", () => {
@@ -83,6 +92,18 @@ describe("PRE-DEPLOY — the generic floor prefers a REAL archive clip and names
     expect(logs.some((l) => l.includes("EMERGENCY") || l.includes("source=synthetic"))).toBe(false);
     /** the one archive clip is allowed to serve both sentences when it is the only one (rotation prefers fresh clips first) */
     expect(logs.some((l) => l.includes("TOTAL placed=2 failed=0"))).toBe(true);
+  }, 300_000);
+
+  it("FIX 1+2 — a real generic clip that fails the checks for its sentence is not placed; the colour field (which the delivery gate refuses) stands in", async () => {
+    capture();
+    archive.rows = [{ id: 418, title: "slow clouds", mediaType: "video", mediaStatus: "READY", isActive: 1, durationSec: 8, storageUrl: "", storageKey: null, mimeType: "video/mp4", tags: ["generic"] }];
+    const { results, asked } = await place(path.join(root, "with-archive-refused"), false);
+    expect(asked.length).toBeGreaterThan(0);
+    for (const c of results[0]!.clips) {
+      expect(path.basename(c)).not.toContain(`__pid_${GENERIC_FOOTAGE_PROVIDER}`);
+    }
+    expect(logs.filter((l) => l.includes("placed source=archive"))).toHaveLength(0);
+    expect(logs.some((l) => l.includes("did not pass both mandatory checks for this sentence"))).toBe(true);
   }, 300_000);
 
   it("with NO generic clip in the archive: the synthetic placeholder is placed under its own provider name and every line calls it an EMERGENCY, not footage", async () => {

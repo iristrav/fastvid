@@ -1201,8 +1201,16 @@ export async function runRenderJob(params: {
             fromArchive,
             /** One authority for "this depicts nothing" — the pipeline's own predicate. */
             isPlaceholder: local ? isPipelineFallbackClip(local) : false,
+            /** FIX 1+2 — the two mandatory checks, as the timeline recorded them for this clip. */
+            contentApproval: clip.source.contentApproval ?? null,
+            textCheck: clip.source.textCheck ?? null,
           };
         }),
+      /**
+       * FIX 1+2 — a film the pipeline queued (no requesting user) must show both checks on every
+       * picture; a render the owner asked for from the editor carries the owner's own choices.
+       */
+      enforcePictureChecks: job.requestedByUserId == null,
       delivered: {
         exists: check.fileExists,
         readable: check.fileExists && check.sizeBytes > 0,

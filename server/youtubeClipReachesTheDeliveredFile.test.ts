@@ -125,7 +125,8 @@ function clip(c: ClipSpec): TimelineVideoClip {
       providerAssetId: c.providerAssetId ?? `yt_${c.id}`,
       mediaUrl: c.file,
       archiveAssetId: 59100 + c.beat,
-      ...(c.approved === false ? {} : { contentApproval: "judge_fit" as const }),
+      /** FIX 1+2 — an approved pipeline picture carries both checks; "not approved" carries neither. */
+      ...(c.approved === false ? {} : { contentApproval: "judge_fit" as const, textCheck: "clean" as const }),
     },
     sourceIn: 0,
     sourceOut: c.end - c.start,
@@ -263,11 +264,21 @@ describe("an approved YouTube clip reaches the delivered MP4 and covers its sent
     expect(filmUploads(uploads)).toHaveLength(1);
   }, 420_000);
 
-  it("3. the same clip without the picture editor's verdict is not cover: SENTENCE_COVERAGE_UNPROVEN — named, and published", async () => {
-    const { result, logged } = await deliveredWithProblem(film({ approved: false }));
-    expect(result.ok).toBe(true);
-    expect(logged).toMatch(/QUALITY_PROBLEM SENTENCE_COVERAGE_UNPROVEN[^\n]*s0b0/);
-    expect(filmUploads(uploads)).toHaveLength(1);
+  /**
+   * FIX 1+2 — a pipeline film whose timeline holds a picture without both mandatory checks is not
+   * delivered with it (before Fix 1+2 it was published, the missing verdict only named). The render
+   * worker has no sourcing to replace a picture with; the replacement is the pipeline's, before the
+   * timeline (`enforceMandatoryChecks` and the fallback rungs). Here the gate names the clip.
+   */
+  it("3. the same clip without the picture editor's verdict is not delivered: PICTURE_NOT_CHECKED names the clip, nothing is published", async () => {
+    const result = await runWith(film({ approved: false }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("PICTURE_NOT_CHECKED");
+    expect(result.message).toContain("clip=vc_yt");
+    expect(result.message).not.toContain("clip=vc_two");
+    expect(dbState.published).toBeNull();
+    expect(filmUploads(uploads)).toHaveLength(0);
   }, 420_000);
 
   it("4. the timeline calls the second picture approved footage, but the FILE holds a real chapter card: PLACEHOLDER_IN_FILE — the file is what is checked", async () => {

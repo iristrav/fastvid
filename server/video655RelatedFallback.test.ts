@@ -160,15 +160,23 @@ describe("4. wiring: after unjudged footage, before generic footage and the colo
   const PIPE = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
   const GENERIC = readFileSync(path.join(__dirname, "genericFootageFallback.ts"), "utf8");
 
-  it("the order in placeGenericMovingFallbacks", () => {
+  /**
+   * FIX 1+2 (14 October) — the owner's rule: a picture the picture editor REFUSED for its sentence is
+   * never placed. 655's rung (a refused picture reprieved as the last resort) no longer places
+   * anything; the refusals it would have used are only named, between the checked unjudged rung and
+   * the generic floor.
+   */
+  it("the order in placeGenericMovingFallbacks — and the refused rung places nothing", () => {
     const body = PIPE.slice(PIPE.indexOf("export async function placeGenericMovingFallbacks("));
-    const unjudged = body.indexOf("pickUnjudgedFallback(dedup, si, beat.index)");
-    const related = body.indexOf("pickSoftMismatchFallback(dedup, scene.index, beat.index)");
+    const unjudged = body.indexOf("const unjudged = await firstCheckedFallback(");
+    const related = body.indexOf("softMismatchCandidatesForBeat(dedup.beatRelevance, scene.index, beat.index)");
     const generic = body.indexOf("genericFootageDecision(");
     expect(unjudged).toBeGreaterThan(-1);
     expect(related).toBeGreaterThan(unjudged);
     expect(generic).toBeGreaterThan(related);
-    expect(body).toContain("reprieveAsLastResort(dedup.beatRelevance, related.path, scene.index, beat.index)");
+    const rung = body.slice(related, generic);
+    expect(rung).toContain("a refused picture is never placed");
+    expect(rung).not.toMatch(/reprieveAsLastResort|target\.clips\.push|tally\.placed\+\+/);
   });
 
   it("the colour field's log lines no longer say it keeps the film from delivery", () => {

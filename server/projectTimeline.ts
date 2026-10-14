@@ -62,6 +62,13 @@ export type AssetSourceIdentity = {
    * (genericFootageFallback.ts): valid visual coverage, explicitly NOT a content fit.
    */
   contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage";
+  /**
+   * FIX 1+2 — what the on-screen-text check found on THIS picture: "clean" (looked, no added text),
+   * "overlay" (a logo, subtitle or watermark over real footage — the picture editor decided),
+   * "fills_picture" (text IS the picture), "unchecked" (nobody looked). Written by the pipeline for
+   * every picture it places; absent on a clip the owner placed in the editor or an older timeline.
+   */
+  textCheck?: "clean" | "overlay" | "fills_picture" | "unchecked";
   /** A URL this system serves the media from, and will still serve tomorrow. */
   canonicalUrl?: string;
   /** The provider's direct media URL as it was at render time. May have expired since. */

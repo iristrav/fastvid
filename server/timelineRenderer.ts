@@ -505,6 +505,41 @@ export function sourceReadSec(
   return Math.min(wantSec, Math.max(0.04, clip.sourceOut - startAt));
 }
 
+/** The push a held tail gets: 4% over the whole clip — enough to read as alive, too little to read as a zoom. */
+export const HOLD_TAIL_PUSH_SCALE = 1.04;
+
+/**
+ * A video clip whose file ends before its slot shows its last frame for the rest (`tpad`). Real
+ * footage plans no camera move (cameraPlanner: it keeps its own motion), so that held frame would be a
+ * frozen picture. Only then — a held tail of at least two frames and no move of its own — the clip
+ * gets a slow, subtle push for this render. A clip that fills its slot, or already moves, keeps
+ * exactly what it had (null).
+ */
+export function holdTailCamera(
+  clip: Pick<TimelineVideoClip, "kind" | "speed" | "sourceIn" | "sourceOut" | "holdAtSourceOut" | "camera">,
+  fileSec: number | null,
+  slotSec: number,
+  handleSec: number,
+  fps: number
+): NonNullable<TimelineVideoClip["camera"]> | null {
+  if (clip.kind !== "video" || fileSec == null || !(fileSec > 0) || !(slotSec > 0)) return null;
+  const c = clip.camera;
+  const moves =
+    c != null &&
+    (Math.abs((c.startScale ?? 1) - (c.endScale ?? 1)) > 1e-3 ||
+      Math.abs((c.startX ?? 0.5) - (c.endX ?? 0.5)) > 1e-3 ||
+      Math.abs((c.startY ?? 0.5) - (c.endY ?? 0.5)) > 1e-3);
+  if (moves) return null;
+  const speed = clipPlaybackSpeed(clip);
+  const dur = slotSec + Math.max(0, handleSec);
+  const inPoint = Math.max(0, clip.sourceIn ?? 0);
+  const lastFrameAt = fileSec > 0.1 ? fileSec - 0.1 : 0;
+  const startAt = Math.min(Math.max(0, inPoint - Math.max(0, handleSec) * speed), lastFrameAt);
+  const shown = Math.min(sourceReadSec(clip, startAt, dur * speed), Math.max(0, fileSec - startAt)) / speed;
+  if (dur - shown < 2 / Math.max(1, fps)) return null;
+  return { type: "slow_push", intensity: 0.3, startScale: 1, endScale: HOLD_TAIL_PUSH_SCALE };
+}
+
 export async function probeIsPortrait(file: string): Promise<boolean | null> {
   try {
     const { stdout } = await execFileAsync(FFPROBE, [
@@ -821,13 +856,22 @@ async function renderSegment(
     );
   }
   const fitted: TimelineVideoClip = fitSpeed != null ? { ...clip, speed: fitSpeed } : clip;
+  /** A file shorter than its slot holds its last frame; real footage with no move of its own is kept alive while it does. */
+  const tailCamera = holdTailCamera(fitted, fileSec, slot, Math.max(0, handleSec), fmt.fps);
+  if (tailCamera) {
+    console.log(
+      `[HoldTailCamera] clip=${clip.id} the file ends before its ${slot.toFixed(2)}s slot and the shot holds still — ` +
+        `a subtle push (×${HOLD_TAIL_PUSH_SCALE}) keeps the held last frame from freezing`
+    );
+  }
+  const moving: TimelineVideoClip = tailCamera ? { ...fitted, camera: tailCamera } : fitted;
   const graded: TimelineVideoClip =
-    fitted.sourceKind || !look || look.grade === "none"
-      ? fitted
+    moving.sourceKind || !look || look.grade === "none"
+      ? moving
       : {
-          ...fitted,
-          sourceKind: docGradeSourceKindForProvider(fitted.source.provider, {
-            archiveAssetId: fitted.source.archiveAssetId,
+          ...moving,
+          sourceKind: docGradeSourceKindForProvider(moving.source.provider, {
+            archiveAssetId: moving.source.archiveAssetId,
           }),
         };
   /** RONDE 647 — a standing picture is filled with itself, blurred, instead of black bars. */
