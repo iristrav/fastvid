@@ -139,6 +139,21 @@ export function resetImageServiceStandDownForTests(): void {
 }
 
 /**
+ * VIDEO 652 — NO PAID GENERATION WHEN NOBODY CAN APPROVE THE RESULT.
+ *
+ * A generated picture is adopted like every other: only with the picture editor's approval. In
+ * render 652 OpenAI's quota ran out at 19:48:48 (`askImpossible`), and Stability and ElevenLabs were
+ * still asked for s1b0 and s1b5 afterwards — each picture then refused as "generated, but not
+ * approved". The two signals are the ones the adoption guard already reads; nothing about approval
+ * changes here. Null when the picture editor can be asked.
+ */
+export function pictureEditorUnavailableReason(signals: { visionPipelineUnavailable: boolean; askImpossible: boolean }): string | null {
+  if (signals.askImpossible) return "the picture editor cannot be reached in this render (judge unavailable)";
+  if (signals.visionPipelineUnavailable) return "the vision pipeline is unavailable in this process";
+  return null;
+}
+
+/**
  * The production generator: Stability's image endpoint with the key the worker already has
  * (`STABILITY_AI_API_KEY`) — the same endpoint and request `probeStabilityAI` (the existing
  * /api/health/stability-probe) already sends. No key, a refusal, a timeout or an empty file: false, and the sentence

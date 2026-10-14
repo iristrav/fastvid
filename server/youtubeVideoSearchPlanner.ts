@@ -911,6 +911,18 @@ export function planEntityQuery(
   const why = refusal(name, properName ? 1 : 2);
   let query = name;
   let namedBy = "";
+  /**
+   * VIDEO 652 — "Tesla first car" was admitted by the gate and narrowed to "Tesla": the words that
+   * made it this need were cut, the narrowed form then failed the rules, and the need was never
+   * asked — search "Lotus chassis" went out for the same sentence instead. A need the gate ADMITS
+   * but narrows away is asked in its own words, under the same rules.
+   */
+  const kept = why ? keptAsAsked(name, gate, (q, g) => refuseQuery(q, { analysis, mustDifferFrom: target.asked.join(" "), gate: g, allowSingleScene: true, minWords: properName ? 1 : 2 })) : null;
+  if (kept) {
+    const sent = kept.query + (kept.phrase(asksForArchiveFilm(input)) ?? "");
+    log(`[YouTubeSearchPlanner] entity "${name}" kept as asked — the search gate would narrow it to "${kept.narrowedTo}", which drops "${kept.dropped}"; query="${sent}"`);
+    return { query: sent, mainSubject: name, source: "fallback", attempts: 0, refused: [] };
+  }
   if (why) {
     const unnamed = reachedGate.has(name) && gate(name).reason === "SUBJECT_NOT_NAMED";
     const named = unnamed ? nameFromItsSentences(name, target, analysis, (q) => refusal(q, 2), gate) : null;
@@ -928,6 +940,97 @@ export function planEntityQuery(
       : `[YouTubeSearchPlanner] entity "${name}" query="${sent}"`
   );
   return { query: sent, mainSubject: name, source: "fallback", attempts: 0, refused: [] };
+}
+
+/**
+ * VIDEO 652 — the words that ask for a person filmed in person. Used only when one of the person's
+ * own sentences says it: the gate admits no word the narration or the prompt does not prove.
+ */
+export const PERSON_ON_SCREEN_WORDS: readonly string[] = [
+  "interview", "speech", "keynote", "stage", "conference", "presentation", "podium", "debate", "rally", "testimony",
+];
+
+/**
+ * VIDEO 652 — ONE SEARCH FOR A PERSON THE SCRIPT PUTS ON SCREEN.
+ *
+ * 652's sentences about Elon Musk were searched only inside "Tesla Fremont Elon Musk footage": factory
+ * film, in which the picture editor saw "a person speaking", not Musk ("identity guessed, not seen").
+ * A person the visual plan says must be seen is asked for alone: "<name> <word>" when the person's own
+ * sentences say how ("interview", "speech", "stage" …), otherwise "<name> footage". The same rules and
+ * the same gate as every other query; null when they refuse both. What a search returns proves nothing:
+ * every candidate still goes through the thumbnail look and the picture editor.
+ */
+export function planPersonQuery(
+  deps: Pick<PlannerDeps, "gate" | "log">,
+  input: PlannerInput,
+  analysis: VideoAnalysis,
+  target: { name: string; beats: readonly number[] }
+): PlannedQuery | null {
+  const log = deps.log ?? (() => {});
+  const gate = once(deps.gate);
+  const name = target.name.replace(/['’]s\b/gi, "").trim();
+  const own = target.beats.map((b) => analysis.sentences[b] ?? "").join(" ");
+  const said = PERSON_ON_SCREEN_WORDS.find((w) => words(own).includes(w));
+  const rules = (q: string, g: (q: string) => GateVerdict) => refuseQuery(q, { analysis, gate: g, allowSingleScene: true, minWords: 2 });
+  const historical = asksForArchiveFilm(input);
+  let why = "";
+  for (const q of said ? [`${name} ${said}`, name] : [name]) {
+    const refused = rules(q, gate) ?? (queryNames(gate(q).sentAs?.trim() || q, q) ? null : `the search gate narrows it to "${gate(q).sentAs}"`);
+    if (!refused) {
+      const sent = gateText(gate, q, historical);
+      log(`[YouTubeSearchPlanner] person "${name}" on screen — query="${sent}"`);
+      return { query: sent, mainSubject: name, source: "fallback", attempts: 0, refused: [] };
+    }
+    const kept = keptAsAsked(q, gate, rules);
+    if (kept) {
+      const sent = q + (kept.phrase(historical) ?? "");
+      log(`[YouTubeSearchPlanner] person "${name}" on screen — kept as asked (the gate would send "${kept.narrowedTo}") query="${sent}"`);
+      return { query: sent, mainSubject: name, source: "fallback", attempts: 0, refused: [] };
+    }
+    why = why || `"${q}": ${refused}`;
+  }
+  log(`[YouTubeSearchPlanner] person "${name}" NO_QUERY — ${why}`);
+  return null;
+}
+
+/**
+ * VIDEO 652 — a query the gate ADMITS (every word proven by the narration or the prompt) but would
+ * send narrowed to a form that no longer names it ("Tesla first car" → "Tesla"). Returned only when
+ * the planner's rules pass on the query as asked; then it is sent as asked, with the planner's own
+ * production phrase when the gate admits that too. Null for anything else: a refused query, a
+ * narrowing that keeps every word of the query, or a rule the words as asked break.
+ */
+export function keptAsAsked(
+  query: string,
+  gate: (q: string) => GateVerdict,
+  rules: (q: string, gate: (q: string) => GateVerdict) => string | null
+): { query: string; narrowedTo: string; dropped: string; phrase: (historical: boolean) => string | null } | null {
+  const verdict = gate(query);
+  const narrowedTo = verdict.sentAs?.trim() ?? "";
+  if (!verdict.ok || !narrowedTo || narrowedTo.toLowerCase() === query.trim().toLowerCase() || queryNames(narrowedTo, query)) return null;
+  /**
+   * Only a SHORTENED query: the narrowed form keeps part of it ("Tesla first car" → "Tesla"). A gate
+   * that puts other words in its place ("Kris Jenner" → "celebrity mother manager") or drops the name
+   * altogether still means no search for it, as before.
+   */
+  const asked = new Set(contentWords(query));
+  if (!contentWords(narrowedTo).some((w) => asked.has(w))) return null;
+  /** The same gate, minus the narrowing: a refusal stays a refusal. */
+  const asAsked = (q: string): GateVerdict => {
+    const v = gate(q);
+    return v.ok ? { ok: true, sentAs: q } : v;
+  };
+  if (rules(query, asAsked)) return null;
+  const left = new Set(contentWords(narrowedTo));
+  return {
+    query,
+    narrowedTo,
+    dropped: contentWords(query).filter((w) => !left.has(w)).join(" "),
+    phrase: (historical) => {
+      const phrase = historical ? HISTORICAL_FOOTAGE : MODERN_FOOTAGE;
+      return gate(`${query} ${phrase}`).ok ? ` ${phrase}` : null;
+    },
+  };
 }
 
 /**

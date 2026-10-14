@@ -22,7 +22,8 @@ const TEXT_LADEN_CLIP = (() => {
   execFileSync(
     process.env.FFMPEG_PATH || "ffmpeg",
     [
-      "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=2",
+      /** VIDEO 652 — 4 s: a piece under the archive's 3 s minimum is refused before the text check this test is about. */
+      "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=4",
       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "0", out,
     ],
     { stdio: "ignore" }

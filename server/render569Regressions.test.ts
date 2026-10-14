@@ -222,7 +222,14 @@ describe("render 569 defect 3 — a spent beat kept paying", () => {
   });
 
   it("it breaks out rather than skipping one candidate", () => {
-    const at = PIPE.indexOf("beatShortlistExhausted(dedup.beatShortlist");
+    /**
+     * VIDEO 652 — the check inside adoptClip. generateMissingBeatImages now asks the same question
+     * earlier in the file (and moves on to the next sentence there, by design).
+     */
+    const adopt = PIPE.indexOf("async function adoptClip(");
+    expect(adopt).toBeGreaterThan(0);
+    const at = PIPE.indexOf("beatShortlistExhausted(dedup.beatShortlist", adopt);
+    expect(at).toBeGreaterThan(adopt);
     const block = PIPE.slice(at, at + 400);
     expect(block).toContain("break;");
     expect(block).toContain("[BeatShortlist]");

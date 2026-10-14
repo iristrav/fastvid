@@ -28,8 +28,14 @@ import { createHash } from "crypto";
 
 import { ARCHIVE_PIECE_MAX_SEC } from "./archiveVideoSplitter";
 
-/** A piece shorter than this is a flash or the inside of a transition, not a usable shot. */
-export const ARCHIVE_PIECE_MIN_SEC = 2;
+/**
+ * A piece shorter than this is a flash or the inside of a transition, not a usable shot.
+ *
+ * VIDEO 652 — the same floor as the archive's own admission (`MIN_VIDEO_DURATION_SEC` in
+ * archiveIngestion.ts, not imported: that module imports this one). At 2 s the YouTube stock and the
+ * archive split cut pieces of 2–3 s that adoption then always refused (`invalid_duration_before_review`).
+ */
+export const ARCHIVE_PIECE_MIN_SEC = 3;
 /** Kept clear of each cut, so a piece never starts or ends on the frame of the next shot. */
 export const CUT_EDGE_PAD_SEC = 0.12;
 

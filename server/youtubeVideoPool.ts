@@ -23,7 +23,9 @@ import {
   contentWords,
   planEntityQuery,
   planGapQuery,
+  planPersonQuery,
   planVideoQuery,
+  PERSON_ON_SCREEN_WORDS,
   queryNames,
   type PlannerDeps,
   type PlannerInput,
@@ -463,10 +465,14 @@ export function namedSubjectCoverage(
   namedSubjects?: (sentence: string) => NamedSubject[],
   opts: { asked?: readonly string[]; important?: string } = {}
 ): NamedSubjectCoverage[] {
-  const asked = new Set([pool.query1 ?? "", ...(opts.asked ?? [])].flatMap((q) => contentWords(q)));
+  /**
+   * VIDEO 652 — a need is asked when ONE query asked for all of it. Words spread over several
+   * queries ("Tesla" in search #1, "car" in another) never asked for the thing the sentence needs.
+   */
+  const asked = [pool.query1 ?? "", ...(opts.asked ?? [])].map((q) => new Set(contentWords(q))).filter((q) => q.size > 0);
   const usable = pool.candidates.filter((c) => c.usable);
   return scriptVisualNeeds(pool, namedSubjects)
-    .filter((e) => !contentWords(e.name).every((w) => asked.has(w)))
+    .filter((e) => !asked.some((q) => contentWords(e.name).every((w) => q.has(w))))
     .map((e) => ({
       name: e.name,
       kind: e.kind,
@@ -482,6 +488,68 @@ export function namedSubjectCoverage(
         SUBJECT_PRIORITY[a.kind] - SUBJECT_PRIORITY[b.kind] ||
         a.beats[0]! - b.beats[0]!
     );
+}
+
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * VIDEO 652 — THE PEOPLE THE VISUAL PLAN PUTS ON SCREEN.
+ *
+ * A name the narration gives a sentence ("Elon Musk") is central there only when the planner's reading
+ * of the whole script (`pool.visualNeeds`) lists, for that same sentence, something to see that holds
+ * the whole name ("Elon Musk triumph"). A sentence about an object or an event ("Tesla's first car,
+ * built on a Lotus chassis") has no such need, so it never asks for a person. A name that shares a word
+ * with a company or brand the sentence names ("Tesla Fremont") is not taken for a person. Weighed like
+ * every need: its sentences, plus one because the plan listed it. Most central first.
+ */
+export function centralPeople(
+  pool: Pick<VideoYoutubePool, "sentences" | "visualNeeds">,
+  namedSubjects?: (sentence: string) => NamedSubject[]
+): Array<{ name: string; beats: number[]; score: number }> {
+  if (!namedSubjects) return [];
+  const byKey = new Map<string, { name: string; beats: number[] }>();
+  pool.sentences.forEach((sentence, i) => {
+    const named = namedSubjects(sentence);
+    const business = new Set(named.filter((s) => s.kind === "company" || s.kind === "brand").flatMap((s) => contentWords(s.name)));
+    const plan = (pool.visualNeeds ?? []).filter((n) => n.beats.includes(i)).map((n) => new Set(contentWords(n.subject)));
+    for (const s of named) {
+      if (s.kind !== "name") continue;
+      const name = s.name.replace(/['’]s\b/gi, "").trim();
+      const words = contentWords(name);
+      if (words.length < 2 || words.some((w) => business.has(w))) continue;
+      /** "Ford Model T", "Tesla Model 3": a name that goes on in a capital or a number is a longer name, a thing. */
+      const runsOn = new RegExp(`${esc(name)}(?:['’]s)?\\s+[\\p{Lu}\\p{N}]`, "u");
+      if (runsOn.test(sentence) || (pool.visualNeeds ?? []).some((n) => n.beats.includes(i) && runsOn.test(n.subject))) continue;
+      /**
+       * "Tesla Fremont" while the script also says "Tesla's valuation": a name whose FIRST word the
+       * script uses on its own is a thing named after it (a plant, a model), not a person. A person is
+       * called by the LAST word ("Musk"), which this leaves alone.
+       */
+      const [first, ...rest] = name.split(/\s+/);
+      const alone = new RegExp(`(?<![\\p{L}\\p{N}])${esc(first!)}(?![\\p{L}\\p{N}])(?!\\s+${esc(rest.join(" "))}(?![\\p{L}\\p{N}]))`, "u");
+      if (pool.sentences.some((s) => alone.test(s))) continue;
+      if (!plan.some((need) => words.every((w) => need.has(w)))) continue;
+      const key = words.join(" ");
+      const held = byKey.get(key) ?? byKey.set(key, { name, beats: [] }).get(key)!;
+      if (!held.beats.includes(i)) held.beats.push(i);
+    }
+  });
+  return [...byKey.values()]
+    .map((p) => ({ name: p.name, beats: p.beats.sort((a, b) => a - b), score: p.beats.length + 1 }))
+    .sort((a, b) => b.score - a.score || a.beats[0]! - b.beats[0]!);
+}
+
+/**
+ * VIDEO 652 — a query that asked for this person: the whole name and at most one other word (a place,
+ * a year — the gate's own "subject + one concept"), not counting a word that says how they are filmed.
+ * "Kris Jenner Calabasas footage" asked for Kris Jenner; "Tesla Fremont Elon Musk footage" and
+ * "Elon Musk 2020 Tesla market capitalization footage" asked for a factory and a valuation.
+ */
+export function askedForPerson(query: string, person: string): boolean {
+  const own = contentWords(person);
+  const words = contentWords(query);
+  const rest = words.filter((w) => !own.includes(w) && !PERSON_ON_SCREEN_WORDS.includes(w));
+  return own.length > 0 && own.every((w) => words.includes(w)) && rest.length <= 1;
 }
 
 /** The most important subject the pool cannot show (VIDEO 640's Kris Jenner), or null. */
@@ -745,10 +813,43 @@ export async function buildVideoYoutubePool(
       );
     }
     const tried = new Set<string>();
+    /**
+     * VIDEO 652 — one search, at most, for the person the visual plan puts on screen most, inside the
+     * same budget: before the next need unless that need weighs more. Not when a query already asked
+     * for that person alone.
+     */
+    const person = centralPeople(pool, deps.namedSubjects)[0];
+    const personAskedFor = () => !!person && asked().some((q) => askedForPerson(q, person.name));
+    let personDone = !person || personAskedFor();
+    if (person) {
+      log(
+        `[PERSON_SEARCH] video=${input.videoId} person="${person.name}" sentences=[${person.beats.join(",")}] score=${person.score} ` +
+          (personDone ? "already asked for" : "pending")
+      );
+    }
     while (pool.searches < MAX_YOUTUBE_SEARCHES_PER_VIDEO && !deps.inCooldown?.()) {
       const next = namedSubjectCoverage(pool, deps.namedSubjects, { asked: asked(), important }).find(
         (e) => !e.covered && !tried.has(e.name)
       );
+      if (person && !personDone && personAskedFor()) {
+        personDone = true;
+        log(`[PERSON_SEARCH] video=${input.videoId} person="${person.name}" not searched — a search already asked for that person`);
+      }
+      if (person && !personDone && (!next || person.score >= next.score)) {
+        personDone = true;
+        const plan = planPersonQuery(deps, input, analysis, { name: person.name, beats: person.beats });
+        if (!plan) continue;
+        const ran = await runSearch(plan.query);
+        if (!ran) break;
+        (pool.entityTargets ??= []).push({
+          name: person.name, kind: "name", beats: person.beats, reason: "person_on_screen", n: ran.n, query: plan.query, score: person.score,
+        });
+        log(
+          `[PERSON_SEARCH] video=${input.videoId} search=#${ran.n} person="${person.name}" query="${plan.query}" ` +
+            `candidates=${ran.found} usable=${ran.usable} sentences=[${person.beats.join(",")}]`
+        );
+        continue;
+      }
       if (!next) break;
       tried.add(next.name);
       /** VIDEO 641 (Option A) — the need's own sentences, and the people they name, for a need without a name. */

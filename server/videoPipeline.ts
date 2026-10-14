@@ -211,6 +211,7 @@ import {
   generatedImagePrompt,
   generatedStillSec,
   imageServiceStandingDown,
+  pictureEditorUnavailableReason,
   stillImageGenerator,
 } from "./generatedImageFallback";
 import {
@@ -8339,7 +8340,7 @@ const articleScreenshotsByRender = new WeakMap<VisualDedupState, number>();
  * generated picture is pushed like any other (see `fetchBeatGeneratedImage`) and lands in the
  * scene's clip list under its own sentence.
  */
-async function generateMissingBeatImages(
+export async function generateMissingBeatImages(
   scenes: Scene[],
   sceneVisualResults: Array<SceneVisualsResult | undefined>,
   dedup: VisualDedupState,
@@ -8362,6 +8363,27 @@ async function generateMissingBeatImages(
       if (imageServiceStandingDown()) {
         console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — the image service refuses this account; the sentences keep their fallbacks`);
         return;
+      }
+      /** VIDEO 652 — nobody can approve a generated picture now, so none is paid for. */
+      const noJudge = pictureEditorUnavailableReason({
+        visionPipelineUnavailable: visionPipelineIsUnavailable(),
+        askImpossible: dedup.beatImageGate?.askImpossible === true,
+      });
+      if (noJudge) {
+        console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — ${noJudge}; nothing is generated, the sentences keep their fallbacks`);
+        return;
+      }
+      /**
+       * VIDEO 649/651 — this sentence's looks are spent: `adoptClip` stops before the picture editor
+       * (`[BeatShortlist] … stopped looking`), so a generated picture would be paid for and never
+       * looked at. 649 s0b0 and 651 s1b0 (twice) were made and refused exactly that way.
+       */
+      if (beatShortlistExhausted(dedup.beatShortlist, si, beat.index)) {
+        console.log(
+          `[${GENERATED_IMAGE_FALLBACK}] s${scene.index}b${beat.index} not generated — the sentence's ` +
+            `${maxShortlistPerBeat()} looks are spent, so nobody could approve a generated picture`
+        );
+        continue;
       }
       const clip = await fetchBeatGeneratedImage(beat, scene, workDir, si, dedup, videoTitle, GENERATED_IMAGES_PER_FILM - made);
       if (!clip) continue;
