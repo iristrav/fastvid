@@ -462,13 +462,22 @@ would. It answers the only question that matters: does this machine's network id
 
 Not on `/health`. A platform probes that endpoint every few seconds and this one costs a real
 request to YouTube; running it there would turn a health check into rate-limit pressure and make
-the thing it measures worse. It runs once at boot, and on demand at `/health/egress`.
+the thing it measures worse. It runs once at boot, and again from `/health/egress` when the last
+answer is older than `EGRESS_FRESH_SEC`.
 
 Never fatal. A service that cannot reach YouTube today may reach it in an hour, and refusing to
 start would remove the endpoint that says so.
 """
 
 _last_egress: dict[str, object] | None = None
+# When `_last_egress` was measured (monotonic seconds), and the one refresh that may run at a time.
+_last_egress_at: float | None = None
+_egress_refresh_lock = threading.Lock()
+
+# VIDEO 656 — how old a measured answer may be before the next ask refreshes it in the background.
+# The pipeline keeps the same answer for 30 s (`YOUTUBE_EGRESS_CACHE_MS`), so a fresher one would
+# never be read. Overridable for tests.
+EGRESS_FRESH_SEC = float(os.environ.get("EGRESS_FRESH_SEC", "30"))
 
 
 def _classify_probe_error(message: str) -> str:
@@ -571,7 +580,7 @@ def _runtime_facts(ydl: yt_dlp.YoutubeDL) -> dict[str, object]:
 
 def _probe_egress() -> dict[str, object]:
     """Ask YouTube for one video's metadata and report whether the answer got through."""
-    global _last_egress
+    global _last_egress, _last_egress_at
     result: dict[str, object]
     # Bound BEFORE the try. The handler below reads this, and `_probe_options` can raise — leaving
     # it assigned inside would turn a setup failure into a NameError in the very handler written to
@@ -614,13 +623,52 @@ def _probe_egress() -> dict[str, object]:
             **facts,
         }
     _last_egress = result
+    _last_egress_at = time.monotonic()
     return result
+
+
+def _refresh_egress_in_background() -> None:
+    """One probe at a time; a second ask while one runs adds nothing and waits for nothing."""
+    if not _egress_refresh_lock.acquire(blocking=False):
+        return
+
+    def run() -> None:
+        try:
+            _probe_egress()
+        except Exception as err:  # noqa: BLE001 — a refresh that throws keeps the last answer
+            logging.warning("[Egress] background probe failed: %s", str(err)[:200])
+        finally:
+            _egress_refresh_lock.release()
+
+    threading.Thread(target=run, name="egress-refresh", daemon=True).start()
+
+
+def _egress_answer() -> dict[str, object]:
+    """
+    VIDEO 656 — THE LAST MEASURED ANSWER, AT ONCE.
+
+    The pipeline asks this with a 3 s budget, because it asks on a beat that has already lost its
+    time. A live probe takes 5–25 s through the proxy (worker boot logs: 4 896 ms, 24 405 ms), so
+    every render-time ask came back `no_answer` while downloads beside it succeeded — the question
+    was asked and never heard. Now the answer measured last is returned straight away, with its age;
+    when it is older than `EGRESS_FRESH_SEC` a new probe starts in the background for the next ask.
+    Only when nothing was ever measured (boot probe still running or failed) does an ask wait for a
+    live probe.
+    """
+    if _last_egress is None or _last_egress_at is None:
+        return _probe_egress()
+    age = time.monotonic() - _last_egress_at
+    if age > EGRESS_FRESH_SEC:
+        _refresh_egress_in_background()
+    return {**_last_egress, "ageSec": round(age, 1)}
 
 
 @app.get("/health/egress")
 def health_egress() -> JSONResponse:
     """
-    A live answer to 'can this machine actually fetch from YouTube right now?'.
+    An answer to 'can this machine actually fetch from YouTube right now?' — the last one measured,
+    returned at once, and refreshed in the background when it is older than `EGRESS_FRESH_SEC`
+    (see `_egress_answer`).
 
     ── RONDE 258: the status code says it too ──────────────────────────────────────────────────
 
@@ -644,7 +692,7 @@ def health_egress() -> JSONResponse:
     The body is unchanged, so a client that reads `ok` rather than the status keeps working. The
     pipeline's own probe reads the body for exactly that reason.
     """
-    result = _probe_egress()
+    result = _egress_answer()
     return JSONResponse(result, status_code=200 if result.get("ok") else 503)
 
 

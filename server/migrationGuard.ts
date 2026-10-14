@@ -70,6 +70,9 @@ export interface MigrationDbOps {
   insertRecord(hash: string, folderMillis: number): Promise<void>;
   deleteRecord(folderMillis: number): Promise<void>;
   updateHash(folderMillis: number, newHash: string): Promise<void>;
+  /** VIDEO 656 — the rows with their own id, for `MIGRATION_DEDUPE` (optional for backward compat). */
+  getRecordedRows?(): Promise<Array<{ id: number; hash: string; created_at: number }>>;
+  deleteRowsById?(ids: readonly number[]): Promise<void>;
   // Extended checks for full schema-object reconciliation (optional for backward compat):
   columnExists?(table: string, column: string): Promise<boolean>;
   indexExists?(table: string, indexName: string): Promise<boolean>;
@@ -207,6 +210,23 @@ export function createDbOps(db: any): MigrationDbOps {
       await db.execute(
         sql`DELETE FROM \`__drizzle_migrations\` WHERE \`created_at\` = ${folderMillis}`
       );
+    },
+
+    async getRecordedRows() {
+      const res = (await db.execute(
+        sql`SELECT \`id\`, \`hash\`, \`created_at\` FROM \`__drizzle_migrations\` ORDER BY \`id\``
+      )) as unknown as [Array<{ id: string | number; hash: string; created_at: string | number }>, unknown];
+      const rows = Array.isArray(res) && Array.isArray(res[0]) ? res[0] : [];
+      return rows.map((r) => ({ id: Number(r.id), hash: r.hash, created_at: Number(r.created_at) }));
+    },
+
+    async deleteRowsById(ids: readonly number[]) {
+      for (let i = 0; i < ids.length; i += 200) {
+        const chunk = ids.slice(i, i + 200);
+        await db.execute(
+          sql`DELETE FROM \`__drizzle_migrations\` WHERE \`id\` IN (${sql.join(chunk.map((id) => sql`${id}`), sql`, `)})`
+        );
+      }
     },
 
     async updateHash(folderMillis: number, newHash: string) {
@@ -434,6 +454,51 @@ export function canonicaliseRecorded(
   };
 }
 
+/**
+ * VIDEO 656 — WHICH ROWS A ONE-TIME CLEAN-UP MAY DELETE (`MIGRATION_DEDUPE=true`).
+ *
+ * Production carries 1470 rows for 66 migrations, and 0047 is recorded under two hashes. The guard
+ * reports both and, by design, chooses nothing on its own (§3 above). This is the operator's
+ * explicit clean-up, and it chooses by EVIDENCE, never by arrival order:
+ *
+ *   · an identity whose rows include the hash of the file as it is now keeps the lowest-id row
+ *     with that hash; every other row of that identity goes — including a row with an old hash,
+ *     because the file that is deployed is the one whose effect the schema carries;
+ *   · an identity whose rows all agree (and none matches the file, or there is no file) keeps its
+ *     lowest-id row; the copies go, and the ordinary "modified after execution" report still runs;
+ *   · an identity whose rows DISAGREE and none matches the file keeps every row: there is no
+ *     evidence to choose by, and it stays reported.
+ *
+ * Deterministic, so two processes booting together delete the same rows. Never removes an identity.
+ */
+export function planMigrationDedupe(
+  rows: ReadonlyArray<{ id: number; hash: string; created_at: number }>,
+  fileHashByMillis: ReadonlyMap<number, string>
+): { deleteIds: number[]; unresolved: number[] } {
+  const byIdentity = new Map<number, Array<{ id: number; hash: string }>>();
+  for (const r of rows) {
+    const list = byIdentity.get(r.created_at) ?? [];
+    list.push({ id: r.id, hash: r.hash });
+    byIdentity.set(r.created_at, list);
+  }
+  const deleteIds: number[] = [];
+  const unresolved: number[] = [];
+  for (const [millis, list] of byIdentity) {
+    if (list.length < 2) continue;
+    const sorted = [...list].sort((a, b) => a.id - b.id);
+    const fileHash = fileHashByMillis.get(millis);
+    const matching = fileHash ? sorted.find((r) => r.hash === fileHash) : undefined;
+    const allAgree = sorted.every((r) => r.hash === sorted[0]!.hash);
+    const keep = matching ?? (allAgree ? sorted[0] : undefined);
+    if (!keep) {
+      unresolved.push(millis);
+      continue;
+    }
+    for (const r of sorted) if (r.id !== keep.id) deleteIds.push(r.id);
+  }
+  return { deleteIds: deleteIds.sort((a, b) => a - b), unresolved: unresolved.sort((a, b) => a - b) };
+}
+
 // ─── Main guard ───────────────────────────────────────────────────────────────
 
 export async function runMigrationsWithGuard(
@@ -466,6 +531,28 @@ export async function runMigrationsWithGuard(
   };
   const total = journal.entries.length;
   const milliToEntry = new Map(journal.entries.map((e) => [e.when, e]));
+
+  /**
+   * VIDEO 656 — the operator's one-time clean-up of redundant rows, before anything reads them.
+   * Off unless asked for; see `planMigrationDedupe` for what it may delete and why.
+   */
+  if (process.env.MIGRATION_DEDUPE === "true" && !dryRun && ops.getRecordedRows && ops.deleteRowsById) {
+    const fileHashByMillis = new Map<number, string>();
+    for (const e of journal.entries) {
+      const p = path.join(migrationsFolder, `${e.tag}.sql`);
+      if (fs.existsSync(p)) fileHashByMillis.set(e.when, sha256(fs.readFileSync(p, "utf-8")));
+    }
+    const rows = await ops.getRecordedRows();
+    const plan = planMigrationDedupe(rows, fileHashByMillis);
+    if (plan.deleteIds.length > 0) await ops.deleteRowsById(plan.deleteIds);
+    console.log(
+      `[Migration] MIGRATION_DEDUPE: ${rows.length} row(s) → removed ${plan.deleteIds.length} redundant row(s)` +
+        (plan.unresolved.length > 0
+          ? `; ${plan.unresolved.length} identity(ies) kept whole — their rows disagree and none matches the file`
+          : "") +
+        " — unset MIGRATION_DEDUPE once this has run"
+    );
+  }
 
   // Query current DB state
   const recordedRows = await ops.getRecordedMigrations();
