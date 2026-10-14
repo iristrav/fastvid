@@ -266,16 +266,19 @@ describe("DELIVERY — technical faults are a hard block; a valid film passes", 
     voiceoverSec: 67.9,
   };
 
-  it("9. corrupt, missing, silent, wrong-length or placeholder output → blocked", () => {
+  it("9. corrupt, missing, silent, wrong-length or black output → blocked; a placeholder or an unreadable clip → delivered and named (VIDEO 653)", () => {
     const blocked = (patch: Record<string, unknown>) => deliveryGate({ ...good, ...patch } as Parameters<typeof deliveryGate>[0]).allow;
     expect(blocked({ delivered: { ...good.delivered, readable: false, sizeBytes: 0 } })).toBe(false);
     expect(blocked({ delivered: null })).toBe(false);
     expect(blocked({ delivered: { ...good.delivered, hasVideoStream: false } })).toBe(false);
     expect(blocked({ delivered: { ...good.delivered, durationSec: 30 } })).toBe(false);
     expect(blocked({ timelineExists: false })).toBe(false);
-    expect(blocked({ clips: [{ ...good.clips[0], resolved: false }] })).toBe(false);
-    expect(blocked({ clips: [{ ...good.clips[0], isPlaceholder: true }] })).toBe(false);
     expect(blocked({ blankPicture: "every sample black" })).toBe(false);
+    const placeholder = deliveryGate({ ...good, clips: [{ ...good.clips[0], isPlaceholder: true }] } as Parameters<typeof deliveryGate>[0]);
+    expect(placeholder.allow && placeholder.qualityProblems.map((f) => f.code)).toEqual(["PLACEHOLDER_IN_DELIVERY"]);
+    /** Owner's rule (14 October): the worker renders without the clip; the gate names it. */
+    const unresolved = deliveryGate({ ...good, clips: [{ ...good.clips[0], resolved: false }] } as Parameters<typeof deliveryGate>[0]);
+    expect(unresolved.allow && unresolved.qualityProblems.map((f) => f.code)).toEqual(["CLIP_UNRESOLVED"]);
   });
 
   it("10. a technically valid film → SUCCESS", () => {

@@ -128,16 +128,16 @@ describe("one hard deadline for the visual phase", () => {
     expect(PIPE).toContain("sceneVisualResults[si] ??= { clips: [], beatDurations: [] };");
   });
 
-  it("an empty scene is a gap the timeline holds over; only a film with no picture at all is refused", () => {
+  it("an empty scene is a gap the timeline holds over; a film with no real picture is reported (VIDEO 653)", () => {
     expect(PIPE).toContain("no picture found — the timeline holds the previous shot");
-    /** ONE ROUTE: the rule lives in the DeliveryGate; the pipeline asks it and throws its sentence. */
+    /** ONE ROUTE: the rule lives in the DeliveryGate; the pipeline asks it and reports a QUALITY_PROBLEM (VIDEO 653). */
     const refusal = PIPE.indexOf("if (firstEmptySi !== null) {");
     expect(refusal).toBeGreaterThan(0);
     expect(PIPE).toContain("const firstEmptySi = filmWithoutPictureRefusal(");
     expect(filmWithoutPictureRefusal([[], ["fallback.mp4"]], (c) => c === "fallback.mp4")).toBe(0);
     expect(filmWithoutPictureRefusal([[], ["real.mp4"]], (c) => c === "fallback.mp4")).toBeNull();
     expect(filmWithoutPictureRefusal([], () => false)).toBeNull();
-    expect(PIPE.indexOf("no picture was found for any of its beats — export geblokkeerd")).toBeGreaterThan(refusal);
+    expect(PIPE.indexOf("QUALITY_PROBLEM FILM_WITHOUT_REAL_PICTURE")).toBeGreaterThan(refusal);
   });
 
   it("the timeline stays valid across a gap — the previous shot is held to the next one", () => {

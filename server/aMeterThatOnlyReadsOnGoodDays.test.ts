@@ -22,14 +22,15 @@ import { PipelineStepTiming } from "./pipelineStepTiming";
 const PIPE = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
 /**
- * The export-gate block: everything between the scene's "bruikbare clips" line and the throw that
- * ends the render. This is the exit render 582 and render 584 both took.
+ * The export-gate block: everything between the scene's "bruikbare clips" line and the line that
+ * gives the film up to its fallback pictures (a throw until VIDEO 653, a QUALITY_PROBLEM since).
+ * This is the exit render 582 and render 584 both took.
  */
 const exportGateBlock = (): string => {
   const from = PIPE.indexOf("bruikbare clips — ");
-  const to = PIPE.indexOf("export geblokkeerd", from);
+  const to = PIPE.indexOf("QUALITY_PROBLEM FILM_WITHOUT_REAL_PICTURE", from);
   expect(from, "the export gate's diagnostic line").toBeGreaterThan(-1);
-  expect(to, "the throw that ends the render").toBeGreaterThan(from);
+  expect(to, "the line that gives the film up to its fallback pictures").toBeGreaterThan(from);
   return PIPE.slice(from, to);
 };
 

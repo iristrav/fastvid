@@ -455,36 +455,45 @@ describe("the DeliveryGate decides (Eis A + B)", () => {
   const clean: PlaceholderCheckFacts = { method: "all_frames", complete: true, framesSampled: 150, placeholderFrames: 0, placeholderSec: 0, plannedCardSec: 0, confirmedPlaceholderSec: 0, indicatedPlaceholderSec: 0, unplannedPlaceholderFrames: 0, contentGraphicGroundSec: 0, decodedSec: 6 };
   const covered = () => sentenceCoverage(timeline({ sentences: [sentence(0, 0, 0, 4)], clips: [clip("a", { start: 0, end: 4 })] }));
 
-  it("1. a render with a placeholder is refused: the planned card, and the frames the scan saw", () => {
+  /** VIDEO 653 — the same findings, measured exactly as before; they are delivered as quality problems, never as a refusal. */
+  const problems = (v: ReturnType<typeof deliveryGate>) => (v.allow ? v.qualityProblems : []);
+
+  it("1. a render with a placeholder is delivered and the planned card and the frames the scan saw are named", () => {
     const t = timeline({ sentences: [sentence(0, 0, 0, 4.42)], clips: [{ ...clip("g_graphic1", { start: 0, end: 4.42 }), transform: { opacity: 0 } }], graphics: [graphic("gfx1", "chapter_card", 0, 4.42)] });
     const scan: PlaceholderCheckFacts = { ...clean, framesSampled: 150, placeholderFrames: 110, placeholderSec: 4.42, plannedCardSec: 4.42, confirmedPlaceholderSec: 4.42, indicatedPlaceholderSec: 4.42 };
     const v = deliveryGate({ ...base, sentenceCoverage: sentenceCoverage(t), placeholderCheck: scan });
-    expect(v.allow).toBe(false);
-    const codes = !v.allow ? v.failures.map((f) => f.code) : [];
+    expect(v.allow).toBe(true);
+    const codes = problems(v).map((f) => f.code);
     expect(codes).toEqual(expect.arrayContaining(["SENTENCE_NOT_COVERED", "CHAPTER_CARD_PLACEHOLDER", "PLACEHOLDER_IN_FILE"]));
     expect(v.lines.some((l) => l.includes("COVERAGE sentences=1 covered=0 partial=0 uncovered=1 unknown=0"))).toBe(true);
     expect(v.lines.some((l) => l.includes("PLACEHOLDER method=all_frames complete=yes frames=150 placeholderFrames=110 placeholderSec=4.42"))).toBe(true);
-    expect(!v.allow && v.failures.find((f) => f.code === "PLACEHOLDER_IN_FILE")!.detail).toBe(
+    expect(problems(v).find((f) => f.code === "PLACEHOLDER_IN_FILE")!.detail).toBe(
       "110 of 150 frame(s) show the blue-grey chapter-card ground: 4.42s where exactly 0.00s is allowed (planned cards 4.42s)"
     );
-    /** a placeholder the scan saw where nothing was planned blocks on its own */
+    /** a placeholder the scan saw where nothing was planned is named on its own */
     const unplanned = deliveryGate({ ...base, sentenceCoverage: covered(), placeholderCheck: { ...clean, placeholderFrames: 1, unplannedPlaceholderFrames: 1 } });
-    expect(unplanned.allow).toBe(false);
-    expect(!unplanned.allow && unplanned.failures.map((f) => f.code)).toEqual(["PLACEHOLDER_IN_FILE"]);
+    expect(unplanned.allow).toBe(true);
+    expect(problems(unplanned).map((f) => f.code)).toEqual(["PLACEHOLDER_IN_FILE"]);
   });
 
-  it("2. a render with an uncovered or partially covered sentence is refused, naming the sentence and why", () => {
+  it("2. a render with an uncovered or partially covered sentence is delivered, naming the sentence and why", () => {
     const partial = sentenceCoverage(timeline({ sentences: [sentence(0, 0, 0, 6, "measured", "The Detroit Auto Show.")], clips: [clip("a", { start: 0, end: 2.5 })] }));
     const v = deliveryGate({ ...base, sentenceCoverage: partial, placeholderCheck: clean });
-    expect(v.allow).toBe(false);
-    expect(!v.allow && v.failures).toEqual([{ code: "SENTENCE_NOT_COVERED", detail: 's0b0 "The Detroit Auto Show.": 2.50s of 6.00s covered — no picture 3.50s' }]);
+    expect(v.allow).toBe(true);
+    expect(problems(v)).toEqual([{ code: "SENTENCE_NOT_COVERED", detail: 's0b0 "The Detroit Auto Show.": 2.50s of 6.00s covered — no picture 3.50s' }]);
     const stretched = sentenceCoverage(timeline({ sentences: [sentence(0, 0, 0, 6.08)], clips: [clip("a", { start: 0, end: 6.08, sourceSec: 3.56 })] }));
     const w = deliveryGate({ ...base, sentenceCoverage: stretched, placeholderCheck: clean });
-    expect(!w.allow && w.failures[0]!.detail).toContain("clip held past its source 2.52s");
+    /** video 653's case: a clip held past its source on one sentence — the film is delivered */
+    expect(w.allow).toBe(true);
+    expect(problems(w)[0]!.detail).toContain("clip held past its source 2.52s");
+    expect(w.lines.join("\n")).toContain("QUALITY_PROBLEM SENTENCE_NOT_COVERED");
   });
 
-  it("3. unknown coverage is never passed silently: no measurement, no sentences, estimated timing, an unverified clip, or a scan that did not run / was incomplete", () => {
-    const codes = (v: ReturnType<typeof deliveryGate>) => (v.allow ? [] : v.failures.map((f) => f.code));
+  it("3. unknown coverage is never passed silently: no measurement, no sentences, estimated timing, an unverified clip, or a scan that did not run / was incomplete — each is named", () => {
+    const codes = (v: ReturnType<typeof deliveryGate>) => {
+      expect(v.allow).toBe(true);
+      return problems(v).map((f) => f.code);
+    };
     expect(codes(deliveryGate({ ...base, sentenceCoverage: null, placeholderCheck: clean }))).toEqual(["SENTENCE_COVERAGE_UNPROVEN"]);
     expect(codes(deliveryGate({ ...base, sentenceCoverage: sentenceCoverage(timeline({})), placeholderCheck: clean }))).toEqual(["SENTENCE_COVERAGE_UNPROVEN"]);
     const estimated = sentenceCoverage(timeline({ sentences: [sentence(0, 0, 0, 4, "estimated")], clips: [clip("a", { start: 0, end: 4 })] }));
@@ -493,7 +502,7 @@ describe("the DeliveryGate decides (Eis A + B)", () => {
     expect(codes(deliveryGate({ ...base, sentenceCoverage: unverified, placeholderCheck: clean }))).toEqual(["SENTENCE_COVERAGE_UNPROVEN"]);
     expect(codes(deliveryGate({ ...base, sentenceCoverage: covered(), placeholderCheck: null }))).toEqual(["PLACEHOLDER_CHECK_INCOMPLETE"]);
     expect(codes(deliveryGate({ ...base, sentenceCoverage: covered(), placeholderCheck: { ...clean, complete: false, detail: "decoded 3.00s of 7.00s" } }))).toEqual(["PLACEHOLDER_CHECK_INCOMPLETE"]);
-    /** a scan that saw seconds but no frame count, or frames but no seconds, blocks either way */
+    /** a scan that saw seconds but no frame count, or frames but no seconds, is named either way */
     expect(codes(deliveryGate({ ...base, sentenceCoverage: covered(), placeholderCheck: { ...clean, placeholderSec: 0.04 } }))).toEqual(["PLACEHOLDER_IN_FILE"]);
     expect(codes(deliveryGate({ ...base, sentenceCoverage: covered(), placeholderCheck: { ...clean, placeholderFrames: 1 } }))).toEqual(["PLACEHOLDER_IN_FILE"]);
     /** the pure rule function answers the same */

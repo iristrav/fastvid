@@ -267,7 +267,7 @@ describe("R227 §4 — read where it matters, not only in the report", () => {
   it("BEFORE the throw, and after the funnel it qualifies", () => {
     const funnel = PIPE.indexOf("formatBeatShortlists(visualDedup.beatShortlist)");
     const inv = PIPE.indexOf("beatShortlistViolations(visualDedup.beatShortlist)");
-    const thrown = PIPE.indexOf("no picture was found for any of its beats — export geblokkeerd");
+    const thrown = PIPE.indexOf("QUALITY_PROBLEM FILM_WITHOUT_REAL_PICTURE");
     expect(inv).toBeGreaterThan(funnel);
     expect(inv, "the invariants print after the render has thrown").toBeLessThan(thrown);
   });
@@ -295,7 +295,9 @@ describe("R227 §4 — read where it matters, not only in the report", () => {
 
   it("NOTHING WAS DECIDED — the scene gate still only reports", () => {
     const at = PIPE.indexOf("const why = formatNoVerdictReasons(visualDedup.beatImageGate);");
-    const block = PIPE.slice(at, PIPE.indexOf("throw pipelineError(", at));
+    /** VIDEO 653 — the block ends at its QUALITY_PROBLEM line now, not at a throw. */
+    const block = PIPE.slice(at, PIPE.indexOf("QUALITY_PROBLEM FILM_WITHOUT_REAL_PICTURE", at));
+    expect(block.length).toBeGreaterThan(0);
     expect(block).not.toContain("continue;");
     expect(block).not.toContain("admitToShortlist");
     expect(block).not.toContain("noteAskImpossible");

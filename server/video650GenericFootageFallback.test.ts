@@ -210,7 +210,7 @@ describe("VIDEO 650 — generic footage in the coverage check and the delivery g
     expect(v.lines.some((l) => l.includes("QUALITY_NOTE GENERIC_FOOTAGE sentences=1 sec=4.00 (s0b0)"))).toBe(true);
   });
 
-  it("the synthetic colour field is NOT cover: its sentence is uncovered, named synthetic_placeholder on the row, a problem in the report, a QUALITY_PROBLEM at the gate — and the film is REFUSED, never delivered as if it had a picture", () => {
+  it("the synthetic colour field is NOT cover: its sentence is uncovered, named synthetic_placeholder on the row, a problem in the report, a QUALITY_PROBLEM at the gate — and (VIDEO 653) the film is delivered with the problem named, never as if it had a picture", () => {
     const placeholder = clipFor("p", { start: 0, end: 4, approval: "generic_footage", archive: 43 });
     placeholder.source = { ...placeholder.source, provider: SYNTHETIC_PLACEHOLDER_PROVIDER, providerAssetId: "synthetic-p0-5s" };
     const t = timelineWith([placeholder], [sentence(0, 0, 4)]);
@@ -224,10 +224,10 @@ describe("VIDEO 650 — generic footage in the coverage check and the delivery g
       clips: [{ clipId: "p", archiveAssetId: 43, provider: SYNTHETIC_PLACEHOLDER_PROVIDER, providerAssetId: "synthetic-p0-5s", resolved: true, fromArchive: true, isPlaceholder: false }],
       sentenceCoverage: r,
     });
-    expect(v.allow).toBe(false);
-    expect(v.failures.some((f) => f.code === "SENTENCE_NOT_COVERED" && f.detail.includes("synthetic placeholder"))).toBe(true);
-    expect(v.lines.some((l) => l.includes("QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER sentences=1 sec=4.00 (s0b0)") && l.includes("EMERGENCY fallback") && l.includes("NOT footage") && l.includes("not delivered"))).toBe(true);
-    /** half a sentence on a real clip, half on the colour field: partial, still refused */
+    expect(v.allow).toBe(true);
+    expect(v.allow && v.qualityProblems.some((f) => f.code === "SENTENCE_NOT_COVERED" && f.detail.includes("synthetic placeholder"))).toBe(true);
+    expect(v.lines.some((l) => l.includes("QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER sentences=1 sec=4.00 (s0b0)") && l.includes("EMERGENCY fallback") && l.includes("NOT footage") && l.includes("delivered anyway"))).toBe(true);
+    /** half a sentence on a real clip, half on the colour field: partial, still not cover */
     const half = clipFor("p2", { start: 2, end: 4, approval: "generic_footage", archive: 44 });
     half.source = { ...half.source, provider: SYNTHETIC_PLACEHOLDER_PROVIDER, providerAssetId: "synthetic-p1-2s" };
     const mixed = sentenceCoverage(timelineWith([clipFor("a", { start: 0, end: 2, approval: "judge_fit", archive: 45 }), half], [sentence(0, 0, 4)]));
@@ -246,15 +246,15 @@ describe("VIDEO 650 — generic footage in the coverage check and the delivery g
     expect(fs.readFileSync(path.join(__dirname, "railwayLogAnalyser.ts"), "utf8")).toContain("COVERAGE|PLACEHOLDER|QUALITY_NOTE|QUALITY_PROBLEM)$/");
   });
 
-  it("the delivery gate still REFUSES a generic clip without an archive handle, and a card", () => {
+  it("the delivery gate names a generic clip without an archive handle (VIDEO 653: delivered, a quality problem)", () => {
     const t = timelineWith([clipFor("g", { start: 0, end: 4, approval: "generic_footage", archive: null })], [sentence(0, 0, 4)]);
     const v = deliveryGate({
       videoId: 650, route: "cinematic_timeline", timelineExists: true, assetsOnly: true, delivered: null,
       clips: [{ clipId: "g", archiveAssetId: null, provider: GENERIC_FOOTAGE_PROVIDER, providerAssetId: "x", resolved: true, fromArchive: false, isPlaceholder: false }],
       sentenceCoverage: sentenceCoverage(t),
     });
-    expect(v.allow).toBe(false);
-    expect(!v.allow && v.failures.map((f) => f.code)).toContain("CLIP_WITHOUT_ARCHIVE_ASSET");
+    expect(v.allow).toBe(true);
+    expect(v.allow && v.qualityProblems.map((f) => f.code)).toContain("CLIP_WITHOUT_ARCHIVE_ASSET");
   });
 });
 

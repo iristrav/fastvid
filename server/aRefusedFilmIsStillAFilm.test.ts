@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { visionCoverageRefusal, assertVisionCoverageExportGate, type VisionCoverageBeat } from "./deliveryGate";
+import { visionCoverageRefusal, type VisionCoverageBeat } from "./deliveryGate";
 
 /**
  * REFUSING TO PUBLISH A FILM AND DESTROYING IT ARE NOT THE SAME ACT.
@@ -35,6 +35,12 @@ import { visionCoverageRefusal, assertVisionCoverageExportGate, type VisionCover
  * Only WHEN the refusal is thrown. The two conditions, the message, the error code and the `failed`
  * status are identical. Nothing is published that was not published before: a blocked export is
  * still `failed`, still carries the reason, and is never `completed`.
+ *
+ * ── VIDEO 653 — the finding no longer stops the film ────────────────────────────────────────
+ *
+ * The owner's rule since 14 October: a video is always delivered; a picture that may be wrong is
+ * something the customer replaces in the editor. The finding below is unchanged and still decided
+ * on both conditions; it is now reported as a QUALITY_PROBLEM instead of thrown.
  */
 
 const beat = (sceneIndex: number, beatIndex: number, verdicts: number, hasRealFootage = true): VisionCoverageBeat =>
@@ -79,26 +85,8 @@ describe("the refusal itself is unchanged", () => {
     ).toBeNull();
   });
 
-  it("the thrown form and the value form say exactly the same thing", () => {
-    let thrown = "";
-    try {
-      assertVisionCoverageExportGate(RENDER_580);
-    } catch (e) {
-      thrown = (e as Error).message;
-    }
-    /**
-     * Contains rather than equals: `pipelineError` appends its own numeric code to the message
-     * (`… (10115)`), which is the error channel's business and not the gate's sentence. The
-     * guarantee that matters is that the value form and the thrown form carry the same reasoning.
-     */
-    expect(thrown).toContain(visionCoverageRefusal(RENDER_580));
-    expect(thrown).toContain("10115");
-  });
-
-  it("and a clean render throws nothing", () => {
-    expect(() =>
-      assertVisionCoverageExportGate({ providerUnavailable: 0, beats: [beat(0, 0, 0)] })
-    ).not.toThrow();
+  it("a clean render has no finding", () => {
+    expect(visionCoverageRefusal({ providerUnavailable: 0, beats: [beat(0, 0, 0)] })).toBeNull();
   });
 });
 
@@ -106,22 +94,16 @@ describe("the refused film is kept where the operator can see it", () => {
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
   it("the operator hears about it at the moment it is decided, not only at the end", () => {
-    /**
-     * Sixty-three minutes is a long time to be told nothing: the log says why from the moment the
-     * evidence is in, and the render then ends as failed at the export gates.
-     */
-    expect(PIPE).toContain("[VisionCoverage] EXPORT WILL BE BLOCKED");
-    expect(PIPE).toContain("the render ends as failed at the export gates; nothing is uploaded");
+    /** Sixty-three minutes is a long time to be told nothing: the log says why from the moment the evidence is in. */
+    expect(PIPE).toContain("[VisionCoverage] QUALITY_PROBLEM UNJUDGED_FOOTAGE");
   });
 
-  it("IT IS REPORTED BEFORE THE OTHER EXPORT GATES", () => {
-    /**
-     * When more than one gate would refuse, unjudged footage on screen is the graver finding and
-     * the one RONDE 562 exists for — so it is the reason the operator is given.
-     */
-    const vision = PIPE.indexOf("assertVisionCoverageExportGate(visionCoverageParams)");
+  it("VIDEO 653 — IT IS REPORTED, NOT THROWN, AND BEFORE THE OTHER EXPORT GATES", () => {
+    const vision = PIPE.indexOf("const visionCoverageBlock = visionCoverageRefusal(visionCoverageParams);");
     const quality = PIPE.indexOf("enforceQualityExportGate(videoId, qualityReport");
+    expect(vision).toBeGreaterThan(-1);
     expect(vision).toBeLessThan(quality);
+    expect(PIPE).not.toContain("the render ends as failed at the export gates");
   });
 });
 
@@ -158,12 +140,12 @@ describe("nothing was weakened to stop losing the film", () => {
     expect(REPORT).toContain("MOSTLY_UNVERIFIED_CLIPS");
   });
 
-  it("the assert wrapper still has a production caller", () => {
+  it("VIDEO 653 — the throwing wrapper is gone rather than left with only test callers", () => {
     /**
-     * It would otherwise be an export whose only callers are tests — the shape this codebase has
-     * now found four times (`formatAssetTrace`, `metadata.publishedAt`, `beatIndex`,
-     * `externalVisualSourcingEnabled`). The pipeline throws through it rather than around it.
+     * An export whose only callers are tests is the shape this codebase has found four times
+     * (`formatAssetTrace`, `metadata.publishedAt`, `beatIndex`, `externalVisualSourcingEnabled`).
      */
-    expect(PIPE).toContain("assertVisionCoverageExportGate(visionCoverageParams)");
+    expect(REPORT).not.toContain("export function assertVisionCoverageExportGate");
+    expect(PIPE).not.toContain("assertVisionCoverageExportGate");
   });
 });

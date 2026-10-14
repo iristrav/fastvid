@@ -34,15 +34,21 @@
  *
  * Refuse when an OUTAGE left real footage unjudged. Never refuse a render that was merely thrifty
  * (budget spent), deliberately unjudged (gate off), or unlucky in a way that cost nothing.
+ *
+ * ── VIDEO 653 — the owner's rule: a video is always delivered ───────────────────────────────
+ *
+ * Since 14 October the finding no longer stops the film. The owner chose delivery over refusal:
+ * a picture that may be wrong is replaced by the customer in the editor. The finding is decided
+ * on exactly the same two conditions and is reported as a QUALITY_PROBLEM naming the beats, so the
+ * risk this file was written for (render 562) is now visible in the log instead of prevented.
  */
 import { describe, expect, it } from "vitest";
 
-import { PIPELINE_ERROR } from "@shared/appErrors";
 import {
   createBeatImageGateState,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
-import { assertVisionCoverageExportGate, type VisionCoverageBeat } from "./deliveryGate";
+import { visionCoverageRefusal, type VisionCoverageBeat } from "./deliveryGate";
 
 const judged = (s: number, b: number): VisionCoverageBeat => ({
   sceneIndex: s, beatIndex: b, verdicts: 2, hasRealFootage: true,
@@ -56,7 +62,7 @@ const emptyBeat = (s: number, b: number): VisionCoverageBeat => ({
 
 /* ═══════════════════════ the refusal ═══════════════════════ */
 
-describe("an outage that put unjudged footage on screen stops the render", () => {
+describe("an outage that put unjudged footage on screen is named as a quality problem", () => {
   /** Render 562's own shape: some beats judged before the outage, four after it with nothing. */
   const production = {
     providerUnavailable: 23,
@@ -67,30 +73,13 @@ describe("an outage that put unjudged footage on screen stops the render", () =>
     noVerdictSummary: "[BeatImageGate] no verdict: 23x gate could not ask",
   };
 
-  it("refuses render 562", () => {
-    expect(() => assertVisionCoverageExportGate(production)).toThrow();
-  });
-
-  /**
-   * The same failure code the other export gates use, so `server/routers.ts` marks the video
-   * `failed` with this reason instead of `completed`. `pipelineError` carries the code in the
-   * message suffix, which is what the caller and the database both see.
-   */
-  it("fails with the quality-gate code, so the video is marked failed with a reason", () => {
-    let message = "";
-    try {
-      assertVisionCoverageExportGate(production);
-      throw new Error("the gate did not fire");
-    } catch (err) {
-      message = (err as Error).message;
-    }
-    expect(message).toContain(`(${PIPELINE_ERROR.QUALITY_GATE})`);
+  it("finds render 562", () => {
+    expect(visionCoverageRefusal(production)).toBeTruthy();
   });
 
   /** The message has to tell an operator what to do, not just that something is wrong. */
   it("names the beats, the scale, and the way out", () => {
-    let message = "";
-    try { assertVisionCoverageExportGate(production); } catch (e) { message = (e as Error).message; }
+    const message = visionCoverageRefusal(production) ?? "";
     expect(message, "the unjudged beats are not named").toContain("s2b0");
     expect(message, "the scale is missing").toMatch(/4 of 8 beat\(s\)/);
     expect(message, "the outage count is missing").toContain("23");
@@ -100,69 +89,69 @@ describe("an outage that put unjudged footage on screen stops the render", () =>
 
   /** One unjudged beat is enough — this is not a majority rule. */
   it("one unjudged beat among many judged ones is enough", () => {
-    expect(() =>
-      assertVisionCoverageExportGate({
+    expect(
+      visionCoverageRefusal({
         providerUnavailable: 1,
         beats: [judged(0, 0), judged(0, 1), judged(0, 2), unjudged(0, 3)],
       })
-    ).toThrow(/1 of 4 beat\(s\)/);
+    ).toMatch(/1 of 4 beat\(s\)/);
   });
 });
 
 /* ═══════════════════════ what it must NOT refuse ═══════════════════════ */
 
-describe("a render that was not blind still ships", () => {
+describe("a render that was not blind has no finding", () => {
   /**
    * The condition that keeps this from being a tripwire on every thrifty render. A budget
    * ceiling, a missing frame and a switched-off gate all produce unjudged beats, and none of
    * them means a provider was unreachable.
    */
   it("unjudged beats with no outage are not this gate's business", () => {
-    expect(() =>
-      assertVisionCoverageExportGate({
+    expect(
+      visionCoverageRefusal({
         providerUnavailable: 0,
         beats: [unjudged(0, 0), unjudged(0, 1), unjudged(0, 2)],
       })
-    ).not.toThrow();
+    ).toBeNull();
   });
 
   /** An outage that cost only candidates nobody used is a slow render, not a bad video. */
   it("an outage that left no footage unjudged is not a failure", () => {
-    expect(() =>
-      assertVisionCoverageExportGate({
+    expect(
+      visionCoverageRefusal({
         providerUnavailable: 40,
         beats: [judged(0, 0), judged(0, 1), emptyBeat(0, 2)],
       })
-    ).not.toThrow();
+    ).toBeNull();
   });
 
   /** A beat with no real footage carries nothing that needed approving. */
   it("beats without real footage never trigger it", () => {
-    expect(() =>
-      assertVisionCoverageExportGate({
+    expect(
+      visionCoverageRefusal({
         providerUnavailable: 12,
         beats: [emptyBeat(0, 0), emptyBeat(0, 1)],
       })
-    ).not.toThrow();
+    ).toBeNull();
   });
 
-  it("a render with no beats at all does not throw", () => {
-    expect(() =>
-      assertVisionCoverageExportGate({ providerUnavailable: 5, beats: [] })
-    ).not.toThrow();
+  it("a render with no beats at all has no finding", () => {
+    expect(
+      visionCoverageRefusal({ providerUnavailable: 5, beats: [] })
+    ).toBeNull();
   });
 
   /** Both conditions are required; neither alone is a defect. */
   it("needs the outage AND the unjudged footage together", () => {
-    expect(() =>
-      assertVisionCoverageExportGate({ providerUnavailable: 0, beats: [unjudged(0, 0)] })
-    ).not.toThrow();
-    expect(() =>
-      assertVisionCoverageExportGate({ providerUnavailable: 9, beats: [judged(0, 0)] })
-    ).not.toThrow();
-    expect(() =>
-      assertVisionCoverageExportGate({ providerUnavailable: 9, beats: [unjudged(0, 0)] })
-    ).toThrow();
+    expect(
+      visionCoverageRefusal({ providerUnavailable: 0, beats: [unjudged(0, 0)] })
+    ).toBeNull();
+    expect(
+      visionCoverageRefusal({ providerUnavailable: 9, beats: [judged(0, 0)] })
+    ).toBeNull();
+    expect(
+      visionCoverageRefusal({ providerUnavailable: 9, beats: [unjudged(0, 0)] })
+    ).toBeTruthy();
   });
 });
 
@@ -187,7 +176,7 @@ describe("providerUnavailable counts outages and nothing else", () => {
   /**
    * THE COUNTER MUST ACTUALLY BE FED — the half a unit test cannot reach.
    *
-   * Everything above drives `assertVisionCoverageExportGate` with numbers handed to it. If nothing
+   * Everything above drives `visionCoverageRefusal` with numbers handed to it. If nothing
    * increments the counter in the real gate, every one of those tests still passes and the export
    * gate never fires in production. Removing both increments was caught by no test until this one.
    *
@@ -260,33 +249,21 @@ describe("the gate still fails open per clip", () => {
     expect(require("fs").readFileSync(require("path").join(__dirname, "config.ts"), "utf8")).not.toContain("ENABLE_BEAT_IMAGE_RELEVANCE_GATE");
 
     const quality = fs.readFileSync(path.join(__dirname, "deliveryGate.ts"), "utf8");
-    expect(quality, "the export gate is missing").toContain("assertVisionCoverageExportGate");
+    expect(quality, "the finding is missing").toContain("export function visionCoverageRefusal");
 
     const pipe = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    /**
-     * Matched without pinning the argument form. Render 580 separated the decision from the throw —
-     * the verdict is taken before Stage 5 where the beat audit is complete, and thrown after the
-     * upload so `recordBlockedExport` keeps the refused film — so the call now takes a named
-     * parameter object. An anchor on `({` read that as the pipeline no longer calling the gate.
-     */
-    expect(pipe, "the pipeline never calls the export gate").toMatch(
-      /assertVisionCoverageExportGate\((\{|visionCoverageParams\))/
+    expect(pipe, "the pipeline never asks for the finding").toContain(
+      "const visionCoverageBlock = visionCoverageRefusal(visionCoverageParams);"
     );
-    expect(pipe, "the gate is fed something other than the outage counter").toContain(
+    expect(pipe, "the finding is fed something other than the outage counter").toContain(
       "visualDedup.beatImageGate.judgementsProviderUnavailable"
     );
     /**
-     * And the refusal still ENDS the render. Deferring the throw must not have turned the gate into
-     * a warning: a render that logs "EXPORT WILL BE BLOCKED" and then completes would be the exact
-     * failure RONDE 562 was written for, wearing the fix as a disguise.
+     * VIDEO 653 — the finding is reported, not thrown: the owner's rule is that a video is always
+     * delivered and the customer replaces a doubtful picture. It must still be REPORTED, by name.
      */
-    const thrown = pipe.indexOf("assertVisionCoverageExportGate(visionCoverageParams)");
-    expect(thrown, "the gate is decided but never thrown").toBeGreaterThan(-1);
-    /** It throws before any render job is queued, so a refused film is never rendered or published. */
-    expect(thrown, "the gate runs after the render job is queued").toBeLessThan(
-      pipe.indexOf("cutover = await enqueueCinematicRender({")
-    );
-    expect(pipe, "the refusal is caught and swallowed").not.toContain("catch (gateError)");
+    expect(pipe, "the finding is no longer reported").toContain("[VisionCoverage] QUALITY_PROBLEM UNJUDGED_FOOTAGE");
+    expect(pipe, "the finding still ends the render").not.toContain("assertVisionCoverageExportGate");
   });
 
   /** The existing coverage gate keeps its own job — this is a second question, not a rewrite. */

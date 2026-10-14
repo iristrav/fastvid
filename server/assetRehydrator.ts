@@ -250,7 +250,37 @@ export type RehydrateDeps = {
    * or the download ceilings, so it does not talk to YouTube at all: it asks this.
    */
   youtubeResolver?: (videoId: string, destPath: string) => Promise<ProviderResolution | boolean>;
+  /**
+   * VIDEO 653 — the emergency colour field is made, not fetched: its id names its palette and its
+   * length ("synthetic-p4-7s"), so it is drawn again here. Tests pass a stand-in; production draws it.
+   */
+  makeSynthetic?: (spec: { palette: number; durationSec: number }, destPath: string) => Promise<boolean>;
 };
+
+/** VIDEO 653 — "synthetic-p<palette>-<seconds>s", as `syntheticAssetId` writes it; null for anything else. */
+export function syntheticPlaceholderSpec(providerAssetId: string | null | undefined): { palette: number; durationSec: number } | null {
+  const m = /^synthetic-p(\d+)-(\d+)s$/.exec((providerAssetId ?? "").trim());
+  if (!m) return null;
+  const durationSec = Number(m[2]);
+  return durationSec > 0 ? { palette: Number(m[1]), durationSec } : null;
+}
+
+async function drawSyntheticPlaceholder(spec: { palette: number; durationSec: number }, destPath: string): Promise<boolean> {
+  const [{ makeSyntheticMotionClip }, { resolveFFmpegBin }, { DEFAULT_FORMAT }] = await Promise.all([
+    import("./genericFootageFallback"),
+    import("./ffmpegBinary"),
+    import("./projectTimeline"),
+  ]);
+  const made = await makeSyntheticMotionClip(resolveFFmpegBin(), {
+    output: destPath,
+    durationSec: spec.durationSec,
+    widthPx: DEFAULT_FORMAT.widthPx,
+    heightPx: DEFAULT_FORMAT.heightPx,
+    fps: DEFAULT_FORMAT.fps,
+    seed: spec.palette,
+  });
+  return made.ok;
+}
 
 /* ═══════════════════════ technical validation ═══════════════════════ */
 
@@ -454,6 +484,22 @@ export async function rehydrateAsset(params: {
    * second into the first, so the branch keeps the provider-list question it always asked. The
    * archive id still excuses an unknown provider, exactly as RONDE 148 established.
    */
+  /**
+   * VIDEO 653 — the emergency colour field has no archive copy on purpose (VIDEO 651: it is never
+   * filed as footage). Video 651 and 652 were refused because a render could not find it again; it
+   * is drawn again from its own id instead, so a film resting on it is still a film.
+   */
+  if (provider === "synthetic_placeholder") {
+    const spec = syntheticPlaceholderSpec(assetId);
+    if (spec) {
+      const dest = path.join(workDir, `rehydrated_${assetId}.mp4`);
+      const drawn = await (deps.makeSynthetic ?? drawSyntheticPlaceholder)(spec, dest).catch(() => false);
+      if (drawn) {
+        return done(dest, { cacheHit: false, downloaded: false, sourceUrl: null, provenance: "drawn again from its id (synthetic placeholder)" });
+      }
+      return fail(identity, "ASSET_NOT_FOUND", `provider=${provider} id=${assetId} — the colour field could not be drawn again`);
+    }
+  }
   if (!identityCarriesAHandle(identity)) {
     return fail(
       identity, "REHYDRATION_IDENTITY_MISSING",

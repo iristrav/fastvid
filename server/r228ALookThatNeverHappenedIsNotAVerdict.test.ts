@@ -317,7 +317,8 @@ describe("R228 §3 — the export blocks stand", () => {
     expect(unproven.map((c) => c.code)).toContain("MOSTLY_UNVERIFIED_CLIPS");
   });
 
-  it("the scene gate still throws rather than shipping an empty scene", () => {
-    expect(PIPE).toContain("no picture was found for any of its beats — export geblokkeerd");
+  it("VIDEO 653 — a film with no real picture is reported and rendered on its fallback pictures", () => {
+    expect(PIPE).toContain("QUALITY_PROBLEM FILM_WITHOUT_REAL_PICTURE");
+    expect(PIPE).not.toContain("no picture was found for any of its beats — export geblokkeerd");
   });
 });

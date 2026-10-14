@@ -767,7 +767,6 @@ import {
 } from "./judgeBudget";
 /** ONE ROUTE — every rule that may refuse to deliver a film has one owner, the DeliveryGate. */
 import {
-  assertVisionCoverageExportGate,
   assertVisualCoverageExportGate,
   enforceQualityExportGate,
   filmWithoutPictureRefusal,
@@ -8412,6 +8411,50 @@ export async function generateMissingBeatImages(
  * the synthetic colour field is NOT archived (VIDEO 651 — it is not footage, and a film resting on
  * it is refused anyway). Every placed clip gets a `generic_footage` mark in its own ledger.
  */
+/** VIDEO 653 — the log name of real, unapproved footage placed before generic footage and the colour field. */
+export const UNJUDGED_FOOTAGE_FALLBACK = "UNJUDGED_FOOTAGE_FALLBACK";
+
+/**
+ * VIDEO 653 — remember a technically valid candidate the picture editor refused, or could not judge,
+ * for one sentence (`"<scene>:<beat>"`, the scene position `adoptClip` is given). Never one refused for
+ * what the FILE is (`refusedAssetsThisRender`), which is checked again when it is picked.
+ */
+export function noteUnjudgedFallback(dedup: Pick<VisualDedupState, "unjudgedFallbacks">, sceneIndex: number, beatIndex: number, clipPath: string): void {
+  const key = `${sceneIndex}:${beatIndex}`;
+  const list = (dedup.unjudgedFallbacks ??= new Map()).get(key) ?? [];
+  if (!list.includes(clipPath)) list.push(clipPath);
+  dedup.unjudgedFallbacks.set(key, list);
+}
+
+/** VIDEO 653 — a candidate declined for showing a different topic, a title card or a blank frame is not kept. */
+export function forgetUnjudgedFallback(dedup: Pick<VisualDedupState, "unjudgedFallbacks">, sceneIndex: number, beatIndex: number, clipPath: string): void {
+  const key = `${sceneIndex}:${beatIndex}`;
+  const list = dedup.unjudgedFallbacks?.get(key);
+  if (list) dedup.unjudgedFallbacks!.set(key, list.filter((p) => p !== clipPath));
+}
+
+/** VIDEO 653 — the first remembered candidate for the sentence that still exists, is a valid, non-black video and is not on screen elsewhere. */
+export async function pickUnjudgedFallback(
+  dedup: Pick<VisualDedupState, "unjudgedFallbacks" | "usedContentKeys" | "refusedAssetsThisRender">,
+  sceneIndex: number,
+  beatIndex: number,
+  checks: { valid: (p: string) => Promise<boolean>; durationSec: (p: string) => Promise<number>; black: (p: string, d: number) => Promise<boolean> } = {
+    valid: isValidVideoFile,
+    durationSec: async (p) => (await probeVideoStreamMeta(p))?.durationSec ?? 0,
+    black: (p, d) => isMostlyBlackClip(p, d),
+  }
+): Promise<{ path: string; durationSec: number } | null> {
+  for (const p of dedup.unjudgedFallbacks?.get(`${sceneIndex}:${beatIndex}`) ?? []) {
+    const key = clipContentKey(p);
+    if (dedup.usedContentKeys?.has(key) || dedup.refusedAssetsThisRender?.has(key)) continue;
+    if (!fs.existsSync(p) || !(await checks.valid(p).catch(() => false))) continue;
+    const durationSec = await checks.durationSec(p).catch(() => 0);
+    if (!(durationSec > 0) || (await checks.black(p, durationSec).catch(() => true))) continue;
+    return { path: p, durationSec };
+  }
+  return null;
+}
+
 export async function placeGenericMovingFallbacks(
   scenes: Scene[],
   sceneVisualResults: Array<SceneVisualsResult | undefined>,
@@ -8429,6 +8472,25 @@ export async function placeGenericMovingFallbacks(
     const beats = dedup.sceneBeatsBySceneIndex.get(scene.index) ?? result?.beats ?? [];
     for (const beat of beatsWithoutPicture(beats, result?.clipBeatIndices ?? [])) {
       const where = `s${scene.index}b${beat.index}`;
+      /**
+       * VIDEO 653 — real footage first: a file the picture editor refused or could not judge for
+       * THIS sentence beats generic footage and the colour field. Not approved, and never passed off
+       * as approved: the timeline carries no approval for it, so the delivery gate names it.
+       */
+      const unjudged = await pickUnjudgedFallback(dedup, si, beat.index);
+      if (unjudged) {
+        dedup.usedContentKeys.add(clipContentKey(unjudged.path));
+        const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
+        target.clips.push(unjudged.path);
+        target.beatDurations.push(Math.min(generatedStillSec(beat), unjudged.durationSec));
+        (target.clipBeatIndices ??= []).push(beat.index);
+        console.log(
+          `[${UNJUDGED_FOOTAGE_FALLBACK}] ${where} placed ${path.basename(unjudged.path)} (${unjudged.durationSec.toFixed(2)}s) — ` +
+            `real footage the picture editor did not approve for this sentence; delivered as a picture to check in the editor`
+        );
+        tally.placed++;
+        continue;
+      }
       const decision = genericFootageDecision({ hasPicture: false, remainingMs: get_activeBudgetTracker()?.remainingMs?.() ?? null });
       if (!decision.place) {
         console.error(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} NOT PLACED — ${decision.reason}; the sentence has no moving coverage`);
@@ -16584,6 +16646,12 @@ export interface VisualDedupState {
    */
   beatJudgeTextOverride?: Map<string, string>;
   /**
+   * VIDEO 653 — real footage the picture editor refused, or could not judge, for a sentence, keyed
+   * `"<scene>:<beat>"`. Before generic footage and the colour field, the sentence gets one of these
+   * (`placeGenericMovingFallbacks`); it carries no approval and the delivery gate names it.
+   */
+  unjudgedFallbacks?: Map<string, string[]>;
+  /**
    * AUDIT 3f9ba94 — assets refused this render for what the FILE is (not a valid video, black, too
    * small for its length, someone else's burned-in text), keyed by content key. Such a refusal is
    * true for every sentence, so the asset is not offered again: render 628 offered one Internet
@@ -21485,6 +21553,8 @@ async function adoptClip(
         logAdoptTiming("judge:refused");
         noteSameVideoRefusal(sameVideoRefusals, contentKey);
         registerRejection(dedup.rejections, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);
+        /** VIDEO 653 — kept as this sentence's last real picture before the colour field. */
+        noteUnjudgedFallback(dedup, sceneIndex, beatIndex, p);
         noteVisionAsked(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
         noteVisionOutcome(dedup.beatShortlist, sceneIndex, beatIndex, "REJECTED");
         noteReviewedCandidate(p, "MISMATCH");
@@ -21603,6 +21673,8 @@ async function adoptClip(
           `[VisionSelection] s${sceneIndex}b${beatIndex} not adopting ${path.basename(p)} ` +
             `(rank ${cheapRankOf.get(p) ?? "?"}) — UNREVIEWED: no verdict on this sentence, so it stays a candidate`
         );
+        /** VIDEO 653 — unjudged, not refused: kept as this sentence's last real picture before the colour field. */
+        noteUnjudgedFallback(dedup, sceneIndex, beatIndex, p);
         continue;
       }
       if (requeuedAfterRefusal.has(p)) {
@@ -21614,6 +21686,7 @@ async function adoptClip(
         // a title card or a blank frame on screen is declined, and this candidate goes back to
         // being refused — the loop moves to the next path rather than adopting it. The beat keeps
         // every route below it, so this is "look further", not "give the beat a colour card".
+        // VIDEO 653 — nor is it kept as the beat's unjudged fallback (forgetUnjudgedFallback).
         const reprieved = reprieveBeatClip(
           dedup.beatRelevance,
           p,
@@ -21621,6 +21694,7 @@ async function adoptClip(
         );
         if (!reprieved) {
           registerRejection(dedup.rejections, sceneIndex, beatIndex, p, "hard_mismatch", sourceQuery);
+          forgetUnjudgedFallback(dedup, sceneIndex, beatIndex, p);
           continue;
         }
       }
@@ -28011,7 +28085,7 @@ async function _runVideoPipelineInner(
       /**
        * RONDE 224/226/227/247 — the render's own explanation, printed at the exit it takes: the
        * vision tally, the funnel, the decline census, the invariants, where the chosen pictures
-       * went and the time report. Their other readers are in the report, past this throw.
+       * went and the time report. Their other readers are in the report, further on.
        */
       const why = formatNoVerdictReasons(visualDedup.beatImageGate);
       const gate = visualDedup.beatImageGate;
@@ -28030,9 +28104,14 @@ async function _runVideoPipelineInner(
         fail: (line) => console.error(line),
       });
       for (const line of pipelineStepTiming.toReportLines()) console.error(line);
-      throw pipelineError(
-        PIPELINE_ERROR.FFMPEG,
-        `Scene ${scenes[si].index}: no picture was found for any of its beats — export geblokkeerd`
+      /**
+       * VIDEO 653 — ALWAYS A FILM. The sentences hold the moving floor (generic footage or the
+       * colour field, `placeGenericMovingFallbacks`); the film is rendered on it and every one of
+       * those pictures is named at the delivery gate for the customer to replace in the editor.
+       */
+      console.error(
+        `[Pipeline] QUALITY_PROBLEM FILM_WITHOUT_REAL_PICTURE — scene ${scenes[si].index}: no real picture in any scene; ` +
+          `the film is rendered on its fallback pictures and delivered (replace them in the editor)`
       );
     }
     get_activeBudgetTracker()?.stageEnd("retrieval");
@@ -28597,7 +28676,12 @@ async function _runVideoPipelineInner(
       console.warn(`[ExportReadiness] could not be computed:`, (err as Error).message);
     }
 
-    assertVisualCoverageExportGate(qualityReport, visualDedup.sceneRescueColorFallbackCount);
+    /** VIDEO 653 — too few real pictures is reported, never a reason to deliver nothing. */
+    try {
+      assertVisualCoverageExportGate(qualityReport, visualDedup.sceneRescueColorFallbackCount);
+    } catch (err) {
+      console.error(`[ExportGate] QUALITY_PROBLEM VISUAL_COVERAGE — ${(err as Error).message} (delivered anyway: pictures to replace in the editor)`);
+    }
 
     /**
      * RENDER 562 — and a video nobody looked at does not ship either.
@@ -28612,8 +28696,8 @@ async function _runVideoPipelineInner(
      * why both conditions are required and why CLIP is not an acceptable stand-in.
      */
     /**
-     * RENDER 580 — decided here, where the beat audit is complete, and announced at once; thrown at
-     * the export gates (Stage 6), before any render job is queued, so nothing refused is uploaded.
+     * RENDER 580 — decided here, where the beat audit is complete, and announced at once.
+     * VIDEO 653 — no longer thrown: it is a quality problem the customer can fix in the editor.
      */
     const visionCoverageParams = {
       providerUnavailable: visualDedup.beatImageGate.judgementsProviderUnavailable,
@@ -28625,16 +28709,15 @@ async function _runVideoPipelineInner(
       })),
       noVerdictSummary: formatNoVerdictReasons(visualDedup.beatImageGate),
     };
-    /** The evidence is frozen here; only the moment of throwing moves. */
     const visionCoverageBlock = visionCoverageRefusal(visionCoverageParams);
+    /** VIDEO 653 — footage nobody could judge is named sentence by sentence; the film is still delivered. */
     if (visionCoverageBlock) {
       console.error(
         pipelineReport.add(
           "summary",
-          `[VisionCoverage] EXPORT WILL BE BLOCKED — ${visionCoverageBlock}`
+          `[VisionCoverage] QUALITY_PROBLEM UNJUDGED_FOOTAGE — ${visionCoverageBlock} (delivered anyway: check these shots in the editor)`
         )
       );
-      console.warn(`[VisionCoverage] the render ends as failed at the export gates; nothing is uploaded`);
     }
 
     console.log(
@@ -29308,7 +29391,7 @@ async function _runVideoPipelineInner(
      * refusals: unjudged footage on screen is what RONDE 562's gate exists to stop, and it should
      * be the reason reported when more than one applies (RENDER 580).
      */
-    assertVisionCoverageExportGate(visionCoverageParams);
+    /** VIDEO 653 — reported above (`[VisionCoverage] QUALITY_PROBLEM`); provenance still blocks below. */
     enforceQualityExportGate(videoId, qualityReport);
     qualityReport.generatedAt = new Date().toISOString();
 

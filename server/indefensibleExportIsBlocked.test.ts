@@ -162,7 +162,13 @@ describe("MOSTLY_UNVERIFIED_CLIPS", () => {
 
 /* ═══════════════ and the gate acts on them, whatever the flags say ═══════════════ */
 
-describe("the export gate refuses, with every switch off", () => {
+/**
+ * OWNER'S RULE, 14 OCTOBER (after video 653) — a video is always delivered. Both conditions below
+ * are still decided exactly as before (the two describe blocks above are unchanged) and are logged
+ * by name for every render, but they no longer stop the film: the customer replaces the pictures in
+ * the editor. Only a black picture still refuses the export.
+ */
+describe("the export gate reports, with every switch off", () => {
   const ENV = [
     "ENABLE_STRICT_QUALITY_EXPORT",
     "ENABLE_QUALITY_EXPORT_HARD_TIER",
@@ -187,36 +193,29 @@ describe("the export gate refuses, with every switch off", () => {
    * check in the gate hangs off one of them. If this test starts passing because a flag was
    * turned on, the fix has been undone.
    */
-  it("blocks render 568 with strict, hard-tier and visual-mismatch all off", () => {
+  it("delivers render 568 with strict, hard-tier and visual-mismatch all off", () => {
     allFlagsOff();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    expect(() => enforceQualityExportGate(568, render568(), "8-10", { ok: true } as never))
-      .toThrow(/EXPORT BLOCKED|Export blocked/);
+    expect(() => enforceQualityExportGate(568, render568(), "8-10", { ok: true } as never)).not.toThrow();
   });
 
-  it("names both conditions in the thrown error, not just the first", () => {
-    allFlagsOff();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    let message = "";
-    try {
-      enforceQualityExportGate(568, render568(), "8-10", { ok: true } as never);
-    } catch (err) {
-      message = (err as Error).message;
-    }
-    expect(message).toContain("NO_VERIFIED_OWN_VISUAL");
-    expect(message).toContain("MOSTLY_UNVERIFIED_CLIPS");
-  });
-
-  /** The reason has to reach the log too, so a render can be diagnosed from the worker output. */
-  it("logs each condition before throwing", () => {
+  /** The reason has to reach the log, so the customer can be told which pictures to replace. */
+  it("logs both conditions by name, not just the first", () => {
     allFlagsOff();
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    try {
-      enforceQualityExportGate(568, render568(), "8-10", { ok: true } as never);
-    } catch { /* expected */ }
+    enforceQualityExportGate(568, render568(), "8-10", { ok: true } as never);
     const logged = spy.mock.calls.map((c) => String(c[0])).join("\n");
-    expect(logged).toContain("EXPORT BLOCKED NO_VERIFIED_OWN_VISUAL");
-    expect(logged).toContain("EXPORT BLOCKED MOSTLY_UNVERIFIED_CLIPS");
+    expect(logged).toContain("QUALITY_PROBLEM NO_VERIFIED_OWN_VISUAL");
+    expect(logged).toContain("QUALITY_PROBLEM MOSTLY_UNVERIFIED_CLIPS");
+  });
+
+  /** A black picture is a broken film, not a picture to replace: that one still refuses. */
+  it("a black picture still refuses the export, and names itself", () => {
+    allFlagsOff();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const black = { ...render568(), postRenderSpotCheck: { framesChecked: 4, blackFrameCount: 4, worstMeanLuma: 1 } };
+    expect(() => enforceQualityExportGate(568, black as never, "8-10", { ok: true } as never))
+      .toThrow(/FINAL_PICTURE_IS_BLACK/);
   });
 
   /**
@@ -259,10 +258,10 @@ describe("the check runs before any flag is read", () => {
     expect(body).not.toMatch(/Enabled\(\)|process\.env/);
   });
 
-  /** It must throw, not warn — a console line is what render 568 already had. */
-  it("throws rather than warning", () => {
+  /** What still refuses (a black picture) must throw, not warn. */
+  it("throws rather than warning for what still refuses", () => {
     const src = SRC();
-    const at = src.indexOf("const indefensible = indefensibleExportConditions(report);");
+    const at = src.indexOf("const indefensible = found.filter((x) => !QUALITY_ONLY_EXPORT_CODES.has(x.code));");
     const block = src.slice(at, at + 700);
     expect(block).toContain("throw pipelineError(");
     expect(block).toContain("PIPELINE_ERROR.QUALITY_GATE");

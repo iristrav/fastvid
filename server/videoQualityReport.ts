@@ -28,7 +28,7 @@ import {
 } from "./beatVisualStatus";
 import type { BeatRelevanceLedger } from "./beatVisualRelevance";
 import type { ScreenTimeFinding } from "./deliveredScreenTime";
-import { indefensibleExportConditions, visualCoverageFallsShort } from "./deliveryGate";
+import { indefensibleExportConditions, QUALITY_ONLY_EXPORT_CODES, visualCoverageFallsShort } from "./deliveryGate";
 
 export type { VoiceVisualMatchSummary };
 
@@ -1004,6 +1004,8 @@ export type ExportGateStatus = {
   /** The gate's own name, as it appears when it throws. */
   gate: string;
   blocking: boolean;
+  /** VIDEO 653 — the finding holds, but it is about the pictures: reported, and the film is delivered. */
+  qualityProblem?: boolean;
   detail: string;
 };
 
@@ -1016,9 +1018,12 @@ export function exportGateReadiness(
   /** 1. Coverage — the same arithmetic assertVisualCoverageExportGate performs. */
   const beatsFilled = report.adoptAuditSummary?.beatsFilled ?? 0;
   const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
+  /** VIDEO 653 — too few real pictures is reported, never a refusal (the pipeline catches it). */
+  const coverageShort = visualCoverageFallsShort(report, sceneRescueColorFallbackCount);
   out.push({
     gate: "visual_coverage",
-    blocking: visualCoverageFallsShort(report, sceneRescueColorFallbackCount),
+    blocking: false,
+    qualityProblem: coverageShort,
     detail:
       `${fallbackBeats}/${beatsFilled} beat(s) got ONLY a card, ` +
       `${sceneRescueColorFallbackCount} scene(s) fell back entirely` +
@@ -1045,9 +1050,11 @@ export function exportGateReadiness(
   };
   for (const code of ["NO_VERIFIED_OWN_VISUAL", "MOSTLY_UNVERIFIED_CLIPS", "FINAL_PICTURE_IS_BLACK"]) {
     const hit = indefensible.find((c) => c.code === code);
+    const qualityOnly = QUALITY_ONLY_EXPORT_CODES.has(code as (typeof indefensible)[number]["code"]);
     out.push({
       gate: code.toLowerCase(),
-      blocking: Boolean(hit),
+      blocking: Boolean(hit) && !qualityOnly,
+      qualityProblem: Boolean(hit) && qualityOnly,
       detail: hit?.detail ?? notBlocking[code]!,
     });
   }
@@ -1064,7 +1071,7 @@ export function formatExportGateReadiness(
   return [
     `[ExportReadiness] video=${videoId} ${blocking} of ${statuses.length} gate(s) would block`,
     ...statuses.map(
-      (s) => `[ExportReadiness]   ${(s.blocking ? "BLOCKS" : "ok").padEnd(6)} ${s.gate.padEnd(24)} ${s.detail}`
+      (s) => `[ExportReadiness]   ${(s.blocking ? "BLOCKS" : s.qualityProblem ? "NOTE" : "ok").padEnd(6)} ${s.gate.padEnd(24)} ${s.detail}`
     ),
   ];
 }

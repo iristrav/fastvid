@@ -308,7 +308,8 @@ describe("§5 — a render completes from the archive with every provider throwi
     expect(touched, "the identity with no handle should not have reached a provider either").toEqual([]);
   }, 60_000);
 
-  it("MEASURED: the gate refuses a clip whose archive handle is missing", async () => {
+  /** VIDEO 653 — a clip that rendered without an archive handle is delivered; the missing handle is reported. */
+  it("MEASURED: the gate names a clip whose archive handle is missing, as a quality problem", async () => {
     const gate = deliveryGate({
       videoId: 10108,
       route: "cinematic_timeline",
@@ -331,8 +332,8 @@ describe("§5 — a render completes from the archive with every provider throwi
       },
       voiceoverSec: null,
     });
-    expect(gate.allow, "a provider-only clip was allowed into a delivery").toBe(false);
-    if (gate.allow) return;
-    expect(gate.failures.map((f) => f.code)).toContain("CLIP_WITHOUT_ARCHIVE_ASSET");
+    expect(gate.allow).toBe(true);
+    if (!gate.allow) return;
+    expect(gate.qualityProblems.map((f) => f.code)).toContain("CLIP_WITHOUT_ARCHIVE_ASSET");
   });
 });

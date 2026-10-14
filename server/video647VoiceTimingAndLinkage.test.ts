@@ -151,7 +151,8 @@ const sentence = (s: number, b: number, start: number, end: number, basis: "meas
   ({ sceneIndex: s, beatIndex: b, startSec: start, endSec: end, timingBasis: basis, text: `Sentence ${s}-${b}.` });
 const base = { videoId: 647, route: "cinematic_timeline" as const, timelineExists: true, clips: [], delivered: null, assetsOnly: true };
 const cleanScan: PlaceholderCheckFacts = { method: "all_frames", complete: true, framesSampled: 250, placeholderFrames: 0, placeholderSec: 0, plannedCardSec: 0, confirmedPlaceholderSec: 0, indicatedPlaceholderSec: 0, unplannedPlaceholderFrames: 0, contentGraphicGroundSec: 0, decodedSec: 10 };
-const codesOf = (v: ReturnType<typeof deliveryGate>) => (v.allow ? [] : v.failures.map((f) => f.code));
+/** VIDEO 653 — the findings are measured and named as before; a picture finding is a quality problem, not a refusal. */
+const codesOf = (v: ReturnType<typeof deliveryGate>) => (v.allow ? v.qualityProblems : v.failures).map((f) => f.code);
 
 describe("3. the gate tells a timing problem from a picture problem", () => {
   it("measured timing under an approved picture passes; the same picture under estimated timing is UNPROVEN, not NOT_COVERED", () => {
@@ -169,18 +170,20 @@ describe("3. the gate tells a timing problem from a picture problem", () => {
     expect(codesOf(none)).not.toContain("SENTENCE_COVERAGE_UNPROVEN");
   });
 
-  it("a measured timing is never marked proven by a missing one: one estimated sentence among measured ones still refuses", () => {
+  it("a measured timing is never marked proven by a missing one: one estimated sentence among measured ones is named", () => {
     const t = timeline([sentence(0, 0, 0, 4), sentence(0, 1, 4, 8, "estimated")], [clip("a", 0, 4, { beat: [0, 0] }), clip("b", 4, 8, { beat: [0, 1] })]);
     const r = sentenceCoverage(t);
     expect(r.sentences[0]!.status).toBe("covered");
     expect(r.sentences[1]!.status).toBe("unknown");
     expect(r.proven).toBe(false);
-    expect(deliveryGate({ ...base, sentenceCoverage: r, placeholderCheck: cleanScan }).allow).toBe(false);
+    const v = deliveryGate({ ...base, sentenceCoverage: r, placeholderCheck: cleanScan });
+    expect(v.allow).toBe(true);
+    expect(codesOf(v)).toEqual(["SENTENCE_COVERAGE_UNPROVEN"]);
   });
 });
 
 describe("4. a clip counts only for the sentence it was approved for", () => {
-  it("another sentence's approved clip, an unjudged clip and a clip held past its source are each refused, by kind", () => {
+  it("another sentence's approved clip, an unjudged clip and a clip held past its source are each named, by kind", () => {
     const other = sentenceCoverage(timeline([sentence(0, 1, 0, 4)], [clip("a", 0, 4, { beat: [0, 0] })]));
     expect(other.sentences[0]).toMatchObject({ status: "uncovered", coveredSec: 0, kinds: ["other_sentence_picture"] });
 

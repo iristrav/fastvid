@@ -75,8 +75,8 @@ describe("Video 617. a scene still running at the visual deadline keeps what it 
     expect(PIPE).toMatch(/sceneVisualResults\[si\] \?\?= kept;\s*\}\s*\}\s*sceneVisualResults\[si\] \?\?= \{ clips: \[\], beatDurations: \[\] \};/);
     /** Unchanged: a scene returning after the deadline writes nothing itself. */
     expect(PIPE).toContain("if (chunkClosed) return result;");
-    /** Unchanged: a scene with no picture at all still stops the export. */
-    expect(PIPE).toContain("no picture was found for any of its beats — export geblokkeerd");
+    /** VIDEO 653: a film with no real picture is reported, and rendered on its fallback pictures. */
+    expect(PIPE).toContain("QUALITY_PROBLEM FILM_WITHOUT_REAL_PICTURE");
   });
 
   it("only the scene's own push adds to those lists — after the relevance gate and the adoption guard", () => {

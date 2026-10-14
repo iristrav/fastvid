@@ -102,28 +102,36 @@ describe("Test 11 — the delivery gate", () => {
 /* ═════════════ §11 — every production clip ═════════════ */
 
 describe("§11 — what the gate requires of each clip", () => {
-  it("MEASURED: a clip with no archive asset blocks the delivery", () => {
+  /** VIDEO 653 — a clip that WAS produced, without an archive copy, is a quality problem: the film is delivered. */
+  it("MEASURED: a resolved clip with no archive asset is delivered, and named as a quality problem", () => {
     const v = deliveryGate(
       input({ clips: [goodClip("c1"), { ...goodClip("c2"), archiveAssetId: null, fromArchive: false }] })
     );
-    expect(v.allow).toBe(false);
-    if (v.allow) return;
-    expect(v.failures[0]?.code).toBe("CLIP_WITHOUT_ARCHIVE_ASSET");
-    expect(v.failures[0]?.detail).toContain("depends on the provider still being reachable");
+    expect(v.allow).toBe(true);
+    if (!v.allow) return;
+    expect(v.qualityProblems[0]?.code).toBe("CLIP_WITHOUT_ARCHIVE_ASSET");
+    expect(v.qualityProblems[0]?.detail).toContain("depends on the provider still being reachable");
+    expect(v.lines.join("\n")).toContain("QUALITY_PROBLEM CLIP_WITHOUT_ARCHIVE_ASSET");
   });
 
-  it("MEASURED: an unresolved clip blocks the delivery", () => {
+  /**
+   * Owner's rule (14 October) — a clip whose file cannot be found is a quality problem, not a
+   * broken film: the worker renders without it, and the delivered MP4 is measured on its own.
+   */
+  it("MEASURED: an unresolved clip is delivered and named as a quality problem", () => {
     const v = deliveryGate(input({ clips: [{ ...goodClip("c1"), resolved: false }] }));
-    expect(v.allow).toBe(false);
-    if (v.allow) return;
-    expect(v.failures.map((f) => f.code)).toContain("CLIP_UNRESOLVED");
+    expect(v.allow).toBe(true);
+    if (!v.allow) return;
+    expect(v.qualityProblems.map((p) => p.code)).toContain("CLIP_UNRESOLVED");
+    expect(v.lines.join("\n")).toContain("QUALITY_PROBLEM CLIP_UNRESOLVED");
   });
 
-  it("MEASURED: a placeholder blocks the delivery", () => {
+  /** VIDEO 653 — a placeholder is a picture to replace in the editor, not a broken film. */
+  it("MEASURED: a placeholder is delivered and named as a quality problem", () => {
     const v = deliveryGate(input({ clips: [{ ...goodClip("c1"), isPlaceholder: true }] }));
-    expect(v.allow).toBe(false);
-    if (v.allow) return;
-    expect(v.failures.map((f) => f.code)).toContain("PLACEHOLDER_IN_DELIVERY");
+    expect(v.allow).toBe(true);
+    if (!v.allow) return;
+    expect(v.qualityProblems.map((f) => f.code)).toContain("PLACEHOLDER_IN_DELIVERY");
   });
 
   it("MEASURED: the cinematic route with no timeline blocks", () => {
@@ -202,15 +210,20 @@ describe("the gate says what it looked at", () => {
       input({
         clips: [{ ...goodClip("c1"), archiveAssetId: null, resolved: false }],
         delivered: { ...goodFile, hasVideoStream: false },
+        timelineExists: false,
       })
     );
     expect(v.allow).toBe(false);
     if (v.allow) return;
-    expect(v.failures.length).toBeGreaterThanOrEqual(3);
+    expect(v.failures.length).toBeGreaterThanOrEqual(2);
     const codes = v.failures.map((f) => f.code);
-    expect(codes).toContain("CLIP_WITHOUT_ARCHIVE_ASSET");
-    expect(codes).toContain("CLIP_UNRESOLVED");
+    expect(codes).toContain("TIMELINE_MISSING");
     expect(codes).toContain("DELIVERED_FILE_NO_VIDEO");
+    /** VIDEO 653 — the picture findings are still printed, as quality problems, not as blocks. */
+    expect(codes).not.toContain("CLIP_WITHOUT_ARCHIVE_ASSET");
+    expect(codes).not.toContain("CLIP_UNRESOLVED");
+    expect(v.lines.join("\n")).toContain("QUALITY_PROBLEM CLIP_WITHOUT_ARCHIVE_ASSET");
+    expect(v.lines.join("\n")).toContain("QUALITY_PROBLEM CLIP_UNRESOLVED");
   });
 
   it("MEASURED: a passing verdict formats no block sentence", () => {

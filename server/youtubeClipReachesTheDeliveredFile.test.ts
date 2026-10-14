@@ -9,7 +9,8 @@
  *
  *   1. approved YouTube clip → placed → rendered → visible in the output exactly under its sentence →
  *      zero placeholder frames → the gate delivers.
- *   2. the sentence runs past the clip → SENTENCE_NOT_COVERED, nothing published, nothing uploaded.
+ *   2. the sentence runs past the clip → SENTENCE_NOT_COVERED, named as a quality problem; since
+ *      VIDEO 653 the film is still published (the customer replaces the shot in the editor).
  *   3. the clip has no Judge verdict → SENTENCE_COVERAGE_UNPROVEN.
  *   4. a real chapter card (Remotion-rendered, see the fixture) is in the FILE while the timeline calls
  *      it approved footage → the frame scan finds it → PLACEHOLDER_IN_FILE. The file, not the plan.
@@ -22,7 +23,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-import { RENDER_ERROR, type RenderJobStatus } from "./renderJobs";
+import { type RenderJobStatus } from "./renderJobs";
 import { DEFAULT_FORMAT, emptyTimeline, type ProjectTimeline, type TimelineVideoClip } from "./projectTimeline";
 import { runRenderJob } from "./renderJobWorker";
 import { scanForPlaceholderGround } from "./postRenderSpotCheck";
@@ -234,39 +235,46 @@ describe("an approved YouTube clip reaches the delivered MP4 and covers its sent
     expect(scan.placeholderSec).toBe(0);
   }, 420_000);
 
-  it("2. the sentence runs 1.5 s past the clip: SENTENCE_NOT_COVERED — the file is not published and not uploaded", async () => {
-    const result = await runWith(film({ sentenceOneEnd: 4.5 }));
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.code).toBe(RENDER_ERROR.RENDER_FAILED);
-    expect(result.message).toContain("SENTENCE_NOT_COVERED");
-    expect(result.message).toContain("s0b0");
-    expect(dbState.published).toBeNull();
-    expect(uploads).toHaveLength(0);
-    expect(dbState.job?.status).toBe("failed");
+  /**
+   * VIDEO 653 — ALWAYS A FILM (owner's rule, 14 October). The three findings below are still made,
+   * on the delivered file, sentence by sentence; they are now QUALITY_PROBLEM lines on a film that
+   * is published, for the customer to replace in the editor, instead of a refusal.
+   */
+  const deliveredWithProblem = async (timeline: ProjectTimeline) => {
+    const spy = vi.spyOn(console, "log");
+    try {
+      const result = await runWith(timeline);
+      const logged = spy.mock.calls.map((c) => String(c[0])).join("\n");
+      return { result, logged };
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  it("2. the sentence runs 1.5 s past the clip: SENTENCE_NOT_COVERED — named, and the film is published", async () => {
+    const { result, logged } = await deliveredWithProblem(film({ sentenceOneEnd: 4.5 }));
+    expect(result.ok).toBe(true);
+    expect(logged).toMatch(/QUALITY_PROBLEM SENTENCE_NOT_COVERED[^\n]*s0b0/);
+    expect(dbState.published).not.toBeNull();
+    expect(uploads).toHaveLength(1);
   }, 420_000);
 
-  it("3. the same clip without the picture editor's verdict is not cover: SENTENCE_COVERAGE_UNPROVEN", async () => {
-    const result = await runWith(film({ approved: false }));
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.code).toBe(RENDER_ERROR.RENDER_FAILED);
-    expect(result.message).toContain("SENTENCE_COVERAGE_UNPROVEN");
-    expect(result.message).toContain("s0b0");
-    expect(uploads).toHaveLength(0);
+  it("3. the same clip without the picture editor's verdict is not cover: SENTENCE_COVERAGE_UNPROVEN — named, and published", async () => {
+    const { result, logged } = await deliveredWithProblem(film({ approved: false }));
+    expect(result.ok).toBe(true);
+    expect(logged).toMatch(/QUALITY_PROBLEM SENTENCE_COVERAGE_UNPROVEN[^\n]*s0b0/);
+    expect(uploads).toHaveLength(1);
   }, 420_000);
 
   it("4. the timeline calls the second picture approved footage, but the FILE holds a real chapter card: PLACEHOLDER_IN_FILE — the file is what is checked", async () => {
     const timeline = film({ second: REAL_CARD });
     /** on paper this film is fine */
     expect(sentenceCoverage(timeline).proven).toBe(true);
-    const result = await runWith(timeline);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.code).toBe(RENDER_ERROR.RENDER_FAILED);
-    expect(result.message).toContain("PLACEHOLDER_IN_FILE");
-    expect(result.message).toMatch(/\d+ of \d+ frame\(s\) show the blue-grey chapter-card ground: [23]\.\d\ds where exactly 0\.00s is allowed/);
-    expect(dbState.published).toBeNull();
-    expect(uploads).toHaveLength(0);
+    const { result, logged } = await deliveredWithProblem(timeline);
+    expect(result.ok).toBe(true);
+    expect(logged).toContain("QUALITY_PROBLEM PLACEHOLDER_IN_FILE");
+    expect(logged).toMatch(/\d+ of \d+ frame\(s\) show the blue-grey chapter-card ground: [23]\.\d\ds where exactly 0\.00s is allowed/);
+    expect(dbState.published).not.toBeNull();
+    expect(uploads).toHaveLength(1);
   }, 420_000);
 });

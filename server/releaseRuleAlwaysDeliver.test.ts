@@ -178,14 +178,18 @@ describe("R4/R5 — technical validity stays hard", () => {
     }
   });
 
-  it("R5. a clip that cannot be read, has no archive asset, or is a placeholder → blocked", () => {
+  it("R5. a clip that cannot be read, one without an archive asset, or a placeholder → delivered, named (VIDEO 653); no timeline or a failed render → blocked", () => {
     const base = { clipId: "c", archiveAssetId: 1 as number | null, provider: "ia", resolved: true, fromArchive: true, isPlaceholder: false };
     const gate = (clip: typeof base) =>
       deliveryGate({ videoId: 1, route: "cinematic_timeline", timelineExists: true, clips: [clip], delivered: fine, voiceoverSec: 20 });
     expect(gate(base).allow).toBe(true);
-    expect(gate({ ...base, resolved: false }).allow).toBe(false);
-    expect(gate({ ...base, archiveAssetId: null }).allow).toBe(false);
-    expect(gate({ ...base, isPlaceholder: true }).allow).toBe(false);
+    /** Owner's rule (14 October): the worker renders without the clip; the gate names it. */
+    const unresolved = gate({ ...base, resolved: false });
+    expect(unresolved.allow && unresolved.qualityProblems.map((f) => f.code)).toEqual(["CLIP_UNRESOLVED"]);
+    const noArchive = gate({ ...base, archiveAssetId: null });
+    expect(noArchive.allow && noArchive.qualityProblems.map((f) => f.code)).toEqual(["CLIP_WITHOUT_ARCHIVE_ASSET"]);
+    const placeholder = gate({ ...base, isPlaceholder: true });
+    expect(placeholder.allow && placeholder.qualityProblems.map((f) => f.code)).toEqual(["PLACEHOLDER_IN_DELIVERY"]);
     expect(deliveryGate({ videoId: 1, route: "cinematic_timeline", timelineExists: false, clips: [base], delivered: fine }).allow).toBe(false);
     expect(deliveryGate({ videoId: 1, route: "cinematic_timeline", timelineExists: true, clips: [base], delivered: fine, cinematicRefusal: "render crashed" }).allow).toBe(false);
   });

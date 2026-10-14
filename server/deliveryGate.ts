@@ -158,8 +158,42 @@ export type DeliveryGateFailureCode =
   | "PLACEHOLDER_CHECK_INCOMPLETE";
 
 export type DeliveryGateVerdict =
-  | { allow: true; checked: number; lines: string[] }
+  | {
+      allow: true;
+      checked: number;
+      lines: string[];
+      /**
+       * VIDEO 653 — what is wrong with the PICTURES of a film that is delivered anyway: a sentence
+       * not fully covered, a placeholder, a clip without an archive copy. Named here, sentence by
+       * sentence, so the editor can show what to replace. Empty when every picture is in order.
+       */
+      qualityProblems: Array<{ code: DeliveryGateFailureCode; detail: string }>;
+    }
   | { allow: false; failures: Array<{ code: DeliveryGateFailureCode; detail: string }>; lines: string[] };
+
+/**
+ * VIDEO 653 — ALWAYS A FILM. These findings are about what the pictures show, not about whether the
+ * file is a working video, and since video 653 they never stop a delivery: 646–653 were all refused
+ * for one sentence each (653: a clip held 1.58 s past its source on one sentence of ten) and the
+ * customer got nothing. They are reported as quality problems; the customer replaces those shots in
+ * the editor, and the archive grows with every film. What still blocks is a broken file: no timeline,
+ * a failed render, no video or audio stream, the wrong length, a black picture.
+ *
+ * CLIP_UNRESOLVED too (owner's rule, 14 October): a clip whose file cannot be found is not a broken
+ * film. The render worker already takes such a clip out before rendering (`disableClipsForRender`,
+ * the timeline holds the neighbouring shot) and fails only when no clip came back at all; the
+ * delivered MP4 is measured below on its own.
+ */
+export const QUALITY_ONLY_DELIVERY_CODES: ReadonlySet<DeliveryGateFailureCode> = new Set<DeliveryGateFailureCode>([
+  "SENTENCE_NOT_COVERED",
+  "SENTENCE_COVERAGE_UNPROVEN",
+  "CHAPTER_CARD_PLACEHOLDER",
+  "PLACEHOLDER_IN_FILE",
+  "PLACEHOLDER_CHECK_INCOMPLETE",
+  "PLACEHOLDER_IN_DELIVERY",
+  "CLIP_WITHOUT_ARCHIVE_ASSET",
+  "CLIP_UNRESOLVED",
+]);
 
 /* ═══════════════════════ the gate ═══════════════════════ */
 
@@ -343,7 +377,7 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
         `[DeliveryGate]   QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER sentences=${placeholder.length} ` +
           `sec=${placeholder.reduce((t, r) => t + (r.syntheticPlaceholderSec ?? 0), 0).toFixed(2)} ` +
           `(${placeholder.map((r) => r.key).join(",")}) — EMERGENCY fallback: a generated colour field, NOT footage and NOT a content choice; ` +
-          `no real generic clip was available (archive tag "generic"); not cover, so the film is not delivered — replace these shots`
+          `no real generic clip was available (archive tag "generic"); not cover — delivered anyway, replace these shots`
       );
     }
   }
@@ -362,14 +396,24 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
     `timeline=${input.timelineExists ? "present" : "absent"} ` +
     `checks=${input.assetsOnly ? "assets" : "assets+file"}`;
 
-  if (failures.length === 0) {
-    lines.push(`[DeliveryGate] ${DELIVERY_GATE_PASS} ${at} ${summary}`, ...hardRuleLines, ...qualityNotes);
-    return { allow: true, checked: input.clips.length, lines };
+  const blocking = failures.filter((f) => !QUALITY_ONLY_DELIVERY_CODES.has(f.code));
+  const qualityProblems = failures.filter((f) => QUALITY_ONLY_DELIVERY_CODES.has(f.code));
+  const problemLines = qualityProblems.map(
+    (f) => `[DeliveryGate]   QUALITY_PROBLEM ${f.code} — ${f.detail} (delivered anyway: a picture to replace in the editor, not a broken file)`
+  );
+  if (blocking.length === 0) {
+    lines.push(
+      `[DeliveryGate] ${DELIVERY_GATE_PASS} ${at} ${summary}` + (qualityProblems.length ? ` qualityProblems=${qualityProblems.length}` : ""),
+      ...problemLines,
+      ...hardRuleLines,
+      ...qualityNotes
+    );
+    return { allow: true, checked: input.clips.length, lines, qualityProblems };
   }
-  lines.push(`[DeliveryGate] ${DELIVERY_GATE_FAIL} ${at} ${summary} failures=${failures.length}`);
-  for (const f of failures) lines.push(`[DeliveryGate]   ${f.code} — ${f.detail}`);
-  lines.push(...hardRuleLines, ...qualityNotes);
-  return { allow: false, failures, lines };
+  lines.push(`[DeliveryGate] ${DELIVERY_GATE_FAIL} ${at} ${summary} failures=${blocking.length}`);
+  for (const f of blocking) lines.push(`[DeliveryGate]   ${f.code} — ${f.detail}`);
+  lines.push(...problemLines, ...hardRuleLines, ...qualityNotes);
+  return { allow: false, failures: blocking, lines };
 }
 
 
@@ -453,6 +497,16 @@ export type IndefensibleExportCondition = {
   code: "NO_VERIFIED_OWN_VISUAL" | "MOSTLY_UNVERIFIED_CLIPS" | "FINAL_PICTURE_IS_BLACK";
   detail: string;
 };
+
+/**
+ * VIDEO 653 — export conditions about the pictures only: reported, never a refusal. Unknown
+ * provenance (MOSTLY_UNVERIFIED_CLIPS) too, by the owner's rule of 14 October: a picture that fits
+ * may be used even when the lineage cannot say where it came from. Only a black picture still stops.
+ */
+export const QUALITY_ONLY_EXPORT_CODES: ReadonlySet<IndefensibleExportCondition["code"]> = new Set<IndefensibleExportCondition["code"]>([
+  "NO_VERIFIED_OWN_VISUAL",
+  "MOSTLY_UNVERIFIED_CLIPS",
+]);
 
 /** More than half the delivered clips having no proven source is the second condition's bar. */
 const UNVERIFIED_CLIP_SHARE_LIMIT = 0.5;
@@ -679,11 +733,11 @@ export type VisionCoverageGateParams = {
 };
 
 /**
- * THE REFUSAL AS A VALUE, SO IT CAN BE DECIDED EARLY AND THROWN LATE.
+ * FOOTAGE NOBODY COULD JUDGE, AS A VALUE.
  *
- * The pipeline asks here when the beat audit is complete and logs the verdict at once; it throws at
- * the export gates, before any render job is queued. A refused film is never uploaded or published —
- * the same rule the DeliveryGate applies to the rendered file.
+ * The pipeline asks here when the beat audit is complete and logs the finding at once. VIDEO 653 —
+ * it no longer stops the film: unjudged shots are a quality problem the customer can replace in
+ * the editor, so the finding is reported and the film is delivered.
  */
 export function visionCoverageRefusal(params: VisionCoverageGateParams): string | null {
   if (params.providerUnavailable <= 0) return null;
@@ -696,25 +750,28 @@ export function visionCoverageRefusal(params: VisionCoverageGateParams): string 
     .join(", ");
   const withFootage = params.beats.filter((b) => b.hasRealFootage).length;
   return (
-    `Render rejected — the picture editor was unreachable and this video contains footage nobody ` +
+    `The picture editor was unreachable and this video contains footage nobody ` +
     `judged: ${unchecked.length} of ${withFootage} beat(s) with real footage received no verdict ` +
     `(${named}${unchecked.length > 6 ? ", …" : ""}), after ${params.providerUnavailable} ` +
     `judgement(s) were declined for want of a vision provider. ` +
     `${params.noVerdictSummary || "No provider was reachable."} ` +
-    `Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied) and ` +
-    `re-render. The picture editor cannot be switched off.`
+    `Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied) so ` +
+    `the next video is judged. The picture editor cannot be switched off.`
   );
-}
-
-/** The same gate, thrown where a caller wants it thrown. */
-export function assertVisionCoverageExportGate(params: VisionCoverageGateParams): void {
-  const refusal = visionCoverageRefusal(params);
-  if (refusal) throw pipelineError(PIPELINE_ERROR.QUALITY_GATE, refusal);
 }
 
 /** Refuses a render whose pictures cannot be traced or were never approved — see `indefensibleExportConditions`. */
 export function enforceQualityExportGate(videoId: number, report: VideoQualityReport): void {
-  const indefensible = indefensibleExportConditions(report);
+  /**
+   * VIDEO 653 — "no sentence got an approved picture of its own" and "most clips have no proven
+   * source" are about the pictures, not the file: the film is delivered and the customer replaces
+   * the shots. Only a black picture still blocks.
+   */
+  const found = indefensibleExportConditions(report);
+  for (const c of found.filter((x) => QUALITY_ONLY_EXPORT_CODES.has(x.code))) {
+    console.error(`[Quality] Video ${videoId}: QUALITY_PROBLEM ${c.code} — ${c.detail} (delivered anyway: pictures to replace in the editor)`);
+  }
+  const indefensible = found.filter((x) => !QUALITY_ONLY_EXPORT_CODES.has(x.code));
   if (indefensible.length === 0) return;
   for (const c of indefensible) {
     console.error(`[Quality] Video ${videoId}: EXPORT BLOCKED ${c.code} — ${c.detail}`);

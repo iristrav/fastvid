@@ -13,7 +13,6 @@ import { deliveryGate, finalVideoRefusals, visualCoverageFallsShort } from "./de
 const RULES = [
   "assertVisualCoverageExportGate",
   "visionCoverageRefusal",
-  "assertVisionCoverageExportGate",
   "indefensibleExportConditions",
   "enforceQualityExportGate",
   "finalTimelineFootageRefusal",
@@ -41,7 +40,7 @@ describe("the DeliveryGate is the one owner of DELIVER / BLOCK", () => {
 
   it("the readiness report asks the gate's own coverage rule instead of repeating it", () => {
     const report = readFileSync(path.join(__dirname, "videoQualityReport.ts"), "utf8");
-    expect(report).toContain("blocking: visualCoverageFallsShort(report, sceneRescueColorFallbackCount),");
+    expect(report).toContain("const coverageShort = visualCoverageFallsShort(report, sceneRescueColorFallbackCount);");
     expect(report).not.toContain("fallbackBeats / beatsFilled > 0.5");
   });
 

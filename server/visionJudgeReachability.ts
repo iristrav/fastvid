@@ -28,7 +28,7 @@
  * One call, a handful of tokens on a 1×1 image at `detail: "low"`, bounded by its own timeout. It
  * asks nothing about the render's content and reads no frames from it.
  *
- * It does NOT decide whether a render may ship. That remains `assertVisionCoverageExportGate`,
+ * It does NOT judge the render. That remains `visionCoverageRefusal` (reported as a quality problem),
  * which knows something this cannot: whether real footage actually reached a beat with no verdict.
  * This only answers "is there a judge", early, so an operator is not told after an hour.
  *

@@ -63,7 +63,7 @@ describe("R224 §1 — the scene gate says why nobody could judge", () => {
 
   it("BEFORE the throw, so a failing render carries its own explanation", () => {
     const why = PIPE.indexOf("const why = formatNoVerdictReasons(visualDedup.beatImageGate);");
-    const thrown = PIPE.indexOf("no picture was found for any of its beats — export geblokkeerd");
+    const thrown = PIPE.indexOf("QUALITY_PROBLEM FILM_WITHOUT_REAL_PICTURE");
     expect(why).toBeGreaterThan(0);
     expect(thrown).toBeGreaterThan(0);
     expect(why, "the explanation prints after the render has already thrown").toBeLessThan(thrown);
@@ -210,7 +210,7 @@ describe("R226 §4 — the beat funnel prints where the render dies", () => {
   it("BEFORE the throw, beside the vision tally", () => {
     const funnel = PIPE.indexOf("formatBeatShortlists(visualDedup.beatShortlist)");
     const tally = PIPE.indexOf("const why = formatNoVerdictReasons(visualDedup.beatImageGate);");
-    const thrown = PIPE.indexOf("no picture was found for any of its beats — export geblokkeerd");
+    const thrown = PIPE.indexOf("QUALITY_PROBLEM FILM_WITHOUT_REAL_PICTURE");
     expect(funnel).toBeGreaterThan(0);
     expect(funnel).toBeGreaterThan(tally);
     expect(funnel, "the funnel prints after the render has thrown").toBeLessThan(thrown);

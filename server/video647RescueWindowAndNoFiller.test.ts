@@ -205,7 +205,8 @@ function timeline(o: { sentences: ProjectTimeline["sentences"]; clips?: Timeline
 const sentence = (s: number, b: number, start: number, end: number) => ({ sceneIndex: s, beatIndex: b, startSec: start, endSec: end, timingBasis: "measured" as const, text: `Sentence ${s}-${b}.` });
 const base = { videoId: 647, route: "cinematic_timeline" as const, timelineExists: true, clips: [], delivered: null, assetsOnly: true };
 const cleanScan: PlaceholderCheckFacts = { method: "all_frames", complete: true, framesSampled: 250, placeholderFrames: 0, placeholderSec: 0, plannedCardSec: 0, confirmedPlaceholderSec: 0, indicatedPlaceholderSec: 0, unplannedPlaceholderFrames: 0, contentGraphicGroundSec: 0, decodedSec: 10 };
-const codesOf = (v: ReturnType<typeof deliveryGate>) => (v.allow ? [] : v.failures.map((f) => f.code));
+/** VIDEO 653 — every finding is still measured and named; a picture finding no longer refuses the film. */
+const codesOf = (v: ReturnType<typeof deliveryGate>) => (v.allow ? v.qualityProblems : v.failures).map((f) => f.code);
 
 describe("5. a budget overrun never puts the blue-grey ground under a sentence", () => {
   it("the rescue block searches; it plans no card, no filler and no generated picture when time runs out", () => {
@@ -220,19 +221,19 @@ describe("5. a budget overrun never puts the blue-grey ground under a sentence",
     expect(PIPE).toContain("no picture found — the timeline holds the previous shot");
   });
 
-  it("a chapter card planned as a sentence's picture is refused by the gate on the plan alone — before any frame is read", () => {
+  it("a chapter card planned as a sentence's picture is named by the gate on the plan alone — before any frame is read", () => {
     const t = timeline({ sentences: [sentence(0, 0, 0, 4.42)], graphics: [card("gfx1", 0, 4.42)] });
     const cov = sentenceCoverage(t);
     expect(cov.plannedCardSec).toBe(4.42);
     const v = deliveryGate({ ...base, sentenceCoverage: cov, placeholderCheck: { ...cleanScan, plannedCardSec: 4.42 } });
-    expect(v.allow).toBe(false);
+    expect(v.allow).toBe(true);
     expect(codesOf(v)).toEqual(expect.arrayContaining(["CHAPTER_CARD_PLACEHOLDER", "SENTENCE_NOT_COVERED"]));
   });
 
-  it("frames of the ground in the delivered file are refused even when nothing planned them", () => {
+  it("frames of the ground in the delivered file are named even when nothing planned them", () => {
     const t = timeline({ sentences: [sentence(0, 0, 0, 4)], clips: [clip("a", 0, 4)] });
     const v = deliveryGate({ ...base, sentenceCoverage: sentenceCoverage(t), placeholderCheck: { ...cleanScan, placeholderFrames: 12, placeholderSec: 0.48, unplannedPlaceholderFrames: 12 } });
-    expect(v.allow).toBe(false);
+    expect(v.allow).toBe(true);
     expect(codesOf(v)).toContain("PLACEHOLDER_IN_FILE");
   });
 });
@@ -270,23 +271,27 @@ describe("7. the rescue walks the same source ladder as the first search", () =>
   });
 });
 
-describe("8. the final gate refuses a film that is not complete", () => {
-  it("a sentence with no picture, a sentence only half pictured, and an unjudged picture are each refused; a covered film passes", () => {
+describe("8. the final gate names what is missing in a film that is not complete (VIDEO 653: and delivers it)", () => {
+  it("a sentence with no picture, a sentence only half pictured, and an unjudged picture are each named; a covered film passes clean", () => {
     const none = deliveryGate({ ...base, sentenceCoverage: sentenceCoverage(timeline({ sentences: [sentence(0, 0, 0, 4)] })), placeholderCheck: cleanScan });
     expect(codesOf(none)).toContain("SENTENCE_NOT_COVERED");
 
     const half = deliveryGate({ ...base, sentenceCoverage: sentenceCoverage(timeline({ sentences: [sentence(0, 0, 0, 6)], clips: [clip("a", 0, 2.5)] })), placeholderCheck: cleanScan });
     expect(codesOf(half)).toContain("SENTENCE_NOT_COVERED");
 
+    expect(none.allow && half.allow).toBe(true);
     const unjudged = deliveryGate({ ...base, sentenceCoverage: sentenceCoverage(timeline({ sentences: [sentence(0, 0, 0, 4)], clips: [clip("a", 0, 4, [0, 0], false)] })), placeholderCheck: cleanScan });
-    expect(unjudged.allow).toBe(false);
+    expect(unjudged.allow).toBe(true);
+    expect(codesOf(unjudged).length).toBeGreaterThan(0);
 
     const whole = deliveryGate({ ...base, sentenceCoverage: sentenceCoverage(timeline({ sentences: [sentence(0, 0, 0, 4), sentence(0, 1, 4, 8)], clips: [clip("a", 0, 4, [0, 0]), clip("b", 4, 8, [0, 1])] })), placeholderCheck: cleanScan });
     expect(whole.allow).toBe(true);
+    expect(codesOf(whole)).toEqual([]);
   });
 
-  it("a scan that could not read the whole file fails closed", () => {
+  it("a scan that could not read the whole file is never passed silently: it is named", () => {
     const v = deliveryGate({ ...base, sentenceCoverage: sentenceCoverage(timeline({ sentences: [sentence(0, 0, 0, 4)], clips: [clip("a", 0, 4)] })), placeholderCheck: { ...cleanScan, complete: false } });
-    expect(v.allow).toBe(false);
+    expect(v.allow).toBe(true);
+    expect(codesOf(v)).toEqual(["PLACEHOLDER_CHECK_INCOMPLETE"]);
   });
 });

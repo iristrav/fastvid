@@ -85,6 +85,11 @@ describe("every gate is reported, blocking or not", () => {
   });
 });
 
+/**
+ * VIDEO 653 — the findings below are about the pictures: the pipeline reports them and delivers
+ * the film (the owner's rule). Readiness says so with `qualityProblem`; `blocking` is now only the
+ * black picture. Agreement is checked on the finding, whatever it leads to.
+ */
 describe("the report agrees with the gate it describes", () => {
   /** A film of cards: the coverage gate throws, and readiness must say so before it does. */
   const cards = reportFor({
@@ -92,7 +97,7 @@ describe("the report agrees with the gate it describes", () => {
   });
 
   it("visual_coverage matches assertVisualCoverageExportGate", () => {
-    const readiness = gate(cards, "visual_coverage").blocking;
+    const readiness = gate(cards, "visual_coverage").qualityProblem ?? false;
     let threw = false;
     try {
       assertVisualCoverageExportGate(cards, 0);
@@ -100,10 +105,11 @@ describe("the report agrees with the gate it describes", () => {
       threw = true;
     }
     expect(readiness).toBe(threw);
+    expect(gate(cards, "visual_coverage").blocking, "the pipeline catches this one since VIDEO 653").toBe(false);
   });
 
-  it("a whole scene on a placeholder blocks in both", () => {
-    expect(gate(cards, "visual_coverage", 1).blocking).toBe(true);
+  it("a whole scene on a placeholder is a finding in both", () => {
+    expect(gate(cards, "visual_coverage", 1).qualityProblem).toBe(true);
     expect(() => assertVisualCoverageExportGate(cards, 1)).toThrow();
   });
 
@@ -117,7 +123,9 @@ describe("the report agrees with the gate it describes", () => {
         drawn: () => false,
       });
       const codes = indefensibleExportConditions(r).map((c) => c.code.toLowerCase());
-      expect(gate(r, name).blocking).toBe(codes.includes(name));
+      const g = gate(r, name);
+      expect(Boolean(g.blocking || g.qualityProblem)).toBe(codes.includes(name));
+      expect(g.blocking, "a picture finding never blocks since VIDEO 653").toBe(false);
     }
   );
 });

@@ -249,19 +249,18 @@ describe("VIDEO 650 — one bounded render retry after a technical refusal", () 
     expect(dbState.job?.status).toBe("failed");
   }, 420_000);
 
-  it("a refusal about the TIMELINE (a sentence without approved footage) is never retried", async () => {
+  /**
+   * VIDEO 653 — a finding about the TIMELINE (a sentence without approved footage) is a quality
+   * problem now: the film is delivered on the first render. Still never retried — no second
+   * encode can change the document.
+   */
+  it("a finding about the TIMELINE (a sentence without approved footage) is never retried, and the film is delivered", async () => {
     const { result, renderCalls, uploads } = await runWith({
       timeline: goodTimeline({ uncoveredSentence: true }),
       checks: ["real", "real"],
     });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    /** The delivery gate's refusal, not the file's; no second encode can change the document. */
-    expect(result.message).toContain("Delivery blocked");
-    expect(result.message).not.toContain("technical render failure");
-    expect(result.message).not.toContain("retry");
+    expect(result.ok).toBe(true);
     expect(renderCalls).toHaveLength(1);
-    expect(uploads).toHaveLength(0);
-    expect(dbState.job?.status).toBe("failed");
+    expect(uploads).toHaveLength(1);
   }, 420_000);
 });
