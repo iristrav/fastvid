@@ -161,7 +161,14 @@ describe("the rule for a neighbour: same sentence, and its own source fills the 
     expect(clips[0]!.timelineEnd).toBe(4);
     expect(notes.join("\n")).not.toContain("short holds");
     const long = limitLongShots({ clips });
-    expect(long.notes.join("\n")).not.toContain("hold its final frame");
+    /** the neighbour is not stretched into a still */
+    expect(long.notes.join("\n")).not.toMatch(/^short: .*hold its final frame/m);
+    /**
+     * VIDEO 656 — the YouTube clip's own tail used to repeat a window here; it now plays slower and
+     * holds its last frame (a held piece, `holdAtSourceOut`), placed on purpose — not stretched again.
+     */
+    expect(long.clips.find((c) => c.id === "short")!.timelineEnd).toBe(4);
+    expect(long.notes.join("\n")).not.toMatch(/^y_p\d+: .*hold its final frame/m);
   });
 
   it("step 1 (over 5 s): a same-sentence neighbour with too little source does not take the excess; the clip is cut instead", () => {

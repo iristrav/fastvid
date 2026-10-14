@@ -136,11 +136,20 @@ describe("§2 — a scene with only YouTube: pieces from different moments", () 
     expect(notes.join(" ")).not.toContain("repeat");
   });
 
-  it("VIDEO 604 with no neighbour: 40.16 s from a 30.6 s fragment repeats, and says so", () => {
+  /**
+   * VIDEO 656 — this used to repeat a window, and said so. The owner's rule (14 October): no picture
+   * twice. The piece the fragment has no different footage for holds the last frame instead.
+   */
+  it("VIDEO 604 with no neighbour: 40.16 s from a 30.6 s fragment holds its last frame, and says so", () => {
     const { pieces, notes } = planYoutubePieces({ inSec: 0, durationSec: 40.16, facts: oneShot(30.6) });
     expect(pieces).toHaveLength(9);
     expect(pieces.every((p) => p.durationSec <= YOUTUBE_MAX_SHOT_SEC)).toBe(true);
-    expect(notes.join(" ")).toMatch(/\d+ repeat/);
+    expect(notes.join(" ")).toMatch(/\d+ hold the last frame instead of a repeat/);
+    const moving = pieces.filter((p) => !p.hold);
+    expect(new Set(moving.map((p) => p.inSec)).size).toBe(moving.length);
+    /** the held piece is the frame the last moving piece ends on */
+    const last = moving[moving.length - 1]!;
+    for (const h of pieces.filter((p) => p.hold)) expect(h.inSec).toBeCloseTo(last.inSec + last.durationSec - 0.05, 2);
   });
 
   it("every piece of the timeline is at most five seconds, and the span is unchanged", () => {

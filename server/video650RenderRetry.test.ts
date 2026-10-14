@@ -25,6 +25,10 @@ import { DEFAULT_CAPTION_STYLE, DEFAULT_FORMAT, emptyTimeline, type ProjectTimel
 import { runRenderJob, type RenderWorkerDeps } from "./renderJobWorker";
 import { checkRenderedFile, renderTimeline } from "./timelineRenderer";
 
+/** VIDEO 656 — a contact sheet is stored next to the film; "one upload" means one upload of the FILM. */
+const filmUploads = <T,>(u: readonly T[]): T[] =>
+  u.filter((x) => (typeof x === "string" ? x : (x as unknown as { key: string }).key).endsWith(".mp4"));
+
 const dbState = vi.hoisted(() => ({
   job: null as {
     id: number; videoId: number; status: string; timelineVersion: number; attempt: number;
@@ -205,7 +209,7 @@ describe("VIDEO 650 — one bounded render retry after a technical refusal", () 
     expect(renderCalls[1]!.outputPath).toMatch(/out_retry\.mp4$/);
     expect(checkCalls).toBe(2);
     /** Delivered ONCE, as ONE job. */
-    expect(uploads).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(1);
     expect(uploads[0]!.bytes).toBeGreaterThan(1024);
     expect(dbState.finishCalls).toBe(1);
     expect(dbState.job?.status).toBe("completed");
@@ -261,6 +265,6 @@ describe("VIDEO 650 — one bounded render retry after a technical refusal", () 
     });
     expect(result.ok).toBe(true);
     expect(renderCalls).toHaveLength(1);
-    expect(uploads).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(1);
   }, 420_000);
 });

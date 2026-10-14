@@ -39,6 +39,10 @@ import {
 import { validateTimeline } from "./timelineValidator";
 import { renderOutputKey, runRenderJob } from "./renderJobWorker";
 
+/** VIDEO 656 — a contact sheet is stored next to the film; "one upload" means one upload of the FILM. */
+const filmUploads = <T,>(u: readonly T[]): T[] =>
+  u.filter((x) => (typeof x === "string" ? x : (x as unknown as { key: string }).key).endsWith(".mp4"));
+
 /* ═══════════════════════ the database, and only the database ═══════════════════════ */
 
 /**
@@ -671,9 +675,13 @@ describe("the render worker, end to end", () => {
 
     // A real file, of a real length, measured by the real ffprobe gate.
     expect(result.durationSec).toBeGreaterThan(5.5);
-    expect(uploads).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(1);
     expect(uploads[0]!.key).toBe("videos/1/edits/render_501.mp4");
     expect(uploads[0]!.bytes).toBeGreaterThan(1024);
+    /** VIDEO 656 — and the contact sheet of the real file, made by the real ffmpeg, stored next to it */
+    const sheet = uploads.find((u) => u.key === "videos/1/edits/render_501_contact_sheet.jpg");
+    expect(sheet, "contact sheet stored").toBeDefined();
+    expect(sheet!.bytes).toBeGreaterThan(1024);
     expect(fs.existsSync(path.join(ROOT, "videos_1_edits_render_501.mp4"))).toBe(true);
 
     // §9 — it lands in editedVideoUrl, and the generated master is untouched.
@@ -816,7 +824,7 @@ describe("the render worker, end to end", () => {
     if (!result.ok) return;
     expect(downloadsAttempted).toBe(0);
     expect(result.durationSec).toBeGreaterThan(5.5);
-    expect(uploads).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(1);
     expect(result.published).toBe(true);
   }, 420_000);
 

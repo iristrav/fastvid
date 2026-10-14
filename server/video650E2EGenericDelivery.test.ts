@@ -22,6 +22,10 @@ import { makeSyntheticMotionClip, clipHasMotion } from "./genericFootageFallback
 import { replicateVideoConfigured } from "./replicateVideoGeneration";
 import { elevenLabsVideoConfigured } from "./elevenLabsVideoGeneration";
 
+/** VIDEO 656 — a contact sheet is stored next to the film; "one upload" means one upload of the FILM. */
+const filmUploads = <T,>(u: readonly T[]): T[] =>
+  u.filter((x) => (typeof x === "string" ? x : (x as unknown as { key: string }).key).endsWith(".mp4"));
+
 const dbState = vi.hoisted(() => ({
   job: null as { id: number; videoId: number; status: string; timelineVersion: number; attempt: number; progressStep: string; progress: number; outputUrl: string | null; errorCode: string | null; errorMessage: string | null } | null,
   videoRenderAttempt: 1,
@@ -115,7 +119,7 @@ describe("VIDEO 650 — a film delivered on the generic floor, end to end", () =
     expect(result.ok, result.ok ? "" : `${result.code}: ${result.message}`).toBe(true);
     if (!result.ok) return;
     expect(result.published).toBe(true);
-    expect(uploads).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(1);
     /** the VIDEO 650 rule on the delivered file: 30 fps, average and nominal, a dissolve join and all */
     const { stdout } = await run(FFPROBE, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate,avg_frame_rate,nb_frames,duration", "-of", "json", uploads[0]!]);
     const st = (JSON.parse(stdout).streams ?? [])[0];

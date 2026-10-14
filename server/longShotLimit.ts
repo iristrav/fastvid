@@ -97,7 +97,9 @@ export function limitLongShots(params: {
     const ownSpeed = clip.speed == null || Math.abs(clip.speed - 1) < EPS;
     const pastItsSource = window != null && dur * (ownSpeed ? 1 : clip.speed!) > window + (ownSpeed ? EPS : 0.01);
     /** A shot the user edited is theirs; a piece an earlier rule cut is already short. */
-    if (clip.disabled || clip.editedByUser || (dur <= maxSec + EPS && !pastItsSource)) {
+    /** VIDEO 656 — a held frame placed on purpose is not a shot that ran out of source. */
+    const heldOnPurpose = clip.holdAtSourceOut === true && dur <= maxSec + EPS;
+    if (clip.disabled || clip.editedByUser || heldOnPurpose || (dur <= maxSec + EPS && !pastItsSource)) {
       out.push(clip);
       continue;
     }
@@ -120,6 +122,8 @@ export function limitLongShots(params: {
         ...clip,
         speed: stretch,
         sourceOut: round(inSec + window!),
+        /** VIDEO 656 — it stops on the window's last frame, not on the file's next seconds. */
+        ...(runsOut ? { holdAtSourceOut: true } : {}),
         ...(runsOut && !clip.camera ? { camera: pieceCamera(1) } : {}),
       });
       continue;
@@ -156,6 +160,8 @@ export function limitLongShots(params: {
         timelineEnd: end,
         ...(stretch != null ? { speed: stretch } : {}),
       };
+      /** VIDEO 656 — a piece past the window's end holds that frame; it does not read the file's next seconds. */
+      if (window != null && pieceIn + reads > inSec + window + EPS) piece.holdAtSourceOut = true;
       /** The first piece keeps the planner's move; every later one gets its own. */
       if (clip.camera) {
         if (k > 0) piece.camera = pieceCamera(k);

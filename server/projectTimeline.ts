@@ -281,6 +281,12 @@ export type TimelineVideoClip = {
    */
   sourceIn?: number;
   sourceOut?: number;
+  /**
+   * VIDEO 656 — read the source no further than `sourceOut`; the slot past it holds that last frame.
+   * Set where the alternative would be showing seconds already on screen. Absent: the read runs on
+   * into the file for the whole slot, as before.
+   */
+  holdAtSourceOut?: boolean;
   /** Absolute position on the timeline, in seconds. */
   timelineStart: number;
   timelineEnd: number;

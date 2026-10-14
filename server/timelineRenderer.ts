@@ -487,6 +487,20 @@ export function speedThatFitsSource(
   return Math.floor(fit * 10_000) / 10_000;
 }
 
+/**
+ * VIDEO 656 — how many seconds of source the input reads. The whole slot at its speed, unless the
+ * clip asks to hold at its out-point (`holdAtSourceOut`): then no further than `sourceOut`, and
+ * `tpad` clones that frame for the rest of the slot. Never less than one frame.
+ */
+export function sourceReadSec(
+  clip: Pick<TimelineVideoClip, "holdAtSourceOut" | "sourceOut">,
+  startAt: number,
+  wantSec: number
+): number {
+  if (!clip.holdAtSourceOut || clip.sourceOut == null || !Number.isFinite(clip.sourceOut)) return wantSec;
+  return Math.min(wantSec, Math.max(0.04, clip.sourceOut - startAt));
+}
+
 export async function probeIsPortrait(file: string): Promise<boolean | null> {
   try {
     const { stdout } = await execFileAsync(FFPROBE, [
@@ -863,7 +877,14 @@ async function renderSegment(
           `its last frame holds instead of replaying its start`
       );
     }
-    args.push("-ss", startAt.toFixed(3), "-t", (dur * speed).toFixed(3), "-i", localMedia);
+    const readSec = sourceReadSec(fitted, startAt, dur * speed);
+    if (readSec < dur * speed - 0.01) {
+      console.log(
+        `[ShotHold] clip=${clip.id} reads ${readSec.toFixed(2)}s of source to its out-point, then holds that frame ` +
+          `for the rest of its ${slot.toFixed(2)}s — seconds past it are not shown twice`
+      );
+    }
+    args.push("-ss", startAt.toFixed(3), "-t", readSec.toFixed(3), "-i", localMedia);
   }
   args.push(
     "-an",

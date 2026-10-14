@@ -44,8 +44,15 @@ export type YoutubeSourceFacts = {
   measured: boolean;
 };
 
-/** `speed` (below 1) when the piece is played slower so it need not repeat a window — VIDEO 636. */
-export type YoutubePiece = { inSec: number; durationSec: number; speed?: number };
+/**
+ * `speed` (below 1) when the piece is played slower so it need not repeat a window — VIDEO 636.
+ * `hold` when the source has no different footage left: the piece is the last frame before it, held
+ * (`holdAtSourceOut`) — VIDEO 656.
+ */
+export type YoutubePiece = { inSec: number; durationSec: number; speed?: number; hold?: boolean };
+
+/** VIDEO 656 — how much source a held piece reads: one frame and a little, then that frame holds. */
+export const YOUTUBE_HOLD_READ_SEC = 0.05;
 
 /** The slowest a piece is played rather than repeat a window: the renderer's `MIN_FIT_SPEED`. */
 export const YOUTUBE_MIN_PIECE_SPEED = 0.5;
@@ -150,7 +157,8 @@ export function planYoutubePieces(params: {
    * RONDE 657 — the dress rehearsal played the same 4 s of a YouTube source twice in a row: one shot
    * held a 4 s window, two shorter shots held none. Rather than repeat a picture, the pieces get
    * shorter — still equal, never under `YOUTUBE_STRICT_MIN_PIECE_SEC` — until every piece can show
-   * different footage. Only when even that fails does a window repeat, and the note below says so.
+   * different footage. Only when even that fails does a piece hold the last frame (VIDEO 656), and
+   * the note says so.
    */
   if (windows.length < count) {
     for (let more = count + 1; need / more >= YOUTUBE_STRICT_MIN_PIECE_SEC - EPS; more++) {
@@ -187,6 +195,21 @@ export function planYoutubePieces(params: {
         break;
       }
     }
+    /**
+     * VIDEO 656 — not even the floor gives every piece its own footage: at the floor, as many pieces
+     * as the source has footage for move, and the rest hold the last frame (below).
+     */
+    if (speed === 1) {
+      const atFloor = windowsOf(len * YOUTUBE_MIN_PIECE_SPEED);
+      if (atFloor.length > windows.length) {
+        speed = YOUTUBE_MIN_PIECE_SPEED;
+        windows = atFloor;
+        notes.push(
+          `${count} piece(s) of ${len.toFixed(2)}s would repeat a picture — ${atFloor.length} played at ` +
+            `${YOUTUBE_MIN_PIECE_SPEED}× from different footage`
+        );
+      }
+    }
   }
   if (windows.length === 0) {
     return { pieces: [], notes, refused: `no shot in the source holds a ${len.toFixed(2)}s piece clear of its cuts` };
@@ -209,14 +232,24 @@ export function planYoutubePieces(params: {
     ...rest.filter((w) => w < anchor - EPS),
   ];
 
+  /**
+   * VIDEO 656 — never a window twice. Render 656 played the same 2.87 s three times in a row here
+   * (`order[i % order.length]`). A piece the source has no different footage for is the frame the
+   * piece before it ended on, held: the picture stops instead of starting over.
+   */
   const pieces: YoutubePiece[] = [];
   for (let i = 0; i < count; i++) {
-    pieces.push({ inSec: round(order[i % order.length]!), durationSec: round(len), ...(speed < 1 ? { speed } : {}) });
+    if (i < order.length) {
+      pieces.push({ inSec: round(order[i]!), durationSec: round(len), ...(speed < 1 ? { speed } : {}) });
+      continue;
+    }
+    const lastFrame = Math.max(0, order[order.length - 1]! + reads - YOUTUBE_HOLD_READ_SEC);
+    pieces.push({ inSec: round(lastFrame), durationSec: round(len), hold: true });
   }
   if (count > order.length) {
     notes.push(
       `the source holds ${order.length} distinct ${len.toFixed(2)}s window(s) for ${count} piece(s) — ` +
-        `${count - order.length} repeat`
+        `${count - order.length} hold the last frame instead of a repeat`
     );
   }
 
@@ -352,7 +385,7 @@ export function limitYoutubeShots(params: {
      * VIDEO 622 — the same 4 s of a YouTube video played four times in a row: the source held one
      * window and the slot asked for four. The same seconds are never shown twice; the time the
      * source cannot fill with different footage goes to the shot beside it in the same scene. Only
-     * when there is none does the repeat stay, and the plan's note says so.
+     * when there is none do the pieces play slower, and past that hold their last frame (VIDEO 656).
      */
     const distinct = plan.distinct ?? plan.pieces.length;
     if (distinct < plan.pieces.length) {
@@ -383,10 +416,12 @@ export function limitYoutubeShots(params: {
           maxSec,
           slowRatherThanRepeat: true,
         });
-        if (!slowed.refused && slowed.pieces.length > 0 && (slowed.distinct ?? 0) >= slowed.pieces.length) {
+        const moving = slowed.distinct ?? 0;
+        if (!slowed.refused && slowed.pieces.length > 0 && moving > distinct) {
           notes.push(
-            `${clip.id}: no repeat — no shot beside it can take the time; ${slowed.pieces.length} piece(s) played at ` +
-              `${slowed.pieces[0]!.speed ?? 1}× from different footage`
+            `${clip.id}: no repeat — no shot beside it can take the time; ${moving} piece(s) played at ` +
+              `${slowed.pieces[0]!.speed ?? 1}× from different footage` +
+              (moving < slowed.pieces.length ? `, ${slowed.pieces.length - moving} hold the last frame` : "")
           );
           plan.pieces = slowed.pieces;
         }
@@ -410,11 +445,18 @@ export function limitYoutubeShots(params: {
         ...clip,
         id: plan.pieces.length === 1 ? clip.id : `${clip.id}_p${k + 1}`,
         sourceIn: p.inSec,
-        sourceOut: round(p.inSec + (end - at) * (p.speed ?? 1)),
+        sourceOut: round(p.inSec + (p.hold ? YOUTUBE_HOLD_READ_SEC : (end - at) * (p.speed ?? 1))),
         timelineStart: round(at),
         timelineEnd: end,
         ...(p.speed != null ? { speed: p.speed } : {}),
       };
+      /** VIDEO 656 — a held piece reads one frame and holds it; every other piece reads its own window. */
+      if (p.hold) {
+        piece.holdAtSourceOut = true;
+        delete piece.speed;
+      } else {
+        delete piece.holdAtSourceOut;
+      }
       /** Only the first piece carries the planned transition in, only the last the one out. */
       if (k > 0) {
         piece.transitionIn = "hard_cut";

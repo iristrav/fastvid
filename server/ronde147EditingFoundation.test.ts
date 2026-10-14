@@ -448,11 +448,18 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
     // `holdPictureUnderVoice`, because a film that opens on ten seconds of nothing is a hole, not
     // an edit. Asserting the arithmetic on the leading clip would be asserting the absence of that
     // repair rather than the offset maths it was written for.
+    //
+    // VIDEO 656 — the second beat shows another asset. The same seconds of one asset under two
+    // beats is a repeat, and a repeat is now taken out of the film (`removeRepeatedFootage`).
     const { timeline } = translateEdl({
       videoId: 1,
       inputs: [
         { decision: decision({ beatId: "s0b0" }), sceneOffsetSec: 0, identity },
-        { decision: decision({ beatId: "s1b0" }), sceneOffsetSec: 10, identity },
+        {
+          decision: decision({ beatId: "s1b0" }),
+          sceneOffsetSec: 10,
+          identity: { ...identity, providerAssetId: "File:Y.jpg", mediaUrl: "https://u/y.mp4" },
+        },
       ],
     });
     const track = timeline.tracks.find((t) => t.kind === "VIDEO");

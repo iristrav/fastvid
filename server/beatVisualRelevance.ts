@@ -60,6 +60,8 @@ import {
   formatVisualFitDecision,
   mismatchSeverity,
   reprieveAllowedFor,
+  type MismatchKind,
+  type MismatchSeverity,
 } from "./visualMismatchFeedback";
 import { JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
 
@@ -1186,6 +1188,113 @@ export async function checkBeatRelevance(
  *
  * Returns whether the reprieve was granted, so a caller that was about to adopt the clip can stop.
  */
+/**
+ * VIDEO 655 — THE LAST PICTURE BEFORE THE COLOUR FIELD.
+ *
+ * The owner's rule since 14 October: a video is always delivered and the customer replaces a
+ * doubtful shot in the editor — "zolang het erbij past". Render 655 put a colour field under "In
+ * 2014, Tesla's Palo Alto headquarters sparked …" after the editor had refused, for that sentence,
+ * a Tesla Model S and a speaker in front of the Tesla logo: pictures about the right thing that do
+ * not show the exact moment.
+ *
+ * So, for ONE sentence that would otherwise get the colour field, its own refusals of severity
+ * SOFT_MISMATCH (`mismatchSeverity`: the right subject at the wrong period, place or occasion, or a
+ * talking head about it) are offered once more, as the last resort. Never HARD_MISMATCH (a
+ * different topic, modern footage under history, text or a title card, a blank frame), never
+ * TOTALLY_UNRELATED.
+ *
+ * UNKNOWN only when the editor's own description of the frame names the sentence's subject. The
+ * classifier reads prose with patterns, and none of 655's refusals came out SOFT: "A Tesla car,
+ * likely a Model S" under a sentence about Tesla was UNCLEAR. That the frame shows the sentence's
+ * named subject is the editor's own observation, not a guess (`depictsTheSentenceSubject`).
+ *
+ * `reprieveAllowedFor` stays false: the ordinary search still never overrules the editor; this is
+ * only the floor.
+ */
+/** Capitalised words that start sentences and clauses; never a subject on their own. */
+const NOT_A_NAME = new Set([
+  "a", "an", "the", "in", "on", "at", "by", "for", "from", "with", "after", "before", "during", "since",
+  "but", "and", "or", "so", "yet", "then", "when", "while", "if", "as", "this", "that", "these", "those",
+  "it", "its", "his", "her", "their", "our", "my", "your", "we", "they", "he", "she", "i", "just",
+  "imagine", "today", "now", "here", "there", "what", "why", "how", "who", "one", "every", "each",
+]);
+
+/** The names a sentence is about: its verified subject, and every capitalised word that is not a sentence word. */
+export function sentenceSubjectWords(ctx: Pick<BeatVisualContext, "beatText" | "anchors">): string[] {
+  const out = new Set<string>();
+  const add = (w: string) => {
+    const t = w.toLowerCase().replace(/['’]s$/, "").replace(/[^\p{L}\p{N}-]/gu, "");
+    if (t.length >= 3 && !NOT_A_NAME.has(t)) out.add(t);
+  };
+  for (const w of (ctx.anchors?.subject ?? "").split(/\s+/)) add(w);
+  for (const w of ctx.beatText.split(/\s+/)) if (/^[A-Z]/.test(w)) add(w);
+  return [...out];
+}
+
+/** Does the editor's own description of the frame name one of the sentence's subjects? */
+export function depictsTheSentenceSubject(
+  ctx: Pick<BeatVisualContext, "beatText" | "anchors">,
+  depicts: string
+): boolean {
+  const said = ` ${depicts.toLowerCase().replace(/['’]s\b/g, "").replace(/[^\p{L}\p{N}-]+/gu, " ")} `;
+  return sentenceSubjectWords(ctx).some((w) => said.includes(` ${w} `));
+}
+
+/** SOFT_MISMATCH, or an UNKNOWN whose frame names the sentence's subject. Nothing else. */
+function lastResortAllowed(entry: BeatRelevanceEntry): { ok: boolean; kind: MismatchKind; severity: MismatchSeverity } {
+  const kind = classifyMismatch({ depicts: entry.decision.depicts, reason: entry.decision.reason });
+  const severity = mismatchSeverity(kind);
+  const ok =
+    severity === "SOFT_MISMATCH" ||
+    (severity === "UNKNOWN" && depictsTheSentenceSubject(entry.ctx, entry.decision.depicts ?? ""));
+  return { ok, kind, severity };
+}
+
+export function softMismatchCandidatesForBeat(
+  ledger: Pick<BeatRelevanceLedger, "byBeat">,
+  sceneIndex: number,
+  beatIndex: number
+): string[] {
+  const prefix = beatRelevanceBeatKey(sceneIndex, beatIndex, "path", "");
+  const out: string[] = [];
+  for (const [key, entry] of ledger.byBeat) {
+    if (!key.startsWith(prefix) || entry.decision.verdict !== "does_not_fit") continue;
+    if (!lastResortAllowed(entry).ok) continue;
+    const clipPath = key.slice(prefix.length);
+    if (clipPath && !out.includes(clipPath)) out.push(clipPath);
+  }
+  return out;
+}
+
+/** VIDEO 655 — place one of `softMismatchCandidatesForBeat` on the record, so the compose barrier lets it through. */
+export function reprieveAsLastResort(
+  ledger: Pick<BeatRelevanceLedger, "byBeat">,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number
+): boolean {
+  const entry = ledger.byBeat.get(beatRelevanceBeatKey(sceneIndex, beatIndex, "path", clipPath));
+  if (!entry || entry.decision.verdict !== "does_not_fit") return false;
+  const { ok, kind, severity } = lastResortAllowed(entry);
+  if (!ok) return false;
+  entry.decision = { ...entry.decision, allowed: true, reprieved: true };
+  console.log(
+    formatVisualFitDecision({
+      beatLabel: beatSlotKey(entry.ctx),
+      candidate: path.basename(clipPath),
+      verdict: entry.decision.verdict,
+      severity,
+      decision: "REPRIEVED",
+      reason:
+        severity === "SOFT_MISMATCH"
+          ? `${kind.toLowerCase()}: last resort before the colour field — about the right thing, not the exact moment`
+          : `${kind.toLowerCase()}: last resort before the colour field — the frame shows the sentence's subject`,
+      fallback: true,
+    })
+  );
+  return true;
+}
+
 export function reprieveBeatClip(
   ledger: BeatRelevanceLedger,
   clipPath: string,

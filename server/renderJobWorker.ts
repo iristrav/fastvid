@@ -31,6 +31,8 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { contactSheetStorageKey, formatContactSheetLine, scanDeliveredFilm } from "./contactSheet";
+import { resolveFFmpegBin } from "./ffmpegBinary";
 
 import {
   claimQueuedRenderJob,
@@ -450,6 +452,41 @@ export function disableClipsForRender(
     );
   }
   return removed;
+}
+
+/** VIDEO 656 — see `contactSheet.ts`. Never throws. */
+export async function reportContactSheet(params: {
+  videoId: number;
+  jobId: number;
+  outputPath: string;
+  workDir: string;
+  durationSec: number | null;
+  upload: RenderWorkerDeps["upload"];
+  scan?: typeof scanDeliveredFilm;
+}): Promise<string> {
+  let line: string;
+  try {
+    const scan = await (params.scan ?? scanDeliveredFilm)({
+      videoPath: params.outputPath,
+      sheetPath: path.join(params.workDir, "contact_sheet.jpg"),
+      durationSec: params.durationSec ?? 0,
+      ffmpegBin: resolveFFmpegBin(),
+    });
+    let storedKey: string | null = null;
+    if (scan?.sheetPath) {
+      storedKey = await params
+        .upload(contactSheetStorageKey(params.videoId, params.jobId), scan.sheetPath, "image/jpeg")
+        .then((put) => put.key)
+        .catch(() => null);
+    }
+    line = formatContactSheetLine(params.videoId, params.jobId, scan, storedKey);
+    if (scan && scan.repeats.length === 0 && storedKey) console.log(line);
+    else console.warn(line);
+  } catch (err) {
+    line = `[ContactSheet] video=${params.videoId} job=${params.jobId} NOT MADE — ${(err as Error)?.message?.slice(0, 200) ?? "unknown error"}`;
+    console.warn(line);
+  }
+  return line;
 }
 
 export async function runRenderJob(params: {
@@ -1282,6 +1319,12 @@ export async function runRenderJob(params: {
       renderedClipIds: rendered.renderedClipIds,
       published,
     });
+
+    /**
+     * 9. VIDEO 656 — a contact sheet of the delivered file, stored next to it, and a check for a
+     * picture that comes back. After delivery: it reports and can never fail the job.
+     */
+    await reportContactSheet({ videoId: job.videoId, jobId: job.id, outputPath, workDir, durationSec: check.durationSec, upload: deps.upload });
 
     return {
       ok: true,

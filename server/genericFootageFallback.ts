@@ -218,7 +218,7 @@ export function formatGenericFootagePlacement(p: {
     return (
       `[${GENERIC_FOOTAGE_FALLBACK}] s${p.sceneIndex}b${p.beatIndex} placed source=synthetic asset=${p.assetId} ` +
       `duration=${p.durationSec.toFixed(2)}s needed=${p.neededSec.toFixed(2)}s — EMERGENCY PLACEHOLDER (provider=${SYNTHETIC_PLACEHOLDER_PROVIDER}): ` +
-      `a generated colour field, NOT footage, NOT a content choice, NOT cover; a QUALITY PROBLEM that keeps the film from delivery — ` +
+      `a generated colour field, NOT footage, NOT a content choice, NOT cover; a QUALITY PROBLEM, delivered and named for the customer to replace (VIDEO 653) — ` +
       `put real rights-clear clips in the archive under the "${GENERIC_ARCHIVE_TAG}" tag`
     );
   }

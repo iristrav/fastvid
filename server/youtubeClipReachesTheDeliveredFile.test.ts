@@ -29,6 +29,10 @@ import { runRenderJob } from "./renderJobWorker";
 import { scanForPlaceholderGround } from "./postRenderSpotCheck";
 import { sentenceCoverage } from "./sentenceCoverage";
 
+/** VIDEO 656 — a contact sheet is stored next to the film; "one upload" means one upload of the FILM. */
+const filmUploads = <T,>(u: readonly T[]): T[] =>
+  u.filter((x) => (typeof x === "string" ? x : (x as unknown as { key: string }).key).endsWith(".mp4"));
+
 /* ═══════════════════════ the database, and only the database (ronde148) ═══════════════════════ */
 
 const dbState = vi.hoisted(() => ({
@@ -212,7 +216,7 @@ describe("an approved YouTube clip reaches the delivered MP4 and covers its sent
     if (!result.ok) return;
     expect(result.published).toBe(true);
     expect(dbState.job?.status).toBe("completed");
-    expect(uploads).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(1);
     const delivered = uploads[0]!.file;
     expect(fs.existsSync(delivered)).toBe(true);
 
@@ -256,14 +260,14 @@ describe("an approved YouTube clip reaches the delivered MP4 and covers its sent
     expect(result.ok).toBe(true);
     expect(logged).toMatch(/QUALITY_PROBLEM SENTENCE_NOT_COVERED[^\n]*s0b0/);
     expect(dbState.published).not.toBeNull();
-    expect(uploads).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(1);
   }, 420_000);
 
   it("3. the same clip without the picture editor's verdict is not cover: SENTENCE_COVERAGE_UNPROVEN — named, and published", async () => {
     const { result, logged } = await deliveredWithProblem(film({ approved: false }));
     expect(result.ok).toBe(true);
     expect(logged).toMatch(/QUALITY_PROBLEM SENTENCE_COVERAGE_UNPROVEN[^\n]*s0b0/);
-    expect(uploads).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(1);
   }, 420_000);
 
   it("4. the timeline calls the second picture approved footage, but the FILE holds a real chapter card: PLACEHOLDER_IN_FILE — the file is what is checked", async () => {
@@ -275,6 +279,6 @@ describe("an approved YouTube clip reaches the delivered MP4 and covers its sent
     expect(logged).toContain("QUALITY_PROBLEM PLACEHOLDER_IN_FILE");
     expect(logged).toMatch(/\d+ of \d+ frame\(s\) show the blue-grey chapter-card ground: [23]\.\d\ds where exactly 0\.00s is allowed/);
     expect(dbState.published).not.toBeNull();
-    expect(uploads).toHaveLength(1);
+    expect(filmUploads(uploads)).toHaveLength(1);
   }, 420_000);
 });

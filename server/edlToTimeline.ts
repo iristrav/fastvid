@@ -66,6 +66,7 @@ import { isBackgroundSound } from "./cinematicEditingEngine/soundPlanner";
 import { ambienceGainDb, gainFromDb } from "./cinematicAmbient";
 import { beatIndexFromBeatId } from "./cinematicPipelineInputs";
 import { limitYoutubeShots, type YoutubeSourceFacts } from "./youtubeShotLimit";
+import { removeRepeatedFootage } from "./noRepeatedFootage";
 import { MAX_SHOT_SEC, pieceCamera } from "./longShotLimit";
 import { isGeneratedImageClip } from "./generatedImageFallback";
 
@@ -1226,8 +1227,23 @@ export function translateEdl(params: {
    * 604). The rule redistributes time inside a scene and never changes the span the clips cover,
    * so the length measured below and the narration under it are unaffected.
    */
+  /**
+   * VIDEO 656 — the same seconds of footage are never on screen twice (`removeRepeatedFootage`).
+   * After the holds and the fillers, which put a shot's own seconds back on screen; before the
+   * five-second YouTube rule and the six-second rule downstream, which cut a shot stretched here
+   * into moving pieces — and which hold a last frame rather than repeat a window.
+   */
+  const noRepeat = removeRepeatedFootage(clips, { skip: isGraphicBackdrop });
+  clips.splice(0, clips.length, ...noRepeat.clips);
   const limited = limitYoutubeShots({ clips, youtube });
   clips.splice(0, clips.length, ...limited.clips);
+  /**
+   * And once more after it: its pieces come from anywhere in the source, so a piece may land on
+   * seconds another clip of the same video already shows. Those become a held frame, not a repeat —
+   * a shot may no longer grow here.
+   */
+  const noRepeatAfter = removeRepeatedFootage(clips, { skip: isGraphicBackdrop, holdInstead: true });
+  clips.splice(0, clips.length, ...noRepeatAfter.clips);
 
   /**
    * The film is as long as the LONGER of its picture and its voice.
@@ -1270,8 +1286,8 @@ export function translateEdl(params: {
     timeline,
     unsupported,
     covered,
-    youtubeShots: limited.notes,
-    youtubeAdjustedClipIds: limited.adjustedIds,
+    youtubeShots: [...limited.notes, ...[...noRepeat.notes, ...noRepeatAfter.notes].map((n) => `NO_REPEAT ${n}`)],
+    youtubeAdjustedClipIds: [...limited.adjustedIds, ...noRepeat.adjustedIds, ...noRepeatAfter.adjustedIds],
   };
 }
 

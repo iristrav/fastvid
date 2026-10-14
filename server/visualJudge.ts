@@ -705,7 +705,9 @@ export {
   ensureVerdictBeforeCompose,
   nothingToJudgeAgainst,
   relevanceVerdictForRenderedAsset,
+  reprieveAsLastResort,
   reprieveBeatClip,
+  softMismatchCandidatesForBeat,
 } from "./beatVisualRelevance";
 /**
  * RONDE 649 — A YOUTUBE RESULT WHOSE TITLE SAYS IT IS NOT FOOTAGE IS NOT DOWNLOADED.

@@ -193,7 +193,7 @@ import type { TimelineGraphic } from "./projectTimeline";
 import { type StillStyleContext } from "./motionGraphicsEngine";
 import { PipelineStepTiming, recordPipelineTiming, timePipelineStep } from "./pipelineStepTiming";
 import { type BeatGeoRegion } from "./vidrushQuality";
-import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, onScreenTextRefusesBeforeVision, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveBeatClip, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
+import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, onScreenTextRefusesBeforeVision, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveAsLastResort, reprieveBeatClip, softMismatchCandidatesForBeat, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
 import type { RejectionRegistry } from "./rejectionRegistry";
 import { registerRejection, createRejectionRegistry, beatRejectCount, beatRejectReasons, noteRepeatedRefusal } from "./rejectionRegistry";
 // RONDE 70: one funnel line per beat, for every beat. Counting only — see beatOutcomeAudit.ts.
@@ -8438,13 +8438,30 @@ export async function pickUnjudgedFallback(
   dedup: Pick<VisualDedupState, "unjudgedFallbacks" | "usedContentKeys" | "refusedAssetsThisRender">,
   sceneIndex: number,
   beatIndex: number,
-  checks: { valid: (p: string) => Promise<boolean>; durationSec: (p: string) => Promise<number>; black: (p: string, d: number) => Promise<boolean> } = {
-    valid: isValidVideoFile,
-    durationSec: async (p) => (await probeVideoStreamMeta(p))?.durationSec ?? 0,
-    black: (p, d) => isMostlyBlackClip(p, d),
-  }
+  checks: FallbackFileChecks = DEFAULT_FALLBACK_CHECKS
 ): Promise<{ path: string; durationSec: number } | null> {
-  for (const p of dedup.unjudgedFallbacks?.get(`${sceneIndex}:${beatIndex}`) ?? []) {
+  return firstUsableFallback(dedup.unjudgedFallbacks?.get(`${sceneIndex}:${beatIndex}`) ?? [], dedup, checks);
+}
+
+type FallbackFileChecks = {
+  valid: (p: string) => Promise<boolean>;
+  durationSec: (p: string) => Promise<number>;
+  black: (p: string, d: number) => Promise<boolean>;
+};
+
+const DEFAULT_FALLBACK_CHECKS: FallbackFileChecks = {
+  valid: isValidVideoFile,
+  durationSec: async (p) => (await probeVideoStreamMeta(p))?.durationSec ?? 0,
+  black: (p, d) => isMostlyBlackClip(p, d),
+};
+
+/** The first path that still exists, is a valid non-black video, and is neither on screen nor refused as a file. */
+async function firstUsableFallback(
+  paths: readonly string[],
+  dedup: Pick<VisualDedupState, "usedContentKeys" | "refusedAssetsThisRender">,
+  checks: FallbackFileChecks
+): Promise<{ path: string; durationSec: number } | null> {
+  for (const p of paths) {
     const key = clipContentKey(p);
     if (dedup.usedContentKeys?.has(key) || dedup.refusedAssetsThisRender?.has(key)) continue;
     if (!fs.existsSync(p) || !(await checks.valid(p).catch(() => false))) continue;
@@ -8453,6 +8470,23 @@ export async function pickUnjudgedFallback(
     return { path: p, durationSec };
   }
   return null;
+}
+
+/** VIDEO 655 — the log name of a picture about the right thing, refused for not showing the exact moment, placed as the last resort. */
+export const RELATED_FOOTAGE_FALLBACK = "RELATED_FOOTAGE_FALLBACK";
+
+/**
+ * VIDEO 655 — after unjudged footage, before generic footage and the colour field: this sentence's own
+ * SOFT_MISMATCH refusals (`softMismatchCandidatesForBeat`). `sceneIndex` is the scene's own index, the
+ * one the relevance ledger files its verdicts under.
+ */
+export async function pickSoftMismatchFallback(
+  dedup: Pick<VisualDedupState, "beatRelevance" | "usedContentKeys" | "refusedAssetsThisRender">,
+  sceneIndex: number,
+  beatIndex: number,
+  checks: FallbackFileChecks = DEFAULT_FALLBACK_CHECKS
+): Promise<{ path: string; durationSec: number } | null> {
+  return firstUsableFallback(softMismatchCandidatesForBeat(dedup.beatRelevance, sceneIndex, beatIndex), dedup, checks);
 }
 
 export async function placeGenericMovingFallbacks(
@@ -8487,6 +8521,25 @@ export async function placeGenericMovingFallbacks(
         console.log(
           `[${UNJUDGED_FOOTAGE_FALLBACK}] ${where} placed ${path.basename(unjudged.path)} (${unjudged.durationSec.toFixed(2)}s) — ` +
             `real footage the picture editor did not approve for this sentence; delivered as a picture to check in the editor`
+        );
+        tally.placed++;
+        continue;
+      }
+      /**
+       * VIDEO 655 — then a picture about the right thing that the editor refused for not showing the
+       * exact moment (a Tesla under a sentence about Tesla's headquarters). Reprieved on the record so
+       * the compose barrier lets it through; still not approved, so the delivery gate names it.
+       */
+      const related = await pickSoftMismatchFallback(dedup, scene.index, beat.index);
+      if (related && reprieveAsLastResort(dedup.beatRelevance, related.path, scene.index, beat.index)) {
+        dedup.usedContentKeys.add(clipContentKey(related.path));
+        const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
+        target.clips.push(related.path);
+        target.beatDurations.push(Math.min(generatedStillSec(beat), related.durationSec));
+        (target.clipBeatIndices ??= []).push(beat.index);
+        console.log(
+          `[${RELATED_FOOTAGE_FALLBACK}] ${where} placed ${path.basename(related.path)} (${related.durationSec.toFixed(2)}s) — ` +
+            `about the right subject, refused for not showing the exact moment; the last picture before the colour field, to check in the editor`
         );
         tally.placed++;
         continue;
@@ -8587,10 +8640,10 @@ export async function placeGenericMovingFallbacks(
           /**
            * VIDEO 651 — the synthetic colour field is NOT stored in the archive. Render 651 filed it
            * as asset 60649, where a later film could be offered it as archive footage. It is not
-           * cover (the delivery gate refuses a film resting on it either way), so it needs no
+           * cover (the delivery gate names it as a quality problem), so it needs no
            * archive handle; the archive store itself refuses it too (`storeForProduction`).
            */
-          console.warn(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} synthetic placeholder not archived — it is not footage and the film is not delivered with it`);
+          console.warn(`[${GENERIC_FOOTAGE_FALLBACK}] ${where} synthetic placeholder not archived — it is not footage; it is drawn again from its id at render time (VIDEO 653)`);
         }
         markGenericFootageForBeat(dedup, scene.index, beat.index, clipContentKey(outPath));
         const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
