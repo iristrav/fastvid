@@ -19,6 +19,8 @@
  *                      under the sourcing ladder (`source.contentApproval === "generic_footage"`,
  *                      genericFootageFallback.ts). Counted as cover and NAMED as generic on every row,
  *                      because it is visual coverage and explicitly not a content fit;
+ *   ai_generated       VIDEO 659 — a picture generated for THIS sentence and placed by the owner's rule
+ *                      (`source.contentApproval === "ai_generated"`): cover, named as AI-generated;
  *   synthetic_placeholder  PRE-DEPLOY — the subset of generic cover whose provider is the synthetic
  *                      colour field (`source.provider === "synthetic_placeholder"`): an EMERGENCY
  *                      placeholder, not footage. NOT cover: a coloured field under a spoken sentence
@@ -205,6 +207,8 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
   const acceptable: Array<{ span: Span; forSentence: string | null }> = [];
   /** the approved/acceptable spans whose picture a model generated — a subset, named apart */
   const aiGenerated: Array<{ span: Span; forSentence: string | null }> = [];
+  /** VIDEO 659 — a picture generated for its sentence and kept by the owner's rule (`ai_generated`): cover, named as AI */
+  const aiKept: Array<{ span: Span; forSentence: string | null }> = [];
   const generic: Array<{ span: Span; forSentence: string | null }> = [];
   const synthetic: Array<{ span: Span; forSentence: string | null }> = [];
   const unverified: Span[] = [];
@@ -228,7 +232,10 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
     }
     if (c.source?.contentApproval === "judge_fit") approved.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
     else if (c.source?.contentApproval === "judge_acceptable") acceptable.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
-    else if (c.source?.contentApproval === "generic_footage") {
+    else if (c.source?.contentApproval === "ai_generated") {
+      aiKept.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
+      aiGenerated.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
+    } else if (c.source?.contentApproval === "generic_footage") {
       generic.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
       if (c.source?.provider === "synthetic_placeholder") synthetic.push({ span: [start, shownEnd], forSentence: sentenceKeyOf(c) });
     } else unverified.push([start, shownEnd]);
@@ -282,14 +289,15 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
     const genericIn = clip(generic.filter((g) => g.forSentence === key).map((g) => g.span), lo, hi);
     const syntheticIn = clip(synthetic.filter((g) => g.forSentence === key).map((g) => g.span), lo, hi);
     const aiIn = clip(aiGenerated.filter((g) => g.forSentence === key).map((g) => g.span), lo, hi);
+    const aiKeptIn = clip(aiKept.filter((g) => g.forSentence === key).map((g) => g.span), lo, hi);
     const otherSentenceIn = clip(
-      [...approved, ...acceptable, ...generic, ...contentGraphics].filter((a) => a.forSentence != null && a.forSentence !== key).map((a) => a.span),
+      [...approved, ...acceptable, ...generic, ...aiKept, ...contentGraphics].filter((a) => a.forSentence != null && a.forSentence !== key).map((a) => a.span),
       lo,
       hi
     );
-    const unmarkedIn = clip([...approved, ...acceptable, ...generic, ...contentGraphics].filter((a) => a.forSentence == null).map((a) => a.span), lo, hi);
+    const unmarkedIn = clip([...approved, ...acceptable, ...generic, ...aiKept, ...contentGraphics].filter((a) => a.forSentence == null).map((a) => a.span), lo, hi);
     /** the synthetic colour field is placed as generic, but it is not a picture: never cover */
-    const coverSpans = union([...approvedIn, ...graphicIn, ...acceptableIn, ...subtract(genericIn, syntheticIn)]);
+    const coverSpans = union([...approvedIn, ...graphicIn, ...acceptableIn, ...aiKeptIn, ...subtract(genericIn, syntheticIn)]);
     const rest = subtract(win, coverSpans);
     const unverifiedIn = clip([...unverified, ...unmarkedIn], lo, hi);
     const stretchedIn = clip(stretched, lo, hi);

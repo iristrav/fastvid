@@ -264,7 +264,8 @@ describe("wiring — the same rung, the same route, nothing bypassed", () => {
     expect(video).toContain("tagPathWithProviderAsset(path.join(workDir, `${base}.mp4`), GENERATED_VIDEO_PROVIDER, assetId, dedup.sourcingCache, {");
     expect(video).toContain('mediaType: "video",');
     expect(video).toContain("if (!clip || !isRealVideoClip(clip)) {");
-    expect(video).toContain("generated, but not approved for the sentence — not used; the still is tried");
+    /** VIDEO 659 — not adopted is not thrown away: the owner's rule keeps it for its sentence */
+    expect(video).toContain("return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, GENERATED_VIDEO_FALLBACK);");
     expect(video).toContain("recordProviderDownloadOutcome(dedup.sourcingCache, outPath, false, \"the video service produced nothing\");");
     expect(video).not.toMatch(/stillImageToVideo|fetchYouTubeCCClips|downloadYouTubeCCClip/);
   });

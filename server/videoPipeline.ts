@@ -193,7 +193,7 @@ import type { TimelineGraphic } from "./projectTimeline";
 import { type StillStyleContext } from "./motionGraphicsEngine";
 import { PipelineStepTiming, recordPipelineTiming, timePipelineStep } from "./pipelineStepTiming";
 import { type BeatGeoRegion } from "./vidrushQuality";
-import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, onScreenTextRefusesBeforeVision, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveAsLastResort, reprieveBeatClip, softMismatchCandidatesForBeat, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
+import { PERSON_OFFTOPIC_VISUAL_RE, categoryIsBlockedContent, judgeCandidateMetadata, judgeOnScreenText, onScreenTextRefusesBeforeVision, beatAlreadyRefusedPicture, ensureVerdictBeforeCompose, judgeAtPush, keepGeneratedForBeat, judgePicture, judgeStockResult, nothingToJudgeAgainst, relevanceVerdictForRenderedAsset, reprieveAsLastResort, reprieveBeatClip, softMismatchCandidatesForBeat, stockVisualCategory, visionVerdictFromGate, textMentionsPersonName, type RealEntityRule } from "./visualJudge";
 import type { RejectionRegistry } from "./rejectionRegistry";
 import { registerRejection, createRejectionRegistry, beatRejectCount, beatRejectReasons, noteRepeatedRefusal } from "./rejectionRegistry";
 // RONDE 70: one funnel line per beat, for every beat. Counting only — see beatOutcomeAudit.ts.
@@ -212,7 +212,6 @@ import {
   generatedImagePrompt,
   generatedStillSec,
   imageServiceStandingDown,
-  pictureEditorUnavailableReason,
   stillImageGenerator,
 } from "./generatedImageFallback";
 import {
@@ -8398,42 +8397,17 @@ export async function generateMissingBeatImages(
         console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — the image service refuses this account; the sentences keep their fallbacks`);
         return;
       }
-      /** VIDEO 652 — nobody can approve a generated picture now, so none is paid for. */
-      const noJudge = pictureEditorUnavailableReason({
-        visionPipelineUnavailable: visionPipelineIsUnavailable(),
-        askImpossible: dedup.beatImageGate?.askImpossible === true,
-      });
-      if (noJudge) {
-        console.log(`[${GENERATED_IMAGE_FALLBACK}] stopped — ${noJudge}; nothing is generated, the sentences keep their fallbacks`);
-        return;
-      }
       /**
-       * VIDEO 649/651 — this sentence's looks are spent: `adoptClip` stops before the picture editor
-       * (`[BeatShortlist] … stopped looking`), so a generated picture would be paid for and never
-       * looked at. 649 s0b0 and 651 s1b0 (twice) were made and refused exactly that way.
-       *
-       * FIX 1+2 (14 October) — this stop is back. A generated picture, like every other picture,
-       * reaches the film only with the picture editor's approval AND a text check
-       * (`runMandatoryChecks`); 031b17a's "always used" is withdrawn.
+       * VIDEO 658 — no approval is needed: a generated picture is always used for its sentence
+       * (`keepGeneratedForSentence`). The stops VIDEO 649/651/652 put here (the picture editor
+       * unreachable, the sentence's looks spent) only existed because an unapproved picture was
+       * thrown away after it was paid for; now it is placed, so they would only cost the sentence
+       * its picture. VIDEO 659 — FIX 1+2 had put them back and thrown 659's four generated pictures
+       * away; the owner restored the rule (15 October), no text check either.
        */
-      if (beatShortlistExhausted(dedup.beatShortlist, si, beat.index)) {
-        console.log(
-          `[${GENERATED_IMAGE_FALLBACK}] s${scene.index}b${beat.index} not generated — the sentence's ` +
-            `${maxShortlistPerBeat()} looks are spent, so nobody could approve a generated picture`
-        );
-        continue;
-      }
       const clip = await fetchBeatGeneratedImage(beat, scene, workDir, si, dedup, videoTitle, GENERATED_IMAGES_PER_FILM - made);
       if (!clip) continue;
       made++;
-      /**
-       * FIX 1+2 — the picture editor approved it at the push; the text check looks at it here, before
-       * it stands under its sentence (a generated picture can carry garbled lettering).
-       */
-      if (!(await checkPictureForSentence(dedup, scene, beat, clip, workDir, videoTitle, GENERATED_IMAGE_FALLBACK)).pass) {
-        console.log(`[${GENERATED_IMAGE_FALLBACK}] s${scene.index}b${beat.index} generated, but it did not pass both mandatory checks — not used`);
-        continue;
-      }
       const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
       target.clips.push(clip);
       target.beatDurations.push(generatedStillSec(beat));
@@ -8701,6 +8675,8 @@ export async function enforceMandatoryChecks(
       const clipPath = vr.clips[i]!;
       const beat = beats.find((b) => b.index === vr.clipBeatIndices?.[i]);
       if (!beat || isPipelineFallbackClip(clipPath) || isSyntheticPlaceholderClip(dedup, clipPath)) continue;
+      /** VIDEO 659 — a picture generated for its sentence stays by the owner's rule (`keepGeneratedForSentence`). */
+      if (aiKeptAnywhere(dedup, clipContentKey(clipPath))) continue;
       tally.checked++;
       const outcome = await checkPictureForSentence(dedup, scene, beat, clipPath, workDir, videoTitle, stage);
       if (!outcome.pass) failed.add(i);
@@ -9159,6 +9135,47 @@ export function productionCoverRestIo(dedup: VisualDedupState, workDir: string, 
   };
 }
 
+/**
+ * VIDEO 658 — A PICTURE GENERATED FOR A SENTENCE IS ALWAYS USED FOR IT (the owner's rule).
+ *
+ * It was made from this sentence's own words, so the picture editor's verdict does not decide it.
+ * 658 paid for an ElevenLabs video and two Stability stills and threw all three away ("nobody
+ * looked", "not approved") — and then filled those sentences with random refused footage. Only the
+ * file itself can still stop it: it must exist, be a valid video, not be mostly black, and not be on
+ * screen already. Any refusal on the record is overruled there (`keepGeneratedForBeat`), so the
+ * compose barrier lets it through; the delivery report still shows it was not approved.
+ *
+ * VIDEO 659 — FIX 1+2 had withdrawn this rule; the owner restored it (15 October: "everything from
+ * AI is used"). The picture is filed in its own ledger (`markAiKeptForBeat`), so the timeline marks
+ * it `ai_generated` — never `judge_fit` — and the mandatory-check pass leaves it where it is.
+ */
+async function keepGeneratedForSentence(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  outPath: string,
+  tag: string,
+  checks: FallbackFileChecks = DEFAULT_FALLBACK_CHECKS
+): Promise<string | null> {
+  const where = `s${sceneIndex}b${beatIndex}`;
+  const usable = await firstUsableFallback([outPath], dedup, checks);
+  if (!usable) {
+    console.warn(`[${tag}] ${where} generated, but the file cannot be used (missing, not a valid video, mostly black, or already on screen) — not used`);
+    return null;
+  }
+  const overruled = keepGeneratedForBeat(dedup.beatRelevance, outPath, sceneIndex, beatIndex);
+  dedup.usedContentKeys.add(clipContentKey(outPath));
+  markAiKeptForBeat(dedup, sceneIndex, beatIndex, clipContentKey(outPath));
+  console.log(
+    `[${tag}] ${where} used ${path.basename(outPath)} (${usable.durationSec.toFixed(2)}s) — generated for this sentence, ` +
+      `always used${overruled ? ` (the picture editor's refusal overruled)` : " (the picture editor did not look)"}`
+  );
+  return outPath;
+}
+
+/** Exposed for tests: the rule above without a render around it. */
+export const __keepGeneratedForSentence = keepGeneratedForSentence;
+
 /** The sentence's VisualIntent as the fallback rungs read it (the judge's text override first). */
 function fallbackIntentForBeat(dedup: VisualDedupState, scene: Scene, beat: SceneBeat) {
   const sentence = dedup.beatJudgeTextOverride?.get(`${scene.index}:${beat.index}`) ?? beat.text;
@@ -9274,8 +9291,7 @@ async function fetchBeatGeneratedImage(
     })
   );
   if (!clip || !isRealVideoClip(clip)) {
-    console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} generated, but not approved for the sentence — not used`);
-    return null;
+    return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, GENERATED_IMAGE_FALLBACK);
   }
   console.log(
     `[${GENERATED_IMAGE_FALLBACK}] ${where} used provider=${GENERATED_IMAGE_PROVIDER} ` +
@@ -9513,8 +9529,7 @@ async function fetchBeatReplicateVideo(
     })
   );
   if (!clip || !isRealVideoClip(clip)) {
-    console.log(`[${REPLICATE_VIDEO_FALLBACK}] ${where} generated, but not approved for the sentence — not used; the still is tried`);
-    return null;
+    return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, REPLICATE_VIDEO_FALLBACK);
   }
   console.log(
     `[${REPLICATE_VIDEO_FALLBACK}] ${where} used provider=${REPLICATE_VIDEO_PROVIDER} model=${cfg.model} generated=true ` +
@@ -9588,8 +9603,7 @@ async function fetchBeatElevenLabsVideo(
     })
   );
   if (!clip || !isRealVideoClip(clip)) {
-    console.log(`[${GENERATED_VIDEO_FALLBACK}] ${where} generated, but not approved for the sentence — not used; the still is tried`);
-    return null;
+    return keepGeneratedForSentence(dedup, scene.index, beat.index, outPath, GENERATED_VIDEO_FALLBACK);
   }
   console.log(
     `[${GENERATED_VIDEO_FALLBACK}] ${where} used provider=${GENERATED_VIDEO_PROVIDER} model=${cfg.modelId} ` +
@@ -25503,6 +25517,34 @@ export function genericFootageForBeat(dedup: object, sceneIndex: number, beatInd
 }
 
 /**
+ * VIDEO 659 — the AI ledger: a picture generated for its sentence and placed by the owner's rule
+ * (`keepGeneratedForSentence`), approved or not. Read into `contentApproval: "ai_generated"` — never
+ * into `judge_fit`, so the timeline and the report say what it is: made for the line, not judged.
+ */
+const aiKeptKeysByRender = new WeakMap<object, Map<string, Set<string>>>();
+
+export function markAiKeptForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey: string): void {
+  if (!contentKey) return;
+  const keys = aiKeptKeysByRender.get(dedup) ?? new Map<string, Set<string>>();
+  aiKeptKeysByRender.set(dedup, keys);
+  const k = `${sceneIndex}:${beatIndex}`;
+  const set = keys.get(k) ?? new Set<string>();
+  set.add(contentKey);
+  keys.set(k, set);
+}
+
+export function aiKeptForBeat(dedup: object, sceneIndex: number, beatIndex: number, contentKey: string): boolean {
+  return Boolean(contentKey) && Boolean(aiKeptKeysByRender.get(dedup)?.get(`${sceneIndex}:${beatIndex}`)?.has(contentKey));
+}
+
+/** Whether this file was kept for ANY sentence by the owner's AI rule — the mandatory-check pass leaves it alone. */
+export function aiKeptAnywhere(dedup: object, contentKey: string): boolean {
+  if (!contentKey) return false;
+  for (const set of aiKeptKeysByRender.get(dedup)?.values() ?? []) if (set.has(contentKey)) return true;
+  return false;
+}
+
+/**
  * VIDEO 650 — the ACCEPTABLE ledger: a picture the judge called acceptable (the subject shown, the
  * situation not — `acceptableRule`) that the adoption loop took because no fit was found for its
  * sentence. Read into `contentApproval: "judge_acceptable"`; never into `judge_fit`.
@@ -30578,7 +30620,10 @@ async function _runVideoPipelineInner(
                             ? ("judge_acceptable" as const)
                             : genericFootageForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))
                               ? ("generic_footage" as const)
-                              : ("unverified" as const),
+                              /** VIDEO 659 — generated for this sentence, kept by the owner's rule: named as AI, never as judged. */
+                              : aiKeptForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))
+                                ? ("ai_generated" as const)
+                                : ("unverified" as const),
                         /** FIX 1+2 — the text check's result for this picture; "unchecked" when nobody looked. */
                         textCheck: textCheckForClip(visualDedup, clipContentKey(clipPath)) ?? ("unchecked" as const),
                       }
@@ -30841,9 +30886,20 @@ async function _runVideoPipelineInner(
           );
         }
         if (outcome.ok && cinematicProgress.enabled) {
+          let withdrawLocalFiles: (() => void) | undefined;
           try {
             const { claimRenderAttempt, createRenderJob, claimQueuedRenderJob, getRenderJobById } =
               await import("./db");
+            /**
+             * VIDEO 659 — the files are offered BEFORE the job exists, so whichever caller in this
+             * process ends up rendering it renders from them (see `offerLocalFilesForRender`).
+             */
+            const { offerLocalFilesForRender } = await import("./renderJobWorker");
+            const offeredLocalFiles = (await import("./cinematicPipelineInputs")).localFilesForTimelineClips({
+              clips: (await import("./projectTimeline")).videoTrack(outcome.timeline),
+              localPathFor: localFileForClip,
+            });
+            withdrawLocalFiles = offerLocalFilesForRender(videoId, outcome.timelineVersion, offeredLocalFiles);
             cutover = await enqueueCinematicRender({
               videoId,
               timelineVersion: outcome.timelineVersion,
@@ -31017,12 +31073,8 @@ async function _runVideoPipelineInner(
               } else {
                 onProgress?.({ stage: "Rendering the edit", percent: 97 });
                 const { runRenderJob } = await import("./renderJobWorker");
-                const { localFilesForTimelineClips } = await import("./cinematicPipelineInputs");
                 const { videoTrack } = await import("./projectTimeline");
-                const existingByClipId = localFilesForTimelineClips({
-                  clips: videoTrack(outcome.timeline),
-                  localPathFor: localFileForClip,
-                });
+                const existingByClipId = offeredLocalFiles;
                 /**
                  * A beat whose file this render downloaded and no longer has is NAMED.
                  *
@@ -31347,6 +31399,8 @@ async function _runVideoPipelineInner(
             }
           } catch (err) {
             cinematicRefusal = `the cinematic render threw: ${(err as Error).message.slice(0, 200)}`;
+          } finally {
+            withdrawLocalFiles?.();
           }
         }
 

@@ -703,6 +703,7 @@ export { visionVerdictFromGate };
 export {
   beatAlreadyRefusedPicture,
   ensureVerdictBeforeCompose,
+  keepGeneratedForBeat,
   nothingToJudgeAgainst,
   relevanceVerdictForRenderedAsset,
   reprieveAsLastResort,

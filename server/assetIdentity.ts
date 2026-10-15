@@ -38,7 +38,7 @@ export type AdoptionRecordFacts = {
   assetTitle?: string;
   archiveAssetId?: number;
   /** HARD QUALITY GATE — the picture editor's approval of this clip for its sentence, when the render knows it. */
-  contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage";
+  contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage" | "ai_generated";
   /** FIX 1+2 — the on-screen-text check's result for this clip, when the render knows it. */
   textCheck?: "clean" | "overlay" | "fills_picture" | "unchecked";
 };

@@ -234,6 +234,8 @@ export const QUALITY_ONLY_DELIVERY_CODES: ReadonlySet<DeliveryGateFailureCode> =
  */
 export function pictureCheckMissing(clip: Pick<DeliveryClipFact, "isPlaceholder" | "contentApproval" | "textCheck" | "hidden">): string | null {
   if (clip.isPlaceholder || clip.hidden) return null;
+  /** VIDEO 659 — generated for its sentence and used by the owner's rule: no check decides it. */
+  if (clip.contentApproval === "ai_generated") return null;
   const content = clip.contentApproval === "judge_fit" || clip.contentApproval === "judge_acceptable";
   const text = clip.textCheck === "clean" || clip.textCheck === "overlay";
   if (content && text) return null;

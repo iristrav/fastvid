@@ -60,8 +60,10 @@ export type AssetSourceIdentity = {
    * timelines written before the mark existed; the gate reads absent as unverified.
    * VIDEO 650 — "generic_footage": rights-clear moving footage placed as the floor under the ladder
    * (genericFootageFallback.ts): valid visual coverage, explicitly NOT a content fit.
+   * VIDEO 659 — "ai_generated": a picture generated for THIS sentence and placed by the owner's rule
+   * (everything made by AI is used), whatever the picture editor said. Cover, named as AI.
    */
-  contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage";
+  contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage" | "ai_generated";
   /**
    * FIX 1+2 — what the on-screen-text check found on THIS picture: "clean" (looked, no added text),
    * "overlay" (a logo, subtitle or watermark over real footage — the picture editor decided),

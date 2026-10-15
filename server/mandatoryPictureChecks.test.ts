@@ -218,15 +218,21 @@ describe("8. a verdict for another sentence is not an approval for this one", ()
   });
 });
 
-describe("9. generated pictures go through both checks too", () => {
-  it("a generated picture is checked before it stands under its sentence; nothing overrules a refusal", () => {
+/**
+ * VIDEO 659 — the owner's rule (restored 15 October): a picture generated for a sentence is always
+ * used, without the two checks. It is filed as `ai_generated`, never as `judge_fit`.
+ */
+describe("9. generated pictures: always used by the owner's rule, named as AI", () => {
+  it("a generated picture is kept for its sentence, not put to the two checks, and left alone by the check pass", () => {
     const pipe = SRC("videoPipeline.ts");
     const gen = pipe.slice(pipe.indexOf("export async function generateMissingBeatImages("), pipe.indexOf("export const UNJUDGED_FOOTAGE_FALLBACK"));
-    expect(gen).toContain("checkPictureForSentence(dedup, scene, beat, clip, workDir, videoTitle, GENERATED_IMAGE_FALLBACK)");
-    expect(pipe).not.toContain("keepGeneratedForSentence");
+    expect(gen).not.toContain("checkPictureForSentence(");
+    expect(pipe.match(/return keepGeneratedForSentence\(dedup, scene\.index, beat\.index, outPath, /g)?.length).toBe(3);
+    expect(pipe).toContain("if (aiKeptAnywhere(dedup, clipContentKey(clipPath))) continue;");
   });
 
-  it("at delivery, an AI-generated clip without a text check blocks the film", () => {
+  it("at delivery, an AI-generated clip is never named unchecked; any other clip without a text check still is", () => {
+    expect(pictureCheckMissing({ isPlaceholder: false, contentApproval: "ai_generated", textCheck: "unchecked" })).toBeNull();
     expect(pictureCheckMissing({ isPlaceholder: false, contentApproval: "judge_fit", textCheck: "unchecked" })).toMatch(/no passed text check/);
   });
 });

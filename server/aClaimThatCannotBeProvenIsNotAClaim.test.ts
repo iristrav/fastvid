@@ -166,7 +166,7 @@ describe("§3 — failing closed costs a render nothing", () => {
 
   it("the poll loop moves to the next job", () => {
     const WORKER = readFileSync(join(__dirname, "renderJobWorker.ts"), "utf8");
-    const at = WORKER.indexOf("const claimed = await claimQueuedRenderJob(queued[0]!.id);");
+    const at = WORKER.indexOf("const claimed = await claimQueuedRenderJob(next.id);");
     expect(at).toBeGreaterThan(-1);
     expect(WORKER.slice(at, at + 200)).toContain("if (!claimed) continue;");
   });

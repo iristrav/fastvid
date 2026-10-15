@@ -489,6 +489,44 @@ export async function reportContactSheet(params: {
   return line;
 }
 
+/**
+ * VIDEO 659 — THE PIPELINE'S LOCAL FILES, FOR WHICHEVER CALLER IN THIS PROCESS RUNS ITS RENDER.
+ *
+ * The pipeline queues its cinematic render and then claims it. The poll loop below polls the same
+ * queue in the same process, and on 659 it claimed job 65 in between. `runRenderJob` then ran
+ * without `existingByClipId`, three SerpAPI pictures that only ever lived on this disk could not be
+ * fetched again (REHYDRATION_UNSUPPORTED_PROVIDER), they were dropped, and the film came out 56.00 s
+ * against a 71.55 s timeline — RENDER_FAILED over files that were sitting next to it.
+ *
+ * So the pipeline offers its files here BEFORE it queues, keyed by video and timeline version:
+ *   - the poll loop leaves a job offered here to the pipeline that offered it;
+ *   - and if a render of it starts anyway without files of its own, it reads them from here.
+ * The pipeline withdraws the offer when its render is over. Memory only: another process sees
+ * nothing, and `rehydrateAsset` re-checks every path before trusting it.
+ */
+const localFilesOffered = new Map<string, Map<string, string>>();
+const offerKey = (videoId: number, timelineVersion: number) => `${videoId}:${timelineVersion}`;
+
+/** Returns the withdrawal; call it once the render of this timeline version is over. */
+export function offerLocalFilesForRender(
+  videoId: number,
+  timelineVersion: number,
+  existingByClipId: Map<string, string>
+): () => void {
+  const key = offerKey(videoId, timelineVersion);
+  localFilesOffered.set(key, existingByClipId);
+  return () => {
+    if (localFilesOffered.get(key) === existingByClipId) localFilesOffered.delete(key);
+  };
+}
+
+export function localFilesOfferedForRender(
+  videoId: number,
+  timelineVersion: number
+): Map<string, string> | undefined {
+  return localFilesOffered.get(offerKey(videoId, timelineVersion));
+}
+
 export async function runRenderJob(params: {
   jobId: number;
   deps?: Partial<RenderWorkerDeps>;
@@ -612,6 +650,13 @@ export async function runRenderJob(params: {
      * identities through the SAME resolver, so a Freesound id means the same thing to both.
      */
     const audioDeps = productionRehydrateDeps({ download: deps.download });
+    const offered = params.existingByClipId ? undefined : localFilesOfferedForRender(job.videoId, job.timelineVersion);
+    if (offered) {
+      console.log(
+        `[RenderJob] job=${job.id} video=${job.videoId} uses the ${offered.size} local file(s) its pipeline ` +
+          `offered for timeline v${job.timelineVersion}`
+      );
+    }
     /**
      * ROUND 596, ZERO-FAIL §2 — `failFast` WAS THE SECOND PLACE ONE CLIP ENDED A RENDER.
      *
@@ -631,7 +676,7 @@ export async function runRenderJob(params: {
       workDir: path.join(workDir, "assets"),
       deps: audioDeps,
       failFast: false,
-      existingByClipId: params.existingByClipId,
+      existingByClipId: params.existingByClipId ?? offered,
     });
     for (const line of formatRehydrationSummary(rehydration)) console.log(line);
     if (rehydration.failures.length > 0) {
@@ -1380,9 +1425,11 @@ export async function processRenderJobTick(): Promise<void> {
   try {
     while (activeRenderJobs < maxConcurrentRenderJobs()) {
       const queued = await listQueuedRenderJobs(5);
-      if (queued.length === 0) break;
+      /** VIDEO 659 — a job whose pipeline offered its files here is that pipeline's to claim. */
+      const next = queued.find((j) => !localFilesOfferedForRender(j.videoId, j.timelineVersion));
+      if (!next) break;
 
-      const claimed = await claimQueuedRenderJob(queued[0]!.id);
+      const claimed = await claimQueuedRenderJob(next.id);
       // Lost the race to another worker — try the next one rather than stopping.
       if (!claimed) continue;
 

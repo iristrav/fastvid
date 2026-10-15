@@ -275,7 +275,7 @@ describe("VIDEO 650 — the pipeline places generic footage and names it on the 
   it("the ledger mark reaches the timeline as contentApproval generic_footage, after judge_fit and before unverified", () => {
     const at = PIPELINE.indexOf("contentApproval: pictureApprovedForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))");
     expect(at).toBeGreaterThan(0);
-    const body = PIPELINE.slice(at, at + 1000);
+    const body = PIPELINE.slice(at, at + 1400);
     expect(body).toContain('("judge_fit" as const)');
     expect(body.indexOf("genericFootageForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))")).toBeGreaterThan(body.indexOf('"judge_fit"'));
     expect(body.indexOf('("generic_footage" as const)')).toBeLessThan(body.indexOf('("unverified" as const)'));

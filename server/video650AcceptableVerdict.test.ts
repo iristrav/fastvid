@@ -162,10 +162,10 @@ describe("VIDEO 650 — the pipeline adopts an acceptable picture only without a
     /** the loop holds everything weaker than FIT and keeps looking — the mechanism that makes "only without a fit" true */
     expect(PIPELINE).toContain('if (beatEvidence !== "FIT" && firstLookAtCandidate) {');
   });
-  it("the timeline mark: judge_fit, then judge_acceptable, then generic_footage, then unverified", () => {
+  it("the timeline mark: judge_fit, then judge_acceptable, then generic_footage, then ai_generated (VIDEO 659), then unverified", () => {
     const at = PIPELINE.indexOf("contentApproval: pictureApprovedForBeat(visualDedup, scene.index, beatIndex, clipContentKey(clipPath))");
-    const body = PIPELINE.slice(at, at + 900);
-    const order = ['("judge_fit" as const)', '("judge_acceptable" as const)', '("generic_footage" as const)', '("unverified" as const)'].map((n) => body.indexOf(n));
+    const body = PIPELINE.slice(at, at + 1400);
+    const order = ['("judge_fit" as const)', '("judge_acceptable" as const)', '("generic_footage" as const)', '("ai_generated" as const)', '("unverified" as const)'].map((n) => body.indexOf(n));
     expect(order.every((i) => i > 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
