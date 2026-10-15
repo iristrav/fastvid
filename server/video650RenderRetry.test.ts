@@ -261,22 +261,25 @@ describe("VIDEO 650 — one bounded render retry after a technical refusal", () 
    * encode can change the document.
    */
   /**
-   * FIX 1+2 (14 October) — a film the pipeline made may not be delivered with a picture the picture
-   * editor never approved for its sentence. It is a finding about the TIMELINE, so it is still never
-   * retried: one render, no upload, the job fails once and names the missing check.
+   * FIX 1+2 (14 October) — a picture the picture editor never approved for its sentence is a finding
+   * about the TIMELINE, so it is never retried. VIDEO 659 (owner's rule, 15 October: a video must
+   * always succeed) — it is named as a quality problem and the film from the one render is delivered.
    */
-  it("a finding about the TIMELINE (a sentence without approved footage) is never retried, and the film is NOT delivered", async () => {
-    const { result, renderCalls, uploads } = await runWith({
-      timeline: goodTimeline({ uncoveredSentence: true }),
-      checks: ["real", "real"],
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.code).toBe(RENDER_ERROR.RENDER_FAILED);
-    expect(result.message).toContain("PICTURE_NOT_CHECKED");
-    expect(result.message).toContain("clip=vc_1");
+  it("a finding about the TIMELINE (a sentence without approved footage) is never retried, and the film is delivered with it named", async () => {
+    const spy = vi.spyOn(console, "log");
+    let logged = "";
+    let out: Awaited<ReturnType<typeof runWith>>;
+    try {
+      out = await runWith({ timeline: goodTimeline({ uncoveredSentence: true }), checks: ["real", "real"] });
+      logged = spy.mock.calls.map((c) => String(c[0])).join("\n");
+    } finally {
+      spy.mockRestore();
+    }
+    const { result, renderCalls, uploads } = out;
+    expect(result.ok, result.ok ? "" : `${result.code}: ${result.message}`).toBe(true);
+    expect(logged).toMatch(/QUALITY_PROBLEM PICTURE_NOT_CHECKED[^\n]*clip=vc_1/);
     expect(renderCalls).toHaveLength(1);
-    expect(filmUploads(uploads)).toHaveLength(0);
+    expect(filmUploads(uploads)).toHaveLength(1);
     expect(dbState.finishCalls).toBe(1);
   }, 420_000);
 });

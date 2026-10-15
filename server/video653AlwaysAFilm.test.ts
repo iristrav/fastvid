@@ -97,8 +97,8 @@ describe("2. a broken FILE still blocks — the release rule is about pictures, 
 
   it("the quality-only codes are exactly the picture findings — none of the file codes", () => {
     expect([...QUALITY_ONLY_DELIVERY_CODES].sort()).toEqual([
-      "CHAPTER_CARD_PLACEHOLDER", "CLIP_UNRESOLVED", "CLIP_WITHOUT_ARCHIVE_ASSET", "PLACEHOLDER_CHECK_INCOMPLETE", "PLACEHOLDER_IN_DELIVERY",
-      "PLACEHOLDER_IN_FILE", "SENTENCE_COVERAGE_UNPROVEN", "SENTENCE_NOT_COVERED",
+      "CHAPTER_CARD_PLACEHOLDER", "CLIP_UNRESOLVED", "CLIP_WITHOUT_ARCHIVE_ASSET", "PICTURE_NOT_CHECKED", "PLACEHOLDER_CHECK_INCOMPLETE", "PLACEHOLDER_IN_DELIVERY",
+      "PLACEHOLDER_IN_FILE", "SENTENCE_COVERAGE_UNPROVEN", "SENTENCE_NOT_COVERED", "SENTENCE_WITHOUT_CHECKED_PICTURE",
     ]);
     for (const [, , code] of blocked) expect(QUALITY_ONLY_DELIVERY_CODES.has(code as never)).toBe(false);
   });

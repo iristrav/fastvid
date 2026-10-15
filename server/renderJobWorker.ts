@@ -1204,6 +1204,8 @@ export async function runRenderJob(params: {
             /** FIX 1+2 — the two mandatory checks, as the timeline recorded them for this clip. */
             contentApproval: clip.source.contentApproval ?? null,
             textCheck: clip.source.textCheck ?? null,
+            /** VIDEO 659 — the opacity-0 ground under a drawn graphic is never on screen. */
+            hidden: typeof clip.transform?.opacity === "number" && clip.transform.opacity <= 0,
           };
         }),
       /**

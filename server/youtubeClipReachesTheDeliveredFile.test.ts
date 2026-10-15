@@ -265,20 +265,18 @@ describe("an approved YouTube clip reaches the delivered MP4 and covers its sent
   }, 420_000);
 
   /**
-   * FIX 1+2 — a pipeline film whose timeline holds a picture without both mandatory checks is not
-   * delivered with it (before Fix 1+2 it was published, the missing verdict only named). The render
-   * worker has no sourcing to replace a picture with; the replacement is the pipeline's, before the
-   * timeline (`enforceMandatoryChecks` and the fallback rungs). Here the gate names the clip.
+   * FIX 1+2 — the replacement of an unchecked picture is the pipeline's, before the timeline
+   * (`enforceMandatoryChecks` and the fallback rungs). VIDEO 659 (owner's rule, 15 October: a video
+   * must always succeed) — what is still unchecked at delivery is named, clip by clip, on a film
+   * that is published, for the customer to replace in the editor.
    */
-  it("3. the same clip without the picture editor's verdict is not delivered: PICTURE_NOT_CHECKED names the clip, nothing is published", async () => {
-    const result = await runWith(film({ approved: false }));
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.message).toContain("PICTURE_NOT_CHECKED");
-    expect(result.message).toContain("clip=vc_yt");
-    expect(result.message).not.toContain("clip=vc_two");
-    expect(dbState.published).toBeNull();
-    expect(filmUploads(uploads)).toHaveLength(0);
+  it("3. the same clip without the picture editor's verdict: PICTURE_NOT_CHECKED names the clip, and the film is published", async () => {
+    const { result, logged } = await deliveredWithProblem(film({ approved: false }));
+    expect(result.ok).toBe(true);
+    expect(logged).toMatch(/QUALITY_PROBLEM PICTURE_NOT_CHECKED[^\n]*clip=vc_yt/);
+    expect(logged).not.toMatch(/QUALITY_PROBLEM PICTURE_NOT_CHECKED[^\n]*clip=vc_two/);
+    expect(dbState.published).not.toBeNull();
+    expect(filmUploads(uploads)).toHaveLength(1);
   }, 420_000);
 
   it("4. the timeline calls the second picture approved footage, but the FILE holds a real chapter card: PLACEHOLDER_IN_FILE — the file is what is checked", async () => {

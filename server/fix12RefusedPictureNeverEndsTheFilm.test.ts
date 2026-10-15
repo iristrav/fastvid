@@ -18,6 +18,7 @@ import * as path from "path";
 import { resolveFFmpegBin } from "./ffmpegBinary";
 import { createBeatRelevanceLedger, beatRelevanceBeatKey } from "./beatVisualRelevance";
 import { primaryGraphicForBeat, intentFrom } from "./cinematicPipelineInputs";
+import { filmSubjectChapterCard } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import { deliveryGate, type DeliveryClipFact } from "./deliveryGate";
 import { placePrimaryGraphics } from "./edlToTimeline";
 import { runMandatoryChecks } from "./mandatoryPictureChecks";
@@ -83,9 +84,12 @@ async function candidates(dir: string, n: number): Promise<string[]> {
 async function placeFloor(workDir: string, opts: {
   candidates: string[];
   check: (clipPath: string) => Promise<boolean>;
-  graphicStandsIn?: boolean;
+  /** "production": the pipeline's own answer (`drawnPictureCanStandInForBeat`) */
+  graphicStandsIn?: boolean | "production";
+  mainSubject?: string;
 }) {
   const dedup = vp.createVisualDedupState(vp.getPipelinePerfProfile("1"));
+  if (opts.mainSubject) dedup.mainSubject = opts.mainSubject;
   dedup.sceneBeatsBySceneIndex.set(0, [beat] as never);
   for (const c of opts.candidates) vp.noteUnjudgedFallback(dedup, 0, 0, c);
   const results: Array<{ clips: string[]; beatDurations: number[]; clipBeatIndices: number[] } | undefined> = [{ clips: [], beatDurations: [], clipBeatIndices: [] }];
@@ -94,7 +98,7 @@ async function placeFloor(workDir: string, opts: {
   const tally = await vp.placeGenericMovingFallbacks(
     [scene as never], results as never, dedup, workDir, "Film",
     async (_s, _b, clipPath) => (asked.push(clipPath), opts.check(clipPath)),
-    () => opts.graphicStandsIn ?? false
+    opts.graphicStandsIn === "production" ? undefined : () => (opts.graphicStandsIn as boolean | undefined) ?? false
   );
   return { tally, results: results[0]!, asked, dedup };
 }
@@ -132,6 +136,8 @@ function gateOn(t: ProjectTimeline, placeholderIds: string[] = []) {
     clipId: c.id, archiveAssetId: c.source.archiveAssetId ?? null, provider: c.source.provider, providerAssetId: c.source.providerAssetId ?? null,
     resolved: true, fromArchive: true, isPlaceholder: placeholderIds.includes(c.id),
     contentApproval: c.source.contentApproval ?? null, textCheck: c.source.textCheck ?? null,
+    /** as the render worker reads it */
+    hidden: typeof c.transform?.opacity === "number" && c.transform.opacity <= 0,
   }));
   return deliveryGate({ videoId: 1, route: "cinematic_timeline", timelineExists: true, clips, delivered: null, assetsOnly: true, enforcePictureChecks: true, sentenceCoverage: sentenceCoverage(t) });
 }
@@ -202,7 +208,7 @@ describe("3. the first and the next picture are refused: the existing fallback i
     expect(asked).toEqual(cands);
     expect(results.clips).toEqual([]);
     expect(tally).toEqual({ placed: 0, failed: 0 });
-    expect(logs.some((l) => l.includes("s0b0 no colour field — a data graphic or map drawn from the sentence's own facts is its picture on the timeline"))).toBe(true);
+    expect(logs.some((l) => l.includes("s0b0 no colour field — a data graphic, map or card drawn from the sentence's own words is its picture on the timeline"))).toBe(true);
     expect(logs.some((l) => l.includes("graphicIsPicture=1"))).toBe(true);
     /** no synthetic file was made */
     expect(fs.readdirSync(workDir).filter((f) => f.includes("synthetic_placeholder"))).toEqual([]);
@@ -246,10 +252,11 @@ describe("4. the fallback covers the whole sentence, on its own time", () => {
   });
 });
 
-/* ═══════════════════════ 5. no valid fallback → a real block ═══════════════════════ */
+/* ═══════════════════════ 5. no valid fallback → delivered, named ═══════════════════════ */
 
-describe("5. no valid fallback at all: a real block, never a wrong film", () => {
-  it("a sentence held only by the colour field is refused with its reason; the unchecked picture is never passed off as cover", () => {
+/** VIDEO 659 (owner's rule, 15 October: a video must always succeed) — named for the editor, never a refused film. */
+describe("5. no valid fallback at all: the film is delivered, and what is unchecked is named — never passed off as cover", () => {
+  it("a sentence held only by the colour field: uncovered, named as SENTENCE_WITHOUT_CHECKED_PICTURE, delivered", () => {
     const t = timelineOf(
       [tlClip("vc_a", 0, 3, 0), tlClip("vc_field", 3, 7, 1, { provider: "synthetic_placeholder", contentApproval: "generic_footage", textCheck: "unchecked" })],
       [],
@@ -258,16 +265,88 @@ describe("5. no valid fallback at all: a real block, never a wrong film", () => 
     const row = sentenceCoverage(t).sentences.find((r) => r.key === "s0b1")!;
     expect(row.status).toBe("uncovered");
     const v = gateOn(t, ["vc_field"]);
-    expect(v.allow).toBe(false);
-    if (v.allow) return;
-    expect(v.failures.find((f) => f.code === "SENTENCE_WITHOUT_CHECKED_PICTURE")?.detail).toContain("s0b1");
+    expect(v.allow).toBe(true);
+    if (!v.allow) return;
+    expect(v.qualityProblems.find((p) => p.code === "SENTENCE_WITHOUT_CHECKED_PICTURE")?.detail).toContain("s0b1");
   });
 
-  it("a picture whose check is missing on the timeline is still refused at delivery (the net stays)", () => {
+  it("a picture whose check is missing on the timeline is named at delivery (the net stays), the film delivered", () => {
     const t = timelineOf([tlClip("vc_a", 0, 3, 0, { textCheck: undefined })], [], [[0, 0, 3, "Sales began."]]);
     const v = gateOn(t);
-    expect(v.allow).toBe(false);
-    if (!v.allow) expect(v.failures.map((f) => f.code)).toContain("PICTURE_NOT_CHECKED");
+    expect(v.allow).toBe(true);
+    if (v.allow) expect(v.qualityProblems.map((p) => p.code)).toContain("PICTURE_NOT_CHECKED");
+  });
+});
+
+/* ═══════════════════════ 6. VIDEO 659 — a drawn card instead of a colour field ═══════════════════════ */
+
+describe("6. VIDEO 659: a sentence no picture passes for gets a drawn card, never a colour field, and the film is delivered", () => {
+  /** four of 659's sentences: no figure, no map — 659 gave each a colour field */
+  const S659 = [
+    "Skyrocketing energy bills forced millions to choose between heating and eating.",
+    "Daily life was consumed by worry as heating costs soared.",
+    "When the European Central Bank, under Christine Lagarde, announced its response, markets held their breath.",
+  ];
+
+  it("the pipeline's question: every 659 sentence can be drawn — its own card, or the film's subject", () => {
+    const dedup = vp.createVisualDedupState(vp.getPipelinePerfProfile("1"));
+    dedup.mainSubject = "Inflation in Europe";
+    for (const [i, text] of S659.entries()) {
+      const b = { index: i, text, holdSec: 5, keywords: [] as string[] };
+      expect(vp.drawnPictureCanStandInForBeat(dedup, { ...scene, text: S659.join(" ") } as never, b as never), text).toBe(true);
+    }
+  });
+
+  it("the data-graphic question is unchanged: a plain sentence still has no data graphic (the generated-image rung asks this one)", () => {
+    const dedup = vp.createVisualDedupState(vp.getPipelinePerfProfile("1"));
+    dedup.mainSubject = "Inflation in Europe";
+    const plain = { index: 0, text: S659[1], holdSec: 5, keywords: [] as string[] };
+    expect(vp.graphicCanStandInForBeat(dedup, { ...scene, text: S659[1] } as never, plain as never)).toBe(false);
+  });
+
+  it("on the floor rung with the production answer: every candidate refused, no generic clip — no colour field is made", async () => {
+    const workDir = path.join(root, "six");
+    const cands = await candidates(path.join(workDir, "cands"), 1);
+    archive.rows = [];
+    const { tally, results } = await placeFloor(workDir, { candidates: cands, check: async () => false, graphicStandsIn: "production", mainSubject: "Inflation in Europe" });
+    expect(results.clips).toEqual([]);
+    expect(tally).toEqual({ placed: 0, failed: 0 });
+    expect(logs.some((l) => l.includes("graphicIsPicture=1"))).toBe(true);
+    expect(fs.readdirSync(workDir).filter((f) => f.includes("synthetic_placeholder"))).toEqual([]);
+  }, 300_000);
+
+  it("a checked generic clip still comes before the card: real moving footage first", async () => {
+    const workDir = path.join(root, "six-generic");
+    const cands = await candidates(path.join(workDir, "cands"), 1);
+    archive.rows = [GENERIC_ROW];
+    const { tally, results } = await placeFloor(workDir, { candidates: cands, check: async (p) => !cands.includes(p), graphicStandsIn: "production", mainSubject: "Inflation in Europe" });
+    expect(tally).toEqual({ placed: 1, failed: 0 });
+    expect(path.basename(results.clips[0]!)).toMatch(/__pid_generic_footage-/);
+  }, 300_000);
+
+  it("on the timeline: the card stands under the sentence, its invisible ground is not an unchecked picture, and the film is delivered without SENTENCE_WITHOUT_CHECKED_PICTURE", () => {
+    /** the neighbour's ground the card is cut from carries no checks, as 659's colour field did */
+    const clips = [
+      tlClip("vc_a", 0, 3, 0),
+      tlClip("vc_c", 8, 11, 2, { provider: "synthetic_placeholder", contentApproval: "generic_footage", textCheck: "unchecked" }),
+    ];
+    const graphics: TimelineGraphic[] = [];
+    const card = filmSubjectChapterCard("Inflation in Europe", 3, 5)!;
+    expect(card).not.toBeNull();
+    const placed = placePrimaryGraphics(clips, graphics, [{ beatId: "s0b1", startSec: 3, endSec: 8, graphic: card }]);
+    expect(placed).toHaveLength(1);
+    expect(placed[0]!.backdrop.transform?.opacity).toBe(0);
+    const t = timelineOf(clips, graphics, [[0, 0, 3, "Sales began."], [1, 3, 8, S659[1]!], [2, 8, 11, "Then came the recall."]]);
+    const row = sentenceCoverage(t).sentences.find((r) => r.key === "s0b1")!;
+    expect(row.cardSec).toBe(5);
+    const v = gateOn(t);
+    expect(v.allow).toBe(true);
+    if (!v.allow) return;
+    const named = v.qualityProblems.map((p) => `${p.code} ${p.detail}`);
+    expect(named.filter((p) => p.startsWith("SENTENCE_WITHOUT_CHECKED_PICTURE") && p.includes("s0b1"))).toEqual([]);
+    expect(named.filter((p) => p.startsWith("PICTURE_NOT_CHECKED") && p.includes("_graphic"))).toEqual([]);
+    /** the neighbour's own unchecked clip is still named — the net stays for what is on screen */
+    expect(named.some((p) => p.startsWith("PICTURE_NOT_CHECKED") && p.includes("clip=vc_c "))).toBe(true);
   });
 });
 

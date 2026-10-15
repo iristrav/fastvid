@@ -248,9 +248,11 @@ const clipFact = (over: Partial<DeliveryClipFact>): DeliveryClipFact => ({
 const gate = (clips: DeliveryClipFact[], enforce: boolean, coverage?: SentenceCoverageReport) =>
   deliveryGate({ videoId: 1, route: "cinematic_timeline", timelineExists: true, clips, delivered: null, assetsOnly: true, enforcePictureChecks: enforce, ...(coverage ? { sentenceCoverage: coverage } : {}) });
 
-describe("10. the delivery gate blocks every clip that misses a mandatory check", () => {
-  it("both checks on every clip → delivered", () => {
-    expect(gate([clipFact({}), clipFact({ clipId: "vc_2", contentApproval: "judge_acceptable", textCheck: "overlay" })], true).allow).toBe(true);
+/** VIDEO 659 (owner's rule, 15 October: a video must always succeed) — named for the editor, never a refused film. */
+describe("10. the delivery gate names every clip that misses a mandatory check, and delivers", () => {
+  it("both checks on every clip → delivered, no quality problem", () => {
+    const v = gate([clipFact({}), clipFact({ clipId: "vc_2", contentApproval: "judge_acceptable", textCheck: "overlay" })], true);
+    expect(v.allow && v.qualityProblems).toEqual([]);
   });
 
   it.each([
@@ -260,13 +262,18 @@ describe("10. the delivery gate blocks every clip that misses a mandatory check"
     ["judge_fit", "unchecked"],
     ["judge_fit", "fills_picture"],
     ["judge_fit", undefined],
-  ])("contentApproval=%s textCheck=%s → blocked", (contentApproval, textCheck) => {
+  ])("contentApproval=%s textCheck=%s → delivered, PICTURE_NOT_CHECKED named", (contentApproval, textCheck) => {
     const v = gate([clipFact({ contentApproval: contentApproval ?? null, textCheck: textCheck ?? null })], true);
-    expect(v.allow).toBe(false);
-    if (!v.allow) expect(v.failures.map((f) => f.code)).toContain("PICTURE_NOT_CHECKED");
+    expect(v.allow).toBe(true);
+    if (v.allow) expect(v.qualityProblems.find((p) => p.code === "PICTURE_NOT_CHECKED")?.detail).toContain("clip=vc_1");
   });
 
-  it("a sentence with no checked picture blocks the film, named", () => {
+  it("the opacity-0 ground under a drawn graphic is never on screen: not named as an unchecked picture", () => {
+    const v = gate([clipFact({ clipId: "vc_4947e67028_graphic1_p1", provider: "synthetic_placeholder", contentApproval: "generic_footage", textCheck: "unchecked", hidden: true })], true);
+    expect(v.allow && v.qualityProblems).toEqual([]);
+  });
+
+  it("a sentence with no checked picture is delivered, named", () => {
     const coverage = {
       basis: "timeline", total: 1, covered: 0, partial: 0, uncovered: 1, unknown: 0, stretchedClips: 0, cardIntervals: [], plannedCardSec: 0,
       proven: false, timing: "exact", problems: [],
@@ -278,8 +285,13 @@ describe("10. the delivery gate blocks every clip that misses a mandatory check"
       }],
     } as unknown as SentenceCoverageReport;
     const v = gate([clipFact({})], true, coverage);
-    expect(v.allow).toBe(false);
-    if (!v.allow) expect(v.failures.find((f) => f.code === "SENTENCE_WITHOUT_CHECKED_PICTURE")?.detail).toContain("s0b1");
+    expect(v.allow).toBe(true);
+    if (v.allow) expect(v.qualityProblems.find((p) => p.code === "SENTENCE_WITHOUT_CHECKED_PICTURE")?.detail).toContain("s0b1");
+    /** the same sentence under a card Remotion drew from its own words: the film's own text, not unchecked */
+    const sentence = coverage.sentences[0]!;
+    const card = { ...coverage, sentences: [{ ...sentence, cardSec: 4, emptySec: 0, kinds: ["chapter_card"] }] } as unknown as SentenceCoverageReport;
+    const c = gate([clipFact({})], true, card);
+    expect(c.allow && c.qualityProblems.map((p) => p.code)).not.toContain("SENTENCE_WITHOUT_CHECKED_PICTURE");
   });
 
   it("a render the owner asked for from the editor is the owner's choice: not blocked on these marks", () => {

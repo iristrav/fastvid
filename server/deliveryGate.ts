@@ -58,6 +58,12 @@ export type DeliveryClipFact = {
   contentApproval?: string | null;
   /** FIX 1+2 — the on-screen-text check's result for this clip, as the timeline carries it. */
   textCheck?: string | null;
+  /**
+   * VIDEO 659 — drawn at opacity 0: the invisible ground under a sentence's graphic (`…_graphicN`,
+   * `placePrimaryGraphics`). It copies the source of the shot it was cut from, so it carried that
+   * shot's missing marks into PICTURE_NOT_CHECKED although nothing of it is ever on screen.
+   */
+  hidden?: boolean;
 };
 
 /** What the delivered file itself was measured to be. Never taken from a database row. */
@@ -145,7 +151,8 @@ export type DeliveryGateInput = {
    * FIX 1+2 — a film the PIPELINE assembled: every picture in it must show both mandatory checks
    * (`contentApproval` judge_fit/judge_acceptable AND `textCheck` clean/overlay), and every spoken
    * sentence must have a checked picture. Absent marks fail closed. Off for a render the owner asked
-   * for from the editor, whose pictures are the owner's own choice.
+   * for from the editor, whose pictures are the owner's own choice. VIDEO 659 — what fails is a
+   * quality problem named for the editor, never a refused film (QUALITY_ONLY_DELIVERY_CODES).
    */
   enforcePictureChecks?: boolean;
 };
@@ -167,9 +174,9 @@ export type DeliveryGateFailureCode =
   | "CHAPTER_CARD_PLACEHOLDER"
   | "PLACEHOLDER_IN_FILE"
   | "PLACEHOLDER_CHECK_INCOMPLETE"
-  /** FIX 1+2 — a picture in a pipeline film without both mandatory checks. Blocking. */
+  /** FIX 1+2 — a picture in a pipeline film without both mandatory checks. Quality only since video 659. */
   | "PICTURE_NOT_CHECKED"
-  /** FIX 1+2 — a spoken sentence of a pipeline film with no checked picture at all. Blocking. */
+  /** FIX 1+2 — a spoken sentence of a pipeline film with no checked picture at all. Quality only since video 659. */
   | "SENTENCE_WITHOUT_CHECKED_PICTURE";
 
 export type DeliveryGateVerdict =
@@ -198,6 +205,12 @@ export type DeliveryGateVerdict =
  * film. The render worker already takes such a clip out before rendering (`disableClipsForRender`,
  * the timeline holds the neighbouring shot) and fails only when no clip came back at all; the
  * delivered MP4 is measured below on its own.
+ *
+ * VIDEO 659 — the two FIX 1+2 findings too (owner's rule, 15 October: "a video must always
+ * succeed"). 659 rendered a working 69 s file and was refused because four sentences found no
+ * picture that passed both checks. The checks still decide what the PIPELINE places (a refused or
+ * unchecked picture is never chosen); at delivery, what is left unchecked is named sentence by
+ * sentence for the editor, and the film is delivered.
  */
 export const QUALITY_ONLY_DELIVERY_CODES: ReadonlySet<DeliveryGateFailureCode> = new Set<DeliveryGateFailureCode>([
   "SENTENCE_NOT_COVERED",
@@ -208,16 +221,19 @@ export const QUALITY_ONLY_DELIVERY_CODES: ReadonlySet<DeliveryGateFailureCode> =
   "PLACEHOLDER_IN_DELIVERY",
   "CLIP_WITHOUT_ARCHIVE_ASSET",
   "CLIP_UNRESOLVED",
+  "PICTURE_NOT_CHECKED",
+  "SENTENCE_WITHOUT_CHECKED_PICTURE",
 ]);
 
 /* ═══════════════════════ the gate ═══════════════════════ */
 
 /**
  * FIX 1+2 — which mandatory check this clip cannot show, or null when it shows both. A clip that
- * depicts nothing (`isPlaceholder`) is not a picture and is left to the placeholder rules.
+ * depicts nothing (`isPlaceholder`) is not a picture and is left to the placeholder rules; a clip
+ * never on screen (`hidden`, the ground under a drawn graphic) is not a picture either.
  */
-export function pictureCheckMissing(clip: Pick<DeliveryClipFact, "isPlaceholder" | "contentApproval" | "textCheck">): string | null {
-  if (clip.isPlaceholder) return null;
+export function pictureCheckMissing(clip: Pick<DeliveryClipFact, "isPlaceholder" | "contentApproval" | "textCheck" | "hidden">): string | null {
+  if (clip.isPlaceholder || clip.hidden) return null;
   const content = clip.contentApproval === "judge_fit" || clip.contentApproval === "judge_acceptable";
   const text = clip.textCheck === "clean" || clip.textCheck === "overlay";
   if (content && text) return null;
@@ -320,6 +336,12 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
   if (input.enforcePictureChecks && input.sentenceCoverage) {
     for (const row of input.sentenceCoverage.sentences) {
       if (row.status !== "uncovered") continue;
+      /**
+       * VIDEO 659 — a card Remotion drew from the sentence's own words is the film's own text, not a
+       * picture from outside: nothing in it needs the picture editor or the text check. A sentence
+       * under such a card is reported as a card (CHAPTER_CARD_PLACEHOLDER), not as unchecked.
+       */
+      if (row.spokenSec != null && row.coveredSec + row.cardSec >= row.spokenSec - 0.05) continue;
       failures.push({
         code: "SENTENCE_WITHOUT_CHECKED_PICTURE",
         detail: `${row.key} "${(row.text ?? "").slice(0, 60)}": no picture passed both mandatory checks for this sentence`,

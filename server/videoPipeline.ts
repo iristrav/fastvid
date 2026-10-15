@@ -201,7 +201,8 @@ import type { BeatOutcomeAudit } from "./beatOutcomeAudit";
 import { createBeatOutcomeAudit, noteBeatCandidatesOffered, noteBeatVisionVerdict, resolveBeatCoverage, coverageHasRealFootage, noteBeatEligible, noteBeatAdopted, noteBeatVision, renderBeatFunnelReport, formatEligibleNotAdoptedByProvider, beatsWithPlacedRealFootage, beatOutcomeKey } from "./beatOutcomeAudit";
 import { beginReplayRecording, recordReplayFact, replayRecordingActive } from "./renderReplay";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
-import { dataOrMapGraphicForBeat, intentFrom, type AdoptionFacts } from "./cinematicPipelineInputs";
+import { dataOrMapGraphicForBeat, intentFrom, primaryGraphicForBeat, type AdoptionFacts } from "./cinematicPipelineInputs";
+import { filmSubjectChapterCard } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import {
   GENERATED_IMAGE_FALLBACK,
   GENERATED_IMAGE_PROVIDER,
@@ -8746,8 +8747,8 @@ export async function placeGenericMovingFallbacks(
   workDir: string,
   videoTitle?: string,
   check: SentencePictureCheck = productionPictureCheck(dedup, workDir, videoTitle),
-  /** Whether the timeline can draw a data graphic or map from this sentence's facts (`dataOrMapGraphicForBeat`). */
-  graphicStandsIn: (scene: Scene, beat: SceneBeat) => boolean = (scene, beat) => graphicCanStandInForBeat(dedup, scene, beat)
+  /** Whether the timeline can draw this sentence's picture: a data graphic, a map or a card (`drawnPictureCanStandInForBeat`). */
+  graphicStandsIn: (scene: Scene, beat: SceneBeat) => boolean = (scene, beat) => drawnPictureCanStandInForBeat(dedup, scene, beat)
 ): Promise<{ placed: number; failed: number }> {
   const tally = { placed: 0, failed: 0 };
   let leftToGraphic = 0;
@@ -8813,9 +8814,10 @@ export async function placeGenericMovingFallbacks(
       const refusals: string[] = [];
       for (const source of ["archive", "synthetic"] as GenericFootageSource[]) {
         /**
-         * The colour field is no picture: where a data graphic or map can be drawn from the sentence's
-         * own facts, the sentence is left without a clip so the timeline puts that graphic there
-         * (`primaryGraphicForBeat`) — the colour field used to take its place and the graphic never came.
+         * The colour field is no picture: where a data graphic, a map or a card can be drawn from the
+         * sentence's own words, the sentence is left without a clip so the timeline puts that drawing
+         * there (`primaryGraphicForBeat`, `filmSubjectChapterCard`) — the colour field used to take its
+         * place and the drawing never came. VIDEO 659: four colour fields, where four cards could stand.
          */
         if (source === "synthetic" && graphicStandsIn(scene, beat)) {
           graphicIsPicture = true;
@@ -8891,7 +8893,7 @@ export async function placeGenericMovingFallbacks(
         /**
          * FIX 1+2 — a real generic clip is footage like any other: it is judged for THIS sentence and
          * text-checked before it is placed. The colour field is not a picture and is not asked about;
-         * the delivery gate refuses a film that holds it.
+         * the delivery gate names it as a quality problem (VIDEO 659: never a refused film).
          */
         if (!refusal && meta && source === "archive" && !(await check(scene, beat, outPath, GENERIC_FOOTAGE_FALLBACK))) {
           refusal = "did not pass both mandatory checks for this sentence";
@@ -8933,7 +8935,7 @@ export async function placeGenericMovingFallbacks(
       } else if (graphicIsPicture) {
         leftToGraphic++;
         console.log(
-          `[${GENERIC_FOOTAGE_FALLBACK}] ${where} no colour field — a data graphic or map drawn from the sentence's own facts ` +
+          `[${GENERIC_FOOTAGE_FALLBACK}] ${where} no colour field — a data graphic, map or card drawn from the sentence's own words ` +
             `is its picture on the timeline` + (refusals.length ? ` (before that: ${refusals.join("; ")})` : "")
         );
       } else {
@@ -9175,6 +9177,22 @@ function fallbackIntentForBeat(dedup: VisualDedupState, scene: Scene, beat: Scen
 /** Whether a data graphic or map drawn from the sentence's own facts can be its picture on the timeline. */
 export function graphicCanStandInForBeat(dedup: VisualDedupState, scene: Scene, beat: SceneBeat): boolean {
   return dataOrMapGraphicForBeat(fallbackIntentForBeat(dedup, scene, beat), scene, 0, Math.max(beat.holdSec ?? 5, 1)) !== null;
+}
+
+/**
+ * VIDEO 659 — whether the timeline can DRAW this sentence's picture: a data graphic or map, else the
+ * chapter card of what the sentence is about, else the card of the film's main subject — the same
+ * three, in the same order, that `buildCinematicInputs` places for a sentence left without a clip
+ * (`primaryGraphicForBeat`, then `filmSubjectChapterCard`). Remotion draws them from the film's own
+ * words, so nothing in them needs the picture editor or the text check. 659 got four colour fields
+ * where these cards would have stood, and the film was refused for them.
+ */
+export function drawnPictureCanStandInForBeat(dedup: VisualDedupState, scene: Scene, beat: SceneBeat): boolean {
+  const sec = Math.max(beat.holdSec ?? 5, 1);
+  return (
+    primaryGraphicForBeat(fallbackIntentForBeat(dedup, scene, beat), scene, 0, sec) !== null ||
+    filmSubjectChapterCard(dedup.mainSubject, 0, sec) !== null
+  );
 }
 
 async function fetchBeatGeneratedImage(
