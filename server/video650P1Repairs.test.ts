@@ -182,7 +182,8 @@ describe("P1-J — the render job's heartbeat and the stale sweep", () => {
     expect(WORKER).toContain("}, RENDER_JOB_HEARTBEAT_MS);");
     expect(WORKER).toContain("  } finally {\n    clearInterval(heartbeat);");
     expect(WORKER).toContain("void sweepStaleRenderJobs().then(() => processRenderJobTick());");
-    expect(WORKER).toContain("const sweep = setInterval(() => void sweepStaleRenderJobs(), 2 * 60_000);");
+    /** G/H — the same two-minute sweep, now followed by the render-recovery sweep (`recoveryCoordinator.ts`). */
+    expect(WORKER).toContain("const sweep = setInterval(() => void sweepStaleRenderJobs().then(() => sweepRenderRecoveries()), 2 * 60_000);");
     expect(DB).toContain('.where(and(eq(renderJobs.id, row.id), eq(renderJobs.status, "running"), sql`${renderJobs.updatedAt} < ${cutoff}`));');
     expect(DB).toContain(".set({ updatedAt: new Date() })");
   });

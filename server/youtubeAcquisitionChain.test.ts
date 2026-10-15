@@ -261,8 +261,8 @@ describe("T1 — YouTube gets its time, and a hang cannot hold the render", () =
     ).rejects.toThrow("cancelled");
   });
 
-  it("the limit is three minutes, and the picture clock starts only after the wait", () => {
-    expect(YOUTUBE_STOCK_WAIT_MAX_MS).toBe(180_000);
+  it("the limit is four minutes (VIDEO 659 fix C), and the picture clock starts only after the wait", () => {
+    expect(YOUTUBE_STOCK_WAIT_MAX_MS).toBe(240_000);
     const wait = PIPE.indexOf("await waitForYoutubeStockBeforePictures(videoId, {");
     const clock = PIPE.indexOf("visualDedup.pipelineStartedMs = Date.now();");
     const deadline = PIPE.indexOf("const visualDeadlineMs = judgeableVisualDeadlineMs(");

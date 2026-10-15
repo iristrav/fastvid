@@ -20,6 +20,7 @@ import { createBeatRelevanceLedger, beatRelevanceBeatKey } from "./beatVisualRel
 import { primaryGraphicForBeat, intentFrom } from "./cinematicPipelineInputs";
 import { filmSubjectChapterCard } from "./cinematicEditingEngine/motionGraphicsPlanner";
 import { deliveryGate, type DeliveryClipFact } from "./deliveryGate";
+import { applyFallbackScenes } from "./fallbackScene";
 import { placePrimaryGraphics } from "./edlToTimeline";
 import { runMandatoryChecks } from "./mandatoryPictureChecks";
 import { emptyTimeline, graphicsTrack, videoTrack, type ProjectTimeline, type TimelineGraphic, type TimelineVideoClip } from "./projectTimeline";
@@ -254,9 +255,13 @@ describe("4. the fallback covers the whole sentence, on its own time", () => {
 
 /* ═══════════════════════ 5. no valid fallback → delivered, named ═══════════════════════ */
 
-/** VIDEO 659 (owner's rule, 15 October: a video must always succeed) — named for the editor, never a refused film. */
-describe("5. no valid fallback at all: the film is delivered, and what is unchecked is named — never passed off as cover", () => {
-  it("a sentence held only by the colour field: uncovered, named as SENTENCE_WITHOUT_CHECKED_PICTURE, delivered", () => {
+/**
+ * G/H (owner, 15 October: "replace, then strict") — what is unchecked is never passed off as cover and
+ * never delivered as it is: the render worker turns it into a fallback scene (the drawn field with the
+ * sentence's own words, `applyFallbackScenes`), and only then does the gate pass, naming the scene.
+ */
+describe("5. no valid fallback at all: unchecked is refused as it is, and delivered only as a named fallback scene", () => {
+  it("a sentence held only by the colour field: uncovered and refused; with its words on it (a fallback scene) delivered and named", () => {
     const t = timelineOf(
       [tlClip("vc_a", 0, 3, 0), tlClip("vc_field", 3, 7, 1, { provider: "synthetic_placeholder", contentApproval: "generic_footage", textCheck: "unchecked" })],
       [],
@@ -265,16 +270,23 @@ describe("5. no valid fallback at all: the film is delivered, and what is unchec
     const row = sentenceCoverage(t).sentences.find((r) => r.key === "s0b1")!;
     expect(row.status).toBe("uncovered");
     const v = gateOn(t, ["vc_field"]);
-    expect(v.allow).toBe(true);
-    if (!v.allow) return;
-    expect(v.qualityProblems.find((p) => p.code === "SENTENCE_WITHOUT_CHECKED_PICTURE")?.detail).toContain("s0b1");
+    expect(v.allow).toBe(false);
+    if (!v.allow) expect(v.failures.find((p) => p.code === "SENTENCE_WITHOUT_CHECKED_PICTURE")?.detail).toContain("s0b1");
+    /** what the render worker does before the render: the field gets the sentence's words */
+    expect(applyFallbackScenes(t).captioned.map((c) => c.clipId)).toEqual(["vc_field"]);
+    const after = gateOn(t, ["vc_field"]);
+    expect(after.allow, after.allow ? "" : after.failures.map((f) => f.code).join(",")).toBe(true);
+    expect(after.lines.join("\n")).toMatch(/QUALITY_NOTE FALLBACK_SCENE sentences=1[^\n]*\(s0b1\)[^\n]*NOT footage/);
   });
 
-  it("a picture whose check is missing on the timeline is named at delivery (the net stays), the film delivered", () => {
+  it("a picture whose check is missing on the timeline is refused (the net stays); replaced by a fallback scene it is not shown", () => {
     const t = timelineOf([tlClip("vc_a", 0, 3, 0, { textCheck: undefined })], [], [[0, 0, 3, "Sales began."]]);
     const v = gateOn(t);
-    expect(v.allow).toBe(true);
-    if (v.allow) expect(v.qualityProblems.map((p) => p.code)).toContain("PICTURE_NOT_CHECKED");
+    expect(v.allow).toBe(false);
+    if (!v.allow) expect(v.failures.map((p) => p.code)).toContain("PICTURE_NOT_CHECKED");
+    expect(applyFallbackScenes(t).replaced.map((r) => r.clipId)).toEqual(["vc_a"]);
+    expect(videoTrack(t)[0]!.source.provider).toBe("synthetic_placeholder");
+    expect(gateOn(t, ["vc_a"]).allow).toBe(true);
   });
 });
 
@@ -324,7 +336,7 @@ describe("6. VIDEO 659: a sentence no picture passes for gets a drawn card, neve
     expect(path.basename(results.clips[0]!)).toMatch(/__pid_generic_footage-/);
   }, 300_000);
 
-  it("on the timeline: the card stands under the sentence, its invisible ground is not an unchecked picture, and the film is delivered without SENTENCE_WITHOUT_CHECKED_PICTURE", () => {
+  it("on the timeline: the card stands under the sentence, its invisible ground is not an unchecked picture; the neighbour's bare colour field is refused until it is a fallback scene", () => {
     /** the neighbour's ground the card is cut from carries no checks, as 659's colour field did */
     const clips = [
       tlClip("vc_a", 0, 3, 0),
@@ -340,13 +352,17 @@ describe("6. VIDEO 659: a sentence no picture passes for gets a drawn card, neve
     const row = sentenceCoverage(t).sentences.find((r) => r.key === "s0b1")!;
     expect(row.cardSec).toBe(5);
     const v = gateOn(t);
-    expect(v.allow).toBe(true);
-    if (!v.allow) return;
-    const named = v.qualityProblems.map((p) => `${p.code} ${p.detail}`);
+    expect(v.allow).toBe(false);
+    if (v.allow) return;
+    const named = v.failures.map((p) => `${p.code} ${p.detail}`);
     expect(named.filter((p) => p.startsWith("SENTENCE_WITHOUT_CHECKED_PICTURE") && p.includes("s0b1"))).toEqual([]);
     expect(named.filter((p) => p.startsWith("PICTURE_NOT_CHECKED") && p.includes("_graphic"))).toEqual([]);
-    /** the neighbour's own unchecked clip is still named — the net stays for what is on screen */
+    /** the neighbour's own unchecked clip is refused — the net stays for what is on screen */
     expect(named.some((p) => p.startsWith("PICTURE_NOT_CHECKED") && p.includes("clip=vc_c "))).toBe(true);
+    /** G/H — as the render worker sees it: a colour field is a placeholder, and with its words it is a fallback scene */
+    applyFallbackScenes(t);
+    const after = gateOn(t, ["vc_c"]);
+    expect(after.allow, after.allow ? "" : after.failures.map((f) => `${f.code} ${f.detail}`).join("; ")).toBe(true);
   });
 });
 

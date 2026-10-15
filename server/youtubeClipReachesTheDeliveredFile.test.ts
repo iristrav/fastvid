@@ -270,11 +270,16 @@ describe("an approved YouTube clip reaches the delivered MP4 and covers its sent
    * must always succeed) — what is still unchecked at delivery is named, clip by clip, on a film
    * that is published, for the customer to replace in the editor.
    */
-  it("3. the same clip without the picture editor's verdict: PICTURE_NOT_CHECKED names the clip, and the film is published", async () => {
+  /**
+   * G/H (owner, 15 October: "replace, then strict") — the unjudged YouTube clip is never shown: it
+   * becomes a named fallback scene of its exact slot; the checked second picture is untouched.
+   */
+  it("3. the same clip without the picture editor's verdict: replaced by a named fallback scene, the checked picture untouched, the film published", async () => {
     const { result, logged } = await deliveredWithProblem(film({ approved: false }));
     expect(result.ok).toBe(true);
-    expect(logged).toMatch(/QUALITY_PROBLEM PICTURE_NOT_CHECKED[^\n]*clip=vc_yt/);
-    expect(logged).not.toMatch(/QUALITY_PROBLEM PICTURE_NOT_CHECKED[^\n]*clip=vc_two/);
+    expect(logged).toMatch(/\[FallbackScene\] clip=vc_yt [^\n]*REPLACED/);
+    expect(logged).not.toMatch(/\[FallbackScene\] clip=vc_two /);
+    expect(logged).not.toMatch(/QUALITY_PROBLEM PICTURE_NOT_CHECKED/);
     expect(dbState.published).not.toBeNull();
     expect(filmUploads(uploads)).toHaveLength(1);
   }, 420_000);

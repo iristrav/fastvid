@@ -155,8 +155,12 @@ export function chooseSheetSeconds(durationSec: number, hits: readonly number[],
 
 /** Sharp frames sit four to a row on the service's sheet (`/frames`). */
 export const SHARP_COLUMNS = 4;
-/** At most this many sharp frames per video: the candidates the quick look found, one or two per sentence. */
-export const SHARP_MAX_FRAMES = 12;
+/**
+ * At most this many sharp frames per video: the candidates the quick look found, one or two per
+ * sentence. VIDEO 659 (fix C) — eight, not twelve: two rounds of the service's four frame workers
+ * instead of three (`/frames` took 37–69 s in 659), the sheet two rows; every frame still judged.
+ */
+export const SHARP_MAX_FRAMES = 8;
 
 export function sheetPrompt(
   videoTitle: string,
@@ -254,11 +258,18 @@ export function parseSheetAnswer(raw: string, frameCount: number, sentenceCount:
  * The sections to download: one around each approved second, merged where they touch, inside the
  * video, longest-first within the caps. Each section starts a little before the approved frame so
  * the cut has a clean shot boundary to find.
+ *
+ * VIDEO 659 (fix E) — four seconds before and eight after (was three and seven): YseCVuE80Ss's
+ * section held no single shot of three seconds; a wider reach gives the cut more of the approved
+ * shot to find. The approved second itself, and the sentence it was approved for, are unchanged;
+ * a shot only counts as approved when it holds that second (`sheetApprovalFor`), every other shot
+ * of the wider section is judged and text-checked as before. The total grows with it (6 × 12 s), so
+ * the wider sections never push an approved section out.
  */
-export const SECTION_BEFORE_SEC = 3;
-export const SECTION_AFTER_SEC = 7;
+export const SECTION_BEFORE_SEC = 4;
+export const SECTION_AFTER_SEC = 8;
 export const MAX_SECTIONS = 6;
-export const MAX_SECTION_TOTAL_SEC = 60;
+export const MAX_SECTION_TOTAL_SEC = 72;
 export function windowsAroundApprovals(
   seconds: readonly number[],
   durationSec: number

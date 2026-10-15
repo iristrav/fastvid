@@ -112,13 +112,19 @@ export function pickGenericArchiveAsset<T extends GenericArchiveCandidate>(
   return sorted[Math.abs(Math.trunc(opts.seed)) % sorted.length] ?? null;
 }
 
-/** Six palettes of three colours: muted, cinematic, never a flat blue-grey card. */
+/**
+ * Six palettes of three colours: muted, cinematic, never a flat blue-grey card.
+ *
+ * G/H — the owner's fallback scene ("text scene in brand colours"): the brand's violet
+ * (oklch 0.62 0.22 290, the site's --primary) and warm tones. No blue and no grey at all: a blue or
+ * grey field reads as filler. The index stays the id's `p<n>`, so a stored id still draws.
+ */
 export const SYNTHETIC_PALETTES: ReadonlyArray<readonly [string, string, string]> = [
-  ["#1b2a41", "#324a5f", "#0c1821"],
+  ["#2a1745", "#5b2d8f", "#140a24"],
   ["#2f2a1f", "#5c4b2a", "#1a1712"],
-  ["#1f3a2e", "#2e5d4b", "#0f1f18"],
+  ["#3a1745", "#7a2d8f", "#1c0a24"],
   ["#3a1f2a", "#5d2e45", "#1f0f18"],
-  ["#2a2f3a", "#4b5566", "#15181f"],
+  ["#3a2418", "#6b3f26", "#1e120c"],
   ["#3a2e1f", "#66512e", "#1f1810"],
 ];
 

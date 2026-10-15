@@ -153,11 +153,16 @@ describe("VIDEO 650 — a film delivered on the generic floor, end to end", () =
     expect(logs.some((l) => l.includes("[SentenceCoverage] video=1 s0b1") && l.includes("timing=measured_silence")), seen("s0b1")).toBe(true);
   }, 600_000);
 
-  /** VIDEO 659 (owner's rule, 15 October: a video must always succeed) — delivered, the missing check named. */
-  it("REAL FFMPEG: generic footage nobody judged for its sentence — the film is delivered, and the gate names the missing check", async () => {
+  /**
+   * G/H (owner, 15 October: "replace, then strict") — generic footage nobody judged for its sentence is
+   * not shown: it becomes a fallback scene of its exact slot (the drawn field with the sentence's
+   * words), named in the log; the film is delivered with every remaining picture checked.
+   */
+  it("REAL FFMPEG: generic footage nobody judged for its sentence — replaced by a named fallback scene, the film delivered", async () => {
     const { result, uploads, logs } = await renderFloorFilm("generic_footage", "unchecked");
     expect(result.ok, result.ok ? "" : `${result.code}: ${result.message}`).toBe(true);
-    expect(logs.some((l) => l.includes("QUALITY_PROBLEM PICTURE_NOT_CHECKED") && l.includes("clip=vc_1"))).toBe(true);
+    expect(logs.some((l) => l.includes("[FallbackScene] clip=vc_1") && l.includes("REPLACED"))).toBe(true);
+    expect(logs.some((l) => l.includes("QUALITY_PROBLEM PICTURE_NOT_CHECKED"))).toBe(false);
     expect(logs.some((l) => l.includes("DELIVERY_GATE_PASS") && l.includes("pictureChecks=enforced"))).toBe(true);
     expect(filmUploads(uploads)).toHaveLength(1);
     expect(dbState.published).not.toBeNull();

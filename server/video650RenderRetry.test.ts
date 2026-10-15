@@ -265,7 +265,12 @@ describe("VIDEO 650 — one bounded render retry after a technical refusal", () 
    * about the TIMELINE, so it is never retried. VIDEO 659 (owner's rule, 15 October: a video must
    * always succeed) — it is named as a quality problem and the film from the one render is delivered.
    */
-  it("a finding about the TIMELINE (a sentence without approved footage) is never retried, and the film is delivered with it named", async () => {
+  /**
+   * G/H (owner, 15 October: "replace, then strict") — the unchecked picture is not shown at all: it is
+   * replaced by a fallback scene of its exact slot before the render, named in the log, and the film
+   * from the one render is delivered. Still never retried.
+   */
+  it("a finding about the TIMELINE (a sentence without approved footage) is never retried; the unchecked picture becomes a named fallback scene and the film is delivered", async () => {
     const spy = vi.spyOn(console, "log");
     let logged = "";
     let out: Awaited<ReturnType<typeof runWith>>;
@@ -277,7 +282,8 @@ describe("VIDEO 650 — one bounded render retry after a technical refusal", () 
     }
     const { result, renderCalls, uploads } = out;
     expect(result.ok, result.ok ? "" : `${result.code}: ${result.message}`).toBe(true);
-    expect(logged).toMatch(/QUALITY_PROBLEM PICTURE_NOT_CHECKED[^\n]*clip=vc_1/);
+    expect(logged).toMatch(/\[FallbackScene\] clip=vc_1 [^\n]*REPLACED [^\n]*no approval by the picture editor/);
+    expect(logged).not.toMatch(/QUALITY_PROBLEM PICTURE_NOT_CHECKED/);
     expect(renderCalls).toHaveLength(1);
     expect(filmUploads(uploads)).toHaveLength(1);
     expect(dbState.finishCalls).toBe(1);

@@ -294,7 +294,7 @@ import {
   youtubeMomentsPerVideo,
   type MomentShot,
 } from "./youtubeMoments";
-import { cutLocalVideoIntoShots, productionLocalShotCutter } from "./archiveShotPieces";
+import { cutLocalVideoIntoShots, explainEmptyCut, productionLocalShotCutter } from "./archiveShotPieces";
 
 export { getRenderTopic, getSearchProvenance, withRenderTopic, withSearchProvenance } from "./searchQueryContract";
 export { getQueryScope, withQueryScope } from "./searchQueryContract";
@@ -11744,6 +11744,9 @@ export function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir
         },
         cut: async (filePath, dir) => {
           const cut = await cutLocalVideoIntoShots(filePath, dir, await productionLocalShotCutter());
+          /** VIDEO 659 (fix E) — an empty cut says why: duration, cut points, decode, or extraction. */
+          const why = explainEmptyCut(cut);
+          if (why) console.log(`[YouTubeStock] film=${filmId} ${path.basename(filePath)} no usable shot — ${why}`);
           if (cut.kind === "pieces") return cut.pieces;
           if (cut.kind === "one_shot") return [{ path: filePath, startSec: 0, endSec: cut.durationSec }];
           /** No clean shot, or the cut scan did not finish: a section with a transition in it is not a shot. */
@@ -11768,7 +11771,8 @@ export function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir
  * `YOUTUBE_STOCK_WAIT_MAX_MS`, so a hang cannot hold the render. Nothing is searched or downloaded
  * here that was not already under way; every download keeps its own timeout.
  */
-export const YOUTUBE_STOCK_WAIT_MAX_MS = 180_000;
+/** VIDEO 659 (fix C) — four minutes: the same as one stock video's own deadline (`STOCK_VIDEO_DEADLINE_MS`). */
+export const YOUTUBE_STOCK_WAIT_MAX_MS = 240_000;
 /** How often the wait looks up: a cancelled render stops within this, and progress stays fresh. */
 const YOUTUBE_STOCK_WAIT_STEP_MS = 5_000;
 
@@ -12212,6 +12216,8 @@ export async function secondSectionFromKeptSource(
   const list =
     pieces.kind === "pieces" ? pieces.pieces : pieces.kind === "one_shot" ? [{ path: outPath, startSec: 0, endSec: pieces.durationSec }] : [];
   const added = addStockSection(filmId, videoId, cut.start, list);
+  const why = explainEmptyCut(pieces);
+  if (!added && why) console.log(`[YouTubeStock] film=${filmId} video=${videoId} second section @${Math.round(cut.start)}s no usable shot — ${why}`);
   return { shots: added, detail: added ? `${added}_shots` : `no_usable_shot:${pieces.kind}`, startSec: cut.start };
 }
 
@@ -31053,9 +31059,12 @@ async function _runVideoPipelineInner(
              * process ends up rendering it renders from them (see `offerLocalFilesForRender`).
              */
             const { offerLocalFilesForRender } = await import("./renderJobWorker");
-            const offeredLocalFiles = (await import("./cinematicPipelineInputs")).localFilesForTimelineClips({
+            const inputsModule = await import("./cinematicPipelineInputs");
+            const offeredLocalFiles = inputsModule.localFilesForTimelineClips({
               clips: (await import("./projectTimeline")).videoTrack(outcome.timeline),
               localPathFor: localFileForClip,
+              /** VIDEO 659 — the same asset adopted under another sentence (a graphic's ground, above all). */
+              localPathForIdentity: (clip) => inputsModule.pickLocalFileByIdentity([...localFilesByBeat.values()].flat(), clip),
             });
             withdrawLocalFiles = offerLocalFilesForRender(videoId, outcome.timelineVersion, offeredLocalFiles);
             cutover = await enqueueCinematicRender({

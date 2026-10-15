@@ -229,8 +229,8 @@ describe("LATE STOCK — the same gates as any moment", () => {
     releaseYoutubeShotStock(64111);
   });
 
-  it("TEST 12 — the 180 s wait cap is unchanged; the fix waits for nothing", () => {
-    expect(vp.YOUTUBE_STOCK_WAIT_MAX_MS).toBe(180_000);
+  it("TEST 12 — the wait cap (240 s since VIDEO 659 fix C) is unchanged by this fix; the fix waits for nothing", () => {
+    expect(vp.YOUTUBE_STOCK_WAIT_MAX_MS).toBe(240_000);
     const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     const body = PIPE.slice(PIPE.indexOf("export async function takeLateStockMoments("), PIPE.indexOf("export function assignLateStockVideos<"));
     /** takeStockShots with 0 ms: only what is ready now */

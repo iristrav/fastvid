@@ -750,7 +750,8 @@ describe("the render worker, end to end", () => {
     const t = goodTimeline();
     const track = t.tracks.find((x) => x.kind === "VIDEO");
     if (track?.kind === "VIDEO") {
-      track.clips[0]!.source = { provider: "loc", providerAssetId: "item/0", mediaUrl: "https://loc/gone.mp4" };
+      /** G/H — the clip keeps its two check marks: this test is about a source that cannot be fetched, not an unchecked one. */
+      track.clips[0]!.source = { ...track.clips[0]!.source, provider: "loc", providerAssetId: "item/0", mediaUrl: "https://loc/gone.mp4" };
     }
     dbState.timeline = t;
     dbState.timelineVersion = 1;

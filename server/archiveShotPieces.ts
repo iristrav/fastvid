@@ -376,9 +376,9 @@ export type LocalShotCut =
   /** The file is one shot of at most eleven seconds: store it as it is. */
   | { kind: "one_shot"; durationSec: number }
   /** The file holds several shots (or one long one): these files are what gets stored. */
-  | { kind: "pieces"; pieces: Array<PieceRange & { path: string }>; cuts: number }
+  | { kind: "pieces"; pieces: Array<PieceRange & { path: string }>; cuts: number; durationSec?: number; planned?: number }
   /** Every shot is shorter than a usable piece: nothing in it is one shot long enough. */
-  | { kind: "no_clean_shot"; durationSec: number; cuts: number }
+  | { kind: "no_clean_shot"; durationSec: number; cuts: number; cutsSec?: number[] }
   /** The cut scan did not finish: the file is stored whole and the sweep looks again later. */
   | { kind: "unmeasured"; reason: string };
 
@@ -391,7 +391,7 @@ export async function cutLocalVideoIntoShots(
   if (found.incomplete) return { kind: "unmeasured", reason: found.incomplete };
   const ranges = shotPieceRanges(found.durationSec, found.cutsSec);
   if (isAlreadyOnePiece(found.durationSec, ranges)) return { kind: "one_shot", durationSec: found.durationSec };
-  if (ranges.length === 0) return { kind: "no_clean_shot", durationSec: found.durationSec, cuts: found.cutsSec.length };
+  if (ranges.length === 0) return { kind: "no_clean_shot", durationSec: found.durationSec, cuts: found.cutsSec.length, cutsSec: [...found.cutsSec] };
   const pieces: Array<PieceRange & { path: string }> = [];
   for (let i = 0; i < ranges.length; i++) {
     const r = ranges[i]!;
@@ -399,9 +399,40 @@ export async function cutLocalVideoIntoShots(
     await cutter.extract(localPath, out, r.startSec, r.endSec);
     if (fs.existsSync(out) && fs.statSync(out).size > 0) pieces.push({ ...r, path: out });
   }
-  return { kind: "pieces", pieces, cuts: found.cutsSec.length };
+  return { kind: "pieces", pieces, cuts: found.cutsSec.length, durationSec: found.durationSec, planned: ranges.length };
 }
 
+/**
+ * VIDEO 659 (fix E) — WHY A CUT GAVE NO USABLE SHOT, in words a log can carry; null when it gave one.
+ *
+ * 659's YseCVuE80Ss said only "no single shot long enough": not whether the file was 2 s long, full
+ * of cuts, unreadable, or cut fine and then lost at extraction. Each of those has its own line now.
+ */
+export function explainEmptyCut(cut: LocalShotCut): string | null {
+  const s = (n: number) => `${n.toFixed(2)}s`;
+  switch (cut.kind) {
+    case "one_shot":
+      return null;
+    case "unmeasured":
+      return `the cut scan did not finish (${cut.reason.slice(0, 120)}) — decode or scan failure; a section that may hold a transition is not used`;
+    case "no_clean_shot": {
+      if (!(cut.durationSec > 0)) return `the section has no measurable duration (${cut.durationSec}s) — nothing decodable to cut`;
+      const cuts = (cut.cutsSec ?? []).filter((c) => c > 0 && c < cut.durationSec).sort((a, b) => a - b);
+      const bounds = [0, ...cuts, cut.durationSec];
+      const longest = Math.max(...bounds.slice(1).map((b, i) => b - bounds[i]!));
+      const at = cuts.length ? ` at ${cuts.slice(0, 12).map(s).join(", ")}${cuts.length > 12 ? ", …" : ""}` : "";
+      return (
+        `section ${s(cut.durationSec)} with ${cut.cuts} cut(s)${at}: its longest shot is ${s(longest)}, ` +
+        `under the ${ARCHIVE_PIECE_MIN_SEC}s minimum for one clean shot — shot selection found nothing`
+      );
+    }
+    case "pieces":
+      return cut.pieces.length
+        ? null
+        : `${cut.planned ?? "?"} shot(s) found in ${cut.durationSec != null ? s(cut.durationSec) : "the section"} (${cut.cuts} cut(s)), ` +
+            `but none could be extracted — extract/decode failure`;
+  }
+}
 export async function productionLocalShotCutter(): Promise<LocalShotCutter> {
   const [{ productionShotCutDeps }, splitter] = await Promise.all([
     import("./youtubeShotCuts"),

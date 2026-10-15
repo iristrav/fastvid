@@ -221,9 +221,13 @@ export const QUALITY_ONLY_DELIVERY_CODES: ReadonlySet<DeliveryGateFailureCode> =
   "PLACEHOLDER_IN_DELIVERY",
   "CLIP_WITHOUT_ARCHIVE_ASSET",
   "CLIP_UNRESOLVED",
-  "PICTURE_NOT_CHECKED",
-  "SENTENCE_WITHOUT_CHECKED_PICTURE",
 ]);
+/**
+ * G/H — "replace, then strict" (owner, 15 October), which ends the VIDEO 659 note above for these
+ * two: an unchecked picture in a pipeline film is now replaced by a fallback scene before the render
+ * (`fallbackScene.ts`), so one that is still here means the replacement did not happen — the film is
+ * not delivered. PICTURE_NOT_CHECKED and SENTENCE_WITHOUT_CHECKED_PICTURE BLOCK again.
+ */
 
 /* ═══════════════════════ the gate ═══════════════════════ */
 
@@ -344,6 +348,8 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
        * under such a card is reported as a card (CHAPTER_CARD_PLACEHOLDER), not as unchecked.
        */
       if (row.spokenSec != null && row.coveredSec + row.cardSec >= row.spokenSec - 0.05) continue;
+      /** G/H — a fallback scene (drawn field + the sentence's words) is the sentence's stand-in: named below, not refused. */
+      if (row.spokenSec != null && row.coveredSec + row.cardSec + (row.fallbackSceneSec ?? 0) >= row.spokenSec - 0.05) continue;
       failures.push({
         code: "SENTENCE_WITHOUT_CHECKED_PICTURE",
         detail: `${row.key} "${(row.text ?? "").slice(0, 60)}": no picture passed both mandatory checks for this sentence`,
@@ -444,6 +450,14 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
      * (sentenceCoverage.ts): its sentence is uncovered and the film is refused above. This line names
      * it as a QUALITY PROBLEM — never silently, never as a successful picture choice.
      */
+    const fallbackScenes = c.sentences.filter((r) => (r.fallbackSceneSec ?? 0) > 0);
+    if (fallbackScenes.length > 0) {
+      hardRuleLines.push(
+        `[DeliveryGate]   QUALITY_NOTE FALLBACK_SCENE sentences=${fallbackScenes.length} ` +
+          `sec=${fallbackScenes.reduce((t, r) => t + (r.fallbackSceneSec ?? 0), 0).toFixed(2)} ` +
+          `(${fallbackScenes.map((r) => r.key).join(",")}) — a drawn scene with the sentence's own words stands in where no checked picture was available; NOT footage`
+      );
+    }
     const placeholder = c.sentences.filter((r) => (r.syntheticPlaceholderSec ?? 0) > 0);
     if (placeholder.length > 0) {
       hardRuleLines.push(

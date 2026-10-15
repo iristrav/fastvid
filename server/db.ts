@@ -830,6 +830,17 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
   // is unchanged below — that's what still catches a genuinely stuck/crashed render.
   if (!staleProgress) return video;
 
+  /**
+   * G/H — a video the render-recovery coordinator is re-rendering from its stored timeline is not a
+   * stalled PIPELINE: re-queueing it would search, judge and download the whole film again (the paid
+   * part) next to the render already under way. The coordinator ends it itself — recovered, failed or
+   * needs a person — within its own bound (`RENDER_RECOVERY_MAX`).
+   */
+  {
+    const rec = readVideoMetadataObject(video).renderRecovery as { attempts?: number; final?: string } | undefined;
+    if (rec && (rec.attempts ?? 0) > 0 && !rec.final) return video;
+  }
+
   const step = video.progressStep ?? "unknown step";
   if (pipelineProgressStallRecoveryEnabled()) {
     const meta = readVideoMetadataObject(video);
@@ -865,6 +876,11 @@ export async function requeueInterruptedVideo(videoId: number, reason: string): 
   if (!video) return "skipped";
   if (!IN_PROGRESS_STATUSES.includes(video.status as (typeof IN_PROGRESS_STATUSES)[number])) return "skipped";
   if (video.status === "queued" || video.status === "awaiting_approval" || video.status === "pending") return "skipped";
+  /** G/H — a render-only recovery is the coordinator's to finish; see `failPipelineIfStalled`. */
+  {
+    const rec = readVideoMetadataObject(video).renderRecovery as { attempts?: number; final?: string } | undefined;
+    if (rec && (rec.attempts ?? 0) > 0 && !rec.final) return "skipped";
+  }
   await bumpGenerationAttempt(videoId);
   const meta = readVideoMetadataObject(video);
   const prior = typeof meta.stallRecoveries === "number" ? meta.stallRecoveries : 0;
@@ -1487,6 +1503,47 @@ export async function getVideoRenderAttempt(videoId: number): Promise<number | n
     .where(eq(videos.id, videoId))
     .limit(1);
   return rows.length ? rows[0].renderAttempt : null;
+}
+
+/**
+ * G/H — the next render attempt, ONLY if the video is still at `expected` (the failed job's
+ * attempt). Of two workers recovering the same failed render at once, one moves the token and the
+ * other gets null — so one recovery render is queued, never two.
+ */
+export async function claimRenderAttemptIfCurrent(videoId: number, expected: number): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db
+    .update(videos)
+    .set({ renderAttempt: sql`${videos.renderAttempt} + 1` })
+    .where(and(eq(videos.id, videoId), eq(videos.renderAttempt, expected)));
+  const affected = affectedRowCount(result);
+  if (affected != null) return affected > 0 ? expected + 1 : null;
+  /** A driver that does not report the count: read the token back (as `publishEditedVideo` does). */
+  const rows = await db.select({ a: videos.renderAttempt }).from(videos).where(eq(videos.id, videoId)).limit(1);
+  return rows[0]?.a === expected + 1 ? expected + 1 : null;
+}
+
+/**
+ * G/H — videos with a PIPELINE render (no requesting user) that failed since `since`, or completed
+ * since then while the video itself is not completed: what the recovery sweep looks at.
+ */
+export async function listVideosWithFailedPipelineRenders(since: Date): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .selectDistinct({ videoId: renderJobs.videoId })
+    .from(renderJobs)
+    .innerJoin(videos, eq(videos.id, renderJobs.videoId))
+    .where(
+      and(
+        isNull(renderJobs.requestedByUserId),
+        sql`${renderJobs.updatedAt} >= ${since}`,
+        or(eq(renderJobs.status, "failed"), and(eq(renderJobs.status, "completed"), ne(videos.status, "completed")))
+      )
+    )
+    .limit(50);
+  return rows.map((r) => r.videoId);
 }
 
 export async function createRenderJob(params: {

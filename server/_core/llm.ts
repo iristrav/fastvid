@@ -554,6 +554,25 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * VIDEO 659 (fix D) — one retry for a real, passing network fault.
+ *
+ * 659's look at ifr_Z0PZ434 died on `[LLM] openai network/timeout failure: fetch failed` — the
+ * connection dropped, OpenAI never saw the question, and the video was downloaded unlooked. Such a
+ * fault gets ONE more try after `LLM_NETWORK_RETRY_WAIT_MS`. Nothing else is retried here: not a
+ * timeout (another 120 s), not a cancelled call, not an HTTP answer (the provider spoke — a refusal
+ * or a 4xx/5xx keeps its own handling), and never an answer the caller judged and turned down.
+ */
+export const LLM_NETWORK_RETRY_WAIT_MS = 2_000;
+const TRANSIENT_NETWORK = /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|other side closed|UND_ERR_SOCKET|UND_ERR_CONNECT|network error/i;
+export function isTransientNetworkFailure(err: unknown, signal?: AbortSignal | null): boolean {
+  if (signal?.aborted) return false;
+  const e = err as { name?: string; message?: string; code?: string; cause?: { code?: string; message?: string; name?: string } } | null;
+  if (!e) return false;
+  if (e.name === "TimeoutError" || e.name === "AbortError" || e.cause?.name === "TimeoutError" || e.cause?.name === "AbortError") return false;
+  return [e.message, e.code, e.cause?.code, e.cause?.message].some((t) => typeof t === "string" && TRANSIENT_NETWORK.test(t));
+}
+
 function isRateLimitError(status: number): boolean {
   return status === 429;
 }
@@ -1454,6 +1473,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       payload.response_format = normalizedResponseFormat;
     }
 
+    /** VIDEO 659 (fix D) — whether this provider already had its one network retry. */
+    let networkRetried = false;
     for (let attempt = 0; attempt < 4; attempt++) {
       // No timeout previously meant a hung connection to the provider would leave this fetch
       // pending indefinitely — no error to trigger the retry/fallback-provider chain below, no
@@ -1478,7 +1499,15 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         });
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
-        console.warn(`[LLM] ${provider} network/timeout failure:`, lastError.message);
+        if (!networkRetried && isTransientNetworkFailure(err, signal)) {
+          networkRetried = true;
+          console.warn(
+            `[LLM] ${provider} network failure (attempt 1/2): ${lastError.message} — one retry in ${LLM_NETWORK_RETRY_WAIT_MS / 1000}s`
+          );
+          await sleep(LLM_NETWORK_RETRY_WAIT_MS);
+          if (!signal?.aborted) continue;
+        }
+        console.warn(`[LLM] ${provider} network/timeout failure${networkRetried ? " (attempt 2/2 — no further retry)" : ""}:`, lastError.message);
         // A network fault is not a capacity fact — the provider never got to say anything about
         // its quota, so this stays a real failure.
         sawRealFailure = true;
@@ -1486,9 +1515,11 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       }
 
       if (response.ok) {
-        if (i > 0 || attempt > 0) {
+        const rateLimitRetries = attempt - (networkRetried ? 1 : 0);
+        if (networkRetried) console.log(`[LLM] ${provider} network retry succeeded (attempt 2/2)`);
+        if (i > 0 || rateLimitRetries > 0) {
           console.log(
-            `[LLM] Succeeded via ${provider}${attempt > 0 ? ` (after ${attempt} rate-limit retries)` : ""}` +
+            `[LLM] Succeeded via ${provider}${rateLimitRetries > 0 ? ` (after ${rateLimitRetries} rate-limit retries)` : ""}` +
               (i > 0 ? ` after ${chain[0]} failure` : "")
           );
         }

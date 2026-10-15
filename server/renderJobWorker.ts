@@ -29,6 +29,10 @@
  * lose the working video they had ten minutes ago.
  */
 import { makeSyntheticSfx, SYNTHETIC_SFX_PROVIDER } from "./typewriterSound";
+import { isGraphicBackdrop } from "./edlToTimeline";
+import { sameAssetIdentity } from "./cinematicPipelineInputs";
+import { SYNTHETIC_PLACEHOLDER_PROVIDER, syntheticAssetId } from "./genericFootageFallback";
+import { applyFallbackScenes, FALLBACK_SCENE_MAX_SHARE, isFallbackSceneClip, rescueMissingPictures, toFallbackScene } from "./fallbackScene";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -398,6 +402,67 @@ export function renderOutputKey(videoId: number, jobId: number): string {
 export const RENDER_CLIP_DROPPED = "RENDER_CLIP_DROPPED";
 
 /**
+ * VIDEO 659 — A GRAPHIC'S GROUND NEVER SHORTENS THE FILM.
+ *
+ * Under a card that IS a sentence's picture lies a copy of a shot at opacity 0 (`<id>_graphic<n>`,
+ * `placePrimaryGraphics`): the renderer draws it as plain black and the card covers it. Its only job
+ * is to hold the slot on the VIDEO track. When its file could not be recovered, the render dropped
+ * it like a real shot, the film came out that many seconds short (659: 5.89 s, its map opening) and
+ * the final check refused the file twice — a whole video lost for a picture nobody sees.
+ *
+ * Its slot is now kept, in this order, and written down:
+ *   1. the file its own shot was given this render — the same asset, by identity;
+ *   2. a drawn ground of the slot's length (the emergency colour field route, never archived), which
+ *      the opacity keeps black exactly as before.
+ * Only grounds: a real shot that could not be recovered is still dropped and reported, and the
+ * duration check still refuses a film that comes out shorter than its plan.
+ */
+export async function recoverGraphicGrounds<F extends { clipId: string; result: { errorCode?: string } }>(params: {
+  timeline: ProjectTimeline;
+  failures: ReadonlyArray<F>;
+  byClipId: Map<string, string>;
+  drawGround: (clip: ReturnType<typeof videoTrack>[number]) => Promise<string | null>;
+  jobId: number;
+}): Promise<{ remaining: F[]; recovered: Array<{ clipId: string; how: "shot_file" | "drawn_ground" }> }> {
+  const clips = new Map(videoTrack(params.timeline).map((c) => [c.id, c] as const));
+  const remaining: F[] = [];
+  const recovered: Array<{ clipId: string; how: "shot_file" | "drawn_ground" }> = [];
+  for (const f of params.failures) {
+    const clip = clips.get(f.clipId);
+    if (!clip || !isGraphicBackdrop(clip) || (clip.transform?.opacity ?? 1) > 0) {
+      remaining.push(f);
+      continue;
+    }
+    const shot = clips.get(clip.id.replace(/_graphic\d+$/, ""));
+    const shotFile = shot && sameAssetIdentity(shot.source, clip.source) ? params.byClipId.get(shot.id) : undefined;
+    const file = shotFile ?? (await params.drawGround(clip).catch(() => null));
+    if (!file) {
+      remaining.push(f);
+      continue;
+    }
+    params.byClipId.set(clip.id, file);
+    const how = shotFile ? "shot_file" : "drawn_ground";
+    recovered.push({ clipId: clip.id, how });
+    console.log(
+      `[RenderJob] job=${params.jobId} GRAPHIC_GROUND_KEPT clip=${clip.id} ` +
+        `slot=${clip.timelineStart.toFixed(2)}-${clip.timelineEnd.toFixed(2)}s via=${how} ` +
+        `(its own file: ${f.result.errorCode ?? "failed"}) — the card covers it; the film keeps its length`
+    );
+  }
+  return { remaining, recovered };
+}
+
+/** The drawn ground for a slot: the emergency colour field's identity, at the slot's length. */
+export function groundFillIdentity(clip: { timelineStart: number; timelineEnd: number }): { provider: string; providerAssetId: string } {
+  return { provider: SYNTHETIC_PLACEHOLDER_PROVIDER, providerAssetId: syntheticAssetId(0, Math.max(1, clip.timelineEnd - clip.timelineStart)) };
+}
+
+/** A copy of the timeline whose VIDEO track holds only this clip — to draw one ground through the rehydrator. */
+export function withOnlyVideoClip(timeline: ProjectTimeline, clip: ReturnType<typeof videoTrack>[number]): ProjectTimeline {
+  return { ...timeline, tracks: timeline.tracks.map((t) => (t.kind === "VIDEO" ? { ...t, clips: [clip] } : t)) };
+}
+
+/**
  * ROUND 596 — TAKE ONE REFUSED CLIP OUT OF THIS RENDER, LOUDLY.
  *
  * ── The rule it serves ──────────────────────────────────────────────────────────────────────
@@ -616,6 +681,22 @@ export async function runRenderJob(params: {
           globalFaults.slice(0, 5).map(formatTimelineIssue).join("; ")
       );
     }
+    /** G/H — a pipeline film's picture with no route to its file keeps its slot as a fallback scene (drawn below). */
+    const pipelineJob = job.requestedByUserId == null;
+    let missingAtValidation = 0;
+    if (pipelineJob && perClipFaults.length > 0) {
+      for (const fault of [...perClipFaults]) {
+        const c = videoTrack(timeline).find((v) => v.id === fault.elementId);
+        if (!c || c.disabled || (typeof c.transform?.opacity === "number" && c.transform.opacity <= 0)) continue;
+        const was = toFallbackScene(c);
+        missingAtValidation++;
+        perClipFaults.splice(perClipFaults.indexOf(fault), 1);
+        console.warn(
+          `[RenderJob] job=${job.id} [FallbackScene] clip=${c.id} slot=${c.timelineStart.toFixed(2)}-${c.timelineEnd.toFixed(2)}s ` +
+            `${was} has no route to its file (${fault.code}) — fallback scene for exactly this slot (not footage)`
+        );
+      }
+    }
     if (perClipFaults.length > 0) {
       const dropped = disableClipsForRender(
         timeline,
@@ -631,6 +712,22 @@ export async function runRenderJob(params: {
           RENDER_ERROR.TIMELINE_INVALID,
           `every video clip was refused (${dropped} removed): ` +
             perClipFaults.slice(0, 5).map(formatTimelineIssue).join("; ")
+        );
+      }
+    }
+
+    /**
+     * G/H — "replace, then strict" (owner, 15 October). A film the PIPELINE queued shows no picture
+     * without both mandatory checks: each such picture becomes a fallback scene of exactly its slot
+     * BEFORE anything is fetched (so it is not even downloaded), and the gate below refuses any that
+     * is left. An editor render (a requesting user) carries the owner's own choices, as before.
+     */
+    if (pipelineJob) {
+      const scenes = applyFallbackScenes(timeline, (line) => console.log(`[RenderJob] job=${job.id} ${line}`));
+      if (scenes.replaced.length || scenes.captioned.length) {
+        console.log(
+          `[RenderJob] job=${job.id} FALLBACK_SCENES replaced=${scenes.replaced.length} captioned=${scenes.captioned.length} ` +
+            `withoutWords=${scenes.withoutWords.length} — fallback scenes are named as such, never as footage`
         );
       }
     }
@@ -680,6 +777,93 @@ export async function runRenderJob(params: {
       existingByClipId: params.existingByClipId ?? offered,
     });
     for (const line of formatRehydrationSummary(rehydration)) console.log(line);
+    /** VIDEO 659 — a graphic's ground that could not be fetched keeps its slot; see `recoverGraphicGrounds`. */
+    const grounds = await recoverGraphicGrounds({
+      timeline,
+      failures: rehydration.failures,
+      byClipId: rehydration.byClipId,
+      drawGround: async (clip) => {
+        const drawn = await deps.rehydrate({
+          timeline: withOnlyVideoClip(timeline, { ...clip, source: groundFillIdentity(clip) }),
+          workDir: path.join(workDir, "assets"),
+          deps: audioDeps,
+          failFast: false,
+        });
+        return drawn.byClipId.get(clip.id) ?? null;
+      },
+      jobId: job.id,
+    });
+    rehydration.failures.splice(0, rehydration.failures.length, ...grounds.remaining);
+    /**
+     * G/H — a pipeline picture whose file is gone keeps its slot as a fallback scene, drawn locally.
+     * Not when NO real picture came back at all: that is an outage (storage, network), and a film of
+     * nothing but fallback scenes is not a film — the job fails as before (ASSET_NOT_REHYDRATABLE)
+     * and the recovery coordinator may render it again later, bounded.
+     */
+    const realRecovered = [...rehydration.byClipId.keys()].filter((id) => {
+      const c = videoTrack(timeline).find((v) => v.id === id);
+      return c && !isFallbackSceneClip(c) && !(typeof c.transform?.opacity === "number" && c.transform.opacity <= 0);
+    }).length;
+    let rescuedMissing = missingAtValidation;
+    if (pipelineJob && rehydration.failures.length > 0 && realRecovered > 0) {
+      const rescue = await rescueMissingPictures({
+        timeline,
+        failures: rehydration.failures,
+        byClipId: rehydration.byClipId,
+        draw: async (clip) => {
+          const drawn = await deps.rehydrate({
+            timeline: withOnlyVideoClip(timeline, clip),
+            workDir: path.join(workDir, "assets"),
+            deps: audioDeps,
+            failFast: false,
+          });
+          return drawn.byClipId.get(clip.id) ?? null;
+        },
+        log: (line) => console.warn(`[RenderJob] job=${job.id} ${line}`),
+      });
+      rehydration.failures.splice(0, rehydration.failures.length, ...rescue.remaining);
+      rescuedMissing = rescue.rescued.length;
+      if (rescue.rescued.length) applyFallbackScenes(timeline, (line) => console.log(`[RenderJob] job=${job.id} ${line}`));
+    }
+    /**
+     * G/H — a fallback scene stands in for a picture; it never becomes the film. Past
+     * `FALLBACK_SCENE_MAX_SHARE` of the picture time the film is not delivered: a person decides.
+     * When files were missing it may be an outage, so the recovery coordinator may try again later;
+     * when the pictures failed their checks, a re-render would make the same film.
+     */
+    if (pipelineJob && realRecovered === 0 && (rehydration.failures.length > 0 || missingAtValidation > 0)) {
+      const first = rehydration.failures[0];
+      return await fail(
+        RENDER_ERROR.ASSET_NOT_REHYDRATABLE,
+        `no real picture could be recovered (${rehydration.failures.length + missingAtValidation} failed; fallback scenes alone are not a film)` +
+          (first ? `; first: clip ${first.clipId}: ${first.result.errorCode} — ${first.result.errorMessage}` : "")
+      );
+    }
+    if (pipelineJob) {
+      const visibleClips = videoTrack(timeline).filter((c) => !c.disabled && !(typeof c.transform?.opacity === "number" && c.transform.opacity <= 0));
+      const total = visibleClips.reduce((n, c) => n + Math.max(0, c.timelineEnd - c.timelineStart), 0);
+      const fallbackSec = visibleClips.filter(isFallbackSceneClip).reduce((n, c) => n + Math.max(0, c.timelineEnd - c.timelineStart), 0);
+      if (total > 0 && fallbackSec / total > FALLBACK_SCENE_MAX_SHARE) {
+        const share = `${fallbackSec.toFixed(2)}s of ${total.toFixed(2)}s (${Math.round((100 * fallbackSec) / total)}%, limit ${Math.round(100 * FALLBACK_SCENE_MAX_SHARE)}%)`;
+        return await fail(
+          RENDER_ERROR.RENDER_FAILED,
+          rescuedMissing > 0
+            ? `FALLBACK_SHARE_TOO_HIGH_MISSING_FILES — fallback scenes would fill ${share}; ${rescuedMissing} picture file(s) could not be recovered`
+            : `Delivery blocked for video ${job.videoId}: 1 requirement(s) failed — FALLBACK_SHARE_TOO_HIGH (fallback scenes would fill ${share}: too few pictures passed both mandatory checks)`
+        );
+      }
+    }
+    const missingPictureSec = rehydration.failures.reduce((sum, f) => {
+      const c = videoTrack(timeline).find((v) => v.id === f.clipId);
+      return sum + (c ? Math.max(0, c.timelineEnd - c.timelineStart) : 0);
+    }, 0);
+    if (missingPictureSec > 0) {
+      console.warn(
+        `[RenderJob] job=${job.id} PICTURE_SHORT ${missingPictureSec.toFixed(2)}s of picture could not be recovered ` +
+          `(${rehydration.failures.map((f) => f.clipId).join(", ")}) — the film is not filled with anything else; ` +
+          `the final duration check refuses a file that comes out shorter than the plan`
+      );
+    }
     if (rehydration.failures.length > 0) {
       disableClipsForRender(
         timeline,
@@ -734,6 +918,24 @@ export async function runRenderJob(params: {
         const made = path.join(audioDir, `${clip.id}.mp3`);
         if (await makeSyntheticSfx(clip.source.providerAssetId ?? "", made).catch(() => false)) audioByClip.set(clip.id, made);
         else console.warn(`[Audio] job=${job.id} clip=${clip.id} status=NOT_DRAWN provider=${SYNTHETIC_SFX_PROVIDER} asset=${clip.source.providerAssetId}`);
+        continue;
+      }
+      /** VIDEO 659 (fix F) — a Freesound sound: the planned recording, else its catalogue alternative, else only it is skipped. */
+      if (clip.source.provider === "freesound" && !clip.source.canonicalUrl && !clip.source.mediaUrl && clip.source.providerAssetId) {
+        const { fetchFreesoundClip } = await import("./freesoundFallback");
+        const { freesoundSoundIsGone } = await import("./cinematicAudio/fetcher");
+        const got = await fetchFreesoundClip(
+          clip,
+          path.join(audioDir, `${clip.id}.mp3`),
+          {
+            resolve: async (source) => (audioDeps.providerResolver ? audioDeps.providerResolver(source) : null),
+            download: (url, dest) => deps.download(url, dest),
+            isGone: freesoundSoundIsGone,
+            log: (line) => console.warn(line),
+          },
+          job.id
+        );
+        if (got) audioByClip.set(clip.id, got.file);
         continue;
       }
       let url = clip.source.canonicalUrl || clip.source.mediaUrl || "";
@@ -1253,7 +1455,7 @@ export async function runRenderJob(params: {
             resolved: Boolean(local),
             fromArchive,
             /** One authority for "this depicts nothing" — the pipeline's own predicate. */
-            isPlaceholder: local ? isPipelineFallbackClip(local) : false,
+            isPlaceholder: (local ? isPipelineFallbackClip(local) : false) || isFallbackSceneClip(clip),
             /** FIX 1+2 — the two mandatory checks, as the timeline recorded them for this clip. */
             contentApproval: clip.source.contentApproval ?? null,
             textCheck: clip.source.textCheck ?? null,
@@ -1472,6 +1674,16 @@ export async function sweepStaleRenderJobs(): Promise<number[]> {
   }
 }
 
+/** G/H — one recovery sweep; never throws. */
+export async function sweepRenderRecoveries(): Promise<void> {
+  try {
+    const { productionRecoveryDeps, runRenderRecoverySweep } = await import("./recoveryCoordinator");
+    await runRenderRecoverySweep(await productionRecoveryDeps());
+  } catch (err) {
+    console.warn("[Recovery] sweep failed (DB may be unavailable):", (err as Error).message);
+  }
+}
+
 export function startRenderJobWorker(): void {
   if (pollTimer) return;
   const intervalMs = parseInt(process.env.RENDER_JOB_POLL_MS ?? "5000", 10);
@@ -1481,7 +1693,11 @@ export function startRenderJobWorker(): void {
   );
   void sweepStaleRenderJobs().then(() => processRenderJobTick());
   pollTimer = setInterval(() => void processRenderJobTick(), intervalMs);
-  const sweep = setInterval(() => void sweepStaleRenderJobs(), 2 * 60_000);
+  /**
+   * G/H — after the stale sweep (which FAILS a lost job), the recovery sweep may re-render that
+   * failed film's stored timeline, bounded; see `recoveryCoordinator.ts`. Same interval, no new loop.
+   */
+  const sweep = setInterval(() => void sweepStaleRenderJobs().then(() => sweepRenderRecoveries()), 2 * 60_000);
   sweep.unref?.();
 }
 

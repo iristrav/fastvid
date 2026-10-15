@@ -73,6 +73,12 @@ export type SentenceCoverageRow = {
   genericFootageSec: number;
   /** PRE-DEPLOY — the part of the generic cover that is the synthetic colour field: an emergency placeholder, NOT footage. */
   syntheticPlaceholderSec: number;
+  /**
+   * G/H — of those, the seconds that are a FALLBACK SCENE: the drawn field with words on screen
+   * (`fallbackScene.ts`). Not footage and never called footage; the strict delivery check accepts it
+   * as the sentence's stand-in, and the gate names every one of them.
+   */
+  fallbackSceneSec?: number;
   contentGraphicSec: number;
   /** Seconds under footage without the approval mark, or an approved picture without a sentence mark (fit not established). */
   unverifiedSec: number;
@@ -247,6 +253,11 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
     .filter(isContentGraphic)
     .map((g) => ({ span: [Number(g.start) || 0, Number(g.end) || 0] as Span, forSentence: sentenceKeyOf(g.data ?? {}) }));
   const cards: Span[] = cardIntervals.map((c): Span => [c.startSec, c.endSec]);
+  /** G/H — every span with words on screen (a graphic or a text element), for the fallback scene. */
+  const wordsOnScreen: Span[] = timeline.tracks
+    .flatMap((t): Array<{ start: number; end: number; disabled?: boolean }> => (t.kind === "GRAPHICS" ? t.graphics ?? [] : t.kind === "TEXT" ? t.texts ?? [] : []))
+    .filter((g) => g && !g.disabled && Number(g.end) > Number(g.start))
+    .map((g): Span => [Number(g.start), Number(g.end)]);
 
   const sentences = timeline.sentences ?? [];
   if (sentences.length === 0) problems.push("the timeline carries no sentences: coverage cannot be measured");
@@ -311,6 +322,7 @@ export function sentenceCoverage(timeline: ProjectTimeline): SentenceCoverageRep
       aiGeneratedSec: r3(measure(aiIn)),
       genericFootageSec: r3(measure(subtract(genericIn, union([...approvedIn, ...graphicIn, ...acceptableIn])))),
       syntheticPlaceholderSec: r3(measure(subtract(syntheticIn, union([...approvedIn, ...graphicIn, ...acceptableIn])))),
+      fallbackSceneSec: r3(measure(subtract(subtract(syntheticIn, subtract(syntheticIn, clip(wordsOnScreen, lo, hi))), union([...approvedIn, ...graphicIn, ...acceptableIn])))),
       contentGraphicSec: r3(measure(graphicIn)),
       unverifiedSec: r3(measure(clip(unverifiedIn, lo, hi).length ? subtract(unverifiedIn, coverSpans) : [])),
       otherSentenceSec: r3(measure(subtract(otherSentenceIn, coverSpans))),

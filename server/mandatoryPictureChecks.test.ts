@@ -255,7 +255,13 @@ const gate = (clips: DeliveryClipFact[], enforce: boolean, coverage?: SentenceCo
   deliveryGate({ videoId: 1, route: "cinematic_timeline", timelineExists: true, clips, delivered: null, assetsOnly: true, enforcePictureChecks: enforce, ...(coverage ? { sentenceCoverage: coverage } : {}) });
 
 /** VIDEO 659 (owner's rule, 15 October: a video must always succeed) — named for the editor, never a refused film. */
-describe("10. the delivery gate names every clip that misses a mandatory check, and delivers", () => {
+/**
+ * G/H (owner, 15 October: "replace, then strict") — the render worker replaces every unchecked
+ * picture of a pipeline film by a fallback scene BEFORE the render (`fallbackScene.ts`). A picture
+ * that still reaches the gate without both checks therefore means the replacement did not happen:
+ * it BLOCKS (it was a named quality note from video 659 until this decision).
+ */
+describe("10. the delivery gate refuses a pipeline film with a clip that misses a mandatory check", () => {
   it("both checks on every clip → delivered, no quality problem", () => {
     const v = gate([clipFact({}), clipFact({ clipId: "vc_2", contentApproval: "judge_acceptable", textCheck: "overlay" })], true);
     expect(v.allow && v.qualityProblems).toEqual([]);
@@ -268,10 +274,10 @@ describe("10. the delivery gate names every clip that misses a mandatory check, 
     ["judge_fit", "unchecked"],
     ["judge_fit", "fills_picture"],
     ["judge_fit", undefined],
-  ])("contentApproval=%s textCheck=%s → delivered, PICTURE_NOT_CHECKED named", (contentApproval, textCheck) => {
+  ])("contentApproval=%s textCheck=%s → blocked, PICTURE_NOT_CHECKED names the clip", (contentApproval, textCheck) => {
     const v = gate([clipFact({ contentApproval: contentApproval ?? null, textCheck: textCheck ?? null })], true);
-    expect(v.allow).toBe(true);
-    if (v.allow) expect(v.qualityProblems.find((p) => p.code === "PICTURE_NOT_CHECKED")?.detail).toContain("clip=vc_1");
+    expect(v.allow).toBe(false);
+    if (!v.allow) expect(v.failures.find((p) => p.code === "PICTURE_NOT_CHECKED")?.detail).toContain("clip=vc_1");
   });
 
   it("the opacity-0 ground under a drawn graphic is never on screen: not named as an unchecked picture", () => {
@@ -279,7 +285,7 @@ describe("10. the delivery gate names every clip that misses a mandatory check, 
     expect(v.allow && v.qualityProblems).toEqual([]);
   });
 
-  it("a sentence with no checked picture is delivered, named", () => {
+  it("a sentence with no checked picture blocks; a card or a fallback scene with its words stands in", () => {
     const coverage = {
       basis: "timeline", total: 1, covered: 0, partial: 0, uncovered: 1, unknown: 0, stretchedClips: 0, cardIntervals: [], plannedCardSec: 0,
       proven: false, timing: "exact", problems: [],
@@ -291,8 +297,16 @@ describe("10. the delivery gate names every clip that misses a mandatory check, 
       }],
     } as unknown as SentenceCoverageReport;
     const v = gate([clipFact({})], true, coverage);
-    expect(v.allow).toBe(true);
-    if (v.allow) expect(v.qualityProblems.find((p) => p.code === "SENTENCE_WITHOUT_CHECKED_PICTURE")?.detail).toContain("s0b1");
+    expect(v.allow).toBe(false);
+    if (!v.allow) expect(v.failures.find((p) => p.code === "SENTENCE_WITHOUT_CHECKED_PICTURE")?.detail).toContain("s0b1");
+    /** G/H — the same sentence under a fallback scene (drawn field + its words): passes, and is named as a fallback */
+    const scene = { ...coverage, sentences: [{ ...coverage.sentences[0]!, syntheticPlaceholderSec: 4, fallbackSceneSec: 4, emptySec: 0 }] } as unknown as SentenceCoverageReport;
+    const f = gate([clipFact({})], true, scene);
+    expect(f.allow).toBe(true);
+    expect(f.lines.join("\n")).toMatch(/QUALITY_NOTE FALLBACK_SCENE sentences=1 sec=4\.00 \(s0b1\)[^\n]*NOT footage/);
+    /** the colour field WITHOUT words is not a fallback scene: still blocked */
+    const bare = { ...coverage, sentences: [{ ...coverage.sentences[0]!, syntheticPlaceholderSec: 4, fallbackSceneSec: 0, emptySec: 0 }] } as unknown as SentenceCoverageReport;
+    expect(gate([clipFact({})], true, bare).allow).toBe(false);
     /** the same sentence under a card Remotion drew from its own words: the film's own text, not unchecked */
     const sentence = coverage.sentences[0]!;
     const card = { ...coverage, sentences: [{ ...sentence, cardSec: 4, emptySec: 0, kinds: ["chapter_card"] }] } as unknown as SentenceCoverageReport;

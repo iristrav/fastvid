@@ -168,11 +168,12 @@ describe("the one look's answer", () => {
 });
 
 describe("only the approved seconds are downloaded", () => {
+  /** VIDEO 659 (fix E): four seconds before and eight after the approved frame (was three and seven). */
   it("one section around each approved frame, merged where they touch, inside the video", () => {
-    expect(windowsAroundApprovals([100], 600)).toEqual([{ startSec: 97, durationSec: 10 }]);
-    expect(windowsAroundApprovals([100, 105], 600)).toEqual([{ startSec: 97, durationSec: 15 }]);
-    expect(windowsAroundApprovals([1], 600)).toEqual([{ startSec: 0, durationSec: 8 }]);
-    expect(windowsAroundApprovals([598], 600)).toEqual([{ startSec: 595, durationSec: 5 }]);
+    expect(windowsAroundApprovals([100], 600)).toEqual([{ startSec: 96, durationSec: 12 }]);
+    expect(windowsAroundApprovals([100, 105], 600)).toEqual([{ startSec: 96, durationSec: 17 }]);
+    expect(windowsAroundApprovals([1], 600)).toEqual([{ startSec: 0, durationSec: 9 }]);
+    expect(windowsAroundApprovals([598], 600)).toEqual([{ startSec: 594, durationSec: 6 }]);
   });
   it("never more than the caps, the sections with the most approved frames first", () => {
     const many = Array.from({ length: 20 }, (_, i) => 30 + i * 25);
@@ -180,7 +181,7 @@ describe("only the approved seconds are downloaded", () => {
     expect(w.length).toBeLessThanOrEqual(MAX_SECTIONS);
     expect(w.reduce((s, x) => s + x.durationSec, 0)).toBeLessThanOrEqual(MAX_SECTION_TOTAL_SEC);
     const dense = windowsAroundApprovals([100, 102, 104, 106, 400], 600);
-    expect(dense[0]).toEqual({ startSec: 97, durationSec: 16 });
+    expect(dense[0]).toEqual({ startSec: 96, durationSec: 18 });
   });
 });
 

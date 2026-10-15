@@ -132,7 +132,7 @@ describe("E/F — the hard limits stay, and a long video is still bounded", () =
     expect(youtubeMaxDownloadsPerRender()).toBe(60);
     expect(youtubeDownloadTimeoutMs()).toBe(180_000);
     expect(MAX_STOCK_VIDEOS).toBe(10);
-    expect(YOUTUBE_STOCK_WAIT_MAX_MS).toBe(180_000);
+    expect(YOUTUBE_STOCK_WAIT_MAX_MS).toBe(240_000); // VIDEO 659 fix C: 180 → 240 s
   });
 
   it("the picture time never passes the visual stage wall clock or the picture stage's ceiling", () => {

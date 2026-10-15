@@ -922,19 +922,84 @@ export function localFilesForTimelineClips(params: {
     beatIndex: number,
     clip: { source?: AssetSourceIdentity; sourceIn?: number }
   ) => string | null | undefined;
+  /**
+   * VIDEO 659 — the file this render holds for exactly this ASSET, whichever sentence adopted it:
+   * matched on the asset's own identity (provider id or archive id), never on a guess. Used when the
+   * sentence lookup above finds nothing, and for a graphic's ground (see below).
+   */
+  localPathForIdentity?: (clip: { source?: AssetSourceIdentity; sourceIn?: number }) => string | null | undefined;
   /** Whether that file is on this disk with bytes in it. Defaults to asking the disk. */
   exists?: (localPath: string) => boolean;
 }): Map<string, string> {
   const exists = params.exists ?? fileHasBytes;
   const byClipId = new Map<string, string>();
+  const byId = new Map(params.clips.map((c) => [c.id, c] as const));
+  const backdrops: typeof params.clips[number][] = [];
   for (const clip of params.clips) {
-    if (clip.sceneIndex == null || clip.beatIndex == null) continue;
-    const localPath = params.localPathFor(clip.sceneIndex, clip.beatIndex, clip);
-    if (!localPath) continue;
-    if (!exists(localPath)) continue;
+    /** A graphic's ground is resolved after every shot, from the shot it was made from. */
+    if (GRAPHIC_GROUND_ID.test(clip.id)) {
+      backdrops.push(clip);
+      continue;
+    }
+    const fromBeat = clip.sceneIndex != null && clip.beatIndex != null ? params.localPathFor(clip.sceneIndex, clip.beatIndex, clip) : null;
+    const localPath = fromBeat && exists(fromBeat) ? fromBeat : params.localPathForIdentity?.(clip);
+    if (!localPath || !exists(localPath)) continue;
+    byClipId.set(clip.id, localPath);
+  }
+  /**
+   * VIDEO 659 — A GRAPHIC'S GROUND IS THE SHOT IT WAS MADE FROM.
+   *
+   * `placePrimaryGraphics` copies a shot (`<id>_graphic<n>`) under a card and gives the copy the
+   * card's sentence. Asked by that sentence, the lookup above found nothing — the shot belonged to
+   * another sentence — and the render dropped the ground: video 659 lost its 5.89 s map opening, the
+   * film came out 5.89 s short and was refused twice. The ground carries its shot's identity, so it
+   * takes the file that shot was given; failing that, the file held for that identity. Never the
+   * card's sentence's other files: those are other assets.
+   */
+  for (const clip of backdrops) {
+    const shot = byId.get(clip.id.replace(GRAPHIC_GROUND_ID, ""));
+    const shotFile = shot && sameAssetIdentity(shot.source, clip.source) ? byClipId.get(shot.id) : undefined;
+    const localPath = shotFile ?? params.localPathForIdentity?.(clip);
+    if (!localPath || !exists(localPath)) continue;
     byClipId.set(clip.id, localPath);
   }
   return byClipId;
+}
+
+/** The id suffix `placePrimaryGraphics` gives a graphic's ground (`isGraphicBackdrop` in edlToTimeline). */
+const GRAPHIC_GROUND_ID = /_graphic\d+$/;
+
+/** The same asset: the same provider and the same provider id or archive id. Absent identities never match. */
+export function sameAssetIdentity(a: AssetSourceIdentity | undefined, b: AssetSourceIdentity | undefined): boolean {
+  if (!a || !b) return false;
+  if ((a.provider ?? "") !== (b.provider ?? "")) return false;
+  if (a.providerAssetId != null && b.providerAssetId != null) return String(a.providerAssetId) === String(b.providerAssetId);
+  if (a.archiveAssetId != null && b.archiveAssetId != null) return Number(a.archiveAssetId) === Number(b.archiveAssetId);
+  return false;
+}
+
+/**
+ * VIDEO 659 — the file for exactly this asset among every sentence's files: only candidates whose
+ * adoption names the same provider id (or archive id); the nearest in-point when one asset was cut
+ * more than once. Null when none matches — a different video is never offered.
+ */
+export function pickLocalFileByIdentity(
+  candidates: ReadonlyArray<{ path: string; adoption: AdoptionFacts | null }>,
+  clip: { source?: { provider?: string | null; providerAssetId?: string | null; archiveAssetId?: number | null } | null; sourceIn?: number }
+): string | null {
+  const src = clip.source ?? {};
+  if (src.providerAssetId == null && src.archiveAssetId == null) return null;
+  const same = candidates.filter((c) => {
+    const a = c.adoption;
+    if (!a) return false;
+    if (src.providerAssetId != null && a.providerAssetId != null) return String(a.providerAssetId) === String(src.providerAssetId);
+    if (src.archiveAssetId != null && a.archiveAssetId != null) return Number(a.archiveAssetId) === Number(src.archiveAssetId);
+    return false;
+  });
+  if (same.length === 0) return null;
+  if (same.length === 1 || clip.sourceIn == null) return same[0]!.path;
+  const at = clip.sourceIn;
+  return [...same].sort((x, y) => Math.abs(at - (x.adoption?.sourceInSec ?? 0)) - Math.abs(at - (y.adoption?.sourceInSec ?? 0)))[0]!.path;
 }
 
 /** The one check both this module's local-file readers make. An unreadable path is an absent one. */

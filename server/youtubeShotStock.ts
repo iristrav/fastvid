@@ -57,6 +57,45 @@ export const MAX_STOCK_ATTEMPTS = MAX_STOCK_VIDEOS + 4;
 export const STOCK_CONCURRENCY = 3;
 /** VIDEO 659 — approved sections of ONE video downloaded at the same time. */
 export const SECTIONS_AT_ONCE = 3;
+/** VIDEO 659 (fix C) — section downloads running at the same time for the whole stock, every video together. */
+export const STOCK_DOWNLOADS_AT_ONCE = 6;
+/**
+ * VIDEO 659 (fix B) — the most one stock video may take, look + downloads + cuts together. 659's
+ * slowest honest video took about 3.5 min; three that hung were never heard from again.
+ */
+export const STOCK_VIDEO_DEADLINE_MS = 240_000;
+
+/**
+ * A small counting gate: at most `n` of the given tasks run at once, the rest wait their turn. A
+ * task's slot is given back when it settles, or earlier when `giveBack` resolves (a task whose video
+ * was abandoned keeps no slot from the others while it hangs). Returns the task's own promise.
+ */
+export function createSlots(n: number): { run: <T>(task: () => Promise<T>, giveBack?: Promise<unknown>) => Promise<T>; active: () => number } {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  const start = <T>(task: () => Promise<T>, giveBack?: Promise<unknown>): Promise<T> => {
+    active++;
+    let held = true;
+    const free = () => {
+      if (!held) return;
+      held = false;
+      active--;
+      waiting.shift()?.();
+    };
+    void giveBack?.then(free);
+    let p: Promise<T>;
+    try {
+      p = task();
+    } catch (err) {
+      p = Promise.reject(err);
+    }
+    p.then(free, free);
+    return p;
+  };
+  const run = <T>(task: () => Promise<T>, giveBack?: Promise<unknown>): Promise<T> =>
+    active < n ? start(task, giveBack) : new Promise<void>((r) => waiting.push(r)).then(() => start(task, giveBack));
+  return { run, active: () => active };
+}
 
 export type StockCandidate = {
   videoId: string;
@@ -108,6 +147,8 @@ export type StockDeps = {
   log?: (line: string) => void;
   /** W3 — asked before a replacement starts: a video the render has meanwhile written off is passed over. */
   skip?: (videoId: string) => boolean;
+  /** VIDEO 659 (fix B) — the per-video deadline; tests shorten it. Default `STOCK_VIDEO_DEADLINE_MS`. */
+  videoDeadlineMs?: number;
   /**
    * VIDEO 659 — the look before the download (`lookBeforeDownload`): one contact sheet of the whole
    * video, one look. "approved" downloads only the approved sections; "nothing_fits" downloads
@@ -231,7 +272,12 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
   };
   for (const c of todo) register(c);
   let attempts = 0;
-  let inFlight = 0;
+  /**
+   * Videos being worked on and not yet ready or failed. Counted by their status, so a video turns
+   * from "on its way" to "ready" in one step (never both at once), and a timed-out one frees its place.
+   */
+  const started = new Set<string>();
+  const inFlight = () => [...started].filter((id) => film.get(id)?.status === "pending").length;
   const readyNow = () => [...film.values()].filter((e) => e.status === "ready").length;
   /**
    * The next video to fetch: the planned ones first; then a replacement, only while fewer than
@@ -241,7 +287,7 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
   const nextCandidate = (): StockCandidate | null => {
     const planned = todo.shift();
     if (planned) return planned;
-    while (spare.length > 0 && attempts < MAX_STOCK_ATTEMPTS && readyNow() + inFlight < MAX_STOCK_VIDEOS) {
+    while (spare.length > 0 && attempts < MAX_STOCK_ATTEMPTS && readyNow() + inFlight() < MAX_STOCK_VIDEOS) {
       const c = spare.shift()!;
       if (film.has(c.videoId) || deps.skip?.(c.videoId)) continue;
       /** Past the first MAX_STOCK_VIDEOS started, a spare only runs because an earlier one failed. */
@@ -256,25 +302,82 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
     }
     return null;
   };
+  /** VIDEO 659 (fix C) — at most `STOCK_DOWNLOADS_AT_ONCE` section downloads run for the whole stock. */
+  const downloadSlots = createSlots(STOCK_DOWNLOADS_AT_ONCE);
+  const deadlineMs = deps.videoDeadlineMs ?? STOCK_VIDEO_DEADLINE_MS;
   const worker = async () => {
     for (;;) {
       const c = nextCandidate();
       if (!c) return;
       attempts++;
-      inFlight++;
+      started.add(c.videoId);
       const entry = film.get(c.videoId)!;
       const t0 = Date.now();
+      /**
+       * VIDEO 659 (fix B) — every step is timed and written down (start, end, duration, outcome), and
+       * the whole video has `deadlineMs`. In 659 three approved videos were downloaded and never
+       * reported back: twenty minutes "still downloading", their shots never offered. Past the
+       * deadline the video is failed naming the step(s) it was stuck in; whatever still runs for it is
+       * ignored from then on — a late answer can neither mark it ready nor add shots — its download
+       * slot is given back to the other videos, and the files it made are removed.
+       */
+      let closed = false;
+      let markClosed: () => void = () => undefined;
+      const whenClosed = new Promise<void>((r) => (markClosed = r));
+      const running = new Map<string, number>();
+      let waitingForSlot = 0;
+      const made: string[] = [];
+      /** The shots reach the entry only when the video is done: a video still on its way, or timed out, offers none. */
+      const got: StockShot[] = [];
+      const secs = (since: number) => ((Date.now() - since) / 1000).toFixed(1);
+      /** Runs one step and writes down its start, and its end with duration and outcome. Returns the step's own promise. */
+      const step = <T>(name: string, run: () => Promise<T>, outcome: (r: T) => string): Promise<T> => {
+        const at = Date.now();
+        running.set(name, at);
+        say(`[YouTubeStock] film=${filmId} video=${c.videoId} step=${name} start`);
+        let p: Promise<T>;
+        try {
+          p = run();
+        } catch (err) {
+          p = Promise.reject(err);
+        }
+        p.then(
+          (r) => {
+            running.delete(name);
+            if (!closed) say(`[YouTubeStock] film=${filmId} video=${c.videoId} step=${name} done in ${secs(at)}s — ${outcome(r)}`);
+          },
+          (err) => {
+            running.delete(name);
+            if (!closed) say(`[YouTubeStock] film=${filmId} video=${c.videoId} step=${name} FAILED in ${secs(at)}s — ${(err as Error)?.message?.slice(0, 80) ?? "threw"}`);
+          }
+        );
+        return p;
+      };
+      const cleanUp = () => {
+        for (const f of made) fs.rmSync(f, { recursive: true, force: true });
+      };
       /** One section: downloaded, cut into shots in its own folder, the shots added to the entry. */
       const fetchSection = async (startSec: number, take: number): Promise<boolean> => {
+        if (closed) return false;
         entry.sectionStarts = [...(entry.sectionStarts ?? []), startSec];
-        const outPath = path.join(deps.workDir, `ytstock_${c.videoId}_${Math.round(startSec)}.mp4`);
-        const ok = await deps.download(c.videoId, startSec, take, outPath, c.title);
-        if (!ok || !fs.existsSync(outPath)) return false;
+        const at = Math.round(startSec);
+        const outPath = path.join(deps.workDir, `ytstock_${c.videoId}_${at}.mp4`);
+        made.push(outPath);
+        waitingForSlot++;
+        /** A closed video gives its slot back at once, even while its download still hangs. */
+        const ok = await downloadSlots.run(() => {
+          waitingForSlot--;
+          if (closed) return Promise.resolve(false);
+          return step(`download@${at}s`, () => deps.download(c.videoId, startSec, take, outPath, c.title), (r) => (r && fs.existsSync(outPath) ? "file arrived" : "nothing arrived"));
+        }, whenClosed);
+        if (closed || !ok || !fs.existsSync(outPath)) return false;
         /** Each section's shots in their own folder: the cutter names its pieces shot_1, shot_2, … */
-        const pieceDir = path.join(deps.workDir, `ytstock_${c.videoId}_shots${entry.sectionStarts.length > 1 ? `_${Math.round(startSec)}` : ""}`);
+        const pieceDir = path.join(deps.workDir, `ytstock_${c.videoId}_shots${entry.sectionStarts.length > 1 ? `_${at}` : ""}`);
+        made.push(pieceDir);
         fs.mkdirSync(pieceDir, { recursive: true });
-        const pieces = await deps.cut(outPath, pieceDir);
-        entry.shots.push(
+        const pieces = await step(`cut@${at}s`, () => deps.cut(outPath, pieceDir), (r) => `${r.length} shot(s)`);
+        if (closed) return false;
+        got.push(
           ...pieces.map((p) => ({
             videoId: c.videoId,
             title: c.title,
@@ -286,13 +389,59 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
         );
         return true;
       };
+      /** The video's last word, once: its outcome logged, its waiters released. */
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        closed = true;
+        markClosed();
+        clearTimeout(timer);
+        say(
+          `[YouTubeStock] film=${filmId} video=${c.videoId} ${entry.status} in ${Math.round((Date.now() - t0) / 1000)}s` +
+            (entry.status === "ready" ? ` — ${entry.shots.length} shot(s)` : ` — ${entry.reason}`)
+        );
+        if (c.targetLabel) {
+          say(
+            `[TARGETED_VISUAL] ${c.targetLabel} videoId=${c.videoId} ` +
+              (entry.status === "ready" ? `stage=DOWNLOAD_SUCCEEDED shots=${entry.shots.length}` : `stage=DOWNLOAD_FAILED reason="${entry.reason}"`)
+          );
+        }
+        releases.get(c.videoId)?.();
+      };
+      /**
+       * Past the deadline: failed with the step(s) it hangs in, released, its files removed, and a
+       * fresh worker takes its place; this one leaves the moment its stuck step returns.
+       */
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        if (finished) return;
+        timedOut = true;
+        const stuck =
+          [...running].map(([name, at]) => `${name} for ${secs(at)}s`).join(", ") ||
+          (waitingForSlot > 0 ? `waiting for a download slot (${waitingForSlot} section(s))` : "between steps");
+        entry.status = "failed";
+        entry.reason = `took longer than ${Math.round(deadlineMs / 1000)}s — stuck in ${stuck}`;
+        say(`[YouTubeStock] film=${filmId} video=${c.videoId} TIMEOUT after ${Math.round(deadlineMs / 1000)}s — stuck in ${stuck}; stopped and cleaned up`);
+        finish();
+        cleanUp();
+        void worker();
+      }, deadlineMs);
+      timer.unref?.();
       try {
-        const look = deps.look ? await deps.look(c).catch((err): { kind: "no_sheet"; reason: string } => ({ kind: "no_sheet", reason: (err as Error)?.message?.slice(0, 80) ?? "threw" })) : null;
-        if (look?.kind === "nothing_fits") {
-          entry.status = "failed";
-          entry.refusedByLook = true;
-          entry.reason = "the look before the download found no frame that fits a sentence — not downloaded";
-        } else {
+        work: {
+          const look = deps.look
+            ? await step("look", () => deps.look!(c), (r) => (r.kind === "approved" ? `approved (${r.windows.length} section(s))` : r.kind === "no_sheet" ? `no_sheet (${r.reason})` : r.kind)).catch(
+                (err): { kind: "no_sheet"; reason: string } => ({ kind: "no_sheet", reason: (err as Error)?.message?.slice(0, 80) ?? "threw" })
+              )
+            : null;
+          if (closed) break work;
+          if (look?.kind === "nothing_fits") {
+            entry.status = "failed";
+            entry.refusedByLook = true;
+            entry.reason = "the look before the download found no frame that fits a sentence — not downloaded";
+            break work;
+          }
           if (c.targetLabel) say(`[TARGETED_VISUAL] ${c.targetLabel} videoId=${c.videoId} stage=DOWNLOAD_STARTED film=${filmId}`);
           let delivered = 0;
           if (look?.kind === "approved" && look.windows.length > 0) {
@@ -303,8 +452,9 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
                 for (let w = queue.shift(); w; w = queue.shift()) if (await fetchSection(w.startSec, w.durationSec).catch(() => false)) delivered++;
               })
             );
+            if (closed) break work;
             /** Shots in the order of the video, whichever section arrived first. */
-            entry.shots.sort((a, b) => a.sourceStartSec - b.sourceStartSec);
+            got.sort((a, b) => a.sourceStartSec - b.sourceStartSec);
             say(`[YouTubeStock] film=${filmId} video=${c.videoId} downloaded only the approved seconds: ${delivered}/${look.windows.length} section(s)`);
           } else {
             if (look?.kind === "no_sheet") say(`[YouTubeStock] film=${filmId} video=${c.videoId} no look before the download (${look.reason}) — one section as before`);
@@ -312,6 +462,8 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
             const startSec = c.durationSec > 0 ? deps.startFor(c.durationSec, take, c.videoId) : 0;
             if (await fetchSection(startSec, take)) delivered++;
           }
+          if (closed) break work;
+          entry.shots = got;
           if (!delivered) {
             entry.status = "failed";
             entry.reason = "the download delivered nothing";
@@ -322,21 +474,17 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
           }
         }
       } catch (err) {
-        entry.status = "failed";
-        entry.reason = (err as Error)?.message?.slice(0, 120) ?? "threw";
+        if (!closed) {
+          entry.status = "failed";
+          entry.reason = (err as Error)?.message?.slice(0, 120) ?? "threw";
+        }
       }
-      inFlight--;
-      say(
-        `[YouTubeStock] film=${filmId} video=${c.videoId} ${entry.status} in ${Math.round((Date.now() - t0) / 1000)}s` +
-          (entry.status === "ready" ? ` — ${entry.shots.length} shot(s)` : ` — ${entry.reason}`)
-      );
-      if (c.targetLabel) {
-        say(
-          `[TARGETED_VISUAL] ${c.targetLabel} videoId=${c.videoId} ` +
-            (entry.status === "ready" ? `stage=DOWNLOAD_SUCCEEDED shots=${entry.shots.length}` : `stage=DOWNLOAD_FAILED reason="${entry.reason}"`)
-        );
+      /** Timed out: a fresh worker already took this one's place; what this one made goes now. */
+      if (timedOut) {
+        cleanUp();
+        return;
       }
-      releases.get(c.videoId)?.();
+      finish();
     }
   };
   for (let k = 0; k < Math.min(STOCK_CONCURRENCY, todo.length); k++) void worker();
