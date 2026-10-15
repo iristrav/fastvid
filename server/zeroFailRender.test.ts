@@ -1,7 +1,8 @@
 /**
  * G/H — ZERO-FAIL DELIVERY IN THE RENDER WORKER: a missing picture file keeps its slot as a fallback
- * scene; a film is never mostly fallback; no real picture at all is an outage, not a film; an editor
- * render keeps the owner's own pictures. Driven through `runRenderJob` with the database and the
+ * scene; owner, 15 October: "er moet wel altijd een video uitkomen" — so a film that is mostly or even
+ * entirely fallback scenes is still made, and named for what it is; the recovery's last resort renders
+ * every picture as its fallback scene; an editor render keeps the owner's own pictures. Driven through `runRenderJob` with the database and the
  * rehydrator stood in — the run stops at the point under test (before any encode).
  */
 import fs from "node:fs";
@@ -14,12 +15,13 @@ import { DEFAULT_FORMAT, emptyTimeline, type ProjectTimeline, type TimelineVideo
 const dbState = vi.hoisted(() => ({
   job: null as Record<string, unknown> | null,
   timeline: null as unknown,
+  videoMetadata: null as unknown,
 }));
 
 vi.mock("./db", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./db")>()),
   getRenderJobById: async (id: number) => (dbState.job && dbState.job.id === id ? { ...dbState.job } : null),
-  getVideoById: async (id: number) => ({ id, videoUrl: null, userId: 1 }),
+  getVideoById: async (id: number) => ({ id, videoUrl: null, userId: 1, metadata: dbState.videoMetadata }),
   getVideoRenderAttempt: async () => 1,
   getStoredTimeline: async () => (dbState.timeline ? { raw: JSON.parse(JSON.stringify(dbState.timeline)), timelineVersion: 4 } : null),
   getVideoScenes: async () => null,
@@ -74,7 +76,11 @@ afterEach(() => {
   vi.restoreAllMocks();
   dbState.job = null;
   dbState.timeline = null;
+  dbState.videoMetadata = null;
 });
+
+/** The run went past every refusal and reached the encode (the stand-in renderer stops it there). */
+const reachedEncode = (result: unknown) => expect(`${JSON.stringify(result)}\n${lines.join("\n")}`).toMatch(/STOP_BEFORE_ENCODE/);
 
 /**
  * Runs the job. `available` are the clip ids whose ORIGINAL file comes back; a fallback scene is
@@ -120,31 +126,62 @@ describe("G/H — a picture whose file is gone keeps its slot as a fallback scen
     expect(said).toMatch(/STOP_BEFORE_ENCODE|render/i);
   }, 60_000);
 
-  it("no real picture came back at all: an outage, not a film — ASSET_NOT_REHYDRATABLE, nothing drawn", async () => {
+  it("no real picture came back at all: still a film — every slot its sentence's fallback scene, named ALL_FALLBACK", async () => {
     const { result, fetched } = await run(film([clip(0), clip(1)]), { available: [] });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.code).toBe("ASSET_NOT_REHYDRATABLE");
-    expect(result.message).toMatch(/no real picture could be recovered \(2 failed; fallback scenes alone are not a film\)/);
-    expect(fetched.some((f) => f.endsWith("synthetic_placeholder"))).toBe(false);
+    const said = lines.join("\n");
+    expect(fetched).toEqual(expect.arrayContaining(["vc_0:synthetic_placeholder", "vc_1:synthetic_placeholder"]));
+    expect(said).toMatch(/QUALITY_PROBLEM ALL_FALLBACK 8\.00s of 8\.00s \(100%\) are fallback scenes, not footage — delivered anyway \(always a video\)/);
+    /** each scene carries its sentence's words */
+    expect(said).toMatch(/clip=vc_0 s0b0 words="1932" \(date_card\)/);
+    expect(said).not.toMatch(/ASSET_NOT_REHYDRATABLE/);
+    reachedEncode(result);
   }, 60_000);
 
-  it(`more than ${Math.round(FALLBACK_SCENE_MAX_SHARE * 100)}% fallback because files are missing: refused before the encode, as a TECHNICAL fault (an outage may pass)`, async () => {
+  it(`more than ${Math.round(FALLBACK_SCENE_MAX_SHARE * 100)}% fallback because files are missing: made anyway, named MOSTLY_FALLBACK as a quality problem`, async () => {
     const { result } = await run(film([clip(0), clip(1), clip(2)]), { available: ["vc_0"] });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.message).toMatch(/^FALLBACK_SHARE_TOO_HIGH_MISSING_FILES — fallback scenes would fill 8\.00s of 12\.00s \(67%, limit 50%\); 2 picture file\(s\) could not be recovered/);
-    const { classifyRenderFailure } = await import("./recoveryCoordinator");
-    expect(classifyRenderFailure(result.code, result.message)).toBe("technical");
+    const said = lines.join("\n");
+    expect(said).toMatch(/QUALITY_PROBLEM MOSTLY_FALLBACK 8\.00s of 12\.00s \(67%\) are fallback scenes, not footage/);
+    expect(said).not.toMatch(/FALLBACK_SHARE_TOO_HIGH/);
+    reachedEncode(result);
   }, 60_000);
 
-  it("more than half the film unchecked: refused as a CONTENT matter — a person decides, nothing retried", async () => {
-    const { result } = await run(film([clip(0), clip(1, { contentApproval: "unverified" }), clip(2, { textCheck: "unchecked" })]), { available: ["vc_0", "vc_1", "vc_2"] });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.message).toMatch(/^Delivery blocked for video 661: 1 requirement\(s\) failed — FALLBACK_SHARE_TOO_HIGH \(fallback scenes would fill 8\.00s of 12\.00s/);
-    const { classifyRenderFailure } = await import("./recoveryCoordinator");
-    expect(classifyRenderFailure(result.code, result.message)).toBe("content");
+  it("more than half the film unchecked: the unchecked pictures are replaced (never shown) and the film is still made", async () => {
+    const { result, fetched } = await run(film([clip(0), clip(1, { contentApproval: "unverified" }), clip(2, { textCheck: "unchecked" })]), { available: ["vc_0", "vc_1", "vc_2"] });
+    const said = lines.join("\n");
+    expect(fetched).not.toContain("vc_1:serpapi");
+    expect(fetched).not.toContain("vc_2:serpapi");
+    expect(said).toMatch(/FALLBACK_SCENES replaced=2 captioned=2 withoutWords=0/);
+    expect(said).toMatch(/QUALITY_PROBLEM MOSTLY_FALLBACK 8\.00s of 12\.00s \(67%\)/);
+    expect(said).not.toMatch(/Delivery blocked/);
+    reachedEncode(result);
+  }, 60_000);
+
+  it("a few fallback scenes: a QUALITY_NOTE, not a problem", async () => {
+    await run(film([clip(0), clip(1), clip(2)]), { available: ["vc_0", "vc_2"] });
+    expect(lines.join("\n")).toMatch(/QUALITY_NOTE SOME_FALLBACK 4\.00s of 12\.00s \(33%\)/);
+  }, 60_000);
+
+  it("the recovery's LAST RESORT: every picture is rendered as its fallback scene — no footage fetched, named, and still made", async () => {
+    dbState.videoMetadata = { renderRecovery: { attempts: 3, jobIds: [70, 71, 72], log: [], lastResort: true } };
+    const { result, fetched } = await run(film([clip(0), clip(1), clip(2)]), { available: ["vc_0", "vc_1", "vc_2"] });
+    const said = lines.join("\n");
+    expect(said).toMatch(/LAST_RESORT_RENDER — 3 picture\(s\) rendered as fallback scenes so the film is delivered at all \(not footage\)/);
+    expect(fetched.filter((f) => f.endsWith(":serpapi"))).toEqual([]);
+    expect(said).toMatch(/QUALITY_PROBLEM ALL_FALLBACK 12\.00s of 12\.00s \(100%\)/);
+    reachedEncode(result);
+  }, 60_000);
+
+  it("no last resort without the flag: a normal pipeline render fetches its real pictures", async () => {
+    dbState.videoMetadata = { renderRecovery: { attempts: 1, jobIds: [70], log: [] } };
+    const { fetched } = await run(film([clip(0), clip(1)]), { available: ["vc_0", "vc_1"] });
+    expect(fetched).toEqual(["vc_0:serpapi", "vc_1:serpapi"]);
+    expect(lines.join("\n")).not.toMatch(/LAST_RESORT_RENDER/);
+  }, 60_000);
+
+  it("an editor render never takes the last resort, even with the flag set", async () => {
+    dbState.videoMetadata = { renderRecovery: { attempts: 3, jobIds: [70, 71, 72], log: [], lastResort: true } };
+    const { fetched } = await run(film([clip(0), clip(1)]), { available: ["vc_0", "vc_1"], requestedByUserId: 7 });
+    expect(fetched).toEqual(["vc_0:serpapi", "vc_1:serpapi"]);
   }, 60_000);
 
   it("an unchecked picture is replaced BEFORE anything is fetched — the refused source is never even downloaded", async () => {
@@ -169,6 +206,19 @@ describe("G/H — a picture whose file is gone keeps its slot as a fallback scen
     expect(said).toMatch(/\[FallbackScene\] clip=vc_1 slot=4\.00-8\.00s unknown_route:img-1 has no route to its file \(missing_asset\)/);
     expect(said).not.toMatch(/RENDER_CLIP_DROPPED clip=vc_1/);
     expect(fetched).toContain("vc_1:synthetic_placeholder");
+  }, 60_000);
+
+  it("VIDEO 660: a sentence under the previous sentence's held picture gets its own fallback scene, drawn, and the render goes on", async () => {
+    /** clip 1 is held over sentence 2 (8–12 s), which has no picture of its own */
+    const t = film([clip(0), { ...clip(1), timelineEnd: 12, sourceOut: 4, holdAtSourceOut: true } as TimelineVideoClip]);
+    t.sentences = [...t.sentences!, { sceneIndex: 0, beatIndex: 2, startSec: 8, endSec: 12, timingBasis: "measured", text: "Crowds gathered at the border." }];
+    t.durationSec = 12;
+    const { result, fetched } = await run(t, { available: ["vc_0", "vc_1"] });
+    const said = lines.join("\n");
+    expect(said).toMatch(/\[FallbackScene\] s0b2 slot=8\.00-12\.00s had NO picture of its own .* — a fallback scene of exactly this sentence \(not footage\); vc_1 ends at 8\.00s/);
+    expect(fetched).toEqual(["vc_0:serpapi", "vc_1:serpapi", "vc_fallback_s0b2:synthetic_placeholder"]);
+    expect(said).toMatch(/QUALITY_NOTE SOME_FALLBACK 4\.00s of 12\.00s \(33%\)/);
+    reachedEncode(result);
   }, 60_000);
 
   it("an EDITOR render (a requesting user) keeps the owner's own pictures: nothing replaced, nothing drawn", async () => {

@@ -327,6 +327,8 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
       const running = new Map<string, number>();
       let waitingForSlot = 0;
       const made: string[] = [];
+      /** VIDEO 660 — the files of sections cut BEFORE the deadline: kept with their shots when the video times out. */
+      const kept = new Set<string>();
       /** The shots reach the entry only when the video is done: a video still on its way, or timed out, offers none. */
       const got: StockShot[] = [];
       const secs = (since: number) => ((Date.now() - since) / 1000).toFixed(1);
@@ -354,7 +356,7 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
         return p;
       };
       const cleanUp = () => {
-        for (const f of made) fs.rmSync(f, { recursive: true, force: true });
+        for (const f of made) if (!kept.has(f)) fs.rmSync(f, { recursive: true, force: true });
       };
       /** One section: downloaded, cut into shots in its own folder, the shots added to the entry. */
       const fetchSection = async (startSec: number, take: number): Promise<boolean> => {
@@ -377,6 +379,8 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
         fs.mkdirSync(pieceDir, { recursive: true });
         const pieces = await step(`cut@${at}s`, () => deps.cut(outPath, pieceDir), (r) => `${r.length} shot(s)`);
         if (closed) return false;
+        kept.add(outPath);
+        kept.add(pieceDir);
         got.push(
           ...pieces.map((p) => ({
             videoId: c.videoId,
@@ -420,9 +424,25 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
         const stuck =
           [...running].map(([name, at]) => `${name} for ${secs(at)}s`).join(", ") ||
           (waitingForSlot > 0 ? `waiting for a download slot (${waitingForSlot} section(s))` : "between steps");
-        entry.status = "failed";
-        entry.reason = `took longer than ${Math.round(deadlineMs / 1000)}s — stuck in ${stuck}`;
-        say(`[YouTubeStock] film=${filmId} video=${c.videoId} TIMEOUT after ${Math.round(deadlineMs / 1000)}s — stuck in ${stuck}; stopped and cleaned up`);
+        /**
+         * VIDEO 660 — sections downloaded AND cut before the deadline keep their shots: only the hung
+         * steps are dropped. 660 lost 12 approved, cut shots of three videos this way. Nothing that
+         * finishes after the deadline is added (`closed`), so a late answer still never counts.
+         */
+        if (got.length > 0) {
+          got.sort((a, b) => a.sourceStartSec - b.sourceStartSec);
+          entry.shots = [...got];
+          entry.status = "ready";
+          entry.readyAt = Date.now();
+          say(
+            `[YouTubeStock] film=${filmId} video=${c.videoId} TIMEOUT after ${Math.round(deadlineMs / 1000)}s — stuck in ${stuck}; ` +
+              `the ${got.length} shot(s) cut before the deadline are kept, the hung step(s) stopped and cleaned up`
+          );
+        } else {
+          entry.status = "failed";
+          entry.reason = `took longer than ${Math.round(deadlineMs / 1000)}s — stuck in ${stuck}`;
+          say(`[YouTubeStock] film=${filmId} video=${c.videoId} TIMEOUT after ${Math.round(deadlineMs / 1000)}s — stuck in ${stuck}; stopped and cleaned up`);
+        }
         finish();
         cleanUp();
         void worker();

@@ -683,13 +683,28 @@ export async function runRenderJob(params: {
     }
     /** G/H — a pipeline film's picture with no route to its file keeps its slot as a fallback scene (drawn below). */
     const pipelineJob = job.requestedByUserId == null;
-    let missingAtValidation = 0;
+    /**
+     * G/H — the recovery coordinator's LAST RESORT (`renderRecovery.lastResort`): the renders of this
+     * film's own pictures failed, so this one is the simplified film — every picture its sentence's
+     * fallback scene, on the same voice, music and timeline. Always a video, never called footage.
+     */
+    if (pipelineJob) {
+      const rec = readVideoMetadataObject(await getVideoById(job.videoId).catch(() => null)).renderRecovery as { lastResort?: boolean } | undefined;
+      if (rec?.lastResort) {
+        let n = 0;
+        for (const c of videoTrack(timeline)) {
+          if (c.disabled || isFallbackSceneClip(c) || (typeof c.transform?.opacity === "number" && c.transform.opacity <= 0)) continue;
+          toFallbackScene(c);
+          n++;
+        }
+        console.warn(`[RenderJob] job=${job.id} LAST_RESORT_RENDER — ${n} picture(s) rendered as fallback scenes so the film is delivered at all (not footage)`);
+      }
+    }
     if (pipelineJob && perClipFaults.length > 0) {
       for (const fault of [...perClipFaults]) {
         const c = videoTrack(timeline).find((v) => v.id === fault.elementId);
         if (!c || c.disabled || (typeof c.transform?.opacity === "number" && c.transform.opacity <= 0)) continue;
         const was = toFallbackScene(c);
-        missingAtValidation++;
         perClipFaults.splice(perClipFaults.indexOf(fault), 1);
         console.warn(
           `[RenderJob] job=${job.id} [FallbackScene] clip=${c.id} slot=${c.timelineStart.toFixed(2)}-${c.timelineEnd.toFixed(2)}s ` +
@@ -796,16 +811,11 @@ export async function runRenderJob(params: {
     rehydration.failures.splice(0, rehydration.failures.length, ...grounds.remaining);
     /**
      * G/H — a pipeline picture whose file is gone keeps its slot as a fallback scene, drawn locally.
-     * Not when NO real picture came back at all: that is an outage (storage, network), and a film of
-     * nothing but fallback scenes is not a film — the job fails as before (ASSET_NOT_REHYDRATABLE)
-     * and the recovery coordinator may render it again later, bounded.
+     * Owner, 15 October: "er moet wel altijd een video uitkomen" — so also when NO real picture came
+     * back at all: every slot becomes its sentence's fallback scene and the film is still made, named
+     * as such. Only a scene that cannot even be drawn leaves its slot (the duration check decides).
      */
-    const realRecovered = [...rehydration.byClipId.keys()].filter((id) => {
-      const c = videoTrack(timeline).find((v) => v.id === id);
-      return c && !isFallbackSceneClip(c) && !(typeof c.transform?.opacity === "number" && c.transform.opacity <= 0);
-    }).length;
-    let rescuedMissing = missingAtValidation;
-    if (pipelineJob && rehydration.failures.length > 0 && realRecovered > 0) {
+    if (pipelineJob && rehydration.failures.length > 0) {
       const rescue = await rescueMissingPictures({
         timeline,
         failures: rehydration.failures,
@@ -822,35 +832,24 @@ export async function runRenderJob(params: {
         log: (line) => console.warn(`[RenderJob] job=${job.id} ${line}`),
       });
       rehydration.failures.splice(0, rehydration.failures.length, ...rescue.remaining);
-      rescuedMissing = rescue.rescued.length;
       if (rescue.rescued.length) applyFallbackScenes(timeline, (line) => console.log(`[RenderJob] job=${job.id} ${line}`));
     }
     /**
-     * G/H — a fallback scene stands in for a picture; it never becomes the film. Past
-     * `FALLBACK_SCENE_MAX_SHARE` of the picture time the film is not delivered: a person decides.
-     * When files were missing it may be an outage, so the recovery coordinator may try again later;
-     * when the pictures failed their checks, a re-render would make the same film.
+     * G/H — how much of the film stands on fallback scenes, said out loud. Never a refusal (the owner:
+     * always a video); past `FALLBACK_SCENE_MAX_SHARE` it is a named QUALITY_PROBLEM for the editor.
      */
-    if (pipelineJob && realRecovered === 0 && (rehydration.failures.length > 0 || missingAtValidation > 0)) {
-      const first = rehydration.failures[0];
-      return await fail(
-        RENDER_ERROR.ASSET_NOT_REHYDRATABLE,
-        `no real picture could be recovered (${rehydration.failures.length + missingAtValidation} failed; fallback scenes alone are not a film)` +
-          (first ? `; first: clip ${first.clipId}: ${first.result.errorCode} — ${first.result.errorMessage}` : "")
-      );
-    }
     if (pipelineJob) {
       const visibleClips = videoTrack(timeline).filter((c) => !c.disabled && !(typeof c.transform?.opacity === "number" && c.transform.opacity <= 0));
       const total = visibleClips.reduce((n, c) => n + Math.max(0, c.timelineEnd - c.timelineStart), 0);
       const fallbackSec = visibleClips.filter(isFallbackSceneClip).reduce((n, c) => n + Math.max(0, c.timelineEnd - c.timelineStart), 0);
-      if (total > 0 && fallbackSec / total > FALLBACK_SCENE_MAX_SHARE) {
-        const share = `${fallbackSec.toFixed(2)}s of ${total.toFixed(2)}s (${Math.round((100 * fallbackSec) / total)}%, limit ${Math.round(100 * FALLBACK_SCENE_MAX_SHARE)}%)`;
-        return await fail(
-          RENDER_ERROR.RENDER_FAILED,
-          rescuedMissing > 0
-            ? `FALLBACK_SHARE_TOO_HIGH_MISSING_FILES — fallback scenes would fill ${share}; ${rescuedMissing} picture file(s) could not be recovered`
-            : `Delivery blocked for video ${job.videoId}: 1 requirement(s) failed — FALLBACK_SHARE_TOO_HIGH (fallback scenes would fill ${share}: too few pictures passed both mandatory checks)`
-        );
+      if (total > 0 && fallbackSec > 0) {
+        const share = fallbackSec / total;
+        const label = share >= 0.999 ? "ALL_FALLBACK" : share > FALLBACK_SCENE_MAX_SHARE ? "MOSTLY_FALLBACK" : "SOME_FALLBACK";
+        const line =
+          `[RenderJob] job=${job.id} ${share > FALLBACK_SCENE_MAX_SHARE ? "QUALITY_PROBLEM" : "QUALITY_NOTE"} ${label} ` +
+          `${fallbackSec.toFixed(2)}s of ${total.toFixed(2)}s (${Math.round(100 * share)}%) are fallback scenes, not footage — delivered anyway (always a video); replace them in the editor`;
+        if (share > FALLBACK_SCENE_MAX_SHARE) console.warn(line);
+        else console.log(line);
       }
     }
     const missingPictureSec = rehydration.failures.reduce((sum, f) => {

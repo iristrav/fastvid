@@ -261,7 +261,7 @@ describe("4. the fallback covers the whole sentence, on its own time", () => {
  * sentence's own words, `applyFallbackScenes`), and only then does the gate pass, naming the scene.
  */
 describe("5. no valid fallback at all: unchecked is refused as it is, and delivered only as a named fallback scene", () => {
-  it("a sentence held only by the colour field: uncovered and refused; with its words on it (a fallback scene) delivered and named", () => {
+  it("a sentence held only by the colour field: uncovered, yet delivered and named as an emergency (always a video); with its words on it, a named fallback scene", () => {
     const t = timelineOf(
       [tlClip("vc_a", 0, 3, 0), tlClip("vc_field", 3, 7, 1, { provider: "synthetic_placeholder", contentApproval: "generic_footage", textCheck: "unchecked" })],
       [],
@@ -270,8 +270,8 @@ describe("5. no valid fallback at all: unchecked is refused as it is, and delive
     const row = sentenceCoverage(t).sentences.find((r) => r.key === "s0b1")!;
     expect(row.status).toBe("uncovered");
     const v = gateOn(t, ["vc_field"]);
-    expect(v.allow).toBe(false);
-    if (!v.allow) expect(v.failures.find((p) => p.code === "SENTENCE_WITHOUT_CHECKED_PICTURE")?.detail).toContain("s0b1");
+    expect(v.allow, v.allow ? "" : v.failures.map((f) => f.code).join(",")).toBe(true);
+    expect(v.lines.join("\n")).toMatch(/QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER sentences=1[^\n]*\(s0b1\)[^\n]*NOT footage/);
     /** what the render worker does before the render: the field gets the sentence's words */
     expect(applyFallbackScenes(t).captioned.map((c) => c.clipId)).toEqual(["vc_field"]);
     const after = gateOn(t, ["vc_field"]);
@@ -413,5 +413,31 @@ describe("a picture that passed both checks reaches the timeline with both marks
     expect(out.pass).toBe(false);
     expect(vp.pictureApprovedForBeat(dedup, 0, 0, key)).toBe(false);
     expect(vp.pictureAcceptableForBeat(dedup, 0, 0, key)).toBe(false);
+  });
+});
+
+/* ═══════════════════════ 7. VIDEO 660 — the sentence nothing of its own pictured ═══════════════════════ */
+
+describe("7. VIDEO 660: the last sentence under the previous sentence's held picture is delivered, as a named fallback scene", () => {
+  it("refused as it was (SENTENCE_WITHOUT_CHECKED_PICTURE); after the pipeline's fallback step the gate passes and names the scene", () => {
+    /** 660: s2b1's shot (3.11 s of source) runs 60.52–72.96 s; s2b2 (70.03–72.96 s) has no picture of its own */
+    const held = tlClip("vc_bb3a77a229_p4", 60.52, 72.96, 1);
+    held.sourceIn = 0;
+    held.sourceOut = 3.11;
+    held.holdAtSourceOut = true;
+    const t = timelineOf([held], [], [[1, 60.52, 70.03, "By loosening monetary controls while boosting economic support."], [2, 70.03, 72.96, "But could this gamble restore Europe's trust?"]]);
+    const before = gateOn(t);
+    expect(before.allow).toBe(false);
+    if (!before.allow) expect(before.failures.map((f) => `${f.code} ${f.detail.slice(0, 4)}`)).toEqual(["SENTENCE_WITHOUT_CHECKED_PICTURE s0b2"]);
+    const r = applyFallbackScenes(t);
+    expect(r.carved.map((c) => [c.sentence, c.slot])).toEqual([["s0b2", [70.03, 72.96]]]);
+    const after = gateOn(t, ["vc_fallback_s0b2"]);
+    expect(after.allow, after.allow ? "" : after.failures.map((f) => f.code).join(",")).toBe(true);
+    expect(after.lines.join("\n")).toMatch(/QUALITY_NOTE FALLBACK_SCENE sentences=1[^\n]*\(s0b2\)[^\n]*NOT footage/);
+    /** the checked picture keeps its sentence, up to where the next sentence starts; the film keeps its length */
+    expect(videoTrack(t).map((c) => [c.id, c.timelineStart, c.timelineEnd])).toEqual([
+      ["vc_bb3a77a229_p4", 60.52, 70.03],
+      ["vc_fallback_s0b2", 70.03, 72.96],
+    ]);
   });
 });

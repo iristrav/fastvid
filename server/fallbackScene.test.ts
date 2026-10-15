@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_FORMAT, emptyTimeline, type ProjectTimeline, type TimelineVideoClip } from "./projectTimeline";
 import { applyFallbackScenes, FALLBACK_SCENE_ID_PREFIX, fallbackSceneWords } from "./fallbackScene";
 import { SYNTHETIC_PALETTES } from "./genericFootageFallback";
+import { sentenceCoverage } from "./sentenceCoverage";
 
 const clip = (id: string, a: number, b: number, beat: number, source: Partial<TimelineVideoClip["source"]>, over: Partial<TimelineVideoClip> = {}): TimelineVideoClip =>
   ({
@@ -88,7 +89,7 @@ describe("G/H — replace, then strict", () => {
   });
 
   it("a scene with text already on screen gets no second text", () => {
-    const t = film([clip("a", 0, 4, 0, { contentApproval: "unverified" })]);
+    const t = film([clip("a", 0, 4, 0, { contentApproval: "unverified" })], ["The Berlin Wall fell in 1989."]);
     const g = t.tracks.find((x) => x.kind === "GRAPHICS");
     if (g?.kind === "GRAPHICS") g.graphics.push({ id: "map1", graphicType: "map_point", label: "Berlin", data: {}, start: 1, end: 3 } as never);
     const r = applyFallbackScenes(t);
@@ -96,12 +97,12 @@ describe("G/H — replace, then strict", () => {
     expect(r.withoutWords).toEqual([]);
   });
 
-  it("no words to show: the scene is named, so the strict delivery check refuses it (needs a person)", () => {
+  it("no words to show: the bare colour field stands in and is named an emergency placeholder (always a video)", () => {
     const t = film([clip("a", 0, 4, 0, { contentApproval: "unverified" })], [""]);
     const lines: string[] = [];
     const r = applyFallbackScenes(t, (l) => lines.push(l));
     expect(r.withoutWords).toEqual(["a"]);
-    expect(lines.at(-1)).toMatch(/has NO words to show — the strict delivery check will refuse it/);
+    expect(lines.at(-1)).toMatch(/has NO words to show — the bare colour field stands in, named an emergency placeholder/);
   });
 
   it("hidden grounds under a graphic, disabled clips and AI pictures kept by the owner's rule are left alone", () => {
@@ -142,5 +143,56 @@ describe("G/H — the fallback's colours: brand violet and warm, never blue or g
         expect(h! >= 180 && h! <= 255, `${c} is blue (hue ${h})`).toBe(false);
       }
     }
+  });
+});
+
+/* ═══════════ VIDEO 660 — a sentence with no picture of its own ═══════════ */
+
+describe("VIDEO 660: a sentence with no picture of its own gets its own fallback scene", () => {
+  it("the last sentence under the previous sentence's held picture: the picture stops at the sentence, a fallback scene with its words takes the sentence", () => {
+    /** as on 660: s0b1's picture runs 4–12 s over 3.11 s of source; s0b2 (8–12 s) has nothing of its own */
+    const t = film([clip("a", 0, 4, 0, checked), clip("b", 4, 12, 1, checked, { sourceIn: 10, sourceOut: 13.11, holdAtSourceOut: true })]);
+    expect(sentenceCoverage(t).sentences.find((r) => r.key === "s0b2")?.status).toBe("uncovered");
+    const lines: string[] = [];
+    const r = applyFallbackScenes(t, (l) => lines.push(l));
+    expect(r.carved).toEqual([{ sentence: "s0b2", clipId: "vc_fallback_s0b2", slot: [8, 12], trimmed: ["b ends at 8.00s"] }]);
+    const [a, b, scene] = videoClips(t);
+    expect([a!.id, b!.id, scene!.id]).toEqual(["a", "b", "vc_fallback_s0b2"]);
+    expect([b!.timelineStart, b!.timelineEnd]).toEqual([4, 8]);
+    expect(b!.source.contentApproval).toBe("judge_fit");
+    expect([scene!.timelineStart, scene!.timelineEnd, scene!.sceneIndex, scene!.beatIndex]).toEqual([8, 12, 0, 2]);
+    expect(scene!.source.provider).toBe("synthetic_placeholder");
+    /** its own words on it, and the film keeps its length */
+    expect(r.captioned.map((c) => [c.clipId, c.text])).toEqual([["vc_fallback_s0b2", "Crowds gathered"]]);
+    expect(Math.max(...videoClips(t).map((c) => c.timelineEnd))).toBe(12);
+    const row = sentenceCoverage(t).sentences.find((x) => x.key === "s0b2")!;
+    expect(row.fallbackSceneSec).toBeCloseTo(4, 2);
+    expect(lines.join("\n")).toMatch(/\[FallbackScene\] s0b2 slot=8\.00-12\.00s had NO picture of its own .* — a fallback scene of exactly this sentence \(not footage\); b ends at 8\.00s/);
+  });
+
+  it("a neighbour that runs THROUGH the sentence is split around it: its head before, its tail after, never shown twice", () => {
+    /** s0b0's picture runs 0–10 s, under s0b1 (4–8 s) which has nothing of its own; s0b2 has its own picture at 10–12 s */
+    const t = film([clip("a", 0, 10, 0, checked, { sourceIn: 0, sourceOut: 10 }), clip("c", 10, 12, 2, checked)]);
+    t.sentences![0] = { ...t.sentences![0]!, endSec: 4 };
+    t.sentences![2] = { ...t.sentences![2]!, startSec: 8, endSec: 12 };
+    const r = applyFallbackScenes(t);
+    expect(r.carved.map((c) => c.sentence)).toEqual(["s0b1"]);
+    const clips = videoClips(t).filter((c) => !c.disabled);
+    expect(clips.map((c) => [c.id, c.timelineStart, c.timelineEnd])).toEqual([
+      ["a", 0, 4],
+      ["vc_fallback_s0b1", 4, 8],
+      ["a_after_s0b1", 8, 10],
+      ["c", 10, 12],
+    ]);
+    /** the tail reads on from where the sentence ended: 8 s into the source, never its start again */
+    expect(clips[2]!.sourceIn).toBe(8);
+    expect(clips[2]!.transitionIn).toBe("hard_cut");
+  });
+
+  it("a film where every sentence has its own picture is left exactly as it is", () => {
+    const t = film([clip("a", 0, 4, 0, checked), clip("b", 4, 8, 1, checked), clip("c", 8, 12, 2, checked)]);
+    const before = JSON.stringify(videoClips(t));
+    expect(applyFallbackScenes(t).carved).toEqual([]);
+    expect(JSON.stringify(videoClips(t))).toBe(before);
   });
 });

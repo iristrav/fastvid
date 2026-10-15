@@ -348,8 +348,12 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
        * under such a card is reported as a card (CHAPTER_CARD_PLACEHOLDER), not as unchecked.
        */
       if (row.spokenSec != null && row.coveredSec + row.cardSec >= row.spokenSec - 0.05) continue;
-      /** G/H — a fallback scene (drawn field + the sentence's words) is the sentence's stand-in: named below, not refused. */
-      if (row.spokenSec != null && row.coveredSec + row.cardSec + (row.fallbackSceneSec ?? 0) >= row.spokenSec - 0.05) continue;
+      /**
+       * G/H — a fallback scene is the sentence's stand-in: named below, not refused. Owner, 15 October:
+       * "er moet wel altijd een video uitkomen" — so also a drawn field the sentence had no words for.
+       */
+      const standIn = Math.max(row.fallbackSceneSec ?? 0, row.syntheticPlaceholderSec ?? 0);
+      if (row.spokenSec != null && row.coveredSec + row.cardSec + standIn >= row.spokenSec - 0.05) continue;
       failures.push({
         code: "SENTENCE_WITHOUT_CHECKED_PICTURE",
         detail: `${row.key} "${(row.text ?? "").slice(0, 60)}": no picture passed both mandatory checks for this sentence`,

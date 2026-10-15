@@ -196,6 +196,47 @@ describe("VIDEO 659 fix B — a video that hangs is stopped at its deadline", ()
   });
 });
 
+describe("VIDEO 660 — a video that times out keeps the shots it cut before the deadline", () => {
+  it("two sections cut, one hangs: ready with the cut shots, the hung section dropped and cleaned up, a late answer adds nothing", async () => {
+    const id = film(966_001);
+    const lines: string[] = [];
+    const hang = gate<boolean>();
+    const dir = workDir();
+    startYoutubeShotStock(id, [candidate("partCut0001")], {
+      workDir: dir,
+      startFor: () => 0,
+      download: async (videoId, s, d, out, title) => (s === 200 ? (fs.writeFileSync(out, "partial"), hang.p) : writes(videoId, s, d, out, title)),
+      cut: cutInto(2),
+      look: async () => ({
+        kind: "approved",
+        windows: [
+          { startSec: 30, durationSec: 12 },
+          { startSec: 100, durationSec: 12 },
+          { startSec: 200, durationSec: 12 },
+        ],
+      }),
+      log: (l) => lines.push(l),
+      videoDeadlineMs: 150,
+    });
+    await youtubeStockSettled(id);
+    expect(stockVideoState(id, "partCut0001")?.status).toBe("ready");
+    const said = lines.join("\n");
+    expect(said).toMatch(/video=partCut0001 TIMEOUT after 0s — stuck in download@200s for [\d.]+s; the 4 shot\(s\) cut before the deadline are kept, the hung step\(s\) stopped and cleaned up/);
+    expect(said).toMatch(/video=partCut0001 ready in \d+s — 4 shot\(s\)/);
+    const took = await takeStockShots(id, "partCut0001", 0, () => false, 10);
+    expect(took.shots.map((s) => s.sourceStartSec)).toEqual([30, 36, 100, 106]);
+    /** the kept shots' files are still there; the hung section's partial file is gone */
+    for (const s of took.shots) expect(fs.existsSync(s.path)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "ytstock_partCut0001_200.mp4"))).toBe(false);
+    /** the hung download answers late: nothing is added, no second outcome */
+    fs.writeFileSync(path.join(dir, "ytstock_partCut0001_200.mp4"), "late");
+    hang.open(true);
+    await sleep(30);
+    expect(stockSummary(id)).toMatchObject({ ready: 1, failed: 0, shots: 4 });
+    expect(lines.filter((l) => /video=partCut0001 (ready|failed) in/.test(l))).toHaveLength(1);
+  });
+});
+
 describe("VIDEO 659 fix C — at most six downloads at once, for the whole stock", () => {
   it("the counting gate never runs more than n, and runs them all", async () => {
     const slots = createSlots(6);

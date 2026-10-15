@@ -746,7 +746,11 @@ describe("the render worker, end to end", () => {
     expect(uploads, "nothing was rendered or uploaded").toHaveLength(0);
   });
 
-  it("a clip whose source cannot be fetched fails with the CLIP named", async () => {
+  /**
+   * An EDITOR render (the owner's own pictures) still refuses with the clip named. A PIPELINE film
+   * keeps the slot as a named fallback scene instead (owner: always a video — `zeroFailRender.test.ts`).
+   */
+  it("a clip whose source cannot be fetched fails with the CLIP named (editor render)", async () => {
     const t = goodTimeline();
     const track = t.tracks.find((x) => x.kind === "VIDEO");
     if (track?.kind === "VIDEO") {
@@ -758,7 +762,7 @@ describe("the render worker, end to end", () => {
     dbState.videoRenderAttempt = 1;
 
     dbState.job = {
-      id: 505, videoId: 1, status: "running", timelineVersion: 1, attempt: 1,
+      id: 505, videoId: 1, status: "running", timelineVersion: 1, attempt: 1, requestedByUserId: 7,
       progressStep: "rehydrating", progress: 0, outputUrl: null, errorCode: null, errorMessage: null,
     };
     const result = await runRenderJob({
@@ -839,13 +843,13 @@ describe("the render worker, end to end", () => {
    * again. This is what stops `existingByClipId` from becoming a way to hand the renderer a file
    * that is not there.
    */
-  it("a stale local path is not trusted — it costs a fetch, never a wrong file", async () => {
+  it("a stale local path is not trusted — it costs a fetch, never a wrong file (editor render)", async () => {
     dbState.timeline = goodTimeline();
     dbState.timelineVersion = 1;
     dbState.videoRenderAttempt = 1;
 
     dbState.job = {
-      id: 565, videoId: 1, status: "running", timelineVersion: 1, attempt: 1,
+      id: 565, videoId: 1, status: "running", timelineVersion: 1, attempt: 1, requestedByUserId: 7,
       progressStep: "rehydrating", progress: 0, outputUrl: null, errorCode: null, errorMessage: null,
     };
     const result = await runRenderJob({

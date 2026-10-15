@@ -53,13 +53,19 @@ export type RenderRecoveryState = {
   attempts: number;
   jobIds: number[];
   log: RecoveryLogEntry[];
+  /**
+   * Owner, 15 October: "er moet wel altijd een video uitkomen". When the film's own pictures could
+   * not be rendered (twice), or the film was refused for its pictures, ONE last render is the
+   * simplified film: every picture its sentence's fallback scene (`renderJobWorker` reads this flag).
+   */
+  lastResort?: boolean;
   final?: "recovered" | "failed" | "needs_human";
 };
 
 export type FailureClass = "technical" | "content" | "permanent";
 
 /** Delivery-gate refusals about what the pictures show: a second render makes the same film. */
-const CONTENT_BLOCKS = /\b(PICTURE_NOT_CHECKED|SENTENCE_WITHOUT_CHECKED_PICTURE|FINAL_PICTURE_IS_BLACK|TIMELINE_MISSING|FALLBACK_SHARE_TOO_HIGH)\b/;
+const CONTENT_BLOCKS = /\b(PICTURE_NOT_CHECKED|SENTENCE_WITHOUT_CHECKED_PICTURE|FINAL_PICTURE_IS_BLACK|TIMELINE_MISSING)\b/;
 
 export function classifyRenderFailure(errorCode: string | null, errorMessage: string | null): FailureClass {
   const code = errorCode ?? "";
@@ -84,13 +90,14 @@ export function readRecoveryState(metadata: unknown): RenderRecoveryState {
     attempts: typeof m?.attempts === "number" ? m.attempts : 0,
     jobIds: Array.isArray(m?.jobIds) ? m!.jobIds!.filter((n): n is number => typeof n === "number") : [],
     log: Array.isArray(m?.log) ? (m!.log as RecoveryLogEntry[]) : [],
+    ...(m?.lastResort ? { lastResort: true } : {}),
     ...(m?.final ? { final: m.final } : {}),
   };
 }
 
 export type RecoveryPlan =
   | { kind: "none"; reason: string }
-  | { kind: "retry_render"; failedJob: RecoveryJob; fault: string; remainingAfter: number }
+  | { kind: "retry_render"; failedJob: RecoveryJob; fault: string; remainingAfter: number; lastResort: boolean }
   | { kind: "give_up"; failedJob: RecoveryJob; final: "failed" | "needs_human"; fault: string; reason: string }
   | { kind: "mark_recovered"; job: RecoveryJob };
 
@@ -133,19 +140,31 @@ export function planRenderRecovery(params: {
 
   const fault = `${latest.errorCode ?? "?"}: ${(latest.errorMessage ?? "").slice(0, 200)}`;
   const kind = classifyRenderFailure(latest.errorCode, latest.errorMessage);
-  if (kind === "content") {
-    return { kind: "give_up", failedJob: latest, final: "needs_human", fault, reason: "refused for what the pictures show; a re-render would make the same film" };
-  }
   if (kind === "permanent") {
     return { kind: "give_up", failedJob: latest, final: "needs_human", fault, reason: "the render cannot be repeated as it is (timeline or video missing or invalid)" };
   }
   if (!params.timelineStored(latest.timelineVersion)) {
     return { kind: "give_up", failedJob: latest, final: "needs_human", fault, reason: `timeline version ${latest.timelineVersion} is not stored` };
   }
-  if (state.attempts >= RENDER_RECOVERY_MAX) {
-    return { kind: "give_up", failedJob: latest, final: "failed", fault, reason: `${RENDER_RECOVERY_MAX} render-only recoveries used` };
+  /**
+   * The ladder: up to RENDER_RECOVERY_MAX renders of the film as it is (a technical fault may pass),
+   * then ONE last resort — the simplified film of fallback scenes. A film refused for its pictures
+   * goes straight to the last resort: rendering the same pictures again would make the same film.
+   */
+  if (kind === "technical" && state.attempts < RENDER_RECOVERY_MAX && !state.lastResort) {
+    /** `remainingAfter` counts the last resort too. */
+    return { kind: "retry_render", failedJob: latest, fault, remainingAfter: RENDER_RECOVERY_MAX - state.attempts, lastResort: false };
   }
-  return { kind: "retry_render", failedJob: latest, fault, remainingAfter: RENDER_RECOVERY_MAX - state.attempts - 1 };
+  if (!state.lastResort) {
+    return { kind: "retry_render", failedJob: latest, fault, remainingAfter: 0, lastResort: true };
+  }
+  return {
+    kind: "give_up",
+    failedJob: latest,
+    final: "failed",
+    fault,
+    reason: `${state.attempts} render-only recoveries used, the last resort (a film of fallback scenes) included — the renderer itself does not produce a file`,
+  };
 }
 
 export type RecoveryDeps = {
@@ -182,14 +201,19 @@ export async function runRenderRecoverySweep(deps: RecoveryDeps): Promise<Array<
         continue;
       }
       if (plan.kind === "mark_recovered") {
-        await deps.setVideo(videoId, "completed", { videoUrl: plan.job.outputUrl!, progressStep: "Video complete! (recovered by a render-only retry)" });
+        await deps.setVideo(videoId, "completed", {
+          videoUrl: plan.job.outputUrl!,
+          progressStep: state.lastResort
+            ? "Video complete — simplified film of fallback scenes (last resort); replace them in the editor"
+            : "Video complete! (recovered by a render-only retry)",
+        });
         const next: RenderRecoveryState = {
           ...state,
           final: "recovered",
           log: [...state.log, { at: stamp, jobId: plan.job.id, fault: "-", action: "mark_delivered", result: "recovered", remaining: RENDER_RECOVERY_MAX - state.attempts }],
         };
         await deps.saveState(videoId, next);
-        deps.log(`[Recovery] video=${videoId} job=${plan.job.id} RECOVERED — the render-only retry passed the delivery gate and was published`);
+        deps.log(`[Recovery] video=${videoId} job=${plan.job.id} RECOVERED — ${state.lastResort ? "the last-resort film (every picture a fallback scene, not footage)" : "the render-only retry"} passed the delivery gate and was published`);
         out.push({ videoId, plan: plan.kind, detail: `job ${plan.job.id}` });
         continue;
       }
@@ -211,20 +235,26 @@ export async function runRenderRecoverySweep(deps: RecoveryDeps): Promise<Array<
         out.push({ videoId, plan: "none", detail: "another worker claimed the attempt" });
         continue;
       }
+      /** The flag is written BEFORE the job exists, so the worker that claims it reads it. */
+      if (plan.lastResort) await deps.saveState(videoId, { ...state, lastResort: true });
       const job = await deps.createJob({ videoId, timelineVersion: plan.failedJob.timelineVersion, attempt });
+      const action = plan.lastResort ? "last_resort_fallback_film" : "retry_render_only";
       const result = job ? `render job ${job.id} queued` : "the render job could not be created";
       const next: RenderRecoveryState = {
         attempts: state.attempts + 1,
         jobIds: job ? [...state.jobIds, job.id] : state.jobIds,
-        log: [...state.log, { at: stamp, jobId: plan.failedJob.id, fault: plan.fault, action: "retry_render_only", result, remaining: plan.remainingAfter }],
+        log: [...state.log, { at: stamp, jobId: plan.failedJob.id, fault: plan.fault, action, result, remaining: plan.remainingAfter }],
+        ...(plan.lastResort || state.lastResort ? { lastResort: true } : {}),
       };
       await deps.saveState(videoId, next);
       if (job) {
-        await deps.setVideo(videoId, "generating_effects", { progressStep: `Recovering: render again (${next.attempts}/${RENDER_RECOVERY_MAX})` });
+        await deps.setVideo(videoId, "generating_effects", {
+          progressStep: plan.lastResort ? "Recovering: simplified film (last resort)" : `Recovering: render again (${next.attempts}/${RENDER_RECOVERY_MAX + 1})`,
+        });
       }
       deps.log(
-        `[Recovery] video=${videoId} fault="${plan.fault}" action=render_only_retry timelineVersion=${plan.failedJob.timelineVersion} ` +
-          `result="${result}" attempt=${next.attempts}/${RENDER_RECOVERY_MAX} remaining=${plan.remainingAfter}`
+        `[Recovery] video=${videoId} fault="${plan.fault}" action=${plan.lastResort ? "last_resort_fallback_film" : "render_only_retry"} timelineVersion=${plan.failedJob.timelineVersion} ` +
+          `result="${result}" attempt=${next.attempts}/${RENDER_RECOVERY_MAX + 1} remaining=${plan.remainingAfter}`
       );
       out.push({ videoId, plan: plan.kind, detail: result });
     } catch (err) {

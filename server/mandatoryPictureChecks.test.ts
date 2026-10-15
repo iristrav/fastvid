@@ -285,7 +285,7 @@ describe("10. the delivery gate refuses a pipeline film with a clip that misses 
     expect(v.allow && v.qualityProblems).toEqual([]);
   });
 
-  it("a sentence with no checked picture blocks; a card or a fallback scene with its words stands in", () => {
+  it("a sentence with no checked picture blocks; a card or a fallback scene (with or without words) stands in", () => {
     const coverage = {
       basis: "timeline", total: 1, covered: 0, partial: 0, uncovered: 1, unknown: 0, stretchedClips: 0, cardIntervals: [], plannedCardSec: 0,
       proven: false, timing: "exact", problems: [],
@@ -304,9 +304,14 @@ describe("10. the delivery gate refuses a pipeline film with a clip that misses 
     const f = gate([clipFact({})], true, scene);
     expect(f.allow).toBe(true);
     expect(f.lines.join("\n")).toMatch(/QUALITY_NOTE FALLBACK_SCENE sentences=1 sec=4\.00 \(s0b1\)[^\n]*NOT footage/);
-    /** the colour field WITHOUT words is not a fallback scene: still blocked */
+    /**
+     * The colour field WITHOUT words — owner, 15 October: "er moet wel altijd een video uitkomen".
+     * It stands in (the film is delivered) and is named loudly as an emergency placeholder, not footage.
+     */
     const bare = { ...coverage, sentences: [{ ...coverage.sentences[0]!, syntheticPlaceholderSec: 4, fallbackSceneSec: 0, emptySec: 0 }] } as unknown as SentenceCoverageReport;
-    expect(gate([clipFact({})], true, bare).allow).toBe(false);
+    const b = gate([clipFact({})], true, bare);
+    expect(b.allow).toBe(true);
+    expect(b.lines.join("\n")).toMatch(/QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER sentences=1 sec=4\.00 \(s0b1\)[^\n]*NOT footage/);
     /** the same sentence under a card Remotion drew from its own words: the film's own text, not unchecked */
     const sentence = coverage.sentences[0]!;
     const card = { ...coverage, sentences: [{ ...sentence, cardSec: 4, emptySec: 0, kinds: ["chapter_card"] }] } as unknown as SentenceCoverageReport;

@@ -12,17 +12,19 @@
  *      fallback in the log and the report, never presented as footage.
  *
  * Exactly the slot of the picture it replaces: same start, same end, same sentence. The film keeps
- * its planned length. When a sentence has no words to show (no text on the timeline), no scene is
- * made and the gate's strict rule blocks the delivery — a person has to act.
+ * its planned length. When a sentence has no words to show (no text on the timeline), the bare colour
+ * field still stands in — owner, 15 October: "er moet wel altijd een video uitkomen" — and the gate
+ * names it an EMERGENCY placeholder (QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER), never footage.
  */
 import { ON_SCREEN_TEXT_STYLE, type ProjectTimeline, type TimelineVideoClip } from "./projectTimeline";
 import { keyWordsIn, nameIn, yearIn } from "./animationFloor";
 import { graphicIsRenderable } from "./graphicsVocabulary";
 import { pictureCheckMissing } from "./deliveryGate";
+import { sentenceCoverage } from "./sentenceCoverage";
 import { SYNTHETIC_PLACEHOLDER_PROVIDER, syntheticAssetId } from "./genericFootageFallback";
 
 export const FALLBACK_SCENE_ID_PREFIX = "gfx_fallback_";
-/** G/H — the most of a film's picture time fallback scenes may fill; past it a person decides. */
+/** G/H — past this share of a film's picture time the worker names the film MOSTLY_FALLBACK (a quality problem; it is still delivered). */
 export const FALLBACK_SCENE_MAX_SHARE = 0.5;
 const GROUND_ID = /_graphic\d+$/;
 
@@ -31,8 +33,10 @@ export type FallbackSceneResult = {
   replaced: Array<{ clipId: string; sentence: string | null; slot: [number, number]; missing: string }>;
   /** Fallback scenes that got the sentence's words written on them. */
   captioned: Array<{ clipId: string; graphicId: string; text: string; graphicType: string }>;
-  /** Fallback scenes left without words: no sentence text to show. The strict gate blocks these. */
+  /** Fallback scenes left without words: no sentence text to show. Delivered as a named emergency placeholder. */
   withoutWords: string[];
+  /** VIDEO 660 — sentences with no picture of their own that got a fallback scene of exactly their window. */
+  carved: Array<{ sentence: string; clipId: string; slot: [number, number]; trimmed: string[] }>;
 };
 
 const visible = (c: TimelineVideoClip) =>
@@ -124,7 +128,7 @@ export async function rescueMissingPictures<F extends { clipId: string }>(params
  * fallback scene gets its sentence's words unless text is already on screen there.
  */
 export function applyFallbackScenes(timeline: ProjectTimeline, log: (line: string) => void = () => undefined): FallbackSceneResult {
-  const out: FallbackSceneResult = { replaced: [], captioned: [], withoutWords: [] };
+  const out: FallbackSceneResult = { replaced: [], captioned: [], withoutWords: [], carved: [] };
   const videoTrack = timeline.tracks.find((t) => t.kind === "VIDEO");
   if (videoTrack?.kind !== "VIDEO") return out;
   const sentenceOf = (c: { sceneIndex?: number; beatIndex?: number }) =>
@@ -150,6 +154,9 @@ export function applyFallbackScenes(timeline: ProjectTimeline, log: (line: strin
     );
   }
 
+  /* 1b — a sentence with no picture of its own gets its own fallback scene (VIDEO 660). */
+  out.carved = carveScenesForSentencesWithoutPicture(timeline, log);
+
   /* 2 — words: every visible fallback scene shows its sentence's words, unless text is already there. */
   const gfxTrack = timeline.tracks.find((t) => t.kind === "GRAPHICS");
   const onScreen = (): Array<{ start: number; end: number }> =>
@@ -164,7 +171,7 @@ export function applyFallbackScenes(timeline: ProjectTimeline, log: (line: strin
     const words = fallbackSceneWords(sentenceOf(clip)?.text);
     if (!words || gfxTrack?.kind !== "GRAPHICS" || !graphicIsRenderable(words.graphicType, {}, words.label)) {
       out.withoutWords.push(clip.id);
-      log(`[FallbackScene] clip=${clip.id} ${keyOf(clip) ?? "no-sentence"} has NO words to show — the strict delivery check will refuse it`);
+      log(`[FallbackScene] clip=${clip.id} ${keyOf(clip) ?? "no-sentence"} has NO words to show — the bare colour field stands in, named an emergency placeholder`);
       continue;
     }
     const graphicId = `${FALLBACK_SCENE_ID_PREFIX}${clip.id}`;
@@ -182,6 +189,100 @@ export function applyFallbackScenes(timeline: ProjectTimeline, log: (line: strin
     });
     out.captioned.push({ clipId: clip.id, graphicId, text: words.label, graphicType: words.graphicType });
     log(`[FallbackScene] clip=${clip.id} ${keyOf(clip) ?? "no-sentence"} words="${words.label}" (${words.graphicType}) — fallback scene, not footage`);
+  }
+  return out;
+}
+
+const MIN_PIECE_SEC = 0.1;
+
+/**
+ * VIDEO 660 — a sentence the strict delivery check would refuse because NO picture of its own is on
+ * screen (only a neighbour's picture held over it, or nothing at all) gets a fallback scene of exactly
+ * its spoken window. The neighbour's picture stops where the sentence starts and, if it ran past the
+ * sentence, goes on after it; a neighbour's piece left shorter than 0.1 s is switched off (named).
+ * Same rule as the gate: a sentence under its own card, picture or stand-in is left alone.
+ */
+export function carveScenesForSentencesWithoutPicture(
+  timeline: ProjectTimeline,
+  log: (line: string) => void = () => undefined
+): FallbackSceneResult["carved"] {
+  const out: FallbackSceneResult["carved"] = [];
+  const track = timeline.tracks.find((t) => t.kind === "VIDEO");
+  if (track?.kind !== "VIDEO") return out;
+  for (const row of sentenceCoverage(timeline).sentences) {
+    if (row.status !== "uncovered" || row.spokenSec == null || row.startSec == null || row.endSec == null) continue;
+    const standIn = Math.max(row.fallbackSceneSec ?? 0, row.syntheticPlaceholderSec ?? 0);
+    if (row.coveredSec + row.cardSec + standIn >= row.spokenSec - 0.05) continue;
+    const lo = row.startSec;
+    const hi = row.endSec;
+    if (hi - lo < MIN_PIECE_SEC) continue;
+    const trimmed: string[] = [];
+    const added: TimelineVideoClip[] = [];
+    for (const c of track.clips) {
+      if (c.disabled || c.timelineEnd <= lo + 0.001 || c.timelineStart >= hi - 0.001) continue;
+      const start = c.timelineStart;
+      const end = c.timelineEnd;
+      const rate = c.still ? 0 : (c.speed ?? 1);
+      if (start < lo && end > hi) {
+        /** the neighbour runs through the sentence: its head stays before it, its tail goes on after it */
+        const tail: TimelineVideoClip = JSON.parse(JSON.stringify(c));
+        tail.id = `${c.id}_after_${row.key}`;
+        tail.timelineStart = Number(hi.toFixed(3));
+        if (typeof tail.sourceIn === "number") tail.sourceIn = Number((tail.sourceIn + (hi - start) * rate).toFixed(3));
+        if (typeof tail.sourceIn === "number" && typeof tail.sourceOut === "number" && tail.sourceOut <= tail.sourceIn) {
+          /** past its source already: the tail holds the last frame, as the whole clip did */
+          tail.sourceIn = Math.max(0, tail.sourceOut - 0.04);
+          tail.holdAtSourceOut = true;
+        }
+        tail.transitionIn = "hard_cut";
+        if (end - hi >= MIN_PIECE_SEC) added.push(tail);
+        c.timelineEnd = Number(lo.toFixed(3));
+        c.transitionOut = "hard_cut";
+        trimmed.push(`${c.id} split around the sentence`);
+      } else if (start < lo) {
+        c.timelineEnd = Number(lo.toFixed(3));
+        c.transitionOut = "hard_cut";
+        trimmed.push(`${c.id} ends at ${lo.toFixed(2)}s`);
+      } else if (end > hi) {
+        if (typeof c.sourceIn === "number") c.sourceIn = Number((c.sourceIn + (hi - start) * rate).toFixed(3));
+        if (typeof c.sourceIn === "number" && typeof c.sourceOut === "number" && c.sourceOut <= c.sourceIn) {
+          c.sourceIn = Math.max(0, c.sourceOut - 0.04);
+          c.holdAtSourceOut = true;
+        }
+        c.timelineStart = Number(hi.toFixed(3));
+        c.transitionIn = "hard_cut";
+        trimmed.push(`${c.id} starts at ${hi.toFixed(2)}s`);
+      } else {
+        c.disabled = true;
+        trimmed.push(`${c.id} (inside the sentence, another sentence's picture) switched off`);
+        continue;
+      }
+      if (c.timelineEnd - c.timelineStart < MIN_PIECE_SEC) {
+        c.disabled = true;
+        trimmed.push(`${c.id} left shorter than ${MIN_PIECE_SEC}s — switched off`);
+      }
+    }
+    const scene: TimelineVideoClip = {
+      id: `vc_fallback_${row.key}`,
+      kind: "video",
+      source: { provider: "synthetic_placeholder" },
+      timelineStart: Number(lo.toFixed(3)),
+      timelineEnd: Number(hi.toFixed(3)),
+      motion: "none",
+      transitionIn: "hard_cut",
+      transitionOut: "hard_cut",
+      previewSource: "asset",
+      sceneIndex: row.sceneIndex,
+      beatIndex: row.beatIndex,
+    } as TimelineVideoClip;
+    toFallbackScene(scene);
+    track.clips.push(scene, ...added);
+    track.clips.sort((a, b) => a.timelineStart - b.timelineStart);
+    out.push({ sentence: row.key, clipId: scene.id, slot: [lo, hi], trimmed });
+    log(
+      `[FallbackScene] ${row.key} slot=${lo.toFixed(2)}-${hi.toFixed(2)}s had NO picture of its own (${(row.reasons ?? []).join("; ") || "nothing on screen"}) — ` +
+        `a fallback scene of exactly this sentence (not footage)${trimmed.length ? `; ${trimmed.join("; ")}` : ""}`
+    );
   }
   return out;
 }

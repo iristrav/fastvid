@@ -64,7 +64,9 @@ describe("G/H — the plan", () => {
     expect(p.kind).toBe("retry_render");
     if (p.kind === "retry_render") {
       expect(p.failedJob.timelineVersion).toBe(4);
-      expect(p.remainingAfter).toBe(RENDER_RECOVERY_MAX - 1);
+      /** the ordinary retries left plus the one last resort */
+      expect(p.remainingAfter).toBe(RENDER_RECOVERY_MAX);
+      expect(p.lastResort).toBe(false);
     }
   });
   it("never while a render of the video is queued or running (no second render)", () => {
@@ -86,16 +88,26 @@ describe("G/H — the plan", () => {
   it("old failures are history", () => {
     expect(plan(video(), [job({ updatedAt: new Date(NOW - RENDER_RECOVERY_WINDOW_MS - 1) })]).kind).toBe("none");
   });
-  it("a content refusal is NEEDS_HUMAN at once — no retry, no check bypassed", () => {
+  it("a content refusal goes straight to the last resort (a film of fallback scenes) — the same pictures are never re-rendered", () => {
     const p = plan(video(), [job({ errorMessage: "Delivery blocked for video 659: 1 requirement(s) failed — PICTURE_NOT_CHECKED (clip=vc_1)" })]);
-    expect(p).toMatchObject({ kind: "give_up", final: "needs_human" });
+    expect(p).toMatchObject({ kind: "retry_render", lastResort: true, remainingAfter: 0 });
+  });
+  it("a content refusal of the last-resort film itself: failed for good — no endless loop", () => {
+    const used = { renderRecovery: { attempts: 1, jobIds: [70], log: [], lastResort: true } };
+    const p = plan(video({ metadata: used }), [job({ id: 70, errorMessage: "Delivery blocked for video 659: 1 requirement(s) failed — FINAL_PICTURE_IS_BLACK (…)" })]);
+    expect(p).toMatchObject({ kind: "give_up", final: "failed" });
   });
   it("a timeline that is not stored cannot be re-rendered: NEEDS_HUMAN", () => {
     expect(plan(video(), [job()], false)).toMatchObject({ kind: "give_up", final: "needs_human" });
   });
-  it("exhausted: after RENDER_RECOVERY_MAX retries the video is failed for good — no endless loop", () => {
+  it("after RENDER_RECOVERY_MAX ordinary retries: ONE last-resort render (always a video)", () => {
     const used = { renderRecovery: { attempts: RENDER_RECOVERY_MAX, jobIds: [70, 71], log: [] } };
     const p = plan(video({ metadata: used }), [job({ id: 71 })]);
+    expect(p).toMatchObject({ kind: "retry_render", lastResort: true, remainingAfter: 0 });
+  });
+  it("exhausted: the last resort failed too — failed for good, no endless loop", () => {
+    const used = { renderRecovery: { attempts: RENDER_RECOVERY_MAX + 1, jobIds: [70, 71, 72], log: [], lastResort: true } };
+    const p = plan(video({ metadata: used }), [job({ id: 72 })]);
     expect(p).toMatchObject({ kind: "give_up", final: "failed" });
   });
   it("a recovery that already ended does nothing more", () => {
@@ -114,7 +126,7 @@ describe("G/H — the plan", () => {
   it("a recovery render that failed again is the coordinator's own: retried while attempts remain", () => {
     const meta = { renderRecovery: { attempts: 1, jobIds: [70], log: [] } };
     const p = plan(video({ status: "generating_effects", renderAttempt: 4, metadata: meta }), [job({ id: 70, attempt: 4 })]);
-    expect(p).toMatchObject({ kind: "retry_render", remainingAfter: 0 });
+    expect(p).toMatchObject({ kind: "retry_render", remainingAfter: 1, lastResort: false });
   });
 });
 
@@ -166,7 +178,7 @@ describe("G/H — the sweep: retry, recover, give up, and never twice", () => {
     const done = await runRenderRecoverySweep(w.deps);
     expect(done).toEqual([{ videoId: 659, plan: "retry_render", detail: "render job 100 queued" }]);
     expect(w.jobs().filter((j) => j.status === "queued")).toHaveLength(1);
-    expect(w.lines[0]).toMatch(/\[Recovery\] video=659 fault="RENDER_FAILED: the worker rendering this job stopped reporting.*" action=render_only_retry timelineVersion=4 result="render job 100 queued" attempt=1\/2 remaining=1/);
+    expect(w.lines[0]).toMatch(/\[Recovery\] video=659 fault="RENDER_FAILED: the worker rendering this job stopped reporting.*" action=render_only_retry timelineVersion=4 result="render job 100 queued" attempt=1\/3 remaining=2/);
     expect(readRecoveryState(w.v.metadata)).toMatchObject({ attempts: 1, jobIds: [100] });
     expect(w.v.status).toBe("generating_effects");
   });
@@ -200,25 +212,48 @@ describe("G/H — the sweep: retry, recover, give up, and never twice", () => {
     expect((await runRenderRecoverySweep(w.deps))[0]?.plan).toBe("none");
   });
 
-  it("a recovery render that fails every time: exactly RENDER_RECOVERY_MAX retries, then failed for good with the reason", async () => {
+  it("a recovery render that fails every time: RENDER_RECOVERY_MAX retries, ONE last resort, then failed for good with the reason", async () => {
     const w = world();
-    for (let i = 0; i < 6; i++) {
+    const flagWhenCreated: boolean[] = [];
+    const createJob = w.deps.createJob;
+    w.deps.createJob = async (p) => {
+      /** the worker reads the flag when it claims the job: it must be stored BEFORE the job exists */
+      flagWhenCreated.push(readRecoveryState(w.v.metadata).lastResort === true);
+      return createJob(p);
+    };
+    for (let i = 0; i < 8; i++) {
       await runRenderRecoverySweep(w.deps);
       if (w.jobs().some((j) => j.status === "queued")) w.finish("failed", { errorCode: "RENDER_FAILED", errorMessage: "ffmpeg exited with code 1" });
     }
-    expect(w.jobs().filter((j) => j.id >= 100)).toHaveLength(RENDER_RECOVERY_MAX);
+    expect(w.jobs().filter((j) => j.id >= 100)).toHaveLength(RENDER_RECOVERY_MAX + 1);
+    expect(flagWhenCreated).toEqual([...Array(RENDER_RECOVERY_MAX).fill(false), true]);
+    expect(w.lines.filter((l) => l.includes("action=last_resort_fallback_film"))).toHaveLength(1);
     expect(w.v.status).toBe("failed");
-    expect(readRecoveryState(w.v.metadata)).toMatchObject({ attempts: RENDER_RECOVERY_MAX, final: "failed" });
-    expect(w.statuses.at(-1)?.extra.errorMessage).toMatch(/^RECOVERY_EXHAUSTED: 2 render-only recoveries used — last fault RENDER_FAILED: ffmpeg exited/);
+    expect(readRecoveryState(w.v.metadata)).toMatchObject({ attempts: RENDER_RECOVERY_MAX + 1, lastResort: true, final: "failed" });
+    expect(w.statuses.at(-1)?.extra.errorMessage).toMatch(/^RECOVERY_EXHAUSTED: 3 render-only recoveries used, the last resort \(a film of fallback scenes\) included — .* last fault RENDER_FAILED: ffmpeg exited/);
   });
 
-  it("a film refused for its pictures is NEVER re-rendered around the check: needs a person", async () => {
+  it("a film refused for its pictures is never re-rendered with the same pictures: the last resort (fallback scenes) is made instead", async () => {
     const w = world({ jobs: [job({ errorMessage: "Delivery blocked for video 659: 1 requirement(s) failed — PICTURE_NOT_CHECKED (clip=vc_1)" })] });
+    const r = await runRenderRecoverySweep(w.deps);
+    expect(r[0]).toMatchObject({ plan: "retry_render", detail: "render job 100 queued" });
+    expect(readRecoveryState(w.v.metadata)).toMatchObject({ attempts: 1, lastResort: true });
+    expect(w.v.status).toBe("generating_effects");
+    expect(w.statuses.at(-1)?.extra.progressStep).toBe("Recovering: simplified film (last resort)");
+    /** the last resort delivers: completed, and named for what it is */
+    w.finish("completed", { outputUrl: "https://cdn/renders/659-100.mp4", errorCode: null });
+    await runRenderRecoverySweep(w.deps);
+    expect(w.v).toMatchObject({ status: "completed", videoUrl: "https://cdn/renders/659-100.mp4" });
+    expect(w.statuses.at(-1)?.extra.progressStep).toMatch(/simplified film of fallback scenes \(last resort\)/);
+    expect(w.lines.at(-1)).toMatch(/RECOVERED — the last-resort film \(every picture a fallback scene, not footage\)/);
+  });
+
+  it("a timeline that is missing or invalid is still NEEDS_HUMAN: there is nothing to render", async () => {
+    const w = world({ jobs: [job({ errorCode: "TIMELINE_INVALID", errorMessage: "every video clip was refused" })] });
     await runRenderRecoverySweep(w.deps);
     expect(w.jobs()).toHaveLength(1);
-    expect(w.v.status).toBe("failed");
     expect(readRecoveryState(w.v.metadata).final).toBe("needs_human");
-    expect(w.statuses.at(-1)?.extra.errorMessage).toMatch(/^NEEDS_HUMAN_ACTION: refused for what the pictures show/);
+    expect(w.statuses.at(-1)?.extra.errorMessage).toMatch(/^NEEDS_HUMAN_ACTION:/);
   });
 
   it("the job row cannot be created: logged, counted, and the next sweep can try again within the limit", async () => {
