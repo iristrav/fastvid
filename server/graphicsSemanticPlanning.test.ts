@@ -112,7 +112,9 @@ describe("GRAPHICS — a date the beat states", () => {
 describe("GRAPHICS — a place the beat names", () => {
   /** The world map only knows a curated coordinate list; every other real place got nothing. */
   it("plans a location card for a place the map does not know", () => {
-    expect(typesOf(intent({ visualLocation: "Wolf's Lair" }))).toContain("location_card");
+    expect(typesOf(intent({ visualLocation: "Wolf's Lair", spokenText: "Hitler spent the winter at the Wolf's Lair." }))).toContain("location_card");
+    /** VIDEO 660 — a place the sentence does not say is never put on screen */
+    expect(typesOf(intent({ visualLocation: "Wolf's Lair", spokenText: "He spent the winter far from Berlin's crowds." }))).not.toContain("location_card");
   });
 
   it("prefers the map when the place IS on the coordinate list", () => {

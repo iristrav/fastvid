@@ -29,8 +29,10 @@ const OVERLAY_JSON_SCHEMA = {
         hasBakedEditText: { type: "boolean" },
         /** P0 (video 630) — the same look, one more answer: does that text BE the picture? */
         textFillsPicture: { type: "boolean" },
+        /** VIDEO 660 — and is it more than a small corner logo: subtitles, captions, a ticker? */
+        textIsCaptions: { type: "boolean" },
       },
-      required: ["hasBakedEditText", "textFillsPicture"],
+      required: ["hasBakedEditText", "textFillsPicture", "textIsCaptions"],
       additionalProperties: false,
     },
   },
@@ -271,7 +273,14 @@ textFillsPicture — bestaat het beeld grotendeels uit die toegevoegde tekst?
 - false: er is echt gefilmd beeld en de toegevoegde tekst ligt daar alleen overheen: een logo,
   watermerk, kanaalnaam, ondertitel, caption, lower third of naambalk.
 - false wanneer hasBakedEditText false is.
-Bij meerdere stills: true als minstens één still grotendeels uit zulke tekst bestaat.`;
+Bij meerdere stills: true als minstens één still grotendeels uit zulke tekst bestaat.
+
+textIsCaptions — is de toegevoegde tekst MEER dan een klein logo of watermerk in een hoek?
+- true: ingebakken ondertitels of captions, een nieuwsticker of kopbalk, een lower third of
+  naambalk, een "EXCLUSIVE"/"BREAKING"-banner, of tekst die over het midden van het beeld loopt.
+- false: alleen een klein zender- of kanaallogo of watermerk in een hoek van het beeld.
+- false wanneer hasBakedEditText false is.
+Bij meerdere stills: true als minstens één still zulke tekst toont.`;
 
 /**
  * RONDE 222 — `null` means NOBODY LOOKED, and it used to mean "clean".
@@ -342,18 +351,20 @@ async function detectOnScreenTextInImages(dataUrls: string[]): Promise<OverlayDe
  * same call now also says whether the text fills the picture. `fillsPicture` is absent when the
  * reply did not carry it — an unknown, never a yes.
  */
-export type OverlayDetectorAnswer = { hasText: boolean; fillsPicture?: boolean };
+export type OverlayDetectorAnswer = { hasText: boolean; fillsPicture?: boolean; captions?: boolean };
 
 export function parseOverlayDetectorReply(content: string): OverlayDetectorAnswer | null {
-  const parsed = JSON.parse(content) as { hasBakedEditText?: unknown; textFillsPicture?: unknown };
+  const parsed = JSON.parse(content) as { hasBakedEditText?: unknown; textFillsPicture?: unknown; textIsCaptions?: unknown };
   /**
    * The schema makes the field required, so a reply without it is a reply that did not answer
    * the question — not a reply that answered "no".
    */
   if (typeof parsed.hasBakedEditText !== "boolean") return null;
-  return typeof parsed.textFillsPicture === "boolean"
-    ? { hasText: parsed.hasBakedEditText, fillsPicture: parsed.textFillsPicture }
-    : { hasText: parsed.hasBakedEditText };
+  return {
+    hasText: parsed.hasBakedEditText,
+    ...(typeof parsed.textFillsPicture === "boolean" ? { fillsPicture: parsed.textFillsPicture } : {}),
+    ...(typeof parsed.textIsCaptions === "boolean" ? { captions: parsed.textIsCaptions } : {}),
+  };
 }
 
 async function extractVideoPreviewJpegs(
@@ -555,8 +566,14 @@ export type OverlayVerdict = "has_text" | "clean" | "not_asked";
  * P0 (video 630) — on a `has_text`: `fills_picture` when the text IS the picture (a title card, a
  * leader, a screenshot of a page), `overlay` when real footage carries it (a logo, a subtitle, a
  * lower third). Absent when the detector did not say — unknown.
+ *
+ * VIDEO 660 — `captions` when the text over real footage is more than a small corner logo:
+ * burned-in subtitles, captions, a news ticker or headline bar, a lower third, an "EXCLUSIVE"
+ * banner. Render 69 carried Les Echos subtitles, an NDTV bar and a Bloomberg-style banner. Those
+ * are refused before the picture editor, like a title card; `overlay` is now a corner logo or
+ * watermark only (or a verdict from before the question was asked).
  */
-export type OverlayTextKind = "fills_picture" | "overlay";
+export type OverlayTextKind = "fills_picture" | "captions" | "overlay";
 
 export type OverlayVerdictResult = {
   verdict: OverlayVerdict;
@@ -573,7 +590,8 @@ export function overlayVerdictOf(answer: OverlayDetectorAnswer | null, reason: s
   if (answer === null) return NOT_ASKED(reason);
   if (!answer.hasText) return { verdict: "clean" };
   if (answer.fillsPicture === undefined) return { verdict: "has_text" };
-  return { verdict: "has_text", textKind: answer.fillsPicture ? "fills_picture" : "overlay" };
+  if (answer.fillsPicture) return { verdict: "has_text", textKind: "fills_picture" };
+  return { verdict: "has_text", textKind: answer.captions ? "captions" : "overlay" };
 }
 
 export async function archiveClipBakedEditTextVerdict(

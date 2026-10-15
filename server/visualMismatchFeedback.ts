@@ -129,6 +129,16 @@ export type MismatchFault = "QUESTION" | "MATERIAL" | "UNKNOWN";
 const MISMATCH_PATTERNS: ReadonlyArray<{ kind: MismatchKind; re: RegExp }> = [
   {
     /**
+     * VIDEO 660 — the picture editor's own marker for footage whose signs or captions belong to a
+     * different story ("unrelated story: placards read 'Hands off Rafah'"). First, so the rally or
+     * caption it names can never read as a softer WRONG_EVENT or a TEXT_ON_SCREEN: it is never
+     * taken back as a last resort.
+     */
+    kind: "UNRELATED",
+    re: /\bunrelated story\b/i,
+  },
+  {
+    /**
      * The frame IS the text. Checked before TEXT_ON_SCREEN so "a title card with white lettering"
      * is a title card rather than footage that happens to carry text.
      */

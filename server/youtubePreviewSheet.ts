@@ -192,7 +192,13 @@ export function sheetPrompt(
     "    people, company, products or places that story is about, in its period, do belong.",
     "Never under any sentence: a presenter or someone talking to camera, a studio, a title card,",
     "a logo, a screenshot, a frame mostly covered by text or graphics, a black or blurred frame.",
-    ...(sharp ? ["Also never: burned-in subtitles, a channel watermark or caption text across the picture."] : []),
+    /** VIDEO 660 — "Hands off Rafah" placards under a line about protests, in a film about inflation. */
+    "Never under any sentence: a protest, rally, march or news scene whose signs, banners, placards or",
+    "captions are about a different story, cause, conflict or country than this film's narration —",
+    "even when the kind of scene fits the sentence. Read what the signs say.",
+    ...(sharp
+      ? ["Also never: burned-in subtitles, a channel watermark, caption text across the picture or a news ticker / headline bar."]
+      : []),
     "The era on its own is never enough. When you cannot tell, it does NOT belong.",
     "",
     'Return JSON: {"frames":[{"frame":<number>,"depicts":"<what is on screen, a few words>","sentences":[<sentence numbers>]}]}',

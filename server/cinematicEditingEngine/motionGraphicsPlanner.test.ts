@@ -49,11 +49,26 @@ describe("Motion Graphics Planner (Phase 4)", () => {
     expect(counter!.data.toValue).toBe(3499);
   });
 
-  it("emits a map graphic for a recognized location", () => {
-    const graphics = planMotionGraphics(makeIntent({ visualLocation: "Paris, France" }), undefined, 0, 4);
+  it("emits a map graphic for a recognized location the sentence says", () => {
+    const graphics = planMotionGraphics(
+      makeIntent({ visualLocation: "Paris, France", spokenText: "Crowds filled the streets of Paris." }),
+      undefined,
+      0,
+      4
+    );
     const map = graphics.find((g) => g.graphicType === "map");
     expect(map).toBeDefined();
     expect(map!.data.locationName).toBe("Paris, France");
+  });
+
+  it("VIDEO 660 — no map for a place only the director inferred: the sentence must say it", () => {
+    const graphics = planMotionGraphics(
+      makeIntent({ visualLocation: "London, UK", spokenText: "In 2026, energy bills doubled across European households, sparking protests." }),
+      undefined,
+      0,
+      4
+    );
+    expect(graphics.some((g) => g.graphicType === "map" || g.graphicType === "location_card")).toBe(false);
   });
 
   it("emits a timeline graphic for a dated historical event", () => {

@@ -55,7 +55,17 @@ export function namesAThingNotAPerson(name: string): boolean {
   return THING_NOUN.test(words[words.length - 1]!);
 }
 
-export type GeneratedImageDecision = { generate: true } | { generate: false; reason: string };
+/**
+ * VIDEO 660 — an office one person holds, in the singular ("the ECB president", "the Chancellor",
+ * "its CEO"): drawn, it is that person's likeness. "Finance ministers met" (plural) is not one person.
+ */
+const OFFICE_OF_ONE =
+  /\b(president|vice[- ]president|chancellor|prime minister|premier|governor|chair(?:man|woman|person)?|ceo|chief executive|secretary[- ]general|minister|king|queen|pope|emperor|empress|dictator|monarch)\b(?!s\b)/i;
+export function namesAnOfficeHolder(text: string): boolean {
+  return OFFICE_OF_ONE.test(text);
+}
+
+export type GeneratedImageDecision ={ generate: true } | { generate: false; reason: string };
 
 /**
  * Whether a sentence with no picture may have one generated. Every "no" names its reason, so the
@@ -68,6 +78,15 @@ export function generatedImageDecision(input: {
   graphicCanStandIn: boolean;
   /** The people the sentence names — never generated as a likeness. */
   people: readonly string[];
+  /**
+   * VIDEO 660 — the people the director's plan for this sentence names (its visual description and
+   * search query). The prompt carries the plan, so a name there is drawn as a likeness even when the
+   * sentence names nobody: render 69 showed a Lagarde look-alike under "This crisis wasn't just
+   * numbers; it was survival."
+   */
+  planPeople?: readonly string[];
+  /** The sentence and the plan as words: an office one person holds ("the ECB president") is that person. */
+  planText?: string;
   /** The plan's forbidden content for this sentence. */
   forbidden?: readonly string[];
   /** Generated pictures still allowed in this film. */
@@ -76,6 +95,8 @@ export function generatedImageDecision(input: {
   if (input.hasPicture) return { generate: false, reason: "has_picture" };
   if (input.graphicCanStandIn) return { generate: false, reason: "graphic_stands_in" };
   if (input.people.some((p) => !namesAThingNotAPerson(p))) return { generate: false, reason: "names_a_person" };
+  if ((input.planPeople ?? []).some((p) => !namesAThingNotAPerson(p))) return { generate: false, reason: "plan_names_a_person" };
+  if (input.planText && namesAnOfficeHolder(input.planText)) return { generate: false, reason: "names_an_office_holder" };
   if ((input.forbidden ?? []).some((f) => /\bai\b|generated/i.test(f))) return { generate: false, reason: "plan_forbids_ai" };
   if (input.budgetLeft <= 0) return { generate: false, reason: "film_budget_spent" };
   return { generate: true };

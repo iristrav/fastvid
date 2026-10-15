@@ -150,7 +150,7 @@ export type AdoptionFacts = {
   /** HARD QUALITY GATE — "judge_fit" when the picture editor approved this clip for this sentence (`pictureApprovedForBeat`). */
   contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage" | "ai_generated";
   /** FIX 1+2 — the on-screen-text check's result for this clip (`textCheckForClip`). */
-  textCheck?: "clean" | "overlay" | "fills_picture" | "unchecked";
+  textCheck?: "clean" | "overlay" | "captions" | "fills_picture" | "unchecked";
 };
 
 /**

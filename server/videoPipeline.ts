@@ -9256,10 +9256,14 @@ async function fetchBeatGeneratedImage(
   const contract = dedup.documentaryPlan
     ? (await import("./documentaryPlanningEngine")).getRetrievalContract(dedup.documentaryPlan, sceneIndex, beat.index)
     : null;
+  const plan = storedVisualIntentForBeat(sentence);
+  const planText = [plan?.visual_description ?? beat.visualDescription, plan?.search_query].filter(Boolean).join(". ");
   const decision = generatedImageDecision({
     hasPicture: false,
     graphicCanStandIn: dataOrMapGraphicForBeat(intent, scene, 0, Math.max(beat.holdSec ?? 5, 1)) !== null,
     people: intent.people,
+    planPeople: planText ? extractPersonNamesFromText(planText) : [],
+    planText: `${sentence}. ${planText}`,
     forbidden: contract?.forbiddenContent ?? [],
     budgetLeft,
   });
@@ -9267,7 +9271,6 @@ async function fetchBeatGeneratedImage(
     console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} not generated — ${decision.reason}`);
     return null;
   }
-  const plan = storedVisualIntentForBeat(sentence);
   const prompt = generatedImagePrompt({
     sentence,
     visualDescription: plan?.visual_description ?? beat.visualDescription,
@@ -9277,6 +9280,8 @@ async function fetchBeatGeneratedImage(
     console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} not generated — the sentence and its VisualIntent name too little to show`);
     return null;
   }
+  /** VIDEO 660 — what was asked for is on record, so a generated picture can be checked against it. */
+  console.log(`[${GENERATED_IMAGE_FALLBACK}] ${where} prompt="${prompt.replace(/\s+/g, " ").slice(0, 600)}"`);
   fs.mkdirSync(workDir, { recursive: true });
   /** VIDEO 649 — a moving picture first (ElevenLabs), the still second; see `fetchBeatGeneratedVideo`. */
   const video = await fetchBeatGeneratedVideo(beat, scene, workDir, sceneIndex, dedup, videoTitle, prompt, sentence, plan?.visual_description, plan?.search_query);

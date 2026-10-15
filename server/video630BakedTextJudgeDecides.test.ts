@@ -63,7 +63,8 @@ describe("P0 — the one text check says whether the text IS the picture", () =>
     await textCheckFor({ hasBakedEditText: true, textFillsPicture: false }, "k-schema");
     expect(llm.calls).toHaveLength(1);
     const req = llm.calls[0] as { response_format: { json_schema: { schema: { required: string[] } } } };
-    expect(req.response_format.json_schema.schema.required).toEqual(["hasBakedEditText", "textFillsPicture"]);
+    /** VIDEO 660 — and a third: is the text more than a corner logo (subtitles, captions, a ticker)? */
+    expect(req.response_format.json_schema.schema.required).toEqual(["hasBakedEditText", "textFillsPicture", "textIsCaptions"]);
   });
 
   it("a reply without the new field is read as an unknown kind, never as a title card", () => {

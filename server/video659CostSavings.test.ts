@@ -204,7 +204,9 @@ describe("3 — the sharp look's approval carries the text check", () => {
   });
 
   it("the sharp look refuses text, so its approval can stand for it", () => {
-    expect(read("youtubePreviewSheet.ts")).toContain("Also never: burned-in subtitles, a channel watermark or caption text across the picture.");
+    expect(read("youtubePreviewSheet.ts")).toContain(
+      "Also never: burned-in subtitles, a channel watermark, caption text across the picture or a news ticker / headline bar."
+    );
   });
 });
 

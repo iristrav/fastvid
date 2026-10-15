@@ -22,7 +22,11 @@
 /** What the picture editor established about one picture under one sentence. */
 export type ContentCheck = "fit" | "acceptable" | "refused" | "not_judged";
 /** What the on-screen-text check established about one picture. */
-export type TextCheck = "clean" | "overlay" | "fills_picture" | "unchecked";
+/**
+ * VIDEO 660 — `captions`: subtitles, captions, a ticker or a banner over real footage. It never
+ * passes, like `fills_picture`; `overlay` is a small corner logo or watermark and still passes.
+ */
+export type TextCheck = "clean" | "overlay" | "captions" | "fills_picture" | "unchecked";
 
 export const MANDATORY_CHECKS = "MandatoryChecks";
 
@@ -42,7 +46,10 @@ export function textCheckFromVerdict(
   v: { decision: "ACCEPT" | "REJECT"; evaluated?: boolean; textKind?: string } | null | undefined
 ): TextCheck {
   if (!v || v.evaluated === false) return "unchecked";
-  if (v.decision === "REJECT") return v.textKind === "fills_picture" ? "fills_picture" : "overlay";
+  if (v.decision === "REJECT") {
+    if (v.textKind === "fills_picture") return "fills_picture";
+    return v.textKind === "captions" ? "captions" : "overlay";
+  }
   return "clean";
 }
 
@@ -91,11 +98,12 @@ export async function runMandatoryChecks(io: MandatoryCheckIo): Promise<Mandator
   /** A refusal on record for this sentence ends it for free. */
   if (content === "refused") return out(false, "the picture editor refused it for this sentence", false, false);
   let askedText = false;
-  if (!textPasses(text) && text !== "fills_picture") {
+  if (!textPasses(text) && text !== "fills_picture" && text !== "captions") {
     askedText = true;
     text = await io.checkText().catch((): TextCheck => "unchecked");
   }
   if (text === "fills_picture") return out(false, "text fills the picture", false, askedText);
+  if (text === "captions") return out(false, "subtitles, captions or a ticker over the picture", false, askedText);
   if (!textPasses(text)) return out(false, "the text check gave no answer", false, askedText);
   let askedContent = false;
   if (content === "not_judged") {

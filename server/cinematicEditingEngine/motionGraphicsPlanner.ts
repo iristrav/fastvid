@@ -350,7 +350,12 @@ export function planMotionGraphics(
     );
   }
 
-  const found = findWorldLocation([intent.visualLocation, intent.spokenText].join(" "));
+  /**
+   * VIDEO 660 — the map shows a place the narration SAYS. Render 69 put London on screen under
+   * "energy bills doubled across European households": the sentence names no place on the map, the
+   * director's inferred `visualLocation` did. A place nobody said is an invented fact.
+   */
+  const found = findWorldLocation(intent.spokenText);
   const location = found?.loc ?? null;
   if (found && location) {
     out.push(
@@ -540,7 +545,10 @@ export function planMotionGraphics(
    * building, a street, a region — produced no graphic at all. A location card needs no
    * coordinates. Guarded against the map for the same reason as the date card.
    */
-  const namedPlace = intent.visualLocation?.trim();
+  const inferredPlace = intent.visualLocation?.trim();
+  /** VIDEO 660 — the same rule as the map: only a place the sentence itself says. */
+  const namedPlace =
+    inferredPlace && saysWholeWord(intent.spokenText.toLowerCase(), inferredPlace.toLowerCase()) ? inferredPlace : null;
   if (!location && namedPlace) {
     out.push(
       graphic(

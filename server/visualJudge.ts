@@ -633,7 +633,12 @@ export async function judgeOnScreenText(input: {
 export function onScreenTextRefusesBeforeVision(
   text: Pick<VisualJudgeVerdict, "decision"> & { textKind?: OverlayTextKind } | null | undefined
 ): boolean {
-  return text?.decision === "REJECT" && text.textKind === "fills_picture";
+  /**
+   * VIDEO 660 — and subtitles, captions, a ticker or a banner over the footage (`captions`): the
+   * owner's rule after render 69. Refused here, so the sentence's time goes to its next candidate;
+   * a small corner logo (`overlay`) still goes on to the picture editor.
+   */
+  return text?.decision === "REJECT" && (text.textKind === "fills_picture" || text.textKind === "captions");
 }
 
 /**

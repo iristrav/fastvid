@@ -66,11 +66,12 @@ export type AssetSourceIdentity = {
   contentApproval?: "judge_fit" | "judge_acceptable" | "unverified" | "generic_footage" | "ai_generated";
   /**
    * FIX 1+2 — what the on-screen-text check found on THIS picture: "clean" (looked, no added text),
-   * "overlay" (a logo, subtitle or watermark over real footage — the picture editor decided),
+   * "overlay" (a corner logo or watermark over real footage — the picture editor decided),
+   * "captions" (VIDEO 660: subtitles, captions, a ticker or banner over the footage — never passes),
    * "fills_picture" (text IS the picture), "unchecked" (nobody looked). Written by the pipeline for
    * every picture it places; absent on a clip the owner placed in the editor or an older timeline.
    */
-  textCheck?: "clean" | "overlay" | "fills_picture" | "unchecked";
+  textCheck?: "clean" | "overlay" | "captions" | "fills_picture" | "unchecked";
   /** A URL this system serves the media from, and will still serve tomorrow. */
   canonicalUrl?: string;
   /** The provider's direct media URL as it was at render time. May have expired since. */

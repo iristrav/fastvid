@@ -1069,6 +1069,17 @@ export function buildBeatImagePrompt(
     "under historical narration, a logo, a title card, a screenshot of a webpage or a person",
     "talking to camera about an unrelated topic.",
     /**
+     * VIDEO 660 — a protest under a line about protests, but a protest about another story. Render
+     * 69 cut "Hands off Rafah" placards (an Internet Archive clip of a Gaza solidarity rally) under
+     * "families … venting frustrations in public demonstrations" in a film about inflation in
+     * Europe: the KIND of scene fitted the line, the scene itself belonged to a different story.
+     */
+    "It also DOES NOT belong when signs, banners, placards, captions or on-screen titles in the",
+    "picture tie it to a different story than this documentary — a protest, rally, march or news",
+    "item about another cause, conflict, country or event — even when the kind of scene (a protest,",
+    "a crowd, a meeting) fits the line. Read what the signs say. Begin your reason with",
+    "\"unrelated story:\" and name what they say.",
+    /**
      * RENDER 563's finding, kept — but pointed only at the leap it was written for.
      *
      * The Apteka street ("Street scene… a building marked 'Apteka', likely historical footage")
