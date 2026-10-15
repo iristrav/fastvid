@@ -10,7 +10,8 @@
  *   7  the Judge is unchanged — strict, sentence-based, no planner words
  *   8  open-archive footage reaches the Judge instead of being refused for a missing name
  *   9  a sentence with no approved picture still gets its card
- *  10  a YouTube piece is played slower rather than repeat a window (vc_1d35c303ea)
+ *  10  a YouTube piece never repeats a window (vc_1d35c303ea); VIDEO 658: no slow motion — the
+ *      piece without footage of its own holds the last frame
  */
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -134,20 +135,23 @@ describe("2 — split shots run through their source once, in order", () => {
     for (const c of clips) expect(c.sourceOut!).toBeLessThanOrEqual(3.0 + 1e-6);
   });
 
-  it("58491: 7.80 s over 5.52 s — slowed (0.71×), second piece starts where the first ended", () => {
+  it("58491: 7.80 s over 5.52 s — at 1× (VIDEO 658), second piece starts where the first ended, then holds", () => {
     const { clips } = limitLongShots({ clips: [vclip("vc_bb5e8ea1c3", 56.81, 64.61, 0, 5.52)] });
     expect(clips.length).toBe(2);
     const [a, b] = clips;
-    expect(a!.speed).toBeCloseTo(5.52 / 7.8, 3);
+    expect(a!.speed).toBe(1);
+    expect(b!.speed).toBe(1);
     expect(b!.sourceIn!).toBeCloseTo(a!.sourceOut!, 2);
     expect(b!.sourceOut!).toBeLessThanOrEqual(5.52 + 1e-6);
+    expect(b!.holdAtSourceOut).toBe(true);
   });
 
-  it("58490: 5.27 s over 3.49 s — one shot slowed to 0.66×, no overlapping pieces", () => {
+  it("58490: 5.27 s over 3.49 s — one shot at 1×, no overlapping pieces, its last frame holds", () => {
     const { clips } = limitLongShots({ clips: [vclip("vc_845d4c6071", 70.38, 75.65, 0, 3.49)] });
     expect(clips.length).toBe(1);
-    expect(clips[0]!.speed).toBeCloseTo(3.49 / 5.27, 3);
+    expect(clips[0]!.speed).toBe(1);
     expect(clips[0]!.sourceOut).toBe(3.49);
+    expect(clips[0]!.holdAtSourceOut).toBe(true);
   });
 
   it("a YouTube piece already slowed is not cut again as if it ran past its source", () => {
@@ -169,16 +173,18 @@ describe("3 — the planner reads each clip's measured length", () => {
 /* ═══════════════ ShotFit unchanged ═══════════════ */
 
 describe("ShotFit — the cases that already worked keep working", () => {
-  it("a file a little short is still slowed once (635: 5.36 s over 4.00 s)", () => {
-    expect(speedThatFitsSource({ kind: "video", sourceIn: 0 }, 4.0, 5.36)).toBeCloseTo(0.7462, 3);
+  it("a file a little short is NOT slowed (VIDEO 658): it plays at 1× and its last frame holds (635: 5.36 s over 4.00 s)", () => {
+    expect(speedThatFitsSource({ kind: "video", sourceIn: 0 }, 4.0, 5.36)).toBeNull();
   });
   it("a file long enough is untouched", () => {
     expect(speedThatFitsSource({ kind: "video", sourceIn: 0 }, 6.0, 5.0)).toBeNull();
   });
-  it("a shot slightly longer than its source is still slowed rather than split (635: 8.30 over 7.98)", () => {
+  it("a shot slightly longer than its source stays one shot, not split — at 1×, its last frame holds (635: 8.30 over 7.98)", () => {
     const { clips } = limitLongShots({ clips: [vclip("s", 0, 5.1, 0, 4.9)] });
     expect(clips).toHaveLength(1);
-    expect(clips[0]!.speed).toBeCloseTo(4.9 / 5.1, 3);
+    expect(clips[0]!.speed).toBe(1);
+    expect(clips[0]!.holdAtSourceOut).toBe(true);
+    expect([clips[0]!.sourceIn, clips[0]!.sourceOut]).toEqual([0, 4.9]);
   });
 });
 
@@ -348,21 +354,25 @@ describe("9 — a sentence without an approved picture still gets its card", () 
 
 /* ═══════════════ 10 — YouTube pieces slower rather than repeated ═══════════════ */
 
-describe("10 — a YouTube piece is played slower rather than repeat a window", () => {
+describe("10 — a YouTube piece never repeats a window (VIDEO 658: at 1×, the last frame holds)", () => {
   const fourSeconds: YoutubeSourceFacts = { sourceDurationSec: 4.0, cutsSec: [], measured: true };
 
-  it("vc_1d35c303ea: 7.06 s from one 4.00 s shot — two different windows at 0.55×", () => {
+  it("vc_1d35c303ea: 7.06 s from one 4.00 s shot — the first piece plays once at 1×, the second holds its last frame (no repeat)", () => {
     const plan = planYoutubePieces({ inSec: 0, durationSec: 7.06, facts: fourSeconds, slowRatherThanRepeat: true });
     expect(plan.pieces).toHaveLength(2);
-    expect(plan.distinct).toBe(2);
+    expect(plan.distinct).toBe(1);
     const [a, b] = plan.pieces;
-    expect(a!.speed).toBeCloseTo(0.55, 2);
-    expect(a!.inSec + a!.durationSec * a!.speed!).toBeLessThanOrEqual(b!.inSec + 1e-6);
-    expect(b!.inSec + b!.durationSec * b!.speed!).toBeLessThanOrEqual(4.0 + 1e-6);
+    expect(a!.speed ?? 1).toBe(1);
+    expect(b!.speed ?? 1).toBe(1);
+    expect(b!.hold).toBe(true);
+    /** the held piece reads only the last frame of what the first already showed — never back to its start */
+    expect(b!.inSec).toBeGreaterThan(a!.inSec + a!.durationSec - 0.1);
+    expect(a!.inSec + a!.durationSec).toBeLessThanOrEqual(4.0 + 1e-6);
     expect(plan.pieces.every((p) => p.durationSec <= 5)).toBe(true);
+    expect(plan.notes.join(" ")).toMatch(/1 hold the last frame instead of a repeat/);
   });
 
-  it("between two cards (their invisible grounds may not take its time) the timeline gets the slowed pieces", () => {
+  it("between two cards (their invisible grounds may not take its time) the timeline gets the pieces: once at 1×, then a held frame", () => {
     const yt = vclip("vc_1d35c303ea", 8.02, 15.08, 0, 4.0, { source: { provider: "youtube_cc", providerAssetId: "xbhqH17QD4g" } as never });
     const before = vclip("vc_cc29ed21a0_graphic1", 4.56, 8.02, 0, 3.46);
     const after = vclip("vc_1d35c303ea_graphic2", 15.08, 21.01, 0, 4.0);
@@ -370,8 +380,10 @@ describe("10 — a YouTube piece is played slower rather than repeat a window", 
     const pieces = clips.filter((c) => c.id.startsWith("vc_1d35c303ea_p"));
     expect(pieces).toHaveLength(2);
     expect(pieces[0]!.sourceIn).not.toBe(pieces[1]!.sourceIn);
-    expect(pieces[0]!.sourceOut!).toBeLessThanOrEqual(pieces[1]!.sourceIn! + 1e-6);
-    expect(pieces.every((p) => p.speed != null && p.speed < 1)).toBe(true);
+    /** the second piece only holds the first piece's last frame: it never reads an earlier second again */
+    expect(pieces[1]!.sourceIn!).toBeGreaterThan(pieces[0]!.sourceOut! - 0.1);
+    expect(pieces[1]!.holdAtSourceOut).toBe(true);
+    expect(pieces.every((p) => p.speed == null || p.speed === 1)).toBe(true);
     /** The span is unchanged. */
     expect(pieces[0]!.timelineStart).toBe(8.02);
     expect(pieces[1]!.timelineEnd).toBe(15.08);

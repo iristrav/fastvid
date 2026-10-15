@@ -1,12 +1,14 @@
 /**
  * VIDEO 635 — "How Elon Musk Built Tesla Into a Global Brand": 4 of 11 sentences had a picture.
  *
- *   A   a shot a little longer than its source is slowed, never replayed from its start
+ *   A   a shot a little longer than its source is never replayed from its start (VIDEO 658: no slow
+ *       motion — it plays at 1×, once, in order, and its last frame holds the rest)
  *   B   the Judge hears the line, not the planner's imagined shot; a line about money, a deal,
  *       a decision or criticism may show the company and its people at work, in its period
  *   C   a word of the user's own prompt, or a name the narration writes, is never traded for a year
  *       or replaced by a person; a YouTube query asks for FOOTAGE and keeps asking for it
- *   D   the renderer reads the file once, slowed, instead of looping its start (CuratedTrim)
+ *   D   the renderer reads the file once instead of looping its start (CuratedTrim); VIDEO 658: at
+ *       normal speed, the last frame holds (`tpad`)
  */
 import { describe, expect, it } from "vitest";
 
@@ -31,26 +33,27 @@ const clip = (id: string, start: number, end: number, sourceIn: number, sourceOu
 const reads = (clips: TimelineVideoClip[]) => clips.map((c) => [c.sourceIn!, c.sourceOut!] as const);
 
 describe("A — a shot is never replayed from its start because it sits a little longer than its source", () => {
-  it("s1b1: 8.30 s on screen over 7.98 s of source — two pieces, read once and in order, slowed", () => {
-    const { clips } = limitLongShots({ clips: [clip("vc_9d17851670", 23.73, 32.03, 0, 7.98)] });
+  it("s1b1: 8.30 s on screen over 7.98 s of source — two pieces, read once and in order, at 1×; the last frame holds the rest", () => {
+    const { clips, notes } = limitLongShots({ clips: [clip("vc_9d17851670", 23.73, 32.03, 0, 7.98)] });
     expect(clips).toHaveLength(2);
     const [a, b] = clips;
     expect(b!.sourceIn, "the second piece does NOT start at the window's beginning").toBeGreaterThan(3.9);
     expect(b!.sourceIn).toBeCloseTo(a!.sourceOut!, 2);
     expect(b!.sourceOut).toBeCloseTo(7.98, 2);
     for (const c of clips) {
-      expect(c.speed).toBeCloseTo(7.98 / 8.3, 3);
-      expect(c.speed!).toBeGreaterThanOrEqual(MIN_STRETCH_SPEED);
+      /** VIDEO 658 — no slow motion, ever */
+      expect(c.speed).toBe(MIN_STRETCH_SPEED);
+      expect(MIN_STRETCH_SPEED).toBe(1);
       expect(c.timelineEnd - c.timelineStart).toBeLessThanOrEqual(6 + 0.001);
     }
-    /** What the renderer reads (slot × speed) is exactly the window, once. */
-    const total = clips.reduce((s, c) => s + (c.timelineEnd - c.timelineStart) * c.speed!, 0);
-    expect(total).toBeCloseTo(7.98, 2);
+    /** the source runs out before the slot does: the last piece holds its final frame */
+    expect(b!.holdAtSourceOut).toBe(true);
+    expect(notes.join(" ")).toMatch(/played at 1× speed, once, in order; the last 0\.32s hold its final frame/);
     expect(clips[0]!.timelineStart).toBe(23.73);
     expect(clips.at(-1)!.timelineEnd).toBe(32.03);
   });
 
-  it("s0b2 / s1b2 / s1b3: under six seconds — one shot, slowed, not cut in two", () => {
+  it("s0b2 / s1b2 / s1b3: under six seconds — one shot at 1×, not cut in two; the last frame holds", () => {
     for (const [id, start, end, window] of [
       ["vc_95f9d8f5bf", 13.08, 18.84, 5.36],
       ["vc_f3d55f1b8f", 32.03, 37.13, 4.28],
@@ -59,18 +62,23 @@ describe("A — a shot is never replayed from its start because it sits a little
       const { clips } = limitLongShots({ clips: [clip(id, start, end, 0, window)] });
       expect(clips, id).toHaveLength(1);
       expect(clips[0]!.id).toBe(id);
-      expect(clips[0]!.speed).toBeCloseTo(window / (end - start), 3);
+      expect(clips[0]!.speed).toBe(1);
+      expect(clips[0]!.holdAtSourceOut).toBe(true);
       expect(reads(clips)).toEqual([[0, window]]);
+      expect([clips[0]!.timelineStart, clips[0]!.timelineEnd]).toEqual([start, end]);
     }
   });
 
-  it("VIDEO 636: 3.4 s held for 24 s (video 624) never comes round to the start — 0.5×, in order, then its last frame holds", () => {
+  it("VIDEO 636: 3.4 s held for 24 s (video 624) never comes round to the start — 1×, in order, then its last frame holds", () => {
     const { clips } = limitLongShots({ clips: [clip("vc_38d6214afb", 23.95, 47.99, 0, 3.4)] });
     expect(clips.length).toBe(5);
     for (let i = 0; i < clips.length; i++) {
-      expect(clips[i]!.speed).toBe(0.5);
+      expect(clips[i]!.speed).toBe(1);
+      expect(clips[i]!.holdAtSourceOut).toBe(true);
       expect(clips[i]!.sourceOut!).toBeLessThanOrEqual(3.4 + 0.001);
+      /** never back to an earlier second: every later piece reads at or after the one before */
       if (i > 0) expect(clips[i]!.sourceIn!).toBeGreaterThan(clips[i - 1]!.sourceIn! - 0.001);
+      if (i > 0) expect(clips[i]!.sourceIn!, "a later piece only holds the last frame").toBeGreaterThan(3.3);
     }
     expect(clips[0]!.sourceIn).toBe(0);
   });
@@ -209,32 +217,28 @@ describe("C — names the narration writes, and footage", () => {
 
 /* ═══════════════════════ D ═══════════════════════ */
 
-describe("D — the renderer plays a short file once, slowed, instead of looping its start", () => {
+describe("D — the renderer plays a short file once instead of looping its start (VIDEO 658: at 1×, the last frame holds)", () => {
   const v = (sourceIn: number, speed?: number) => ({ kind: "video" as const, sourceIn, ...(speed ? { speed } : {}) });
 
-  it("635: 5.36 s asked of a 4.00 s file → 0.7462×, ending exactly at the file's end", () => {
-    const s = speedThatFitsSource(v(0), 4.0, 5.36)!;
-    expect(s).toBeCloseTo(4.0 / 5.36, 3);
-    expect(5.36 * s).toBeLessThanOrEqual(4.0);
+  it("635: 5.36 s asked of a 4.00 s file → no slow-down (null): it plays at 1× and its last frame holds", () => {
+    expect(speedThatFitsSource(v(0), 4.0, 5.36)).toBeNull();
   });
 
-  it("a piece already slowed by the long-shot rule is slowed a little more when the file is shorter still", () => {
-    const s = speedThatFitsSource(v(3.99, 0.9614), 7.0, 4.15)!;
-    expect(s).toBeCloseTo((7.0 - 3.99) / 4.15, 3);
-    expect(s).toBeLessThan(0.9614);
+  it("a piece the long-shot rule already set is never slowed further when the file is shorter still", () => {
+    expect(speedThatFitsSource(v(3.99, 0.9614), 7.0, 4.15)).toBeNull();
   });
 
-  it("a transition handle read before the in-point is counted", () => {
+  it("a transition handle read before the in-point is counted — and still never slows the clip", () => {
     /** In-point 2, a 1 s handle before it, a 4 s slot: reads 1 → 6, which a 6 s file holds. */
     expect(speedThatFitsSource(v(2), 6.0, 4, 1)).toBeNull();
-    expect(speedThatFitsSource(v(2), 5.5, 4, 1)).toBeCloseTo((5.5 - 2) / 4, 3);
+    expect(speedThatFitsSource(v(2), 5.5, 4, 1)).toBeNull();
   });
 
-  it("unchanged: a file that covers the slot, an unknown length, or a shortfall beyond the floor", () => {
+  it("unchanged: a file that covers the slot, an unknown length, or any shortfall — the floor is 1×", () => {
     expect(speedThatFitsSource(v(0), 10, 5)).toBeNull();
     expect(speedThatFitsSource(v(0), null, 5)).toBeNull();
     expect(speedThatFitsSource(v(0), 2, 5)).toBeNull();
-    expect(MIN_FIT_SPEED).toBe(0.5);
+    expect(MIN_FIT_SPEED).toBe(1);
   });
 
   it("the segment encoder applies it before the speed filter and the read length are built", () => {

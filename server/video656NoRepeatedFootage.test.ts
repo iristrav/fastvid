@@ -49,7 +49,7 @@ function noRepeats(cs: TimelineVideoClip[]): boolean {
 }
 
 describe("656 replayed", () => {
-  it("three pieces of one 2.87 s window: the first plays on, slower, over the other two", () => {
+  it("three pieces of one 2.87 s window: the first plays on at 1× over the other two, then its last frame holds", () => {
     const film = [
       clip("vc_032cede8cd", 60952, 0, 3, 0, 3),
       clip("vc_36934b199e", 60948, 3, 9.13, 0, 4),
@@ -63,8 +63,8 @@ describe("656 replayed", () => {
     const p1 = clips[2]!;
     expect(p1.timelineStart).toBe(9.13);
     expect(p1.timelineEnd).toBe(17.75);
-    /** 2.87 s over 8.62 s would be 0.33×: it plays at the renderer's floor and its last frame holds */
-    expect(p1.speed).toBe(0.5);
+    /** VIDEO 658 — no slow motion: it plays at normal speed and its last frame holds the rest */
+    expect(p1.speed ?? 1).toBe(1);
     expect(p1.sourceOut).toBe(3.37);
     expect(p1.holdAtSourceOut).toBe(true);
     expect(span(clips)).toEqual(span(film));

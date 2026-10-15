@@ -9,12 +9,16 @@
  *                                                                          → s1b4: 0.12 s held past its source
  * The timelines below are rebuilt from those lines (scene 1; s1b0 16.52–21.29, s1b1 21.67–26.47,
  * s1b3 32.60–36.00, s1b4 36.73–42.78 spoken).
+ *
+ * VIDEO 658 (the owner's rule, later than 651): NO SLOW MOTION, EVER. A shot whose source runs out
+ * plays at 1×, once, in order, and its LAST FRAME HOLDS the rest of its own slot (the camera move
+ * keeps it alive). What 651 forbade still stands: a sentence never shows another sentence's picture,
+ * and no source is ever read again from an earlier second.
  */
 import { describe, expect, it } from "vitest";
 
 import { limitYoutubeShots, YOUTUBE_MAX_SHOT_SEC, type YoutubeSourceFacts } from "./youtubeShotLimit";
 import { limitLongShots } from "./longShotLimit";
-import { sourceWindowSec } from "./sentenceCoverage";
 import type { TimelineVideoClip } from "./projectTimeline";
 
 const oneShot = (sourceDurationSec: number): YoutubeSourceFacts => ({ sourceDurationSec, cutsSec: [], measured: true });
@@ -53,13 +57,9 @@ const otherSentenceSec = (clips: TimelineVideoClip[], beat: number, from: number
   for (let k = 0; k < steps; k++) if (beatAt(clips, from + (k + 0.5) * 0.01) !== beat) n++;
   return Number((n * 0.01).toFixed(2));
 };
-/** Seconds any clip is on screen past its own source window (the frozen-frame seconds). */
-const heldPastSource = (clips: TimelineVideoClip[]) =>
-  clips.reduce((sum, c) => {
-    const w = sourceWindowSec(c);
-    const d = c.timelineEnd - c.timelineStart;
-    return w == null ? sum : sum + Math.max(0, d - w);
-  }, 0);
+/** Every piece of one clip reads on from the piece before it — a held piece reads only the last frame. Never back. */
+const neverReadsBack = (pieces: TimelineVideoClip[]) =>
+  pieces.every((p, i) => i === 0 || (p.sourceIn ?? 0) >= (pieces[i - 1]!.sourceOut ?? 0) - 0.1);
 const span = (clips: TimelineVideoClip[]) => ({
   start: Math.min(...clips.map((c) => c.timelineStart)),
   end: Math.max(...clips.map((c) => c.timelineEnd)),
@@ -84,18 +84,22 @@ describe("job 56 — s1b1: no 2.56 s of s1b0's picture", () => {
     expect(otherSentenceSec(clips, 1, 21.67, 26.47)).toBe(0);
   });
 
-  it("the YouTube clip plays its own source slower instead, once, in pieces of at most 5 s, inside its own window", () => {
+  it("the YouTube clip plays its own source once at 1×, in pieces of at most 5 s, inside its own window; then its last frame holds (VIDEO 658)", () => {
     const { clips, notes } = limitYoutubeShots({ clips: build(), youtube });
     const pieces = clips.filter((c) => c.id.startsWith("vc_11cf9744a2"));
     expect(pieces.length).toBe(2);
-    expect(notes.join("\n")).toContain("vc_11cf9744a2: no repeat — no shot beside it can take the time");
+    expect(notes.join("\n")).toContain("vc_11cf9744a2: the source holds 1 distinct 2.56s window(s) for 2 piece(s) — 1 hold the last frame instead of a repeat");
     for (const p of pieces) {
       expect(p.timelineEnd - p.timelineStart).toBeLessThanOrEqual(YOUTUBE_MAX_SHOT_SEC + 1e-6);
       expect(p.sourceOut!).toBeLessThanOrEqual(2.6 + 1e-6);
+      expect(p.speed ?? 1, "no slow motion").toBe(1);
     }
-    expect(new Set(pieces.map((p) => p.sourceIn)).size, "no window shown twice").toBe(2);
-    /** as the pipeline runs it: the long-shot rule after the YouTube rule */
-    expect(heldPastSource(limitLongShots({ clips }).clips)).toBeLessThan(0.01);
+    /** no window shown twice: the second piece only holds the first piece's last frame */
+    expect(neverReadsBack(pieces)).toBe(true);
+    expect(pieces[1]!.holdAtSourceOut).toBe(true);
+    /** as the pipeline runs it: the long-shot rule after the YouTube rule — still s1b1's own picture */
+    const long = limitLongShots({ clips }).clips;
+    expect(otherSentenceSec(long, 1, 21.67, 26.47)).toBe(0);
     expect(span(clips)).toEqual({ start: 16.52, end: 32.25 });
   });
 });
@@ -119,11 +123,16 @@ describe("job 56 — s1b3: no 1.34 s of s1b4's picture; s1b4: no still frame pas
     expect(otherSentenceSec(clips, 3, 32.6, 36.0)).toBe(0);
   });
 
-  it("after the long-shot rule, no clip holds a frame past its source (s1b4 was 0.40 s)", () => {
+  it("after the long-shot rule, s1b4's clip plays its 4.00 s once at 1×, in order, and its last frame holds the rest of ITS OWN slot (VIDEO 658)", () => {
     const limited = limitYoutubeShots({ clips: build(), youtube });
     const long = limitLongShots({ clips: limited.clips });
-    expect(long.notes.join("\n")).not.toContain("hold its final frame");
-    expect(heldPastSource(long.clips)).toBeLessThan(0.01);
+    const s1b4 = long.clips.filter((c) => c.id.startsWith("vc_4d5d30cfa9"));
+    expect(long.notes.join("\n")).toMatch(/vc_4d5d30cfa9: .*played at 1× speed, once, in order; the last 2\.33s hold its final frame/);
+    expect(s1b4.every((c) => c.speed === 1)).toBe(true);
+    expect(neverReadsBack(s1b4)).toBe(true);
+    expect(s1b4.at(-1)!.holdAtSourceOut).toBe(true);
+    expect(s1b4.at(-1)!.sourceOut).toBe(4);
+    /** the held seconds are s1b4's own picture: never another sentence's */
     expect(otherSentenceSec(long.clips, 4, 36.73, 42.72)).toBe(0);
     expect(span(long.clips)).toEqual({ start: 26.79, end: 42.72 });
   });
@@ -230,14 +239,19 @@ describe("unchanged for clips that do not say their sentence or their source end
 });
 
 describe("a YouTube source shorter than its slot, with nobody to take the time", () => {
-  it("is played slower within its own source — never past it, never a still frame", () => {
+  it("is played once at 1× within its own source — never past it, never back to its start; its last frame holds the rest (VIDEO 658)", () => {
     const { clips } = limitYoutubeShots({
       clips: [clip("other", 0, 4, 0), yt("y", 4, 10, 1), clip("other2", 10, 14, 2)],
       youtube: new Map([["y", oneShot(3.5)]]),
     });
     const pieces = clips.filter((c) => c.id.startsWith("y"));
-    for (const p of pieces) expect(p.sourceOut!).toBeLessThanOrEqual(3.5 + 1e-6);
-    expect(heldPastSource(clips)).toBeLessThan(0.01);
+    for (const p of pieces) {
+      expect(p.sourceOut!).toBeLessThanOrEqual(3.5 + 1e-6);
+      expect(p.speed ?? 1, "no slow motion").toBe(1);
+    }
+    expect(neverReadsBack(pieces)).toBe(true);
+    /** only the pieces past the source hold its last frame, and they are marked as such */
+    expect(pieces.slice(1).every((p) => p.holdAtSourceOut === true)).toBe(true);
     expect(otherSentenceSec(clips, 1, 4, 10)).toBe(0);
     expect(span(clips)).toEqual({ start: 0, end: 14 });
   });

@@ -72,9 +72,15 @@ describe("a refused YouTube clip gives its slot to another shot, never a transit
     }) as unknown as TimelineVideoClip;
   const unmeasured: YoutubeSourceFacts = { sourceDurationSec: 0, cutsSec: [], measured: false };
 
+  /**
+   * VIDEO 658 — no slow motion: a neighbour takes the slot only when its OWN source fills the longer
+   * time at normal speed (VIDEO 651, job 56). Here the neighbours hold 8 s of source for an 8 s slot.
+   */
+  const roomy = (c: TimelineVideoClip): TimelineVideoClip => ({ ...c, sourceOut: (c.sourceIn ?? 0) + 8 });
+
   it("the shot before it holds longer", () => {
     const { clips, notes } = limitYoutubeShots({
-      clips: [clip("a", 0, 4), clip("yt", 4, 8)],
+      clips: [roomy(clip("a", 0, 4)), clip("yt", 4, 8)],
       youtube: new Map([["yt", unmeasured]]),
     });
     expect(clips.map((c) => [c.id, c.timelineStart, c.timelineEnd])).toEqual([["a", 0, 8]]);
@@ -83,10 +89,22 @@ describe("a refused YouTube clip gives its slot to another shot, never a transit
 
   it("or the shot after it starts earlier", () => {
     const { clips } = limitYoutubeShots({
-      clips: [clip("yt", 0, 4), clip("b", 4, 8)],
+      clips: [clip("yt", 0, 4), roomy(clip("b", 4, 8))],
       youtube: new Map([["yt", unmeasured]]),
     });
     expect(clips.map((c) => [c.id, c.timelineStart, c.timelineEnd])).toEqual([["b", 0, 8]]);
+  });
+
+  it("a neighbour whose own source is too short does not take it (no slow motion, no still past its source): the clip stays and says so", () => {
+    const { clips, notes } = limitYoutubeShots({
+      clips: [clip("a", 0, 4), clip("yt", 4, 8)],
+      youtube: new Map([["yt", unmeasured]]),
+    });
+    expect(clips.map((c) => [c.id, c.timelineStart, c.timelineEnd])).toEqual([
+      ["a", 0, 4],
+      ["yt", 4, 8],
+    ]);
+    expect(notes.join(" ")).toContain("KEPT_UNCUT");
   });
 
   it("and when no other shot in the scene can, it stays and says so", () => {
