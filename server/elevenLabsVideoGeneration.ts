@@ -35,6 +35,7 @@
  * The key, the request body and the signed content URL. The log carries the generation id, the
  * status, the HTTP status and timings.
  */
+import { noteRenderCost } from "./renderCostLedger";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { promisify } from "node:util";
@@ -247,6 +248,8 @@ const elevenLabsGenerator: VideoClipGenerator = async (prompt, outMp4, opts) => 
       { method: "POST", headers: { "xi-api-key": key, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) },
       CREATE_TIMEOUT_MS
     );
+    /** VIDEO 659 (cost) — a created generation is billed for its seconds. */
+    if (created.ok) noteRenderCost({ aiVideos: 1, aiVideoSec: opts.durationSec });
     if (!created.ok) {
       console.warn(`[${GENERATED_VIDEO_FALLBACK}] the video service answered HTTP ${created.status} at create`);
       noteAccountRefusal(created.status);

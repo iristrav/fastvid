@@ -42,6 +42,7 @@
  * Everything that talks to the network, the file system probes and the clock is injected through
  * `TunelioDeps`, so the behaviour above is tested without a single paid call.
  */
+import { noteRenderCost } from "./renderCostLedger";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -441,6 +442,8 @@ async function reserveRenderSlot(
       }
     }
     held.add(slotKey);
+    /** VIDEO 659 (cost) — a reserved slot is a paid call about to be made. */
+    noteRenderCost({ tunelioPaidCalls: 1 });
     return { ok: true, slotKey };
   }
   return { ok: false, code: "RENDER_LIMIT", detail: `${TUNELIO_PAID_CALLS_PER_RENDER} paid calls already reserved for render ${renderKey}` };

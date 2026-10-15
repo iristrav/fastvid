@@ -1232,3 +1232,182 @@ def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileR
         filename=f"{id}.mp4",
         background=cleanup,
     )
+
+
+# ── VIDEO 659 — LOOK BEFORE DOWNLOADING: THE VIDEO'S STORYBOARD, WITHOUT ITS BYTES ──────────────
+#
+# The owner's rule: a picture is checked BEFORE it is downloaded, cheaply, and one check may cut
+# many shots from one video. YouTube's storyboard is the strip of small frames the player shows
+# when the timeline is hovered — every few seconds of the WHOLE video, a few sprite images in all.
+# FastVid fetches those sprites itself (i.ytimg.com), lays the frames it wants on one numbered
+# sheet, and asks the picture editor once which frame fits which sentence. Only the approved
+# seconds are then asked of `/download`.
+#
+# This endpoint only reads metadata (no `format`, no range, no file): the storyboard's sprite list
+# and, when the video has one, an English caption track to find where each sentence's subject is
+# spoken. The URLs are returned to the caller and never written to the log.
+
+STORYBOARD_MAX_WIDTH = 480
+
+
+def _best_storyboard(info: dict) -> dict | None:
+    """The sharpest storyboard level no wider than STORYBOARD_MAX_WIDTH, or None. Never raises."""
+    best = None
+    for f in info.get("formats") or []:
+        if f.get("format_note") != "storyboard" and not str(f.get("format_id", "")).startswith("sb"):
+            continue
+        frags = [
+            {"url": fr.get("url"), "duration": float(fr.get("duration") or 0)}
+            for fr in (f.get("fragments") or [])
+            if fr.get("url")
+        ]
+        rows, cols = int(f.get("rows") or 0), int(f.get("columns") or 0)
+        width, height = int(f.get("width") or 0), int(f.get("height") or 0)
+        if not frags or rows <= 0 or cols <= 0 or width <= 0 or height <= 0:
+            continue
+        if width > STORYBOARD_MAX_WIDTH:
+            continue
+        if best is None or width > best["width"]:
+            best = {"width": width, "height": height, "rows": rows, "columns": cols, "fragments": frags}
+    return best
+
+
+def _caption_url(info: dict) -> str | None:
+    """An English json3 caption track: written by a person first, the automatic one otherwise."""
+    for bucket in ("subtitles", "automatic_captions"):
+        tracks = info.get(bucket) or {}
+        for lang in ("en", "en-US", "en-GB", "en-orig"):
+            for t in tracks.get(lang) or []:
+                if t.get("ext") == "json3" and t.get("url"):
+                    return t["url"]
+    return None
+
+
+@app.get("/storyboard")
+def storyboard(
+    id: str = Query(..., min_length=5, max_length=32, description="YouTube video id"),
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    _require_token(authorization)
+    t0 = time.time()
+    try:
+        with yt_dlp.YoutubeDL({**_probe_options(), "logger": _YdlWarnings(id)}) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={id}", download=False) or {}
+    except Exception as err:  # noqa: BLE001 — every failure is one answer: no storyboard from here
+        log.warning("storyboard id=%s failed ms=%d: %s", id, int((time.time() - t0) * 1000), _redact(str(err))[:200])
+        return JSONResponse(status_code=502, content={"error": "extract_failed"})
+    sb = _best_storyboard(info)
+    caption = _caption_url(info)
+    log.info(
+        "storyboard id=%s ok=%s width=%s sprites=%s caption=%s ms=%d",
+        id, sb is not None, sb["width"] if sb else 0, len(sb["fragments"]) if sb else 0,
+        caption is not None, int((time.time() - t0) * 1000),
+    )
+    if sb is None:
+        return JSONResponse(status_code=404, content={"error": "no_storyboard", "duration": info.get("duration")})
+    return JSONResponse({"id": id, "duration": info.get("duration"), **sb, "captionUrl": caption})
+
+
+# ── VIDEO 659 (step 3) — A FEW SHARP FRAMES, WITHOUT DOWNLOADING THE CLIP ─────────────────────────
+#
+# The storyboard is the quick look; it is too small to judge on. These are the frames the picture
+# editor decides on: at each asked second, ONE full-quality frame read straight from the stream
+# (ffmpeg seeks with an HTTP range request — a few hundred kilobytes, not the clip), all of them
+# tiled on one sheet, left to right, row by row. `X-Frame-Seconds` names the seconds on the sheet
+# in that order; a second whose frame could not be read is left out rather than drawn black.
+#
+# The stream URL is signed. It is handed to ffmpeg and never logged or returned.
+
+FRAMES_MAX = 16
+FRAMES_COLUMNS = 4
+FRAMES_WIDTH = 480
+FRAME_TIMEOUT_S = 25
+
+
+def _parse_seconds(at: str) -> list[float]:
+    out: list[float] = []
+    for part in (at or "").split(","):
+        try:
+            sec = float(part)
+        except ValueError:
+            continue
+        if sec >= 0 and all(abs(sec - s) >= 0.5 for s in out):
+            out.append(round(sec, 2))
+        if len(out) >= FRAMES_MAX:
+            break
+    return out
+
+
+def _stream_url(info: dict) -> str | None:
+    """A progressive or video-only stream yt-dlp selected, never HLS (see VIDEO 619)."""
+    for f in [info, *(info.get("requested_formats") or [])]:
+        url = f.get("url")
+        if url and "m3u8" not in str(f.get("protocol", "")) and f.get("vcodec") not in (None, "none"):
+            return url
+    return None
+
+
+def _grab_frame(url: str, sec: float, dst: Path) -> bool:
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-rw_timeout", str(FFMPEG_IO_TIMEOUT_S * 1_000_000)]
+    if PROXY_URL:
+        cmd += ["-http_proxy", PROXY_URL]
+    cmd += ["-ss", f"{sec:.2f}", "-i", url, "-frames:v", "1", "-vf", f"scale={FRAMES_WIDTH}:-2", "-q:v", "3", str(dst)]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=FRAME_TIMEOUT_S, check=True)
+        return dst.is_file() and dst.stat().st_size > 0
+    except Exception:  # noqa: BLE001 — one unreadable second is left off the sheet; the reason is not logged (it carries the URL)
+        return False
+
+
+@app.get("/frames")
+def frames(
+    id: str = Query(..., min_length=5, max_length=32, description="YouTube video id"),
+    at: str = Query(..., max_length=400, description="comma-separated seconds"),
+    authorization: str | None = Header(default=None),
+):
+    _require_token(authorization)
+    secs = _parse_seconds(at)
+    if not secs:
+        raise HTTPException(status_code=400, detail="no seconds asked")
+    t0 = time.time()
+    opts = {**_probe_options(), "logger": _YdlWarnings(id)}
+    opts["format"] = "bv*[height<=720][protocol!*=m3u8]/b[protocol!*=m3u8]"
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={id}", download=False) or {}
+    except Exception as err:  # noqa: BLE001
+        log.warning("frames id=%s extract failed ms=%d: %s", id, int((time.time() - t0) * 1000), _redact(str(err))[:200])
+        return JSONResponse(status_code=502, content={"error": "extract_failed"})
+    url = _stream_url(info)
+    if not url:
+        return JSONResponse(status_code=502, content={"error": "no_stream"})
+    work = Path(tempfile.mkdtemp(prefix="ytframes-"))
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        ok = list(pool.map(lambda i: _grab_frame(url, secs[i], work / f"raw_{i:03d}.jpg"), range(len(secs))))
+    kept = [secs[i] for i in range(len(secs)) if ok[i]]
+    for n, i in enumerate([i for i in range(len(secs)) if ok[i]], start=1):
+        (work / f"raw_{i:03d}.jpg").rename(work / f"f{n:03d}.jpg")
+    if not kept:
+        shutil.rmtree(work, ignore_errors=True)
+        log.warning("frames id=%s none readable of %d ms=%d", id, len(secs), int((time.time() - t0) * 1000))
+        return JSONResponse(status_code=502, content={"error": "no_frame"})
+    rows = (len(kept) + FRAMES_COLUMNS - 1) // FRAMES_COLUMNS
+    sheet = work / "sheet.jpg"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-start_number", "1", "-i", str(work / "f%03d.jpg"),
+             "-vf", f"tile={FRAMES_COLUMNS}x{rows}:padding=4:color=black", "-frames:v", "1", "-q:v", "3", str(sheet)],
+            capture_output=True, timeout=60, check=True,
+        )
+    except Exception:  # noqa: BLE001
+        shutil.rmtree(work, ignore_errors=True)
+        return JSONResponse(status_code=502, content={"error": "sheet_failed"})
+    log.info("frames id=%s asked=%d kept=%d ms=%d", id, len(secs), len(kept), int((time.time() - t0) * 1000))
+    return FileResponse(
+        sheet,
+        media_type="image/jpeg",
+        headers={"X-Frame-Seconds": ",".join(f"{s:g}" for s in kept)},
+        background=BackgroundTask(shutil.rmtree, work, ignore_errors=True),
+    )

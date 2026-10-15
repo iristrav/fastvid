@@ -132,6 +132,11 @@ export type PoolDeps = PlannerDeps & {
    * which of them the video really shows (`Triage.shows`).
    */
   triage: (item: SearchItem, title: string, sentences: string[], subjects?: readonly string[]) => Promise<Triage | null>;
+  /**
+   * VIDEO 659 (cost) — the same look for MANY thumbnails at once: one contact sheet, one call.
+   * Answers by videoId; an item it does not answer for is asked with `triage`, one by one, as before.
+   */
+  triageMany?: (items: SearchItem[], title: string, sentences: string[], subjects?: readonly string[]) => Promise<Map<string, Triage>>;
   /** The archive's own YouTube-origin assets that clear its floor, as items with a thumbnail. */
   archive: (sentences: string[]) => Promise<SearchItem[]>;
   /** When the official API is in its quota cooldown, a search is not spent on a refusal. */
@@ -197,7 +202,7 @@ async function judge(
   sentences: string[],
   subjects: readonly string[] = []
 ): Promise<PoolCandidate[]> {
-  return mapLimit(items, deps.concurrency ?? 8, async (item) => {
+  const prepared = items.map((item) => {
     const d = details?.get(item.videoId) ?? null;
     const it = withYoutubeOwnText(item, d);
     const byTitle = judgeFootageTitle(it.title);
@@ -212,7 +217,16 @@ async function judge(
     else if (d && d.durationSec > 0 && d.durationSec < MIN_SOURCE_SEC) why = `too short ${d.durationSec}s`;
     else if (d && d.durationSec > MAX_SOURCE_SEC) why = `too long ${Math.round(d.durationSec / 60)}min (download ceiling)`;
     else if (d && !d.embeddable) why = "not embeddable";
-    const t = why === "ok" ? await deps.triage(it, title, sentences, subjects).catch(() => null) : null;
+    return { d, it, why };
+  });
+  /** VIDEO 659 (cost) — every thumbnail that is to be looked at, looked at together first. */
+  const batched =
+    deps.triageMany && prepared.some((p) => p.why === "ok")
+      ? await deps.triageMany(prepared.filter((p) => p.why === "ok").map((p) => p.it), title, sentences, subjects).catch(() => new Map<string, Triage>())
+      : new Map<string, Triage>();
+  return mapLimit(prepared, deps.concurrency ?? 8, async ({ d, it, why: firstWhy }) => {
+    let why = firstWhy;
+    const t = why === "ok" ? (batched.get(it.videoId) ?? (await deps.triage(it, title, sentences, subjects).catch(() => null))) : null;
     if (why === "ok") {
       if (!t) why = "not judged";
       else if (judgeFootageType(t.footageType).decision === "REJECT") why = judgeFootageType(t.footageType).reason;

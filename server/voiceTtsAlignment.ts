@@ -1,6 +1,7 @@
 /**
  * ElevenLabs word-level alignment → beat planner (timing-first montage).
  */
+import { noteRenderCost } from "./renderCostLedger";
 import fs from "fs";
 import path from "path";
 import { archiveVisualMaxClipSec, archiveVisualMinClipSec } from "./sourcingPolicy";
@@ -394,6 +395,8 @@ export async function fetchElevenLabsWithTimestamps(
         signal: AbortSignal.timeout(timeoutMs),
       }
     );
+    /** VIDEO 659 (cost) — ElevenLabs bills the characters it spoke. */
+    if (response.ok) noteRenderCost({ voiceChars: text.length });
     if (!response.ok) {
       /**
        * VIDEO 645 — this returned null without a word, and the render's log never said why the

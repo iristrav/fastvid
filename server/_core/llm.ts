@@ -1397,7 +1397,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         if (i > 0) console.log(`[LLM] Succeeded via gemini after ${chain[0]} failure`);
         if (result.usage) {
           const { recordLlmUsage } = await import("./llmBudget");
-          recordLlmUsage(model, result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);
+          recordLlmUsage(model, result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null, hasVision);
         }
         return { ...result, provider: "gemini" };
       } catch (err) {
@@ -1508,7 +1508,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         }
         if (result.usage) {
           const { recordLlmUsage } = await import("./llmBudget");
-          recordLlmUsage(String(payload.model), result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);
+          recordLlmUsage(String(payload.model), result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null, hasVision);
         }
         return { ...result, provider };
       }

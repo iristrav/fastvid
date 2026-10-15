@@ -55,6 +55,8 @@ export const STOCK_FIRST_BATCH = 6;
 export const MAX_STOCK_ATTEMPTS = MAX_STOCK_VIDEOS + 4;
 /** Downloads running at the same time. */
 export const STOCK_CONCURRENCY = 3;
+/** VIDEO 659 — approved sections of ONE video downloaded at the same time. */
+export const SECTIONS_AT_ONCE = 3;
 
 export type StockCandidate = {
   videoId: string;
@@ -106,6 +108,16 @@ export type StockDeps = {
   log?: (line: string) => void;
   /** W3 — asked before a replacement starts: a video the render has meanwhile written off is passed over. */
   skip?: (videoId: string) => boolean;
+  /**
+   * VIDEO 659 — the look before the download (`lookBeforeDownload`): one contact sheet of the whole
+   * video, one look. "approved" downloads only the approved sections; "nothing_fits" downloads
+   * nothing (a replacement takes the place); "no_sheet" falls back to the one guessed section.
+   */
+  look?: (c: StockCandidate) => Promise<
+    | { kind: "approved"; windows: ReadonlyArray<{ startSec: number; durationSec: number }> }
+    | { kind: "nothing_fits" }
+    | { kind: "no_sheet"; reason: string }
+  >;
 };
 
 type Entry = {
@@ -123,6 +135,8 @@ type Entry = {
   sectionStarts?: number[];
   /** VIDEO 645 — the video's title, for shots of a later section when the first gave none. */
   title?: string;
+  /** VIDEO 659 — the look before the download found nothing that fits: never downloaded, by anyone. */
+  refusedByLook?: boolean;
 };
 
 /** Per film (render video id): YouTube video id → its stock. */
@@ -249,33 +263,63 @@ export function startYoutubeShotStock(filmId: number, candidates: readonly Stock
       attempts++;
       inFlight++;
       const entry = film.get(c.videoId)!;
-      const take = c.durationSec > 0 ? Math.min(STOCK_SECTION_SEC, c.durationSec) : STOCK_SECTION_SEC;
-      const startSec = c.durationSec > 0 ? deps.startFor(c.durationSec, take, c.videoId) : 0;
-      entry.sectionStarts = [...(entry.sectionStarts ?? []), startSec];
-      const outPath = path.join(deps.workDir, `ytstock_${c.videoId}_${Math.round(startSec)}.mp4`);
       const t0 = Date.now();
-      if (c.targetLabel) say(`[TARGETED_VISUAL] ${c.targetLabel} videoId=${c.videoId} stage=DOWNLOAD_STARTED film=${filmId}`);
-      try {
+      /** One section: downloaded, cut into shots in its own folder, the shots added to the entry. */
+      const fetchSection = async (startSec: number, take: number): Promise<boolean> => {
+        entry.sectionStarts = [...(entry.sectionStarts ?? []), startSec];
+        const outPath = path.join(deps.workDir, `ytstock_${c.videoId}_${Math.round(startSec)}.mp4`);
         const ok = await deps.download(c.videoId, startSec, take, outPath, c.title);
-        if (!ok || !fs.existsSync(outPath)) {
-          entry.status = "failed";
-          entry.reason = "the download delivered nothing";
-        } else {
-          /** Each video's shots in their own folder: the cutter names its pieces shot_1, shot_2, … */
-          const pieceDir = path.join(deps.workDir, `ytstock_${c.videoId}_shots`);
-          fs.mkdirSync(pieceDir, { recursive: true });
-          const pieces = await deps.cut(outPath, pieceDir);
-          entry.shots = pieces.map((p) => ({
+        if (!ok || !fs.existsSync(outPath)) return false;
+        /** Each section's shots in their own folder: the cutter names its pieces shot_1, shot_2, … */
+        const pieceDir = path.join(deps.workDir, `ytstock_${c.videoId}_shots${entry.sectionStarts.length > 1 ? `_${Math.round(startSec)}` : ""}`);
+        fs.mkdirSync(pieceDir, { recursive: true });
+        const pieces = await deps.cut(outPath, pieceDir);
+        entry.shots.push(
+          ...pieces.map((p) => ({
             videoId: c.videoId,
             title: c.title,
             path: p.path,
             sourceStartSec: Number((startSec + p.startSec).toFixed(2)),
             sourceEndSec: Number((startSec + p.endSec).toFixed(2)),
             handedOut: 0,
-          }));
-          entry.status = entry.shots.length ? "ready" : "failed";
-          if (!entry.shots.length) entry.reason = "no single shot long enough to use";
-          else entry.readyAt = Date.now();
+          }))
+        );
+        return true;
+      };
+      try {
+        const look = deps.look ? await deps.look(c).catch((err): { kind: "no_sheet"; reason: string } => ({ kind: "no_sheet", reason: (err as Error)?.message?.slice(0, 80) ?? "threw" })) : null;
+        if (look?.kind === "nothing_fits") {
+          entry.status = "failed";
+          entry.refusedByLook = true;
+          entry.reason = "the look before the download found no frame that fits a sentence — not downloaded";
+        } else {
+          if (c.targetLabel) say(`[TARGETED_VISUAL] ${c.targetLabel} videoId=${c.videoId} stage=DOWNLOAD_STARTED film=${filmId}`);
+          let delivered = 0;
+          if (look?.kind === "approved" && look.windows.length > 0) {
+            /** Three sections of one video at a time: six in a row through the proxy would outlast the picture stage's wait. */
+            const queue = [...look.windows];
+            await Promise.all(
+              Array.from({ length: Math.min(SECTIONS_AT_ONCE, queue.length) }, async () => {
+                for (let w = queue.shift(); w; w = queue.shift()) if (await fetchSection(w.startSec, w.durationSec).catch(() => false)) delivered++;
+              })
+            );
+            /** Shots in the order of the video, whichever section arrived first. */
+            entry.shots.sort((a, b) => a.sourceStartSec - b.sourceStartSec);
+            say(`[YouTubeStock] film=${filmId} video=${c.videoId} downloaded only the approved seconds: ${delivered}/${look.windows.length} section(s)`);
+          } else {
+            if (look?.kind === "no_sheet") say(`[YouTubeStock] film=${filmId} video=${c.videoId} no look before the download (${look.reason}) — one section as before`);
+            const take = c.durationSec > 0 ? Math.min(STOCK_SECTION_SEC, c.durationSec) : STOCK_SECTION_SEC;
+            const startSec = c.durationSec > 0 ? deps.startFor(c.durationSec, take, c.videoId) : 0;
+            if (await fetchSection(startSec, take)) delivered++;
+          }
+          if (!delivered) {
+            entry.status = "failed";
+            entry.reason = "the download delivered nothing";
+          } else {
+            entry.status = entry.shots.length ? "ready" : "failed";
+            if (!entry.shots.length) entry.reason = "no single shot long enough to use";
+            else entry.readyAt = Date.now();
+          }
         }
       } catch (err) {
         entry.status = "failed";
@@ -381,7 +425,7 @@ export function beatRowsInStockOrder<T>(
 export type StockTake =
   | { shot: StockShot }
   /** Why no shot: not in the stock, its section still on its way, its download failed, or every shot refused. */
-  | { shot: null; reason: "not_stocked" | "still_downloading" | "download_failed" | "all_refused" };
+  | { shot: null; reason: "not_stocked" | "still_downloading" | "download_failed" | "all_refused" | "refused_before_download" };
 
 /**
  * A stock shot of this video for a beat, waiting at most `maxWaitMs` for the video's section to
@@ -399,7 +443,7 @@ export async function takeStockShot(
 
 export type StockTakeMany =
   | { shots: StockShot[]; reason?: undefined }
-  | { shots: []; reason: "not_stocked" | "still_downloading" | "download_failed" | "all_refused" };
+  | { shots: []; reason: "not_stocked" | "still_downloading" | "download_failed" | "all_refused" | "refused_before_download" };
 
 /**
  * OCTOBER 2026 — up to `max` shots of this video for one beat, so the picture editor chooses the
@@ -420,6 +464,8 @@ export async function takeStockShots(
     if (timer) clearTimeout(timer);
   }
   if (entry.status === "pending") return { shots: [], reason: "still_downloading" };
+  /** VIDEO 659 — a video the look refused is not downloaded by the beat either. */
+  if (entry.refusedByLook) return { shots: [], reason: "refused_before_download" };
   if (entry.status === "failed") return { shots: [], reason: "download_failed" };
   const open = entry.shots.filter((s) => !refused(s));
   if (!open.length) return { shots: [], reason: "all_refused" };

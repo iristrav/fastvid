@@ -9,6 +9,10 @@
  *
  * The key is never logged: URLs are built here and only the query, status and counts are printed.
  */
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+
 import type { PoolDeps, SearchItem, ItemDetails, Triage } from "./youtubeVideoPool";
 import type { PlannerInput } from "./youtubeVideoSearchPlanner";
 import { isoDurationSec, rememberYoutubeVideoDurationSec } from "./youtubeVideoDuration";
@@ -249,6 +253,9 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
   /** VIDEO 618 — the same look, now shared with the per-beat search: see `triageYoutubeThumbnail`. */
   const triage = (item: SearchItem, title: string, sentences: string[], subjects?: readonly string[]): Promise<Triage | null> =>
     triageYoutubeThumbnail(item, title, sentences, llm, clipFilter, subjects);
+  /** VIDEO 659 (cost) — the same look for twenty thumbnails at once; see `triageYoutubeThumbnails`. */
+  const triageMany = (items: SearchItem[], title: string, sentences: string[], subjects?: readonly string[]): Promise<Map<string, Triage>> =>
+    triageYoutubeThumbnails(items, title, sentences, llm, subjects);
 
   /**
    * The archive's own YouTube material. The dry run found that the archive answers ~140 assets for
@@ -300,6 +307,7 @@ export async function productionVideoPoolDeps(input: PlannerInput & { videoId: n
     search,
     details,
     triage,
+    ...(youtubeTriageBatchEnabled() ? { triageMany } : {}),
     archive,
     inCooldown: pipeline.isYoutubeInCooldown,
     /**
@@ -375,4 +383,183 @@ export async function triageYoutubeThumbnail(
   } catch {
     return null;
   }
+}
+
+
+/* ═══════════ VIDEO 659 (cost) — many thumbnails, one look ═══════════ */
+
+/**
+ * WHY. The pool looked at every usable search result's thumbnail with its own vision call — up to
+ * fifty per search, each repeating the whole script and the same page of rules. The question is the
+ * same for all of them, so they are now asked together: up to `TRIAGE_BATCH` thumbnails on one
+ * numbered sheet, one call, one answer per thumbnail by the SAME rules (`youtubeTriagePrompt`'s own
+ * text) and the same fields. A thumbnail the sheet could not answer for is asked alone, as before.
+ * `YOUTUBE_TRIAGE_BATCH=false` switches it off.
+ */
+export const TRIAGE_BATCH = 20;
+export const TRIAGE_BATCH_COLUMNS = 5;
+
+export function youtubeTriageBatchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.YOUTUBE_TRIAGE_BATCH?.trim().toLowerCase() !== "false";
+}
+
+export function youtubeTriageBatchPrompt(
+  items: ReadonlyArray<Pick<SearchItem, "title" | "channel" | "description">>,
+  title: string,
+  sentences: string[],
+  subjects: readonly string[] = []
+): string {
+  const single = youtubeTriagePrompt({ title: "", channel: "", description: "" }, title, sentences, subjects);
+  const rules = single.slice(single.indexOf("footageType:\n"));
+  return (
+    `Video being made: "${title}".\n` +
+    `The image is a sheet of ${items.length} YouTube result THUMBNAILS, ${TRIAGE_BATCH_COLUMNS} per row, numbered 1..${items.length} ` +
+    "left to right, then row by row. For EACH result, judge what the VIDEO ITSELF shows on screen for most of its running time — " +
+    "not what the thumbnail advertises. A thumbnail with the right face proves nothing: channels that explain or comment on a " +
+    "subject put that face in their thumbnails too.\n\nResults:\n" +
+    items.map((it, i) => `[${i + 1}] "${it.title}" (channel: ${it.channel})${it.description ? ` — ${it.description.slice(0, 120)}` : ""}`).join("\n") +
+    "\n\nFor each result:\n" +
+    rules +
+    "\n\nReturn one entry per result in `results`, with its number in `n`."
+  );
+}
+
+const triageBatchSchema = (withSubjects: boolean) => ({
+  type: "json_schema" as const,
+  json_schema: {
+    name: withSubjects ? "youtube_thumbnail_sheet_subjects" : "youtube_thumbnail_sheet",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["results"],
+      properties: {
+        results: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["n", ...(withSubjects ? TRIAGE_WITH_SUBJECTS_SCHEMA : TRIAGE_SCHEMA).json_schema.schema.required],
+            properties: { n: { type: "integer" }, ...(withSubjects ? TRIAGE_WITH_SUBJECTS_SCHEMA : TRIAGE_SCHEMA).json_schema.schema.properties },
+          },
+        },
+      },
+    },
+  },
+});
+
+const FOOTAGE_TYPES = new Set(TRIAGE_SCHEMA.json_schema.schema.properties.footageType.enum);
+
+/** The sheet's answer, held to the sheet: unknown numbers, duplicates and unknown footage types are dropped. */
+export function parseTriageBatchAnswer(raw: string, count: number, withSubjects: boolean): Map<number, Triage> {
+  const out = new Map<number, Triage>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return out;
+  }
+  const results = (parsed as { results?: unknown })?.results;
+  if (!Array.isArray(results)) return out;
+  for (const r of results as Array<Record<string, unknown>>) {
+    const n = typeof r.n === "number" ? Math.round(r.n) : NaN;
+    if (!(n >= 1 && n <= count) || out.has(n)) continue;
+    if (typeof r.footageType !== "string" || !FOOTAGE_TYPES.has(r.footageType)) continue;
+    out.set(n, {
+      footageType: r.footageType as Triage["footageType"],
+      servesBeats: Array.isArray(r.servesBeats) ? (r.servesBeats as unknown[]).filter((b): b is number => Number.isInteger(b)) : [],
+      depicts: typeof r.depicts === "string" ? r.depicts : "",
+      ...(withSubjects ? { shows: Array.isArray(r.shows) ? (r.shows as unknown[]).filter((k): k is number => Number.isInteger(k)) : [] } : {}),
+    });
+  }
+  return out;
+}
+
+export type TriageSheetDeps = {
+  fetchThumb: (url: string) => Promise<Buffer | null>;
+  /** Lay the thumbnails (files) on one sheet, `TRIAGE_BATCH_COLUMNS` wide, in order; false when it cannot. */
+  compose: (files: string[], outPath: string) => Promise<boolean>;
+};
+
+function productionTriageSheetDeps(): TriageSheetDeps {
+  return {
+    fetchThumb: async (url) => {
+      const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+      return r.ok ? Buffer.from(await r.arrayBuffer()) : null;
+    },
+    compose: async (files, outPath) => {
+      const { execFile } = await import("child_process");
+      const { promisify } = await import("util");
+      const { resolveFFmpegBin } = await import("./ffmpegBinary");
+      const run = promisify(execFile);
+      const ffmpeg = resolveFFmpegBin();
+      const dir = path.dirname(outPath);
+      try {
+        for (let i = 0; i < files.length; i++) {
+          await run(ffmpeg, ["-y", "-loglevel", "error", "-i", files[i]!, "-vf", "scale=320:180,setsar=1", "-frames:v", "1", path.join(dir, `t${String(i + 1).padStart(3, "0")}.jpg`)], { timeout: 15_000 });
+        }
+        const rows = Math.ceil(files.length / TRIAGE_BATCH_COLUMNS);
+        await run(ffmpeg, ["-y", "-loglevel", "error", "-start_number", "1", "-i", path.join(dir, "t%03d.jpg"), "-vf", `tile=${TRIAGE_BATCH_COLUMNS}x${rows}:padding=4:color=black`, "-frames:v", "1", "-q:v", "4", outPath], { timeout: 30_000 });
+        return fs.existsSync(outPath) && fs.statSync(outPath).size > 0;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+export async function triageYoutubeThumbnails(
+  items: SearchItem[],
+  title: string,
+  sentences: string[],
+  llm?: (p: unknown) => Promise<unknown>,
+  subjects: readonly string[] = [],
+  deps: TriageSheetDeps = productionTriageSheetDeps()
+): Promise<Map<string, Triage>> {
+  llm ??= (await import("./_core/llm")).invokeLLM as unknown as (p: unknown) => Promise<unknown>;
+  const out = new Map<string, Triage>();
+  const withSubjects = subjects.length > 0;
+  for (let at = 0; at < items.length; at += TRIAGE_BATCH) {
+    const chunk = items.slice(at, at + TRIAGE_BATCH).filter((it) => it.thumb);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-triage-"));
+    try {
+      const files: string[] = [];
+      const kept: SearchItem[] = [];
+      const bytes = await Promise.all(chunk.map((it) => deps.fetchThumb(it.thumb).catch(() => null)));
+      chunk.forEach((it, i) => {
+        if (!bytes[i]?.length) return;
+        const f = path.join(dir, `raw_${i}.jpg`);
+        fs.writeFileSync(f, bytes[i]!);
+        files.push(f);
+        kept.push(it);
+      });
+      /** Fewer than two on a sheet is no saving: those are asked alone by the caller. */
+      if (kept.length < 2) continue;
+      const sheet = path.join(dir, "sheet.jpg");
+      if (!(await deps.compose(files, sheet))) continue;
+      const resp = await Promise.race([
+        llm({
+          messages: [
+            { role: "system", content: "You triage YouTube results for a documentary editor. Return only JSON." },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: youtubeTriageBatchPrompt(kept, title, sentences, subjects) },
+                { type: "image_url", image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(sheet).toString("base64")}`, detail: "high" } },
+              ],
+            },
+          ],
+          response_format: triageBatchSchema(withSubjects),
+          maxTokens: 120 * kept.length + 200,
+        }),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("triage sheet timeout")), 60_000)),
+      ]).catch(() => null);
+      const answers = resp ? parseTriageBatchAnswer(llmText(resp), kept.length, withSubjects) : new Map<number, Triage>();
+      answers.forEach((t, n) => out.set(kept[n - 1]!.videoId, t));
+      console.log(`[YouTubePool] thumbnail sheet: ${kept.length} thumbnail(s), one look — ${answers.size} answered, ${kept.length - answers.size} asked alone`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  return out;
 }

@@ -1,3 +1,4 @@
+import { noteRenderCost } from "../renderCostLedger";
 /**
  * Application-side LLM daily spend cap.
  *
@@ -157,9 +158,12 @@ export function recordLlmUsage(
   model: string,
   promptTokens: number,
   completionTokens: number,
-  userId?: number | null
+  userId?: number | null,
+  /** VIDEO 659 (cost) — whether the call carried an image, for the render's cost line. */
+  hasVision = false
 ): void {
   const costUsd = estimateCostUsd(model, promptTokens, completionTokens);
+  noteRenderCost({ llmCalls: 1, visionCalls: hasVision ? 1 : 0, promptTokens, completionTokens, llmUsd: costUsd });
   const day = todayUtc();
   // Immediate local increment so same-process budget checks are exact without waiting on the
   // DB round trip below.

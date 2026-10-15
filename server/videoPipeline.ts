@@ -283,6 +283,8 @@ import { videoMainSubject } from "./mainSubject";
 import { queryNames, sentencesOf } from "./youtubeVideoSearchPlanner";
 import { readPeopleInNarration } from "./personNames";
 import { noteSameVideoRefusal, sameVideoRefusedEnough, type SameVideoRefusals } from "./sameVideoRefusals";
+import { noteRenderCost, takeRenderCostLine } from "./renderCostLedger";
+import { clearSheetApprovals, composeSheetWithFfmpeg, fetchSharpFramesFromService, fetchStoryboardFromService, lookBeforeDownload, parseYoutubeMomentKey, rememberSheetApprovals, SHEET_SCHEMA, sheetApprovalFor, transcriptSegmentsFromJson3 } from "./youtubePreviewSheet";
 import { addStockSection, beatRowsInStockOrder, claimLateStock, stockSectionStarts, stockVideoTargeted, stockedVideoIds, STOCK_SECTION_SEC, isStocked, isStockReady, MAX_STOCK_ATTEMPTS, unofferedReadyStock, MAX_STOCK_VIDEOS, releaseYoutubeShotStock, STOCK_FIRST_BATCH, startYoutubeShotStock, stockOrder, stockSummary, stockVideoState, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
 import {
   chooseMoments,
@@ -365,7 +367,7 @@ import {
 } from "./mandatoryPictureChecks";
 import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, maxBeatImageJudgementsPerRender, type BeatImageGateState } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
-import { createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, grantLastLookAllowance, maxRelevanceLooksPerBeat, pictureJudgedOnBeat, youtubeForLastLook, giveLastLookTo, isYoutubeContentKey, pictureLookedAtOnBeat, youtubeLookedAtOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
+import { beatIdentityKey, createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, grantLastLookAllowance, maxRelevanceLooksPerBeat, pictureJudgedOnBeat, youtubeForLastLook, giveLastLookTo, isYoutubeContentKey, pictureLookedAtOnBeat, youtubeLookedAtOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
 import {
   coverageOfAdoptEntry,
   formatBeatVisualProblems,
@@ -6828,6 +6830,8 @@ async function synthesizeElevenLabsVoice(
         await new Promise((r) => setTimeout(r, 600 + attempt * 600));
         continue;
       }
+      /** VIDEO 659 (cost) — ElevenLabs bills the characters it spoke. */
+      if (response.ok) noteRenderCost({ voiceChars: text.length });
       if (!response.ok) {
         const errText = await response.text();
         // Any non-429 failure means ElevenLabs isn't usable right now — quota, auth, payment,
@@ -8170,6 +8174,7 @@ async function fetchSerpAPIImages(
   const results: string[] = [];
   try {
     const searchUrl = new URL('https://serpapi.com/search.json');
+    noteRenderCost({ serpapiSearches: 1 });
     searchUrl.searchParams.set('engine', 'google_images');
     searchUrl.searchParams.set('q', query);
     searchUrl.searchParams.set('safe', 'active');
@@ -8513,6 +8518,28 @@ export function textCheckForClip(dedup: object, contentKey: string): TextCheck |
   return (contentKey && textChecksByRender.get(dedup)?.get(contentKey)) || null;
 }
 
+/**
+ * VIDEO 659 — A SHOT APPROVED ON SHARP FRAMES ALREADY HAD ITS TEXT LOOKED AT.
+ *
+ * The sharp look (`lookBeforeDownload`, step 3) refuses a frame with burned-in subtitles, a
+ * watermark, caption text or a picture mostly covered by text, on the full-quality frame. A moment
+ * that holds such an approved frame for THIS sentence is recorded as `clean` here, so neither the
+ * adopt route nor the mandatory check pays a second, separate text look for it. Every other picture
+ * is text-checked exactly as before.
+ */
+export function sheetApprovedTextClean(
+  dedup: object,
+  contentKey: string,
+  sentence: string,
+  filmId: number | null | undefined = getActiveVideoId()
+): boolean {
+  const moment = parseYoutubeMomentKey(contentKey);
+  if (!moment || filmId == null || !sentence?.trim()) return false;
+  if (!sheetApprovalFor(filmId, moment.assetKey, moment.startSec, moment.endSec, sentence)) return false;
+  noteTextCheck(dedup, contentKey, "clean");
+  return true;
+}
+
 /** The picture editor's answer on record for THIS picture under THIS sentence — never another sentence's. */
 export function recordedContentForSentence(
   dedup: Pick<VisualDedupState, "beatRelevance">,
@@ -8564,6 +8591,8 @@ export async function checkPictureForSentence(
     recordedText: () => {
       const known = textCheckForClip(dedup, contentKey);
       if (known) return known;
+      /** VIDEO 659 — the sharp look already refused text on this moment's approved frame. */
+      if (sheetApprovedTextClean(dedup, contentKey, beat.text)) return "clean";
       /** An archive row carries its own text verdict from its intake: 0 is "looked, no text". */
       const archiveId = dedup.sourcingCache?.lineage?.resolve(clipPath, contentKey)?.archiveAssetId;
       if (archiveId != null) {
@@ -9632,6 +9661,7 @@ async function fetchBeatArticleScreenshot(
     let results: NewsResult[] = [];
     try {
       const url = new URL("https://serpapi.com/search.json");
+      noteRenderCost({ serpapiSearches: 1 });
       url.searchParams.set("engine", "google_news");
       url.searchParams.set("q", query);
       url.searchParams.set("api_key", SERPAPI_KEY);
@@ -11578,6 +11608,90 @@ export function formatTargetedPoolEntry(
   return lines;
 }
 
+/** VIDEO 659 — the look before the download; `YOUTUBE_LOOK_BEFORE_DOWNLOAD=false` switches it off. */
+export function youtubeLookBeforeDownloadEnabled(): boolean {
+  return process.env.YOUTUBE_LOOK_BEFORE_DOWNLOAD?.trim().toLowerCase() !== "false";
+}
+
+/**
+ * VIDEO 659 — one contact sheet of a pool video, one look, before the stock downloads anything.
+ * What it approves is remembered for the sentences (`rememberSheetApprovals`); see
+ * `youtubePreviewSheet.ts` for the whole route. Never throws: anything that goes wrong is
+ * `no_sheet`, and the stock then downloads as it always has.
+ */
+export async function lookAtYoutubeVideoBeforeDownload(
+  filmId: number,
+  sentences: readonly string[],
+  c: { videoId: string; title: string; durationSec: number },
+  workDir: string
+): Promise<
+  | { kind: "approved"; windows: ReadonlyArray<{ startSec: number; durationSec: number }> }
+  | { kind: "nothing_fits" }
+  | { kind: "no_sheet"; reason: string }
+> {
+  if (visionPipelineIsUnavailable()) return { kind: "no_sheet", reason: "the picture editor is unavailable" };
+  try {
+    const { invokeLLM } = await import("./_core/llm");
+    const fontFile = path.join(__dirname, "remotion", "fonts", "Inter.ttf");
+    const outcome = await lookBeforeDownload({
+      videoId: c.videoId,
+      title: c.title,
+      sentences,
+      durationSec: c.durationSec,
+      deps: {
+        workDir: path.join(workDir, "ytsheet"),
+        fetchStoryboard: (id) => fetchStoryboardFromService(id),
+        /** Step 3 — sharp frames of the candidates' seconds, read from the stream, not downloaded. */
+        fetchSharpFrames: (id, secs, outPath) => fetchSharpFramesFromService(id, secs, outPath),
+        fetchBytes: async (url) => {
+          const r = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+          return r.ok ? Buffer.from(await r.arrayBuffer()) : null;
+        },
+        fetchTranscript: async (url) => {
+          const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+          return r.ok ? transcriptSegmentsFromJson3(await r.json()) : [];
+        },
+        compose: (frames, outPath) => composeSheetWithFfmpeg(FFMPEG_BIN, fs.existsSync(fontFile) ? fontFile : null, frames, outPath),
+        ask: async (prompt, sheetPath) => {
+          const resp = await Promise.race([
+            invokeLLM({
+              messages: [
+                { role: "system", content: "You are a documentary picture editor. Return only JSON." },
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text: prompt },
+                    { type: "image_url", image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(sheetPath).toString("base64")}`, detail: "high" } },
+                  ],
+                },
+              ],
+              response_format: SHEET_SCHEMA,
+              maxTokens: 2_400,
+            } as never),
+            new Promise<never>((_, rej) => setTimeout(() => rej(new Error("sheet look timeout")), 60_000)),
+          ]);
+          const content = (resp as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content;
+          return typeof content === "string" ? content : Array.isArray(content) ? content.map((p) => (p as { text?: string }).text ?? "").join("") : null;
+        },
+      },
+    });
+    /** Only a verdict given on SHARP frames stands for the sentence; candidates from the storyboard alone are judged after the download. */
+    if (outcome.kind === "approved" && outcome.confirmed) {
+      rememberSheetApprovals(
+        filmId,
+        providerAssetKey("youtube_cc", c.videoId),
+        outcome.picks.flatMap((p) => p.sentences.map((i) => ({ sec: p.sec, sentence: sentences[i] ?? "", depicts: p.depicts })))
+      );
+      return { kind: "approved", windows: outcome.windows };
+    }
+    if (outcome.kind === "approved") return { kind: "approved", windows: outcome.windows };
+    if (outcome.kind === "nothing_fits") return { kind: "nothing_fits" };
+    return outcome;
+  } catch (err) {
+    return { kind: "no_sheet", reason: (err as Error)?.message?.slice(0, 80) ?? "threw" };
+  }
+}
+
 export function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir: string): VideoYoutubePool {
   try {
     const usable = withoutUnusableYoutubeVideos(
@@ -11608,6 +11722,8 @@ export function stockYoutubePool(filmId: number, pool: VideoYoutubePool, workDir
       {
         workDir,
         startFor: pickLongVideoStartSec,
+        /** VIDEO 659 — one look at the whole video before any of it is downloaded (`lookBeforeDownload`). */
+        ...(youtubeLookBeforeDownloadEnabled() ? { look: (c: { videoId: string; title: string; durationSec: number }) => lookAtYoutubeVideoBeforeDownload(filmId, pool.sentences, c, workDir) } : {}),
         /** W3 — a replacement the render has meanwhile written off (failure memory) is passed over. */
         skip: (ytId) => youtubeDownloadRefusal(ytId) != null || youtubeVideoUnusable(ytId) != null,
         download: async (ytId, startSec, durationSec, outPath, title) => {
@@ -12674,6 +12790,8 @@ export async function downloadYouTubeCCClip(
           transferStarted = true;
         }
       );
+      /** VIDEO 659 (cost) — every byte of a cut comes through the paid proxy. */
+      if (dlResp.ok) noteRenderCost({ youtubeDownloads: 1, youtubeBytes: bytesWritten ?? 0 });
       if (!dlResp.ok) {
         const errText = await dlResp.text().catch(() => "");
         /**
@@ -22010,7 +22128,10 @@ async function adoptClip(
        * clip with text is passed over and the beat's time goes to the next candidate. Memoised
        * under the key the archive uses, so the push reads it back instead of paying twice.
        */
-      if (clipRequiresFairUseTransform(p)) {
+      /** VIDEO 659 — approved on the sharp frames for this sentence: its text was looked at there. */
+      if (clipRequiresFairUseTransform(p) && sheetApprovedTextClean(dedup, contentKey, beatText)) {
+        console.log(`[OnScreenText] s${sceneIndex}b${beatIndex}: ${path.basename(p)} — text looked at on the sharp frames before the download; no second text look`);
+      } else if (clipRequiresFairUseTransform(p)) {
         const textStartedMs = Date.now();
         const text = await judgeOnScreenText({
           path: p,
@@ -25876,6 +25997,39 @@ function noteEligibleForJudgement(
   return recorded;
 }
 
+/**
+ * VIDEO 659 — THE CONTACT SHEET'S VERDICT, FILED WHERE THE PICTURE EDITOR READS ITS OWN.
+ *
+ * `lookBeforeDownload` asked once, for the whole video, which frame fits which sentence, and only the
+ * approved seconds were downloaded. A moment cut from them that holds an approved frame for THIS
+ * sentence gets that verdict in the gate's own render memory (`state.seen`, the same key
+ * `judgeBeatImage` reads), so the sentence pays no second look. A moment without one — another
+ * sentence, or seconds the sheet did not approve — is judged exactly as before.
+ */
+export function seedSheetApproval(
+  params: Pick<BeatRelevanceParams, "contentKey" | "state">,
+  ctx: BeatVisualContext,
+  filmId: number | null | undefined = getActiveVideoId()
+): boolean {
+  const moment = parseYoutubeMomentKey(params.contentKey);
+  if (!moment || filmId == null || !params.state?.seen || !ctx.beatText?.trim()) return false;
+  const approval = sheetApprovalFor(filmId, moment.assetKey, moment.startSec, moment.endSec, ctx.beatText);
+  if (!approval) return false;
+  const key = `${params.contentKey}|${beatIdentityKey(ctx)}`;
+  if (params.state.seen.has(key)) return false;
+  params.state.seen.set(key, {
+    verdict: "fits",
+    depicts: approval.depicts,
+    reason: "approved on the video's contact sheet before it was downloaded (one look for the whole video)",
+    evaluated: true,
+  });
+  console.log(
+    `[YouTubeSheet] s${ctx.sceneIndex}b${ctx.beatIndex} ${params.contentKey} approved before the download ` +
+      `(frame @${approval.sec}s: "${approval.depicts.slice(0, 80)}") — no second look`
+  );
+  return true;
+}
+
 async function judgeBeatClipRelevance(
   dedup: VisualDedupState,
   sceneIndex: number,
@@ -25911,6 +26065,8 @@ async function judgeBeatClipRelevance(
   if (line && !params.ctx.line) params = { ...params, ctx: { ...params.ctx, line } };
   /** VIDEO 627 — a beat searched on something else is still judged on its own sentence. */
   const ownSentence = dedup.beatJudgeTextOverride?.get(`${sceneIndex}:${beatIndex}`);
+  /** VIDEO 659 — a moment the contact sheet already approved for this sentence is not looked at again. */
+  seedSheetApproval(params, ownSentence?.trim() ? { ...params.ctx, beatText: ownSentence } : params.ctx);
   const { decision } = await judgePicture({
     ...params,
     ...(ownSentence?.trim() ? { ctx: { ...params.ctx, beatText: ownSentence } } : {}),
@@ -27277,7 +27433,10 @@ export async function runVideoPipeline(
       );
     }
     releaseYoutubeShotStock(videoId);
+    clearSheetApprovals(videoId);
     setRecentYoutubeUsageForFilm(videoId, null);
+    /** VIDEO 659 (cost) — what this video cost, on one line, whatever the ending. */
+    console.log(takeRenderCostLine(videoId));
   }
 }
 

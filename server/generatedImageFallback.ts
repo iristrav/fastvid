@@ -24,6 +24,7 @@
  * likeness: a sentence that names a person is not generated at all, nor one whose plan forbids AI
  * imagery. A sentence with too little to show (fewer than two subject words) gets nothing.
  */
+import { noteRenderCost } from "./renderCostLedger";
 import fs from "node:fs";
 
 import { classifyProviderFailure, formatProviderCooldown } from "./providerFailureClass";
@@ -177,6 +178,8 @@ const stabilityGenerator: StillImageGenerator = async (prompt, outPng) => {
       body: form,
       signal: controller.signal,
     });
+    /** VIDEO 659 (cost) — a generated still is billed when the service answers with it. */
+    if (resp.ok) noteRenderCost({ aiStills: 1 });
     if (!resp.ok) {
       console.warn(`[${GENERATED_IMAGE_FALLBACK}] the image service answered HTTP ${resp.status}`);
       if (ACCOUNT_REFUSAL_STATUSES.has(resp.status)) {
