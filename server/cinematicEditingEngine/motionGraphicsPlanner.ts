@@ -22,6 +22,7 @@ import type { MotionGraphicInstruction } from "./types";
 import { graphicIsRenderable } from "../graphicsVocabulary";
 import { graphicLabel, rendererGraphicType } from "../edlToTimeline";
 import { sentenceWords, subjectWords } from "../youtubeNonFootage";
+import { keyWordsIn } from "../animationFloor";
 
 /** The renderer's answer for one planned graphic, under the name and label the timeline gives it. */
 export function plannedGraphicIsDrawable(g: Pick<MotionGraphicInstruction, "data"> & { graphicType: string }): boolean {
@@ -99,6 +100,40 @@ export function spokenStat(text: string | undefined): (ReturnType<typeof parseNu
     return { ...stat, label: `${stat.prefix}${stat.token}${unit}` };
   }
   return null;
+}
+
+/** Whether a label says nothing but its figure: "10%", "10 %", "10 percent" (same rule as the ring). */
+function labelOnlyRestatesFigure(label: string, value: number): boolean {
+  const words = label.toLowerCase().replace(/percent/g, "").replace(/[\d.,%\s]/g, "");
+  const digits = label.replace(/[^\d.]/g, "");
+  return words === "" && digits !== "" && Number(digits) === value;
+}
+
+/**
+ * VIDEO 660 — a percentage on screen says what it is a percentage OF. Render 69 opened on a ring that
+ * counted to 10% with nothing under it ("10%" restated the figure and was dropped): it read as a
+ * loading indicator. The label is the sentence's own words — the key words of the clause that says
+ * the figure ("By mid-2026, Europe's inflation soared past 10%, …" → "Europe's inflation soared"),
+ * else of the whole sentence. Nothing is added; no words, no label.
+ */
+export function percentLabelFrom(text: string | undefined, token: string): string | null {
+  const t = (text ?? "").trim();
+  if (!t) return null;
+  /** Every figure goes, with its unit: the label says what the figure is, the figure itself is drawn large. */
+  const strip = (s: string) =>
+    s
+      .replace(/\d[\d.,]*\s*(%|per\s?cent\b|percentage points?\b)?/gi, " ")
+      .split(token)
+      .join(" ")
+      .replace(/%|\bper\s?cent\b/gi, " ");
+  const clause = t.split(/[,;:.!?—–]/).find((c) => c.includes(token));
+  return (clause && keyWordsIn(strip(clause))) || keyWordsIn(strip(t));
+}
+
+/** The label of a percentage graphic: the callout or spoken label when it says more than the figure, else the sentence's words. */
+function percentLabel(label: string, value: number, token: string, spokenText: string | undefined): string {
+  if (!labelOnlyRestatesFigure(label, value)) return label;
+  return percentLabelFrom(spokenText, token) ?? label;
 }
 
 /**
@@ -241,7 +276,12 @@ export function planMotionGraphics(
         out.push(
           graphic(
             "progress_bar",
-            { toValue: Math.min(100, parsed.value), suffix: "%", label: scene.statCallout, anchorWord: parsed.token },
+            {
+              toValue: Math.min(100, parsed.value),
+              suffix: "%",
+              label: percentLabel(scene.statCallout, parsed.value, parsed.token, intent.spokenText),
+              anchorWord: parsed.token,
+            },
             beatVoiceStartSec,
             dur,
             `Scene's stat callout ("${scene.statCallout}") is a percentage — shown as a filling progress bar.`
@@ -282,7 +322,12 @@ export function planMotionGraphics(
       spoken.suffix === "%"
         ? graphic(
             "progress_bar",
-            { toValue: Math.min(100, spoken.value), suffix: "%", label: spoken.label, anchorWord: spoken.token },
+            {
+              toValue: Math.min(100, spoken.value),
+              suffix: "%",
+              label: percentLabel(spoken.label, spoken.value, spoken.token, intent.spokenText),
+              anchorWord: spoken.token,
+            },
             beatVoiceStartSec,
             dur,
             `Narration states a percentage ("${spoken.label}") — shown as a filling progress bar.`

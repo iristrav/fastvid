@@ -87,6 +87,28 @@ export function nameIn(text: string): string | null {
   return best.length ? best.join(" ") : null;
 }
 
+/**
+ * VIDEO 660 — a short phrase of the sentence, in reading order: the first run of two or three words
+ * that are not filler, clause by clause ("By loosening monetary controls while …" → "loosening
+ * monetary controls"). Null when no clause has two such words in a row.
+ */
+export function phraseIn(text: string): string | null {
+  for (const clause of text.split(/[,;:.!?—–()"“”]/)) {
+    let run: string[] = [];
+    for (const w of clause.split(/\s+/).filter(Boolean)) {
+      if (STOPWORDS.has(w.toLowerCase()) || w.length < 3 || /^\d/.test(w)) {
+        if (run.length >= 2) break;
+        run = [];
+        continue;
+      }
+      run.push(w);
+      if (run.length === 3) break;
+    }
+    if (run.length >= 2) return run.join(" ");
+  }
+  return null;
+}
+
 /** The sentence's key words: the longest run of up to three words that are not filler. */
 export function keyWordsIn(text: string): string | null {
   const words = text.replace(/[.,;:!?"“”()]/g, " ").split(/\s+/).filter(Boolean);

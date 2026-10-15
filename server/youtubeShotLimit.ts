@@ -47,12 +47,16 @@ export type YoutubeSourceFacts = {
 /**
  * `speed` (below 1) when the piece is played slower so it need not repeat a window — VIDEO 636.
  * `hold` when the source has no different footage left: the piece is the last frame before it, held
- * (`holdAtSourceOut`) — VIDEO 656.
+ * (`holdAtSourceOut`) — VIDEO 656. With `readsSec` it first plays that much of the source not yet
+ * shown, then holds the frame it ends on — VIDEO 660.
  */
-export type YoutubePiece = { inSec: number; durationSec: number; speed?: number; hold?: boolean };
+export type YoutubePiece = { inSec: number; durationSec: number; speed?: number; hold?: boolean; readsSec?: number };
 
 /** VIDEO 656 — how much source a held piece reads: one frame and a little, then that frame holds. */
 export const YOUTUBE_HOLD_READ_SEC = 0.05;
+
+/** VIDEO 660 — unshown source shorter than this is not worth playing before a hold (a frame or two). */
+export const YOUTUBE_UNUSED_MIN_SEC = 0.1;
 
 /**
  * The slowest a piece is played rather than repeat a window: the renderer's `MIN_FIT_SPEED`.
@@ -241,12 +245,42 @@ export function planYoutubePieces(params: {
    * piece before it ended on, held: the picture stops instead of starting over.
    */
   const pieces: YoutubePiece[] = [];
+  /**
+   * VIDEO 660 — a 4.00 s source over 7.06 s played 0–3.53 and then held 3.48 for 3.53 s: the 0.47 s
+   * after the last window was never shown. The first held piece now plays those seconds first —
+   * up to the end of the last window's shot, never into a window already on screen — and only then
+   * holds its last frame. A later held piece first plays a shot of the source no piece showed, when
+   * that shot is a piece's minimum long (a cut like any other piece's, never a flash). Nothing is
+   * repeated and every piece keeps its length.
+   */
+  const lastEnd = order.length > 0 ? order[order.length - 1]! + reads : 0;
+  const unused = unshownParts(usable, order, reads);
   for (let i = 0; i < count; i++) {
     if (i < order.length) {
       pieces.push({ inSec: round(order[i]!), durationSec: round(len), ...(speed < 1 ? { speed } : {}) });
       continue;
     }
-    const lastFrame = Math.max(0, order[order.length - 1]! + reads - YOUTUBE_HOLD_READ_SEC);
+    /** The seconds right after the last window first (they continue its picture), then another unshown shot. */
+    const next =
+      unused.find((u) => Math.abs(u.start - lastEnd) <= EPS && u.end - u.start >= YOUTUBE_UNUSED_MIN_SEC - EPS) ??
+      unused.find((u) => u.end - u.start >= YOUTUBE_STRICT_MIN_PIECE_SEC - EPS);
+    if (next) {
+      const readsSec = Math.min(next.end - next.start, len);
+      pieces.push({
+        inSec: round(next.start),
+        durationSec: round(len),
+        ...(readsSec < len - EPS ? { hold: true, readsSec: round(readsSec) } : {}),
+      });
+      notes.push(
+        `piece ${i + 1} plays ${next.start.toFixed(2)}–${(next.start + readsSec).toFixed(2)}s of the source, not yet ` +
+          `shown, before it holds its last frame`
+      );
+      next.start += readsSec;
+      continue;
+    }
+    const prior = pieces[pieces.length - 1]!;
+    const priorEnd = prior.inSec + (prior.hold ? (prior.readsSec ?? YOUTUBE_HOLD_READ_SEC) : reads);
+    const lastFrame = Math.max(0, priorEnd - YOUTUBE_HOLD_READ_SEC);
     pieces.push({ inSec: round(lastFrame), durationSec: round(len), hold: true });
   }
   if (count > order.length) {
@@ -259,7 +293,29 @@ export function planYoutubePieces(params: {
   if (Math.abs(pieces[0]!.inSec - params.inSec) > EPS) {
     notes.push(`in-point moved ${params.inSec.toFixed(2)}s → ${pieces[0]!.inSec.toFixed(2)}s so the piece holds no cut`);
   }
-  return { pieces, notes, distinct: Math.min(count, order.length) };
+  /** The pieces before the first held one: an unshown shot as long as a piece counts as its own footage. */
+  const firstHold = pieces.findIndex((p) => p.hold);
+  return { pieces, notes, distinct: firstHold < 0 ? pieces.length : firstHold };
+}
+
+/** VIDEO 660 — the parts of the usable shots that no window `[w, w + reads)` shows, in source order. */
+function unshownParts(
+  usable: ReadonlyArray<{ start: number; end: number }>,
+  windows: readonly number[],
+  reads: number
+): Array<{ start: number; end: number }> {
+  const shown = [...windows].sort((a, b) => a - b).map((w) => ({ start: w, end: w + reads }));
+  const out: Array<{ start: number; end: number }> = [];
+  for (const seg of usable) {
+    let at = seg.start;
+    for (const s of shown) {
+      if (s.end <= seg.start + EPS || s.start >= seg.end - EPS) continue;
+      if (s.start > at + EPS) out.push({ start: at, end: Math.min(s.start, seg.end) });
+      at = Math.max(at, s.end);
+    }
+    if (seg.end > at + EPS) out.push({ start: at, end: seg.end });
+  }
+  return out;
 }
 
 /**
@@ -448,7 +504,7 @@ export function limitYoutubeShots(params: {
         ...clip,
         id: plan.pieces.length === 1 ? clip.id : `${clip.id}_p${k + 1}`,
         sourceIn: p.inSec,
-        sourceOut: round(p.inSec + (p.hold ? YOUTUBE_HOLD_READ_SEC : (end - at) * (p.speed ?? 1))),
+        sourceOut: round(p.inSec + (p.hold ? (p.readsSec ?? YOUTUBE_HOLD_READ_SEC) : (end - at) * (p.speed ?? 1))),
         timelineStart: round(at),
         timelineEnd: end,
         ...(p.speed != null ? { speed: p.speed } : {}),

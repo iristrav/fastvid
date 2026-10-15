@@ -660,3 +660,67 @@ describe("the fixture is a real video", () => {
     }
   });
 });
+
+/* ═════════════ VIDEO 660 — two moments of one source are two archive assets ═════════════ */
+
+describe("VIDEO 660 — the provider id names a source, not the moment cut from it", () => {
+  const youtubeRun = (archive: ReturnType<typeof fakeArchive>, localPath: string, metadata = metadataFor("youtube_cc", "Lagarde")) =>
+    storeForProduction({
+      localPath, provider: "youtube_cc", providerAssetId: "qhLHbY9kVR4", metadata,
+      deps: archive.deps,
+      ctx: { projectId: 660, provider: "youtube_cc", providerAssetId: "qhLHbY9kVR4" },
+      verifyDir, log: () => {},
+    });
+
+  it("MEASURED: the moments at 454 s and 533 s of qhLHbY9kVR4 get TWO archive assets, both stored", async () => {
+    if (!ffmpegAvailable) return;
+    const at454 = path.join(workDir, "scene_2_ytfu_0m0_t454d40.mp4");
+    const at533 = path.join(workDir, "scene_2_ytfu_0m1_t533d40.mp4");
+    makeRealVideo(at454, 4);
+    makeRealVideo(at533, 5);
+    const archive = fakeArchive();
+    const a = await youtubeRun(archive, at454);
+    const b = await youtubeRun(archive, at533);
+    expect(archiveStoreSucceeded(a) && archiveStoreSucceeded(b)).toBe(true);
+    if (!archiveStoreSucceeded(a) || !archiveStoreSucceeded(b)) return;
+    expect(a.archiveAssetId).not.toBe(b.archiveAssetId);
+    expect(b.reused, "the second moment is its own file, not the first moment's").toBe(false);
+    expect(archive.ingestCalls, "both moments' bytes were stored").toHaveLength(2);
+  }, 60_000);
+
+  it("MEASURED: the identical moment stored twice is still ONE asset (checksum)", async () => {
+    if (!ffmpegAvailable) return;
+    const first = path.join(workDir, "moment.mp4");
+    const again = path.join(workDir, "moment-again.mp4");
+    makeRealVideo(first, 4);
+    fs.copyFileSync(first, again);
+    const archive = fakeArchive();
+    const a = await youtubeRun(archive, first);
+    const b = await youtubeRun(archive, again);
+    if (!archiveStoreSucceeded(a) || !archiveStoreSucceeded(b)) throw new Error("store failed");
+    expect(b.archiveAssetId).toBe(a.archiveAssetId);
+    expect(b.reusedBy).toBe("checksum");
+    expect(archive.ingestCalls).toHaveLength(1);
+  }, 60_000);
+
+  it("MEASURED: a photograph (image mime type, even inside a video file) keeps its provider-id reuse", async () => {
+    if (!ffmpegAvailable) return;
+    const one = path.join(workDir, "photo-a.mp4");
+    const two = path.join(workDir, "photo-b.mp4");
+    makeRealVideo(one, 4);
+    makeRealVideo(two, 6);
+    const archive = fakeArchive();
+    const photo = { ...metadataFor("serpapi", "map"), mimeType: "image/jpeg" };
+    const run = (localPath: string) =>
+      storeForProduction({
+        localPath, provider: "serpapi", providerAssetId: "https://example.invalid/map.jpg", metadata: photo,
+        deps: archive.deps, ctx: { projectId: 660, provider: "serpapi", providerAssetId: "map" },
+        verifyDir, log: () => {},
+      });
+    const a = await run(one);
+    const b = await run(two);
+    if (!archiveStoreSucceeded(a) || !archiveStoreSucceeded(b)) throw new Error("store failed");
+    expect(b.archiveAssetId).toBe(a.archiveAssetId);
+    expect(b.reusedBy).toBe("provider_asset_id");
+  }, 60_000);
+});

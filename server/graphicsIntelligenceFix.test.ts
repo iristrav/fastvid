@@ -234,7 +234,18 @@ describe("2 — good footage wins, and the MediaForm decides which graphic may s
 describe("3 — a figure the sentence says needs no statCallout", () => {
   it("'Inflation reached 10% in 2022.' → a 10% ring without a statCallout", () => {
     const g = plan("Inflation reached 10% in 2022.").find((x) => x.graphicType === "progress_bar");
-    expect(g?.data).toMatchObject({ toValue: 10, suffix: "%", label: "10%", anchorWord: "10" });
+    /** VIDEO 660 — the label says what the 10% is, in the sentence's own words; the figure itself is drawn large */
+    expect(g?.data).toMatchObject({ toValue: 10, suffix: "%", label: "Inflation reached", anchorWord: "10" });
+  });
+
+  it("VIDEO 660 — 'By mid-2026, Europe's inflation soared past 10%, …' → the 10% says what it is: 'Europe's inflation soared'", () => {
+    const g = plan("By mid-2026, Europe's inflation soared past 10%, leaving store shelves empty.").find((x) => x.graphicType === "progress_bar");
+    expect(g?.data).toMatchObject({ toValue: 10, suffix: "%", label: "Europe's inflation soared", anchorWord: "10" });
+  });
+
+  it("VIDEO 660 — a callout that already says more than its figure is kept as written", () => {
+    const g = plan("Inflation in the euro area reached 10% that year.", "10% inflation").find((x) => x.graphicType === "progress_bar");
+    expect(g?.data.label).toBe("10% inflation");
   });
 
   it("'70 million people died.' → a counter to 70 million", () => {
@@ -276,7 +287,7 @@ describe("3 — a figure the sentence says needs no statCallout", () => {
         expect(said).toContain(v);
       }
     }
-    expect(plan(text).find((x) => x.graphicType === "progress_bar")?.data.label).toBe("25%");
+    expect(plan(text).find((x) => x.graphicType === "progress_bar")?.data.label).toBe("Unemployment hit");
   });
 });
 

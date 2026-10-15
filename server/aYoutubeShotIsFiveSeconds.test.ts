@@ -147,9 +147,15 @@ describe("§2 — a scene with only YouTube: pieces from different moments", () 
     expect(notes.join(" ")).toMatch(/\d+ hold the last frame instead of a repeat/);
     const moving = pieces.filter((p) => !p.hold);
     expect(new Set(moving.map((p) => p.inSec)).size).toBe(moving.length);
-    /** the held piece is the frame the last moving piece ends on */
+    /**
+     * VIDEO 660 — the first held piece plays the 3.83 s after the last window (26.77–30.60) first;
+     * the pieces after it hold the frame that one ends on.
+     */
     const last = moving[moving.length - 1]!;
-    for (const h of pieces.filter((p) => p.hold)) expect(h.inSec).toBeCloseTo(last.inSec + last.durationSec - 0.05, 2);
+    const [first, ...rest] = pieces.filter((p) => p.hold);
+    expect(first!.inSec).toBeCloseTo(last.inSec + last.durationSec, 2);
+    expect(first!.inSec + first!.readsSec!).toBeCloseTo(30.6, 2);
+    for (const h of rest) expect(h.inSec).toBeCloseTo(30.6 - 0.05, 2);
   });
 
   it("every piece of the timeline is at most five seconds, and the span is unchanged", () => {

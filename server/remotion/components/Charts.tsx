@@ -445,6 +445,29 @@ export const PercentageRing: React.FC<{
   const rawLabel = readText(data, "label", "title");
   const label = rawLabel && ringLabelRestatesFigure(rawLabel, target) ? null : rawLabel;
 
+  /**
+   * VIDEO 660 — never a bare ring: a ring counting up with nothing under it reads as a loading
+   * indicator. Without a label that says what the figure is, only the figure is drawn, large.
+   */
+  if (!label) {
+    return (
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+        <text
+          x={W / 2}
+          y={H / 2 + 56}
+          fill={INK}
+          fontFamily={CHART_FONT}
+          fontSize={168}
+          fontWeight={800}
+          textAnchor="middle"
+          style={{ fontVariantNumeric: "tabular-nums" }}
+        >
+          {Math.round(shown)}%
+        </text>
+      </svg>
+    );
+  }
+
   return (
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
       <circle cx={W / 2} cy={H / 2} r={r} fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth={26} />
@@ -472,11 +495,9 @@ export const PercentageRing: React.FC<{
       >
         {Math.round(shown)}%
       </text>
-      {label && (
-        <text x={W / 2} y={H / 2 + 76} fill={MUTED} fontFamily={CHART_FONT} fontSize={26} textAnchor="middle">
-          {label}
-        </text>
-      )}
+      <text x={W / 2} y={H / 2 + r + 62} fill={INK} fontFamily={CHART_FONT} fontSize={34} fontWeight={600} textAnchor="middle">
+        {label}
+      </text>
     </svg>
   );
 };

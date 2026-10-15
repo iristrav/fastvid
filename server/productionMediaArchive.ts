@@ -490,7 +490,17 @@ export async function storeForProduction(params: {
   if (existingByChecksum) {
     return finish(existingByChecksum.id, existingByChecksum.storageKey, "checksum");
   }
-  if (providerAssetId) {
+  /**
+   * VIDEO 660 — the provider id names a whole SOURCE, not the moment cut from it. Two different
+   * moments of one YouTube video (qhLHbY9kVR4 at 454 s and 533 s) were both handed archive asset
+   * 61462: the second moment's file was never stored, a re-render read the first moment for both,
+   * and the repeat check removed two different approved pictures as "the same seconds". A video is
+   * therefore reused by its CHECKSUM only (the identical file, above); a still keeps the provider
+   * reuse, because for a picture the provider id does name exactly this picture — also when the
+   * picture travels as a video file (a photograph given a camera move keeps its image mime type).
+   */
+  const isFootage = expectVideo && !/^image\//i.test(params.metadata.mimeType ?? "");
+  if (providerAssetId && !isFootage) {
     const existingByProvider = await deps
       .findByProviderAsset?.(provider, providerAssetId)
       .catch(() => null);

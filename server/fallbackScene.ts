@@ -17,7 +17,7 @@
  * names it an EMERGENCY placeholder (QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER), never footage.
  */
 import { ON_SCREEN_TEXT_STYLE, type ProjectTimeline, type TimelineVideoClip } from "./projectTimeline";
-import { keyWordsIn, nameIn, yearIn } from "./animationFloor";
+import { keyWordsIn, nameIn, phraseIn, yearIn } from "./animationFloor";
 import { graphicIsRenderable } from "./graphicsVocabulary";
 import { pictureCheckMissing } from "./deliveryGate";
 import { sentenceCoverage } from "./sentenceCoverage";
@@ -46,14 +46,25 @@ export function isFallbackSceneClip(c: Pick<TimelineVideoClip, "source">): boole
   return c.source?.provider === SYNTHETIC_PLACEHOLDER_PROVIDER;
 }
 
-/** The words a fallback scene shows: the sentence's year, else a name it says, else its key words, else its first words. */
-export function fallbackSceneWords(text: string | null | undefined): { graphicType: string; label: string } | null {
+/**
+ * The words a fallback scene shows: the sentence's year, else a name it says — and, under it, a short
+ * phrase of the sentence's own key words (VIDEO 660: "ECB" alone on a coloured field said nothing; now
+ * "ECB" over "LOOSENING MONETARY CONTROLS"). Without a year or name: its key words, else its first
+ * words. Only the sentence's own words; nothing is added.
+ */
+export function fallbackSceneWords(
+  text: string | null | undefined
+): { graphicType: string; label: string; phrase?: string } | null {
   const t = (text ?? "").trim();
   if (!t) return null;
-  const year = yearIn(t);
-  if (year) return { graphicType: "date_card", label: year };
-  const name = nameIn(t);
-  if (name) return { graphicType: "label", label: name };
+  const anchor = yearIn(t) ?? nameIn(t);
+  if (anchor) {
+    const phrase = phraseIn(t.split(anchor).join(","));
+    /** a phrase that only repeats part of the anchor adds nothing */
+    const adds = phrase && !anchor.toLowerCase().includes(phrase.toLowerCase());
+    if (adds) return { graphicType: "lower_third", label: anchor, phrase };
+    return { graphicType: yearIn(t) === anchor ? "date_card" : "label", label: anchor };
+  }
   const key = keyWordsIn(t);
   if (key) return { graphicType: "emphasis", label: key };
   const first = t.replace(/[.,;:!?"“”()]/g, " ").split(/\s+/).filter(Boolean).slice(0, 4).join(" ");
@@ -181,26 +192,40 @@ export function applyFallbackScenes(timeline: ProjectTimeline, log: (line: strin
       id: graphicId,
       graphicType: words.graphicType,
       label: words.label,
-      data: { sceneIndex: clip.sceneIndex, beatIndex: clip.beatIndex, fallbackScene: true },
+      data: {
+        sceneIndex: clip.sceneIndex,
+        beatIndex: clip.beatIndex,
+        fallbackScene: true,
+        ...(words.phrase ? { subtitle: words.phrase } : {}),
+      },
       start: Number(a.toFixed(3)),
       end: Number(b.toFixed(3)),
       style: { ...ON_SCREEN_TEXT_STYLE },
       animation: "slide_up",
     });
-    out.captioned.push({ clipId: clip.id, graphicId, text: words.label, graphicType: words.graphicType });
-    log(`[FallbackScene] clip=${clip.id} ${keyOf(clip) ?? "no-sentence"} words="${words.label}" (${words.graphicType}) — fallback scene, not footage`);
+    const shown = words.phrase ? `${words.label} — ${words.phrase}` : words.label;
+    out.captioned.push({ clipId: clip.id, graphicId, text: shown, graphicType: words.graphicType });
+    log(`[FallbackScene] clip=${clip.id} ${keyOf(clip) ?? "no-sentence"} words="${shown}" (${words.graphicType}) — fallback scene, not footage`);
   }
   return out;
 }
 
 const MIN_PIECE_SEC = 0.1;
+/**
+ * VIDEO 660 — render 69 left 0.33 s of a neighbour's held frame (72.26–72.59) between the fallback
+ * scene and the next shot: a flash. A remainder the carve itself cuts off that is shorter than this
+ * is not kept; the fallback scene runs over it instead. A remainder that is the own picture of the
+ * sentence it lies in stays, however short — and a short shot the carve did not cut is never touched.
+ */
+export const CARVE_FLASH_SEC = 0.75;
 
 /**
  * VIDEO 660 — a sentence the strict delivery check would refuse because NO picture of its own is on
  * screen (only a neighbour's picture held over it, or nothing at all) gets a fallback scene of exactly
  * its spoken window. The neighbour's picture stops where the sentence starts and, if it ran past the
- * sentence, goes on after it; a neighbour's piece left shorter than 0.1 s is switched off (named).
- * Same rule as the gate: a sentence under its own card, picture or stand-in is left alone.
+ * sentence, goes on after it; a neighbour's piece left shorter than 0.1 s is switched off (named),
+ * and one left shorter than `CARVE_FLASH_SEC` that is no sentence's own picture there goes to the
+ * fallback scene. Same rule as the gate: a sentence under its own card, picture or stand-in is left alone.
  */
 export function carveScenesForSentencesWithoutPicture(
   timeline: ProjectTimeline,
@@ -209,7 +234,21 @@ export function carveScenesForSentencesWithoutPicture(
   const out: FallbackSceneResult["carved"] = [];
   const track = timeline.tracks.find((t) => t.kind === "VIDEO");
   if (track?.kind !== "VIDEO") return out;
-  for (const row of sentenceCoverage(timeline).sentences) {
+  const rows = sentenceCoverage(timeline).sentences;
+  /** The remainder [a, b) of `c` is the own picture of a sentence spoken there. */
+  const ownPictureThere = (c: TimelineVideoClip, a: number, b: number) =>
+    rows.some(
+      (r) =>
+        r.sceneIndex === c.sceneIndex &&
+        r.beatIndex === c.beatIndex &&
+        r.startSec != null &&
+        r.endSec != null &&
+        Math.min(b, r.endSec) - Math.max(a, r.startSec) > 0.01
+    );
+  /** A remainder the carve cut off that would only flash: shorter than `CARVE_FLASH_SEC` and no sentence's own picture. */
+  const flash = (c: TimelineVideoClip, a: number, b: number) =>
+    b - a > 0.001 && b - a < CARVE_FLASH_SEC && !ownPictureThere(c, a, b);
+  for (const row of rows) {
     if (row.status !== "uncovered" || row.spokenSec == null || row.startSec == null || row.endSec == null) continue;
     const standIn = Math.max(row.fallbackSceneSec ?? 0, row.syntheticPlaceholderSec ?? 0);
     if (row.coveredSec + row.cardSec + standIn >= row.spokenSec - 0.05) continue;
@@ -218,11 +257,51 @@ export function carveScenesForSentencesWithoutPicture(
     if (hi - lo < MIN_PIECE_SEC) continue;
     const trimmed: string[] = [];
     const added: TimelineVideoClip[] = [];
+    /** The fallback scene's own slot: the sentence, plus any flash it took over. */
+    let sceneLo = lo;
+    let sceneHi = hi;
     for (const c of track.clips) {
       if (c.disabled || c.timelineEnd <= lo + 0.001 || c.timelineStart >= hi - 0.001) continue;
       const start = c.timelineStart;
       const end = c.timelineEnd;
       const rate = c.still ? 0 : (c.speed ?? 1);
+      const headFlash = start < lo && flash(c, start, lo);
+      const tailFlash = end > hi && flash(c, hi, end);
+      if (headFlash) sceneLo = Math.min(sceneLo, start);
+      if (tailFlash) sceneHi = Math.max(sceneHi, end);
+      if ((start >= lo || headFlash) && (end <= hi || tailFlash)) {
+        /** nothing of it is left but flashes: the fallback scene takes all of it */
+        c.disabled = true;
+        trimmed.push(
+          start < lo || end > hi
+            ? `${c.id} would leave only ${(Math.max(0, lo - start) + Math.max(0, end - hi)).toFixed(2)}s — under ${CARVE_FLASH_SEC}s, the fallback scene takes it`
+            : `${c.id} (inside the sentence, another sentence's picture) switched off`
+        );
+        continue;
+      }
+      if (headFlash) {
+        /** only its tail after the sentence is kept */
+        if (typeof c.sourceIn === "number") c.sourceIn = Number((c.sourceIn + (hi - start) * rate).toFixed(3));
+        if (typeof c.sourceIn === "number" && typeof c.sourceOut === "number" && c.sourceOut <= c.sourceIn) {
+          c.sourceIn = Math.max(0, c.sourceOut - 0.04);
+          c.holdAtSourceOut = true;
+        }
+        c.timelineStart = Number(hi.toFixed(3));
+        c.transitionIn = "hard_cut";
+        trimmed.push(`${c.id} starts at ${hi.toFixed(2)}s; its ${(lo - start).toFixed(2)}s before the sentence goes to the fallback scene`);
+        continue;
+      }
+      if (tailFlash) {
+        /** only its head before the sentence is kept */
+        c.timelineEnd = Number(lo.toFixed(3));
+        c.transitionOut = "hard_cut";
+        trimmed.push(`${c.id} ends at ${lo.toFixed(2)}s; its ${(end - hi).toFixed(2)}s after the sentence goes to the fallback scene`);
+        if (c.timelineEnd - c.timelineStart < MIN_PIECE_SEC) {
+          c.disabled = true;
+          trimmed.push(`${c.id} left shorter than ${MIN_PIECE_SEC}s — switched off`);
+        }
+        continue;
+      }
       if (start < lo && end > hi) {
         /** the neighbour runs through the sentence: its head stays before it, its tail goes on after it */
         const tail: TimelineVideoClip = JSON.parse(JSON.stringify(c));
@@ -266,8 +345,8 @@ export function carveScenesForSentencesWithoutPicture(
       id: `vc_fallback_${row.key}`,
       kind: "video",
       source: { provider: "synthetic_placeholder" },
-      timelineStart: Number(lo.toFixed(3)),
-      timelineEnd: Number(hi.toFixed(3)),
+      timelineStart: Number(sceneLo.toFixed(3)),
+      timelineEnd: Number(sceneHi.toFixed(3)),
       motion: "none",
       transitionIn: "hard_cut",
       transitionOut: "hard_cut",
@@ -278,9 +357,9 @@ export function carveScenesForSentencesWithoutPicture(
     toFallbackScene(scene);
     track.clips.push(scene, ...added);
     track.clips.sort((a, b) => a.timelineStart - b.timelineStart);
-    out.push({ sentence: row.key, clipId: scene.id, slot: [lo, hi], trimmed });
+    out.push({ sentence: row.key, clipId: scene.id, slot: [sceneLo, sceneHi], trimmed });
     log(
-      `[FallbackScene] ${row.key} slot=${lo.toFixed(2)}-${hi.toFixed(2)}s had NO picture of its own (${(row.reasons ?? []).join("; ") || "nothing on screen"}) — ` +
+      `[FallbackScene] ${row.key} slot=${sceneLo.toFixed(2)}-${sceneHi.toFixed(2)}s had NO picture of its own (${(row.reasons ?? []).join("; ") || "nothing on screen"}) — ` +
         `a fallback scene of exactly this sentence (not footage)${trimmed.length ? `; ${trimmed.join("; ")}` : ""}`
     );
   }
