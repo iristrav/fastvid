@@ -11,9 +11,16 @@
  *   D   a FIT landing after the cap is placed; a picture still preparing is waited for at the end
  *   E   unapproved or technically refused answers are never placed, and say why
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import path from "path";
+
+/**
+ * Most tests here import the whole video pipeline (`await import("./videoPipeline")`). Under the
+ * full parallel suite that import alone can take longer than the default 5 s; the behaviour under
+ * test takes milliseconds. A load-only timeout, not a slower check.
+ */
+vi.setConfig({ testTimeout: 60_000 });
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
