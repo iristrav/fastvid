@@ -534,35 +534,27 @@ export async function fetchSharpFramesFromService(
   }
 }
 
-/** Crops each frame from its sprite, numbers it, and tiles them `SHEET_COLUMNS` wide. */
+/**
+ * Crops each frame from its sprite and tiles them `SHEET_COLUMNS` wide, in order.
+ *
+ * VIDEO 660 — no numbers are burned onto the frames. The bundled ffmpeg has no `drawtext`, so the
+ * attempt always failed and fell back anyway (and burned-in text is gated repo-wide, RONDE 113).
+ * The prompt numbers the frames by position — left to right, top to bottom — which is what the
+ * look has always been told.
+ */
 export async function composeSheetWithFfmpeg(
   ffmpegBin: string,
-  fontFile: string | null,
   frames: ReadonlyArray<{ sprite: string; x: number; y: number; w: number; h: number; n: number }>,
   outPath: string
 ): Promise<boolean> {
   const dir = fs.mkdtempSync(path.join(path.dirname(outPath), "sheetframes-"));
   try {
     const W = 320;
-    /** A build without `drawtext` (the bundled ffmpeg-static has none) still makes the sheet: the prompt numbers by position. */
-    let numbered = Boolean(fontFile);
     for (const f of frames) {
-      const crop = `crop=${f.w}:${f.h}:${f.x}:${f.y},scale=${W}:-2`;
-      const label = `,drawtext=fontfile='${(fontFile ?? "").replace(/'/g, "")}':text='${f.n}':x=6:y=6:fontsize=28:fontcolor=yellow:box=1:boxcolor=black@0.75:boxborderw=4`;
-      const run = (vf: string) =>
-        execFileAsync(ffmpegBin, [
-          "-y", "-loglevel", "error", "-i", f.sprite, "-vf", vf,
-          "-frames:v", "1", path.join(dir, `f${String(f.n).padStart(3, "0")}.jpg`),
-        ], { timeout: 15_000 });
-      if (numbered) {
-        try {
-          await run(crop + label);
-          continue;
-        } catch {
-          numbered = false;
-        }
-      }
-      await run(crop);
+      await execFileAsync(ffmpegBin, [
+        "-y", "-loglevel", "error", "-i", f.sprite, "-vf", `crop=${f.w}:${f.h}:${f.x}:${f.y},scale=${W}:-2`,
+        "-frames:v", "1", path.join(dir, `f${String(f.n).padStart(3, "0")}.jpg`),
+      ], { timeout: 15_000 });
     }
     const rows = Math.ceil(frames.length / SHEET_COLUMNS);
     await execFileAsync(ffmpegBin, [

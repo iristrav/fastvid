@@ -45,7 +45,8 @@ describe("Sound Effects Planner (Phase 4)", () => {
     expect(sounds.some((s) => s.soundType === "whoosh")).toBe(false);
   });
 
-  it("plans only sounds the catalogue can deliver — impact, typing, page turn, camera and ambience stay", () => {
+  /** VIDEO 660 — typing is heard only under text that types on screen, never planned from the words. */
+  it("plans only sounds the catalogue can deliver — impact, page turn, camera and ambience stay; typing does not", () => {
     const sounds = planSoundEffects(
       makeIntent({ spokenText: "Photographers took a photo of the collision while rain fell; he typed a message and turned the page." }),
       pacing("dramatic"),
@@ -54,7 +55,8 @@ describe("Sound Effects Planner (Phase 4)", () => {
       "whip"
     );
     const types = sounds.map((s) => s.soundType);
-    expect(types).toEqual(expect.arrayContaining(["camera_click", "impact", "rain", "typing", "page_turn"]));
+    expect(types).toEqual(expect.arrayContaining(["camera_click", "impact", "rain", "page_turn"]));
+    expect(types).not.toContain("typing");
     for (const t of types) expect(resolveSoundEffect(t).ok, t).toBe(true);
   });
 

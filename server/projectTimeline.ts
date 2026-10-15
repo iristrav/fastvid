@@ -354,7 +354,7 @@ export type TimelineVideoClip = {
  * `lower_center` and `custom` are new. `custom` is only meaningful with a `safeZone`, and falls
  * back to `bottom` without one rather than defaulting to a corner nobody chose.
  */
-export type TextPosition = "top" | "center" | "bottom" | "lower_third" | "lower_center" | "custom";
+export type TextPosition = "top" | "center" | "bottom" | "lower_third" | "lower_center" | "bottom_left" | "custom";
 
 /** A caller-defined region, in fractions of the frame. Used by `position: "custom"`. */
 export type TextSafeZone = {
@@ -717,6 +717,28 @@ export const DEFAULT_TEXT_STYLE: TextStyle = {
   color: "white",
   backgroundOpacity: 0,
   position: "center",
+};
+
+/**
+ * VIDEO 660 — TEXT IN THE PICTURE SITS BOTTOM LEFT, AT A NORMAL SIZE.
+ *
+ * The owner's rule: when text comes into the picture (a year, a name, a place, a quote, the opening
+ * word) it stands in the bottom-left corner, not big in the middle. 52 px is a little larger than
+ * a subtitle (46) and about 60% of the old centred size (86). Left-aligned, with the same thin
+ * outline subtitles have, because there is no box behind it.
+ *
+ * Graphics that ARE the picture (a sentence's map or chapter card) keep `DEFAULT_TEXT_STYLE`:
+ * they fill the frame by design.
+ */
+export const ON_SCREEN_TEXT_STYLE: TextStyle = {
+  fontSizePx: 52,
+  color: "white",
+  backgroundOpacity: 0,
+  outlineWidthPx: 2,
+  outlineColor: "rgba(0,0,0,0.85)",
+  position: "bottom_left",
+  align: "left",
+  maxCharsPerLine: 32,
 };
 
 /**

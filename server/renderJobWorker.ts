@@ -28,6 +28,7 @@
  * the previous good edit exactly where it was — a person who renders a broken change should not
  * lose the working video they had ten minutes ago.
  */
+import { makeSyntheticSfx, SYNTHETIC_SFX_PROVIDER } from "./typewriterSound";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -728,6 +729,13 @@ export async function runRenderJob(params: {
        * reached through the same production deps. Its `freesound` branch has existed since R166 and
        * had no caller on this path. No second fetcher, no second cache, no second key.
        */
+      /** VIDEO 660 — a sound the render makes itself (the typewriter) is drawn here, never fetched. */
+      if (clip.source.provider === SYNTHETIC_SFX_PROVIDER) {
+        const made = path.join(audioDir, `${clip.id}.mp3`);
+        if (await makeSyntheticSfx(clip.source.providerAssetId ?? "", made).catch(() => false)) audioByClip.set(clip.id, made);
+        else console.warn(`[Audio] job=${job.id} clip=${clip.id} status=NOT_DRAWN provider=${SYNTHETIC_SFX_PROVIDER} asset=${clip.source.providerAssetId}`);
+        continue;
+      }
       let url = clip.source.canonicalUrl || clip.source.mediaUrl || "";
       if (!url && clip.source.provider && clip.source.providerAssetId) {
         const resolved = await audioDeps.providerResolver?.(clip.source).catch(() => null);

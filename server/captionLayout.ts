@@ -272,6 +272,8 @@ export const ANCHOR_GEOMETRY: Readonly<Record<string, AnchorGeometry>> = {
   /** Left-aligned, a fifth up from the bottom — the broadcast lower-third anchor. */
   lower_third: { topPct: null, bottomPct: 0.22, leftPct: 0.08 },
   lower_center: { topPct: null, bottomPct: 0.28, leftPct: null },
+  /** VIDEO 660 — on-screen text: bottom left, just above where a subtitle would sit. */
+  bottom_left: { topPct: null, bottomPct: 0.1, leftPct: 0.06 },
   /** Flush with the action-safe margin, which is the same margin `safeArea` keeps. */
   bottom: { topPct: null, bottomPct: SAFE_MARGIN, leftPct: null },
 };
@@ -325,6 +327,7 @@ export function boxForPosition(
     case "top":
     case "lower_third":
     case "lower_center":
+    case "bottom_left":
     case "bottom":
     default: {
       const anchor = anchorGeometry(position);
@@ -371,6 +374,7 @@ const FALLBACK_ORDER: Record<ResolvedPosition, ResolvedPosition[]> = {
   bottom: ["bottom", "lower_center", "center", "top"],
   lower_center: ["lower_center", "bottom", "center", "top"],
   lower_third: ["lower_third", "lower_center", "top", "center"],
+  bottom_left: ["bottom_left", "lower_third", "top", "center"],
   center: ["center", "lower_center", "top", "bottom"],
   top: ["top", "center", "lower_center", "bottom"],
   custom: ["custom", "bottom", "lower_center", "center", "top"],

@@ -24,6 +24,7 @@
  * identity this module returns names an asset that exists in a catalog; when the catalog has
  * nothing for a request, the answer is `null` and the caller reports `asset_unavailable`.
  */
+import { typewriterSoundIdentity } from "./typewriterSound";
 import { SOUND_CATALOG } from "./cinematicAudio/catalog";
 import type { SoundCategoryId } from "./cinematicAudio/types";
 import type { AssetSourceIdentity } from "./projectTimeline";
@@ -70,6 +71,8 @@ export function resolveCatalogSound(
   if (!category) {
     return { ok: false, reason: "no catalog category maps to this role" };
   }
+  /** VIDEO 660 — Freesound removed the typewriter recording (HTTP 404); the render draws it instead. */
+  if (category === "typewriter") return { ok: true, label: "Typewriter keys", identity: typewriterSoundIdentity() };
   const variants = SOUND_CATALOG[category];
   if (!variants || variants.length === 0) {
     return { ok: false, reason: `the catalog has no recording for category "${category}"` };
@@ -123,8 +126,13 @@ export const SOUND_EFFECT_TO_CATEGORY: Readonly<Record<SoundEffectType, SoundCat
   camera_click: "camera_shutter",
   hit: "metal_clang",
   impact: "metal_clang",
-  typing: "typewriter",
-  keyboard: "keyboard",
+  /**
+   * VIDEO 660 — the owner: "als er typgeluid gebruikt wordt, dan moet dat wel met tekst". A sentence
+   * that only SAYS someone typed gets no key sound; typing is heard only under text that types on
+   * screen (`typewriterSfxClips`, timed to the letters), never planned from the words alone.
+   */
+  typing: null,
+  keyboard: null,
   crowd: "crowd",
   applause: "applause",
   wind: "wind",

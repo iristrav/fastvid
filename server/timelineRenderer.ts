@@ -280,7 +280,9 @@ export function assAlignment(position: TextStyle["position"]): number {
   switch (position) {
     case "top": return 8;
     case "center": return 5;
-    case "lower_third": return 2;
+    // Left-anchored in Remotion's `positionStyle` (ANCHOR_GEOMETRY.leftPct), so bottom-LEFT here.
+    case "lower_third": return 1;
+    case "bottom_left": return 1;
     case "lower_center": return 2;
     case "bottom":
     default: return 2;
@@ -317,6 +319,12 @@ export function assAlignment(position: TextStyle["position"]): number {
 export function assMarginV(position: TextStyle["position"], heightPx: number): number {
   const anchor = anchorGeometry(position);
   return Math.round(heightPx * (anchor.bottomPct ?? SAFE_MARGIN));
+}
+
+/** VIDEO 660 — a left-anchored position's left margin is the anchor's, so libass and Remotion agree. */
+export function assMarginL(position: TextStyle["position"], widthPx: number): number {
+  const anchor = anchorGeometry(position);
+  return anchor.leftPct != null ? Math.round(widthPx * anchor.leftPct) : 40;
 }
 
 /** Wrap text to a maximum line length, on word boundaries. */
@@ -995,9 +1003,10 @@ export function buildAssDocument(params: {
     const borderStyle = style.backgroundOpacity > 0 ? 3 : 1;
     const outline = style.backgroundOpacity > 0 ? 0 : 3;
     const marginV = assMarginV(style.position, params.heightPx);
+    const marginL = assMarginL(style.position, params.widthPx);
     return (
       `Style: ${name},${font},${style.fontSizePx},${primary},&H000000FF,&H00000000,${back},` +
-      `-1,0,0,0,100,100,0,0,${borderStyle},${outline},0,${assAlignment(style.position)},40,40,${marginV},1`
+      `-1,0,0,0,100,100,0,0,${borderStyle},${outline},0,${assAlignment(style.position)},${marginL},40,${marginV},1`
     );
   });
 
@@ -1788,8 +1797,11 @@ export async function renderTimeline(params: {
         index: resolvedAudio.length + 1,
         kind,
         startSec: c.start,
-        /** RONDE 655 — ambience is levelled first, so its gain means the same for every recording. */
-        gain: kind === "AMBIENT" ? levelledGain(c.gain, await measureIntegratedLufs(file)) : c.gain,
+        /**
+         * RONDE 655 — ambience is levelled first, so its gain means the same for every recording.
+         * VIDEO 660 — music too: a loud track no longer stays loud however low its gain.
+         */
+        gain: kind === "AMBIENT" || kind === "MUSIC" ? levelledGain(c.gain, await measureIntegratedLufs(file)) : c.gain,
         fadeInSec: c.fadeInSec,
         fadeOutSec: c.fadeOutSec,
         durationSec: Math.max(0, c.end - c.start),

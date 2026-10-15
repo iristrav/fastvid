@@ -455,8 +455,7 @@ describe("the contact sheet is made with the real ffmpeg", () => {
     execFileSync(FFMPEG, ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=480x270:rate=1", "-frames:v", "1", sprite]);
     const frames = Array.from({ length: 8 }, (_, i) => ({ sprite, x: (i % 3) * 160, y: Math.floor(i / 3) % 3 * 90, w: 160, h: 90, n: i + 1 }));
     const out = path.join(dir, "sheet.jpg");
-    const font = path.join(__dirname, "remotion", "fonts", "Inter.ttf");
-    expect(await composeSheetWithFfmpeg(FFMPEG, fs.existsSync(font) ? font : null, frames, out)).toBe(true);
+    expect(await composeSheetWithFfmpeg(FFMPEG, frames, out)).toBe(true);
     const probe = execFileSync(FFMPEG.replace(/ffmpeg$/, "ffprobe").includes("ffprobe") ? "ffprobe" : "ffprobe", [
       "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", out,
     ]).toString().trim();

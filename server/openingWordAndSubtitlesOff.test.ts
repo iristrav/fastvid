@@ -73,14 +73,17 @@ describe("1 — subtitles off by default, still planned", () => {
 });
 
 describe("2 — one word big at the start", () => {
-  it("the film's main subject, upper case, centred, big, as a title over the first picture", () => {
+  /** VIDEO 660 — the owner's rule changed: text in the picture stands bottom left at a normal size. */
+  it("the film's main subject, upper case, bottom left at the normal size, as a title over the first picture", () => {
     const t = plan({ openingWord: "Tesla" });
     const w = texts(t).find((x) => x.id === "txt_opening_word")!;
     expect(w).toBeDefined();
     expect(w.text).toBe("TESLA");
     expect(w.role).toBe("title");
-    expect(w.style.position).toBe("center");
+    expect(w.style.position).toBe("bottom_left");
+    expect(w.style.align).toBe("left");
     expect(w.style.fontSizePx).toBe(OPENING_WORD_FONT_PX);
+    expect(OPENING_WORD_FONT_PX).toBe(52);
     expect(w.style.backgroundOpacity).toBe(0);
     expect(w.start).toBeLessThan(1);
     expect(w.disabled).not.toBe(true);

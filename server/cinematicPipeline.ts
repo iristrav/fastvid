@@ -55,9 +55,10 @@ import {
   graphicsLifecycle,
 } from "./graphicsLifecycle";
 import type { AssetSourceIdentity, ProjectTimeline, TimelineSentence, TimelineText, TimelineVideoClip } from "./projectTimeline";
-import { captionTrack, DEFAULT_TEXT_STYLE, graphicsTrack } from "./projectTimeline";
+import { captionTrack, graphicsTrack, ON_SCREEN_TEXT_STYLE } from "./projectTimeline";
 import { graphicOnScreenWindow, timelineWordTiming } from "./remotionProps";
-import { intensityAtFrom, typewriterSfxClips } from "./typewriterSound";
+import { intensityAtFrom, typewriterSfxClips, typingSoundsOnlyUnderTypingText } from "./typewriterSound";
+import { ensureAnimationEveryMinute } from "./animationFloor";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 import { planMusicCues, scoreCues, type CurvePoint, type MusicCatalogue, type ScoredCue } from "./musicDirector";
 
@@ -101,18 +102,27 @@ export type CinematicSceneInput = {
   sceneOffsetSec: number;
 };
 
+/**
+ * VIDEO 660 — the owner: "de achtergrondmuziek moet echt heel zachtjes zijn". Every music file is
+ * first levelled to the same loudness as the ambience (`levelledGain`, -23 LUFS, in the renderer),
+ * then set 18 dB under that (0.12; it was 0.22 on an unlevelled file, so a loud track stayed loud),
+ * and ducked further while the narrator speaks. Heard in the pauses, never over the voice.
+ */
+export const MUSIC_BED_GAIN = 0.12;
+
 /** OCTOBER 2026 — the opening word: when it appears, how long it stays, how big it is drawn. */
 export const OPENING_WORD_START_SEC = 0.3;
 export const OPENING_WORD_END_SEC = 3.0;
-export const OPENING_WORD_FONT_PX = 150;
+/** VIDEO 660 — the normal on-screen text size, bottom left (was 150 px in the middle). */
+export const OPENING_WORD_FONT_PX = ON_SCREEN_TEXT_STYLE.fontSizePx;
 
 /**
  * OCTOBER 2026 — ONE WORD BIG IN THE FIRST SECONDS.
  *
  * The owner's rule: subtitles are off by default, and at the start of the video one word may stand
  * big in the picture. The word is the film's main subject (`videoMainSubject`, read from the
- * narration, never invented), at most two words and 20 characters, drawn centred over the first
- * picture without a box, as a `title` — the text director's highest rank, so it is weighed against
+ * narration, never invented), at most two words and 20 characters, drawn over the first picture
+ * without a box — VIDEO 660: bottom left at the normal text size, like every other text, as a `title` — the text director's highest rank, so it is weighed against
  * every other text like any planned one.
  *
  * Only over real footage: when the opening seconds are a sentence's card (a `primaryVisual`
@@ -143,7 +153,7 @@ export function openingWordText(timeline: ProjectTimeline, word: string | null |
     text: text.toUpperCase(),
     start,
     end,
-    style: { ...DEFAULT_TEXT_STYLE, fontSizePx: OPENING_WORD_FONT_PX, position: "center" },
+    style: { ...ON_SCREEN_TEXT_STYLE, fontSizePx: OPENING_WORD_FONT_PX },
     animation: "scale",
     role: "title",
   };
@@ -460,6 +470,16 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       `opening word ${opening && !opening.disabled ? `"${opening.text}"` : "none"}, ${textDirection.kept} text/graphic(s) ` +
       `(typing=${textDirection.typewriter.length}); switched off by the director: ${textDirection.disabled.length}`
   );
+  /** VIDEO 660 — at least one animation in every started minute; after the director, see `animationFloor`. */
+  const floor = ensureAnimationEveryMinute(timeline);
+  textDirection.typewriter.push(...floor.typewriter.map((t) => ({ ...t, why: "year" as const })));
+  console.log(
+    `[AnimationFloor] video=${params.videoId} minutes=${Math.ceil(Math.max(0, timeline.durationSec) / 60)} ` +
+      `added=${floor.added.length} revived=${floor.revived.length} missing=${floor.missing.length}` +
+      floor.added.map((a) => ` | min${a.minute} ${a.graphicType} "${a.label}"`).join("") +
+      floor.revived.map((r) => ` | min${r.minute} revived ${r.graphicType}`).join("") +
+      (floor.missing.length ? ` | no free moment in minute(s) ${floor.missing.join(",")}` : "")
+  );
   /** VIDEO 634 — after the director, so a picture it switched off would show here. Logged, never refused. */
   for (const b of blackByTimelineSpans(timeline)) {
     console.warn(
@@ -493,6 +513,12 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       if (g) e.start = graphicOnScreenWindow(timeline, g, words).startSec;
     }
     sfxForTyping.clips.push(...typewriterSfxClips(textDirection.typewriter.filter((e) => drawnTexts.has(e.id))));
+  }
+  /** VIDEO 660 — a key sound only while text types on screen; see `typingSoundsOnlyUnderTypingText`. */
+  const wordsOnScreen = timelineWordTiming(timeline);
+  const silencedTyping = typingSoundsOnlyUnderTypingText(timeline, (g) => graphicOnScreenWindow(timeline, g, wordsOnScreen));
+  if (silencedTyping.length) {
+    console.log(`[SFX] video=${params.videoId} typing sound removed where no text types: ${silencedTyping.join(", ")}`);
   }
 
   /**
@@ -591,9 +617,9 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
         end: scored.cue.endSec,
         /**
          * Well under the voice, and ducked further by `DUCK_MUSIC` when the narrator speaks.
-         * A documentary bed sits where you notice it only when it stops.
+         * A documentary bed sits where you notice it only when it stops. VIDEO 660 — see `MUSIC_BED_GAIN`.
          */
-        gain: 0.22,
+        gain: MUSIC_BED_GAIN,
         fadeInSec: handover || 1.5,
         fadeOutSec: 2,
         duckUnderVoice: true,

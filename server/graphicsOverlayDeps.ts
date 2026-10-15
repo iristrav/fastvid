@@ -37,6 +37,29 @@ export function graphicsOverlayAvailable(): boolean {
   return resolveRemotionBrowser() !== null;
 }
 
+/**
+ * VIDEO 660 — one line per drawn graphic, naming what it IS (a map, a chapter card, a counter…).
+ * The `[GraphicsOverlay]` total said "graphics=7" and nobody could tell from the log whether the
+ * film had a map, a timeline or seven identical cards. `beat` is the sentence the graphic belongs
+ * to when the planner recorded one.
+ */
+export function graphicDrawnLines(timeline: ProjectTimeline, drawnIds: readonly string[] | undefined): string[] {
+  const drawn = new Set(drawnIds ?? []);
+  return timeline.tracks
+    .flatMap((t) => (t.kind === "GRAPHICS" ? t.graphics : []))
+    .filter((g) => drawn.has(g.id))
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))
+    .map((g) => {
+      const beat = g.data?.beatIndex;
+      return (
+        `[GraphicDrawn] video=${timeline.videoId} type=${g.graphicType} id=${g.id}` +
+        (typeof beat === "number" ? ` beat=${beat}` : "") +
+        ` ${g.start.toFixed(2)}-${g.end.toFixed(2)}s` +
+        (g.data?.primaryVisual === true ? " picture" : " overlay")
+      );
+    });
+}
+
 export type GraphicsOverlayDeps = {
   /** Where the alpha .mov is written. A render intermediate, inside the render's own workDir. */
   workDir: string;
@@ -77,6 +100,8 @@ export function productionGraphicsOverlay(
         /** OCTOBER 2026 — how long the layer took, so a render log answers the performance question. */
         ` ms=${Date.now() - startedAt}`
     );
+
+    for (const line of graphicDrawnLines(timeline, result.graphicDrawnIds)) console.log(line);
 
     /** The ids travel with the file — see `GraphicsOverlayFile` for the two stages they unlock. */
     return {

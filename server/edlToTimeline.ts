@@ -35,6 +35,7 @@ import {
   DEFAULT_CAPTION_STYLE,
   DEFAULT_FORMAT,
   DEFAULT_TEXT_STYLE,
+  ON_SCREEN_TEXT_STYLE,
   emptyTimeline,
   timelineElementId,
   type AssetSourceIdentity,
@@ -358,9 +359,14 @@ export function trackForCaption(caption: CaptionInstruction): "CAPTIONS" | "TEXT
   return caption.captionType === "subtitle" ? "CAPTIONS" : "TEXT";
 }
 
+/**
+ * VIDEO 660 — subtitles keep the planner's position; every other text (a year, a name, a place,
+ * a quote) stands bottom left at a normal size, whatever position the planner asked for — the
+ * owner's rule for text in the picture. See `ON_SCREEN_TEXT_STYLE`.
+ */
 function styleFor(caption: CaptionInstruction): TextStyle {
-  const base = trackForCaption(caption) === "CAPTIONS" ? DEFAULT_CAPTION_STYLE : DEFAULT_TEXT_STYLE;
-  return { ...base, position: positionFor(caption) };
+  if (trackForCaption(caption) === "CAPTIONS") return { ...DEFAULT_CAPTION_STYLE, position: positionFor(caption) };
+  return { ...ON_SCREEN_TEXT_STYLE };
 }
 
 export type EdlTranslationInput = {

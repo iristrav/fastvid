@@ -35,7 +35,7 @@ const opSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("captions_style"),
     fontSizePx: z.number().min(24).max(140).optional(),
-    position: z.enum(["top", "center", "lower_third", "lower_center", "bottom"]).optional(),
+    position: z.enum(["top", "center", "lower_third", "lower_center", "bottom_left", "bottom"]).optional(),
     backgroundOpacity: z.number().min(0).max(1).optional(),
   }),
   z.object({ op: z.literal("set_volume"), track: z.enum(["VOICE", "MUSIC", "SFX", "AMBIENT"]), gain: z.number().min(0).max(2) }),

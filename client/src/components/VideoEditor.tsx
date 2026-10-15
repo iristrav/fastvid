@@ -175,11 +175,12 @@ type TextElement = {
 
 /** VIDEO 619 — how a text the person adds looks until they change it. */
 const NEW_TEXT_STYLE = {
-  fontSizePx: 64,
+  fontSizePx: 52,
   color: "white",
   backgroundOpacity: 0.35,
   backgroundColor: "black",
-  position: "lower_third",
+  position: "bottom_left",
+  align: "left",
 };
 
 type AudioClip = {
@@ -1926,6 +1927,7 @@ function TextInspector({
             ["center", "Center"],
             ["lower_third", "Lower third"],
             ["lower_center", "Lower center"],
+            ["bottom_left", "Bottom left"],
             ["bottom", "Bottom"],
           ]}
           onChange={(v) => setStyle({ position: v })}

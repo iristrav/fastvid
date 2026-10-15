@@ -11632,7 +11632,6 @@ export async function lookAtYoutubeVideoBeforeDownload(
   if (visionPipelineIsUnavailable()) return { kind: "no_sheet", reason: "the picture editor is unavailable" };
   try {
     const { invokeLLM } = await import("./_core/llm");
-    const fontFile = path.join(__dirname, "remotion", "fonts", "Inter.ttf");
     const outcome = await lookBeforeDownload({
       videoId: c.videoId,
       title: c.title,
@@ -11651,7 +11650,7 @@ export async function lookAtYoutubeVideoBeforeDownload(
           const r = await fetch(url, { signal: AbortSignal.timeout(8_000) });
           return r.ok ? transcriptSegmentsFromJson3(await r.json()) : [];
         },
-        compose: (frames, outPath) => composeSheetWithFfmpeg(FFMPEG_BIN, fs.existsSync(fontFile) ? fontFile : null, frames, outPath),
+        compose: (frames, outPath) => composeSheetWithFfmpeg(FFMPEG_BIN, frames, outPath),
         ask: async (prompt, sheetPath) => {
           const resp = await Promise.race([
             invokeLLM({
