@@ -70,9 +70,22 @@ describe("Caption Planner (Phase 4)", () => {
     expect(captions.some((c) => c.captionType === "date")).toBe(false);
   });
 
-  it("emits a location caption when visualLocation is set", () => {
-    const captions = planCaptions(makeIntent({ visualLocation: "Apple Park" }), 0, 4);
+  it("emits a location caption when the sentence says the visualLocation", () => {
+    const captions = planCaptions(
+      makeIntent({ visualLocation: "Apple Park", spokenText: "The keynote was held at Apple Park." }),
+      0,
+      4
+    );
     expect(captions.find((c) => c.captionType === "location")?.text).toBe("Apple Park");
+  });
+
+  it("VIDEO 661 — no location caption for a place only the director inferred", () => {
+    const captions = planCaptions(
+      makeIntent({ visualLocation: "Apple Park", spokenText: "The keynote changed the industry." }),
+      0,
+      4
+    );
+    expect(captions.find((c) => c.captionType === "location")).toBeUndefined();
   });
 
   it("emits a statistic caption from the scene's statCallout", () => {

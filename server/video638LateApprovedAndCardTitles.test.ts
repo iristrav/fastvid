@@ -534,11 +534,12 @@ describe("F1b — the ground under a full-frame graphic is designed, light and s
     expect(GRAPHICS).toContain('"radial-gradient(ellipse at 50% 45%, rgba(43,52,66,0.99) 0%, rgba(30,37,47,0.99) 70%, rgba(26,32,41,0.99) 100%)"');
   });
 
-  it("deterministic and moving: the same frame is the same picture, later frames move the glow and the grain", () => {
+  it("deterministic and moving: the same frame is the same picture, later frames move the glow", () => {
     expect(layers(17, 90)).toEqual(layers(17, 90));
     expect(layers(0, 90)[0]!.background).not.toEqual(layers(89, 90)[0]!.background);
-    expect(layers(1, 90)[2]!.backgroundPosition).not.toEqual(layers(2, 90)[2]!.backgroundPosition);
-    expect(layers(0, 1)).toHaveLength(3);
+    /** VIDEO 661 — glow and sweep only: the per-frame grain spent the encoder's bits on a flat card. */
+    expect(layers(0, 1)).toHaveLength(2);
+    expect(JSON.stringify(layers(5, 90))).not.toContain("repeating-radial-gradient");
   });
 
   it("8/10. no asset, no network, nothing from any shot: gradients from the frame number only", () => {

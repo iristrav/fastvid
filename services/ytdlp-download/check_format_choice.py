@@ -57,7 +57,26 @@ hls_cases = [
     # HLS only, muxed: nothing, at once
     ([hls("h360", 360), hls("h720", 720)], "NONE"),
 ]
+
+def muxed(format_id, height):
+    return dict(format_id=format_id, ext="mp4", vcodec="avc1.42", acodec="mp4a", height=height,
+                width=height * 16 // 9, tbr=height * 2, url=f"http://example.invalid/{format_id}",
+                protocol="https")
+
+
+# VIDEO 661 — the 480 floor holds on the fallbacks too: a muxed 360p stream (format 18) was
+# fetched through the paid proxy and then refused by FastVid as LOW_RESOLUTION.
+fallback_cases = [
+    ([muxed("18", 360)], "NONE"),                       # only 360p muxed: nothing, at once
+    ([muxed("18", 360), muxed("22", 720)], "22"),       # a muxed 720p beside it: that one
+    (ladder([360]) + [muxed("22", 720)], "22"),         # split stream too small: the muxed 720p
+]
 failed = 0
+for formats, want in fallback_cases:
+    got = chosen(None, formats)
+    ok = got == want
+    failed += 0 if ok else 1
+    print(("OK  " if ok else "FAIL"), [f["format_id"] for f in formats], "->", got, "" if ok else f"(wanted {want})")
 for formats, want in hls_cases:
     got = chosen(None, formats)
     ok = got == want

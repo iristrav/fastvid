@@ -124,7 +124,8 @@ describe("§2 — a raw measurement would shorten real fades", () => {
 
 describe("§3 — the segment loop", () => {
   const loop = (() => {
-    const at = RENDERER.indexOf("const askedSec = slotOf(clip) + handleSec;");
+    /** VIDEO 661 — the asked length is the segment's whole frames (`segmentFrameCount`), the same the encode writes. */
+    const at = RENDERER.indexOf("const askedSec = segmentFrameCount(clip, fmt.fps, handleSec) / fmt.fps;");
     return RENDERER.slice(at, at + 1800);
   })();
 

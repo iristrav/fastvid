@@ -268,7 +268,7 @@ Return JSON array:
     "reveal": "what partial truth or fact is revealed (empty if none)",
     "emotion": "exact emotion the viewer should feel during this scene",
     "importance": 8,
-    "transitionToNext": "one sentence bridge to next scene (empty for last)",
+    "transitionToNext": "one sentence bridge to next scene, a statement — never a question (empty for last)",
     "retentionElements": ["reveal", "new_question"],
     "estimatedWords": ${wordsPerScene}
   }
@@ -532,7 +532,7 @@ ${isLast
     ? `This is the CALL TO ACTION. One forward-looking sentence tied to the story. Not generic subscribe bait.` +
       (hookText ? ` Callback the opening hook to close the loop it opened — the hook was: "${hookText.slice(0, 220)}". Echo its image, question, or phrase so the ending pays it off; don't just introduce a new closing thought.` : "")
     : ""}
-${!isFirst && !isLast ? `End with this bridge to the next scene: "${scene.transitionToNext || "naturally lead into what comes next"}"` : ""}
+${!isFirst && !isLast ? `End with this bridge to the next scene, written as a statement, never as a question: "${scene.transitionToNext || "naturally lead into what comes next"}"` : ""}
 
 Write ${minWords}–${maxWords} words of SPOKEN NARRATION only. No [VISUAL:] tags. No bullets. No headings.
 Name real people, companies, places, dates — the footage system finds visuals from your spoken words automatically.`;

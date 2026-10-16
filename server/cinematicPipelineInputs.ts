@@ -841,6 +841,25 @@ export function pairClipsToBeats(params: {
 }
 
 /**
+ * VIDEO 661 — the file is this clip's asset: the archive id first, then the provider id.
+ *
+ * Two moments of ONE YouTube video share its provider id and differ only in their archive id (fix 1
+ * of video 660). Render 70 compared the provider id first: s1b4's moments 61497 and 61498 (82.8 s
+ * and 92.7 s of Ab1qyz96XiE) both matched, and both clips were handed 61497's file — the first
+ * moment twice, the second, approved and paid for, never on screen. The most specific identity both
+ * sides carry decides; the provider id only when one side has no archive id.
+ */
+export function adoptionIsClipAsset(
+  src: { providerAssetId?: string | null; archiveAssetId?: number | null },
+  a: AdoptionFacts | null
+): boolean {
+  if (!a) return false;
+  if (src.archiveAssetId != null && a.archiveAssetId != null) return Number(a.archiveAssetId) === Number(src.archiveAssetId);
+  if (src.providerAssetId != null && a.providerAssetId != null) return String(a.providerAssetId) === String(src.providerAssetId);
+  return false;
+}
+
+/**
  * VIDEO 626 — WHICH OF A SENTENCE'S FILES A TIMELINE CLIP IS.
  *
  * A sentence can now hold two clips, so "the file for scene 1 beat 2" no longer names one file.
@@ -856,13 +875,7 @@ export function pickLocalFileForClip(
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0]!.path;
   const src = clip.source ?? {};
-  const same = candidates.filter((c) => {
-    const a = c.adoption;
-    if (!a) return false;
-    if (src.providerAssetId != null && a.providerAssetId != null) return String(a.providerAssetId) === String(src.providerAssetId);
-    if (src.archiveAssetId != null && a.archiveAssetId != null) return Number(a.archiveAssetId) === Number(src.archiveAssetId);
-    return false;
-  });
+  const same = candidates.filter((c) => adoptionIsClipAsset(src, c.adoption));
   if (same.length === 0) return null;
   if (same.length === 1 || clip.sourceIn == null) return same[0]!.path;
   const at = clip.sourceIn;
@@ -989,13 +1002,7 @@ export function pickLocalFileByIdentity(
 ): string | null {
   const src = clip.source ?? {};
   if (src.providerAssetId == null && src.archiveAssetId == null) return null;
-  const same = candidates.filter((c) => {
-    const a = c.adoption;
-    if (!a) return false;
-    if (src.providerAssetId != null && a.providerAssetId != null) return String(a.providerAssetId) === String(src.providerAssetId);
-    if (src.archiveAssetId != null && a.archiveAssetId != null) return Number(a.archiveAssetId) === Number(src.archiveAssetId);
-    return false;
-  });
+  const same = candidates.filter((c) => adoptionIsClipAsset(src, c.adoption));
   if (same.length === 0) return null;
   if (same.length === 1 || clip.sourceIn == null) return same[0]!.path;
   const at = clip.sourceIn;
@@ -1247,7 +1254,7 @@ export function buildCinematicSceneInputs(params: {
          */
         const filmSubjectCard =
           !standIn && end - start >= MIN_PRIMARY_GRAPHIC_SEC
-            ? filmSubjectChapterCard(params.filmSubject, sceneOffsetSec + start, end - start)
+            ? filmSubjectChapterCard(params.filmSubject, sceneOffsetSec + start, end - start, beat.text)
             : null;
         standIn = standIn ?? filmSubjectCard;
         if (standIn) {

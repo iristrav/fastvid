@@ -20,10 +20,13 @@ describe("the service's format options", () => {
   });
 
   it("keep the 480p floor the client relies on, and never take an HLS stream (video 619)", () => {
+    /** VIDEO 661 — the floor holds on the fallbacks too: no 360p muxed stream fetched only to be refused. */
     expect(MAIN).toContain(
       'f"bv*[height>={MIN_HEIGHT}][ext=mp4][protocol!*=m3u8]+ba[ext=m4a][protocol!*=m3u8]"\n' +
-        '            "/b[ext=mp4][protocol!*=m3u8]/b[protocol!*=m3u8]"'
+        '            f"/b[height>={MIN_HEIGHT}][ext=mp4][protocol!*=m3u8]/b[height>={MIN_HEIGHT}][protocol!*=m3u8]"'
     );
+    const CHECK = readFileSync(join(__dirname, "..", "services", "ytdlp-download", "check_format_choice.py"), "utf8");
+    expect(CHECK).toContain('([muxed("18", 360)], "NONE")');
   });
 
   it("the real-selector check exists beside the service", () => {

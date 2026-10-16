@@ -148,7 +148,50 @@ export function stripWriterInstructions(script: string): { script: string; remov
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  const bridged = dropClosingBridgeQuestions(out, removed);
   if (!removed.length) return { script, removed };
+  return keepUnlessGutted(script, bridged, removed);
+}
+
+/**
+ * VIDEO 661 (round 4) — A SCENE DOES NOT END ON A QUESTION.
+ *
+ * Render 70 still spoke "How did these engineering feats transform into economic power?": no outline
+ * word in it, so G kept it — but it was the planner's bridge to the next scene, which the writer is
+ * told to end every scene with. Such a line has no picture of its own (it got a chapter card) and
+ * reads as the outline, not the film. The last sentence of a scene, when it is a question, is
+ * removed — except in the opening (the hook may ask its one question), a question in quotation
+ * marks (someone's words), and a scene that has nothing else to say.
+ */
+export function dropClosingBridgeQuestions(script: string, removed: string[]): string {
+  const lines = script.split("\n");
+  const isHeading = (t: string) => /^#{2,}\s/.test(t);
+  let section = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (isHeading(lines[i]!.trim())) section++;
+    if (section < 2) continue;
+    const t = lines[i]!.trim();
+    if (!t || isHeading(t) || /^\[visual:/i.test(t)) continue;
+    /** only the scene's last narration line */
+    let j = i + 1;
+    while (j < lines.length && (!lines[j]!.trim() || /^\[visual:/i.test(lines[j]!.trim()))) j++;
+    if (j < lines.length && !isHeading(lines[j]!.trim())) continue;
+    const sentences = t.match(/[^.!?]+[.!?]+["'”’)]*|[^.!?]+$/g) ?? [t];
+    const last = sentences[sentences.length - 1]!;
+    const narrationBefore = lines.slice(0, i).reverse();
+    const headingAt = narrationBefore.findIndex((l) => isHeading(l.trim()));
+    const sceneHasMore =
+      sentences.length > 1 ||
+      narrationBefore.slice(0, headingAt < 0 ? undefined : headingAt).some((l) => l.trim() && !/^\[visual:/i.test(l.trim()));
+    if (!sceneHasMore) continue;
+    if (!/\?\s*["'”’)]?\s*$/.test(last) || /["“”]/.test(last)) continue;
+    removed.push(last.trim());
+    lines[i] = sentences.length > 1 ? t.slice(0, t.lastIndexOf(last)).trim() : "";
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function keepUnlessGutted(script: string, out: string, removed: string[]): { script: string; removed: string[] } {
   const before = countNarrationWords(script);
   const after = countNarrationWords(out);
   if (before > 0 && after < before * (2 / 3)) return { script, removed: [] };
@@ -290,15 +333,16 @@ HOOK → SETUP → COMPLICATION → REVELATION → CONSEQUENCE → CTA
 
 LOOP ORCHESTRATION:
 - MACRO LOOP: The video's spine — the packaging promise (e.g. "How did this really happen?").
-- MID LOOPS: One per major section — escalating questions ("What did they hide?" / "Will it survive?").
-- MICRO LOOPS: Every 3–5 sentences — rhetorical questions, "But here's the catch", partial reveals.
+- MID LOOPS: One per major section — escalating tension, stated as a claim ("What they hid would cost them everything.").
+- MICRO LOOPS: Every 3–5 sentences — "But here's the catch", partial reveals, a sharp contrast.
 - Rule: close a loop partially → immediately open a new one. Never resolve everything at once.
-- Rule: every section ends with a BRIDGE teasing the next ("But that raises an even stranger question…").
+- Rule: every section ends with a BRIDGE teasing the next, written as a statement ("But the real cost was still to come.") — never as a question.
+- Rule: at most ONE question in the whole script — the hook may ask it. Every other line is a statement the viewer can see.
 
 PATTERN INTERRUPTS (rotate every 45–90 seconds):
 - A specific number ($, %, year, count) — concrete, not vague.
 - A named person, company, place, or event (full name on first mention).
-- A rhetorical question or reversal ("Everyone assumed X. They were wrong.").
+- A reversal ("Everyone assumed X. They were wrong.").
 - A contrast or "But here's what nobody tells you" beat.
 
 WRITING CRAFT:
@@ -367,7 +411,7 @@ Rules:
 - Revise ONLY the script in SCRIPT TO REVISE — same facts, people, companies, and story as that draft.
 - Never replace the topic with a different story (no unrelated art, celebrities, or viral tangents).
 - Keep HOOK → sections → CTA structure and all ## headings.
-- Preserve retention mechanics: macro loop, mid-loops, bridges between sections, value bomb near 60–70%, pattern interrupts.
+- Preserve retention mechanics: macro loop, mid-loops, bridges between sections, value bomb near 60–70%, pattern interrupts. Bridges stay statements; add no questions.
 - Remove any [VISUAL: ...] tags — narration only.
 - ${direction === "EXPAND" ? "Add substance: another fact, contrast, micro-hook, or named entity — not padding or filler phrases." : "Cut redundancy only — keep hooks, loops, bridges, and the narrative arc intact."}
 - Return the FULL revised script only (markdown).

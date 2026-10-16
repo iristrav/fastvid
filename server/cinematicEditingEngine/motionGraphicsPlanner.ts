@@ -15,14 +15,14 @@
  *  A beat can have zero, one, or several motion graphics — this returns an array, same
  *  convention as CaptionPlanner.
  */
-import { WORLD_LOCATIONS } from "../cinematicMotion/locationMap";
+import { WORLD_LOCATIONS, saysWholeWord, spokenLocationName } from "../cinematicMotion/locationMap";
 import type { Scene } from "../pipeline/types";
 import type { VisualIntent } from "../visualMatchingV2/types";
 import type { MotionGraphicInstruction } from "./types";
 import { graphicIsRenderable } from "../graphicsVocabulary";
 import { graphicLabel, rendererGraphicType } from "../edlToTimeline";
 import { sentenceWords, subjectWords } from "../youtubeNonFootage";
-import { keyWordsIn } from "../animationFloor";
+import { keyWordsIn, phraseIn } from "../animationFloor";
 
 /** The renderer's answer for one planned graphic, under the name and label the timeline gives it. */
 export function plannedGraphicIsDrawable(g: Pick<MotionGraphicInstruction, "data"> & { graphicType: string }): boolean {
@@ -226,11 +226,6 @@ export function chartTitle(spokenText: string, subject?: string): string {
  * GRAPHICS FIX — a map keyword is a whole word or phrase, never a fragment of one: "uk" is in
  * "the UK", not in "Duke"; "gaza" is not in "magazine".
  */
-function saysWholeWord(lowerText: string, keyword: string): boolean {
-  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "u").test(lowerText);
-}
-
 function findWorldLocation(text: string): { loc: (typeof WORLD_LOCATIONS)[number]; keyword: string } | null {
   const lower = text.toLowerCase();
   for (const loc of WORLD_LOCATIONS) {
@@ -358,11 +353,13 @@ export function planMotionGraphics(
   const found = findWorldLocation(intent.spokenText);
   const location = found?.loc ?? null;
   if (found && location) {
+    /** VIDEO 661 — "the Netherlands" is labelled Netherlands, not Amsterdam: only what the voice said. */
+    const spokenName = spokenLocationName(location, found.keyword);
     out.push(
       graphic(
         "map",
         {
-          locationName: location.name,
+          locationName: spokenName,
           normX: location.normX,
           normY: location.normY,
           /** OCTOBER 2026 — the real place: drawn on the real map, its country highlighted, the camera moving in. */
@@ -374,7 +371,7 @@ export function planMotionGraphics(
         beatVoiceStartSec,
         /** The camera needs time to travel and the place to be read: a little longer than a card. */
         Math.max(3, Math.min(beatVoiceDurationSec, 4.5)),
-        `Beat references a recognized location ("${location.name}") — shown on the world map, the camera moving in to it.`
+        `Beat references a recognized location ("${spokenName}") — shown on the world map, the camera moving in to it.`
       )
     );
   }
@@ -729,13 +726,15 @@ export const CHAPTER_CARD_FALLBACK = "CHAPTER_CARD_FALLBACK";
 export function filmSubjectChapterCard(
   subject: string | null | undefined,
   startSec: number,
-  durationSec: number
+  durationSec: number,
+  /** VIDEO 661 — the sentence the card stands under: its phrase is written under the title. */
+  spokenText?: string
 ): PictureGraphic | null {
   const title = subject?.trim() ?? "";
   if (!title || !(durationSec > 0)) return null;
   const g: PictureGraphic = {
     graphicType: "chapter_card",
-    data: { title, label: title },
+    data: { title, label: title, ...cardPhrase(title, spokenText) },
     startSec,
     durationSec,
     reason:
@@ -743,6 +742,20 @@ export function filmSubjectChapterCard(
       `Remotion draws a title card of the film's main subject ("${title}").`,
   };
   return plannedGraphicIsDrawable(g) ? g : null;
+}
+
+/**
+ * VIDEO 661 — a card never says only one word. Render 70 showed "NETHERLANDS", "ROTTERDAM" and
+ * "BROADER IMPLICATIONS" for 18 s with nothing else on screen. Under the title goes a short phrase
+ * of the sentence itself (`phraseIn`, the same words the fallback scene writes) — only the voice's
+ * own words, and not when the title already says them.
+ */
+export function cardPhrase(title: string, spokenText: string | null | undefined): { subtitle?: string } {
+  const phrase = spokenText ? phraseIn(spokenText) : null;
+  if (!phrase) return {};
+  const t = title.toLowerCase();
+  const p = phrase.toLowerCase();
+  return t.includes(p) || p.includes(t) ? {} : { subtitle: phrase };
 }
 
 /** A word a title cannot end on: it points at a noun that is not there ("what follows such …"). */
@@ -802,7 +815,7 @@ export function chapterCardFallbackFor(
   const title = year && !main.includes(year) ? `${main} · ${year}` : main;
   const g: PictureGraphic = {
     graphicType: "chapter_card",
-    data: { title, label: title },
+    data: { title, label: title, ...cardPhrase(title, intent.spokenText) },
     startSec,
     durationSec,
     reason:

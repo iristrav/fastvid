@@ -846,6 +846,26 @@ export function formatMuxSpan(p: {
   );
 }
 
+/**
+ * VIDEO 661 — A SEGMENT'S LENGTH IN WHOLE FRAMES, COUNTED FROM THE TIMELINE'S OWN FRAME GRID.
+ *
+ * Render 70 showed one fully black frame at 50.77 s, just before a chapter card. Each segment was
+ * encoded with `-t <seconds>` and came out at `round(seconds × fps)` frames, so every cut gained or
+ * lost up to half a frame and the concatenated picture drifted from the timeline. The Remotion
+ * overlay places its graphics at `round(start × fps)` (`remotionProps.toFrames`); by 50 s the
+ * picture ran one frame early, the card's black ground (opacity 0) arrived before its drawn card,
+ * and that frame was black. Counting each clip as `round(end × fps) − round(start × fps)` frames
+ * puts every cut on the same frame the overlay uses, however many hard cuts precede it.
+ */
+export function segmentFrameCount(
+  clip: Pick<TimelineVideoClip, "timelineStart" | "timelineEnd">,
+  fps: number,
+  handleSec = 0
+): number {
+  const slotFrames = Math.max(1, Math.round(clip.timelineEnd * fps) - Math.round(clip.timelineStart * fps));
+  return slotFrames + Math.round(Math.max(0, handleSec) * fps);
+}
+
 async function renderSegment(
   clip: TimelineVideoClip,
   localMedia: string,
@@ -856,7 +876,8 @@ async function renderSegment(
   handleSec = 0
 ): Promise<{ handleFromSource: boolean }> {
   const slot = Math.max(0.04, clip.timelineEnd - clip.timelineStart);
-  const dur = slot + Math.max(0, handleSec);
+  const frames = segmentFrameCount(clip, fmt.fps, handleSec);
+  const dur = frames / fmt.fps;
   /**
    * RONDE 148/149 — fit, camera, grade, effects, scale and opacity, built in `timelineFilters`.
    *
@@ -976,7 +997,7 @@ async function renderSegment(
     "-pix_fmt", "yuv420p",
     /** VIDEO 650 — the timeline's frame rate, stated on the encode as well as in the filter. */
     "-r", String(fmt.fps),
-    "-t", dur.toFixed(3),
+    "-frames:v", String(frames),
     outPath
   );
   await runFfmpeg(args, "segment encode");
@@ -1262,10 +1283,16 @@ export async function renderTimeline(params: {
      * taken from the slots is never too generous, and it does not depend on itself.
      */
     const previous = clips[i - 1];
-    const handleSec =
+    const plannedHandleSec =
       i > 0 && previous
         ? effectiveTransitionSec(clip.transitionIn, clip.transitionInSec, slotOf(previous), slotOf(clip)) ?? 0
         : 0;
+    /**
+     * VIDEO 661 — in whole frames, rounded down: the segment carries exactly these frames
+     * (`segmentFrameCount`) and the graph fades over exactly the same span, so a 0.65 s dissolve at
+     * 30 fps is 19 frames on both sides instead of 20 encoded and 19.5 faded.
+     */
+    const handleSec = Math.floor(plannedHandleSec * fmt.fps + 1e-6) / fmt.fps;
     const seg = path.join(workDir, `seg_${String(i).padStart(3, "0")}.mp4`);
     try {
       const { handleFromSource } = await renderSegment(clip, media, seg, fmt, timeline.look, handleSec);
@@ -1304,7 +1331,7 @@ export async function renderTimeline(params: {
        * An unprobeable segment keeps the asked value too: unknown is not evidence of a mismatch,
        * and that is exactly what happened before this change anyway.
        */
-      const askedSec = slotOf(clip) + handleSec;
+      const askedSec = segmentFrameCount(clip, fmt.fps, handleSec) / fmt.fps;
       const measuredSec = await probeDurationSec(seg);
       const toleranceSec = Math.max(2 / Math.max(1, fmt.fps), 0.08);
       const material = measuredSec != null && Math.abs(measuredSec - askedSec) > toleranceSec;

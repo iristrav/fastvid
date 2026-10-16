@@ -57,7 +57,7 @@ log = logging.getLogger("ytdlp-download")
 #    being one. `services/ytdlp-download/README.md` names the client-side source of each.
 MIN_BYTES = 10_000
 MAX_BYTES = 80 * 1024 * 1024
-# youtubeMinFormatHeight() in server/sourcingPolicy.ts — 480 by default.
+# YOUTUBE_MIN_SHORT_SIDE_PX in server/youtubeAcquisitionValidation.ts — 480; a file under it is refused.
 MIN_HEIGHT = int(os.environ.get("MIN_FORMAT_HEIGHT", "480"))
 # RONDE 648 — the resolution the service PREFERS. The format filter below only sets a floor, and
 # yt-dlp's default order then takes the largest stream left: run against yt-dlp 2026.08.19 with a
@@ -191,9 +191,13 @@ def _ydl_options(out_path: Path, start: float, end: float) -> dict:
         # segments one request at a time through the proxy: `Fgr4w50Rwus` (format 609, m3u8_native)
         # took 262-373 s for four seconds while three beats waited 35-70 s each and gave up. A video
         # that offers only HLS now fails at once ("Requested format is not available") instead.
+        #
+        # VIDEO 661 — the floor holds on every alternative, not only the first. Without it a video
+        # with no separate mp4/m4a pair came back as its 360p progressive stream (format 18): the
+        # proxy bytes were spent and FastVid then refused the file as LOW_RESOLUTION anyway.
         "format": (
             f"bv*[height>={MIN_HEIGHT}][ext=mp4][protocol!*=m3u8]+ba[ext=m4a][protocol!*=m3u8]"
-            "/b[ext=mp4][protocol!*=m3u8]/b[protocol!*=m3u8]"
+            f"/b[height>={MIN_HEIGHT}][ext=mp4][protocol!*=m3u8]/b[height>={MIN_HEIGHT}][protocol!*=m3u8]"
         ),
         # The filter above is a floor, not a choice — without this the largest stream wins.
         "format_sort": [f"res:{MAX_HEIGHT}"],

@@ -22,6 +22,7 @@
  *  text instruction, or an empty array when nothing about the beat calls for on-screen text.
  */
 import { statSpokenInBeat } from "./motionGraphicsPlanner";
+import { saysWholeWord } from "../cinematicMotion/locationMap";
 import type { Scene } from "../pipeline/types";
 import type { VisualIntent } from "../visualMatchingV2/types";
 import type { CaptionInstruction, VisualContinuityState } from "./types";
@@ -136,6 +137,20 @@ export function planSubtitleChunks(
  * legitimately overlap in time as long as they don't collide in position (a future renderer's
  * concern, same as textOverlay/planner.ts's existing noOverlap handling).
  */
+/** VIDEO 661 — the inferred location, or its part, that the sentence itself says; null when it says none. */
+export function placeSaidIn(visualLocation: string, spokenText: string): string | null {
+  const place = visualLocation.trim();
+  if (!place) return null;
+  const lower = spokenText.toLowerCase();
+  if (saysWholeWord(lower, place)) return place;
+  return (
+    place
+      .split(/[,/]|\s+-\s+/)
+      .map((part) => part.trim())
+      .find((part) => part.length >= 2 && saysWholeWord(lower, part)) ?? null
+  );
+}
+
 export function planCaptions(
   intent: VisualIntent,
   beatVoiceStartSec: number,
@@ -194,15 +209,22 @@ export function planCaptions(
     }
   }
 
-  if (intent.visualLocation.trim()) {
+  /**
+   * VIDEO 661 — the tag names a place the voice SAYS. `visualLocation` is the director's inference;
+   * render 70 tagged "Netherlands" under sentences that never said it, the same invented fact the
+   * map stopped showing in VIDEO 660. Only the location (or the part of it, "Rotterdam" of
+   * "Rotterdam, Netherlands") the sentence states as a whole word is written.
+   */
+  const spokenPlace = placeSaidIn(intent.visualLocation, intent.spokenText);
+  if (spokenPlace) {
     out.push({
       captionType: "location",
-      text: intent.visualLocation,
+      text: spokenPlace,
       startSec: beatVoiceStartSec,
       endSec: beatVoiceStartSec + shortDur,
       animation: "slide",
       position: "bottom-left",
-      reason: `Beat's visual location ("${intent.visualLocation}") is shown as a location tag.`,
+      reason: `Beat says the location ("${spokenPlace}") — shown as a location tag.`,
     });
   }
 

@@ -384,6 +384,12 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
             {words.toUpperCase()}
           </div>
           <div style={{ height: 2, width: 90, background: ACCENT, margin: "14px auto 0" }} />
+          {/** VIDEO 661 — the sentence's own phrase under the title: a card never says one word only. */}
+          {readAny(g, "subtitle") ? (
+            <div style={{ fontFamily: CARD_FONT, fontSize: "0.55em", fontWeight: 500, color: "rgba(255,255,255,0.88)", marginTop: 18, textShadow: HALO }}>
+              {readAny(g, "subtitle")}
+            </div>
+          ) : null}
         </div>
       );
       break;
@@ -505,7 +511,10 @@ export const PRIMARY_GROUND =
  *
  *   1. a soft glow in the film's gold accent that drifts slowly across the frame
  *   2. a faint diagonal light sweep, for depth
- *   3. a fine grain whose offset changes every frame, like film stock
+ *
+ * VIDEO 661 — no grain. A fine grain whose offset changed every frame was the third layer; on a
+ * flat card it is the only thing that moves, so the encoder spent its bits on it (render 70: up to
+ * 15 Mbit/s on a word on a dark ground, 2–4 Mbit/s on real footage) and turned it into blocking.
  *
  * Pure CSS gradients, computed from the frame number alone: deterministic, no asset, no network,
  * nothing from any shot. Every layer is translucent and the mean brightness stays where the slate
@@ -516,21 +525,12 @@ export function primaryGroundLayers(frame: number, durationInFrames: number): Re
   /** The glow travels a quarter of the frame over the whole graphic: movement, never a jump. */
   const glowX = 38 + 24 * t;
   const glowY = 42 + 6 * Math.sin(t * Math.PI);
-  /** A fixed hop per frame, no random number: the same frame always renders the same. */
-  const grainX = (frame * 37) % 97;
-  const grainY = (frame * 61) % 89;
   return [
     {
       background: `radial-gradient(ellipse 60% 55% at ${glowX.toFixed(2)}% ${glowY.toFixed(2)}%, ${ACCENT}26 0%, ${ACCENT}0d 45%, ${ACCENT}00 75%)`,
     },
     {
       background: "linear-gradient(115deg, rgba(255,255,255,0) 30%, rgba(255,255,255,0.035) 50%, rgba(255,255,255,0) 70%)",
-    },
-    {
-      backgroundImage:
-        "repeating-radial-gradient(circle at 17% 23%, rgba(255,255,255,0.045) 0px, rgba(255,255,255,0) 1px, rgba(255,255,255,0) 3px)",
-      backgroundSize: "97px 89px",
-      backgroundPosition: `${grainX}px ${grainY}px`,
     },
   ];
 }
