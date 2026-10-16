@@ -94,6 +94,67 @@ export function stripVisualTagsFromScript(script: string): string {
     .trim();
 }
 
+/**
+ * VIDEO 661 (G) — A WRITER'S INSTRUCTION IS NOT NARRATION.
+ *
+ * Render 70 (video 661) spoke "Delve into specific economic milestones…" and "What are the broader
+ * implications…" — the outline the model was given, read out as if it were the film. Those sentences
+ * have no picture (they got chapter cards) and no place in a documentary. Removed from a GENERATED
+ * script before the voice-over:
+ *
+ *  - an instruction to the writer: a sentence that opens with an outline verb ("Delve into", "Explore",
+ *    "Discuss", "Highlight", "Examine", "Describe", "Explain", "Summarize", "Transition to", …) or
+ *    that talks about the film itself ("in this section", "the viewer", "the audience");
+ *  - an outline question: a question that asks about the topic's "implications", "significance",
+ *    "key factors", "lessons", "broader impact" — a prompt for the writer, not a line for the viewer.
+ *
+ * A story question ("But how did it all begin?") stays: only outline wording is removed. Headings,
+ * [VISUAL] tags and every other sentence are untouched; a script that would lose more than a third of
+ * its words is left as it was (something else is wrong with it, and silence is worse).
+ */
+const WRITER_INSTRUCTION_RE =
+  /^(?:["'“‘(]\s*)?(?:delve|dive (?:into|deeper)|explore|discuss|examine|describe|explain|highlight|outline|summari[sz]e|analy[sz]e|elaborate|detail|introduce|mention|touch (?:on|upon)|transition (?:to|into)|conclude (?:with|by)|wrap up|focus on|emphasi[sz]e|illustrate)\b/i;
+const META_REFERENCE_RE =
+  /\b(?:in this (?:section|segment|part|chapter|scene|video)|the (?:viewer|viewers|audience)\b|this script|the narrator should|(?:the )?next section)\b/i;
+const OUTLINE_QUESTION_RE =
+  /\b(?:implications?|significance|key (?:factors|takeaways|lessons|points|drivers)|lessons? (?:can be |were )?learned|broader (?:impact|effects?|consequences|context)|long-term (?:impact|effects?|consequences))\b/i;
+
+export function isWriterInstructionSentence(sentence: string): boolean {
+  const s = sentence.trim();
+  if (!s) return false;
+  if (WRITER_INSTRUCTION_RE.test(s)) return true;
+  if (META_REFERENCE_RE.test(s)) return true;
+  return /\?\s*["'”’)]?\s*$/.test(s) && OUTLINE_QUESTION_RE.test(s);
+}
+
+export function stripWriterInstructions(script: string): { script: string; removed: string[] } {
+  const removed: string[] = [];
+  const out = script
+    .split("\n")
+    .map((line) => {
+      const t = line.trim();
+      /** headings, [VISUAL] lines and blank lines are not narration */
+      if (!t || /^#/.test(t) || /^\[visual:/i.test(t)) return line;
+      const sentences = t.match(/[^.!?]+[.!?]+["'”’)]*|[^.!?]+$/g) ?? [t];
+      /** Only the instruction itself is cut out; the rest of the line keeps its own spelling. */
+      let next = line;
+      for (const sen of sentences) {
+        if (!isWriterInstructionSentence(sen)) continue;
+        removed.push(sen.trim());
+        next = next.replace(sen, " ");
+      }
+      return next === line ? line : next.replace(/[ \t]{2,}/g, " ").trim();
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!removed.length) return { script, removed };
+  const before = countNarrationWords(script);
+  const after = countNarrationWords(out);
+  if (before > 0 && after < before * (2 / 3)) return { script, removed: [] };
+  return { script: out, removed };
+}
+
 export function countNarrationWords(script: string): number {
   const text = script
     .replace(/\[visual:[^\]]*\]/gi, "")

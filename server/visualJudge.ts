@@ -15,6 +15,7 @@
  * deterministic (confidence 1); a picture verdict carries the model's own certainty.
  */
 import path from "path";
+import { wrongPlaceInTitle } from "./placeMismatch";
 import { normalizeMediaTags } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
 import type { CandidateMeta } from "./assetDirector";
@@ -524,6 +525,18 @@ export function judgeCandidateMetadata(input: CandidateJudgeInput): VisualJudgeV
   // RONDE 174: `armed` separates "this gate had nothing to say" from "this gate is broken".
   recordGateVerdict("documentary_beat_gate", !docGate.passes, { armed: docGate.armed });
   if (!docGate.passes) return reject("metadata", "documentary_beat_gate");
+  /**
+   * VIDEO 661 (D) — the provider's own title names another place than the sentence ("Port-Oakland.jpg"
+   * under a sentence about Rotterdam). Refused before anyone pays to look; see `wrongPlaceInTitle`.
+   */
+  const wrongPlace = wrongPlaceInTitle(beatText, input.meta?.providerText?.title);
+  if (wrongPlace) {
+    console.log(
+      `[VisualJudge] ${input.where}: wrong place — the title of "${path.basename(p)}" names ${wrongPlace.titled.join(", ")}, ` +
+        `the sentence ${wrongPlace.said.join(", ")}`
+    );
+    return reject("metadata", "wrong_place_in_title");
+  }
   // VIDEO 623 — gated on the PEOPLE a sentence names. Only counted when there are any: a sentence
   // that names nobody was never asked, and counting it would bury a broken gate in noise.
   const personRules = input.entityRules.filter((r) => r.kind === "person");

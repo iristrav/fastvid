@@ -54,7 +54,7 @@ beforeAll(() => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), "f341-workdir-"));
   sourceVideoPath = path.join(os.tmpdir(), "f341-source.mp4");
   execFileSync("ffmpeg", [
-    "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=10", "-t", "18",
+    "-y", "-f", "lavfi", "-i", "testsrc2=size=854x480:rate=10", "-t", "18",
     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-pix_fmt", "yuv420p", sourceVideoPath,
   ], { stdio: "ignore" });
 });

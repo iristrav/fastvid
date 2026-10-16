@@ -36,6 +36,7 @@ import {
   formatTechnicalReject,
   stillResolutionVerdict,
   videoResolutionVerdict,
+  minShortSideForSource,
 } from "./technicalMediaGate";
 import {
   analyzeBeatSemantics,
@@ -1788,7 +1789,8 @@ export async function prepareCuratedArchiveClip(
        * away the material this pipeline exists to find. See technicalMediaGate.
        */
       const dims = await probeVideoDimensions(rawPath);
-      const verdict = videoResolutionVerdict(dims?.width, dims?.height);
+      /** VIDEO 661 — a YouTube moment kept in the archive is held to YouTube's floor (480), the rest to the archive's (360). */
+      const verdict = videoResolutionVerdict(dims?.width, dims?.height, minShortSideForSource(asset.sourcePlatform ?? "archive"));
       if (!verdict.ok) {
         console.warn(
           formatTechnicalReject({

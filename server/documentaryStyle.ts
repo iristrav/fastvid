@@ -18,7 +18,19 @@ export function documentaryStyleEnabled(): boolean {
  *  result in; omitting it keeps the original uniform grade (backwards compatible). */
 export type DocGradeSourceKind = "archive" | "ai_generated" | "stock" | "unknown";
 
-export function buildDocumentaryColorGradeVF(sourceKind?: DocGradeSourceKind): string {
+/**
+ * VIDEO 661 — a source whose mean luma (0–255) is below this is DARK. Render 70 graded every clip with
+ * `brightness=-0.03`, a vignette and less saturation, and dark archive footage came out nearly black.
+ * A dark source keeps the grade's colour and contrast but is not darkened: no brightness pull, a
+ * slight gamma lift, no vignette.
+ */
+export const DARK_SOURCE_MEAN_LUMA = 60;
+
+export function isDarkSource(meanLuma: number | null | undefined): boolean {
+  return typeof meanLuma === "number" && Number.isFinite(meanLuma) && meanLuma < DARK_SOURCE_MEAN_LUMA;
+}
+
+export function buildDocumentaryColorGradeVF(sourceKind?: DocGradeSourceKind, opts: { darkSource?: boolean } = {}): string {
   // AI-generated clips tend to read too clean/plasticky next to real archival footage —
   // pull saturation and contrast down harder to fight that. Stock footage reads too
   // glossy/modern — a moderate pull. Real archive footage already looks authentic, so it
@@ -29,8 +41,10 @@ export function buildDocumentaryColorGradeVF(sourceKind?: DocGradeSourceKind): s
       : sourceKind === "stock"
         ? { saturation: 0.82, contrast: 1.15 }
         : { saturation: 0.88, contrast: 1.12 };
+  /** VIDEO 661 — a dark source is lifted a little, never pulled down further. */
+  const { brightness, gamma } = opts.darkSource ? { brightness: "0", gamma: "1.08" } : { brightness: "-0.03", gamma: "1.02" };
   return (
-    `eq=contrast=${contrast}:saturation=${saturation}:brightness=-0.03:gamma=1.02,` +
+    `eq=contrast=${contrast}:saturation=${saturation}:brightness=${brightness}:gamma=${gamma},` +
     "colorbalance=rs=-0.02:gs=0:bs=0.04:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02"
   );
 }
@@ -43,7 +57,9 @@ export function buildDocumentaryVignetteVF(sourceKind?: DocGradeSourceKind): str
 }
 
 /** Color + vignette only — applied on each montage clip so sources match before xfade. */
-export function buildPerClipDocumentaryGradeVF(sourceKind?: DocGradeSourceKind): string {
+export function buildPerClipDocumentaryGradeVF(sourceKind?: DocGradeSourceKind, opts: { darkSource?: boolean } = {}): string {
+  /** VIDEO 661 — no vignette on a dark source: its edges are dark enough already. */
+  if (opts.darkSource) return buildDocumentaryColorGradeVF(sourceKind, opts);
   return `${buildDocumentaryColorGradeVF(sourceKind)},${buildDocumentaryVignetteVF(sourceKind)}`;
 }
 

@@ -4,6 +4,20 @@ import os from "os";
 import path from "path";
 
 /**
+ * VIDEO 661 — these tests exercise the base per-sentence ceiling (5 looks). The extra looks a sentence
+ * with nothing approved now gets are pinned off here and covered in video661Fixes.test.ts.
+ */
+const PREV_UNAPPROVED_EXTRA_661 = process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+beforeAll(() => {
+  process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = "0";
+});
+afterAll(() => {
+  if (PREV_UNAPPROVED_EXTRA_661 === undefined) delete process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+  else process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = PREV_UNAPPROVED_EXTRA_661;
+});
+
+
+/**
  * VIDEO 639 — ready YouTube moments vanished when a sentence's scene closed while their review was
  * still running (931e090, the first render after FIX A/B/C):
  *

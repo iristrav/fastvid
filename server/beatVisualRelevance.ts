@@ -563,14 +563,61 @@ export function youtubeLookedAtOnBeat(
   return false;
 }
 
-/** Looks this sentence may still spend under the per-sentence ceiling (`maxRelevanceLooksPerBeat`). */
+/** Looks this sentence may still spend under the per-sentence ceiling (`relevanceLookCeilingOnBeat`). */
 export function looksLeftOnBeat(
-  ledger: (Pick<BeatRelevanceLedger, "spendByBeat"> & Partial<Pick<BeatRelevanceLedger, "lastLookAllowanceByBeat">>) | undefined,
+  ledger:
+    | (Pick<BeatRelevanceLedger, "spendByBeat"> &
+        Partial<Pick<BeatRelevanceLedger, "lastLookAllowanceByBeat" | "byBeat">>)
+    | undefined,
   sceneIndex: number,
   beatIndex: number
 ): number {
   const slot = `s${sceneIndex}b${beatIndex}`;
-  return maxRelevanceLooksPerBeat() + lastLookAllowanceOnBeat(ledger, slot) - (ledger?.spendByBeat.get(slot) ?? 0);
+  return relevanceLookCeilingOnBeat(ledger, slot) + lastLookAllowanceOnBeat(ledger, slot) - (ledger?.spendByBeat.get(slot) ?? 0);
+}
+
+/**
+ * VIDEO 661 — whether the picture editor has already called a picture a fit (or acceptable) for this
+ * sentence. A decline (`evaluated: false`) is not an approval; a reprieved refusal is not one either.
+ */
+export function beatHasApprovedPicture(
+  ledger: Partial<Pick<BeatRelevanceLedger, "byBeat">> | undefined,
+  slot: string
+): boolean {
+  if (!ledger?.byBeat) return false;
+  const prefix = `${slot}\u0000`;
+  for (const [key, entry] of ledger.byBeat) {
+    if (!key.startsWith(prefix)) continue;
+    const d = entry.decision;
+    if (d.evaluated === false || d.reprieved) continue;
+    if (d.verdict === "fits" || d.verdict === "acceptable") return true;
+  }
+  return false;
+}
+
+/**
+ * VIDEO 661 — EXTRA LOOKS FOR A SENTENCE THAT HAS NOTHING APPROVED YET.
+ *
+ * Render 70 (video 661) put chapter cards under three sentences (18.3 s) while eight downloaded
+ * candidates for them were never looked at: the sentence had spent its looks on refusals and every
+ * later candidate was declined with `VISION_BUDGET_EXHAUSTED`. A sentence that already holds an
+ * approved picture keeps the old ceiling; one that holds nothing may look `MAX_JUDGEMENTS_PER_BEAT`
+ * more times before it falls back to a card. The render-wide ceiling (`maxBeatImageJudgementsPerRender`)
+ * still bounds every one of these looks, and a refusal is still a refusal — only the number of
+ * candidates that get a real answer changes.
+ */
+export function unapprovedBeatExtraLooks(): number {
+  const raw = process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 0 && n <= 20 ? n : MAX_JUDGEMENTS_PER_BEAT;
+}
+
+/** VIDEO 661 — the sentence's own look ceiling: the base, plus the extra while nothing is approved. */
+export function relevanceLookCeilingOnBeat(
+  ledger: Partial<Pick<BeatRelevanceLedger, "byBeat">> | undefined,
+  slot: string
+): number {
+  return maxRelevanceLooksPerBeat() + (beatHasApprovedPicture(ledger, slot) ? 0 : unapprovedBeatExtraLooks());
 }
 
 /** VIDEO 649 (V2) — what `grantLastLookAllowance` granted this sentence; 0 without a grant. */
@@ -970,8 +1017,10 @@ export async function checkBeatRelevance(
   // fit — the budget exists to bound spending, not to launder verdicts already earned.
   const alreadyKnown = state.seen.get(cacheKey);
   /** VIDEO 649 (V2) — the ceiling, plus what the last look was granted for moments handed to this sentence. */
-  const beatCeiling = maxRelevanceLooksPerBeat() + lastLookAllowanceOnBeat(ledger, slot);
-  if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat() && !params.finalSay) {
+  /** VIDEO 661 — a sentence with nothing approved yet may look `unapprovedBeatExtraLooks()` more times. */
+  const ownCeiling = relevanceLookCeilingOnBeat(ledger, slot);
+  const beatCeiling = ownCeiling + lastLookAllowanceOnBeat(ledger, slot);
+  if (!alreadyKnown && spentOnBeat >= ownCeiling && !params.finalSay) {
     /**
      * VIDEO 649 (V2) — past the sentence's own ceiling, a look granted by `grantLastLookAllowance`
      * (the stage's second pass, for moments handed to the sentence and never judged) still runs;

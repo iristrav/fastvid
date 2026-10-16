@@ -11,6 +11,20 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
+/**
+ * VIDEO 661 — these tests exercise the base per-sentence ceiling (5 looks). The extra looks a sentence
+ * with nothing approved now gets are pinned off here and covered in video661Fixes.test.ts.
+ */
+const PREV_UNAPPROVED_EXTRA_661 = process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+beforeAll(() => {
+  process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = "0";
+});
+afterAll(() => {
+  if (PREV_UNAPPROVED_EXTRA_661 === undefined) delete process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+  else process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = PREV_UNAPPROVED_EXTRA_661;
+});
+
+
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const BVR = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
 const bodyOf = (src: string, signature: string): string => {
@@ -125,9 +139,9 @@ describe("V2 — a sentence's last look may pass its ceiling for moments handed 
   });
 
   it("the judge honours the allowance, and the ordinary ceiling still produces the BEAT_LOOK_CEILING skip", () => {
-    expect(BVR).toContain("const beatCeiling = maxRelevanceLooksPerBeat() + lastLookAllowanceOnBeat(ledger, slot);");
+    expect(BVR).toContain("const beatCeiling = ownCeiling + lastLookAllowanceOnBeat(ledger, slot);"); // VIDEO 661
     /** the pinned ceiling line is untouched; the allowance is read inside it */
-    expect(BVR).toContain("if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat() && !params.finalSay) {");
+    expect(BVR).toContain("if (!alreadyKnown && spentOnBeat >= ownCeiling && !params.finalSay) {");
     expect(BVR).toContain("    if (spentOnBeat >= beatCeiling) {");
     expect(BVR).toContain('noteJudgementSkipped(state, "BEAT_LOOK_CEILING")');
     expect(BVR).toContain("if (!alreadyKnown && spentOnBeat >= beatCeiling) {");

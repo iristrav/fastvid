@@ -139,6 +139,23 @@ const MISMATCH_PATTERNS: ReadonlyArray<{ kind: MismatchKind; re: RegExp }> = [
   },
   {
     /**
+     * VIDEO 661 (C) — the picture editor's marker for a page of text filling the frame ("text page:
+     * a printed book page about trade"). The frame IS text, like a title card: refused outright.
+     */
+    kind: "TITLE_CARD",
+    re: /\b(?:text page|page of text|book page|document page|newspaper page)\b/i,
+  },
+  {
+    /**
+     * VIDEO 661 (D) — the picture editor's marker for a recognisably different place ("wrong place:
+     * the port of Oakland"). A named different place is a different subject on screen, not a soft
+     * "right sort of thing somewhere else": refused outright, never taken back as a last resort.
+     */
+    kind: "UNRELATED",
+    re: /\bwrong place\b/i,
+  },
+  {
+    /**
      * The frame IS the text. Checked before TEXT_ON_SCREEN so "a title card with white lettering"
      * is a title card rather than footage that happens to carry text.
      */

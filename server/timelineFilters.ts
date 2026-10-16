@@ -419,7 +419,9 @@ export function lookUnsupportedReason(grade: string): string | null {
 
 export function gradeChain(
   look: TimelineLook | undefined,
-  sourceKind: ClipSourceKind | undefined
+  sourceKind: ClipSourceKind | undefined,
+  /** VIDEO 661 — the renderer measured the file as dark (`isDarkSource`): lifted, not darkened. */
+  opts: { darkSource?: boolean } = {}
 ): string | null {
   if (!look || look.grade === "none") return null;
   /** An unknown look leaves the pixels alone and is reported — never approximated by a near one. */
@@ -443,7 +445,8 @@ export function gradeChain(
   const modifier = LOOK_MODIFIERS[look.grade];
   const withLook = (calibration: string) => (modifier ? `${calibration},${modifier}` : calibration);
 
-  const full = buildPerClipDocumentaryGradeVF(kind);
+  const dark = opts.darkSource === true;
+  const full = buildPerClipDocumentaryGradeVF(kind, dark ? { darkSource: true } : {});
   if (strength >= 0.999) return withLook(full);
 
   /**
@@ -461,11 +464,11 @@ export function gradeChain(
   const angle = kind === "ai_generated" || kind === "stock" ? 0.55 : 0.62;
   const calibration =
     `eq=contrast=${mix(1, contrast).toFixed(4)}:saturation=${mix(1, saturation).toFixed(4)}:` +
-    `brightness=${mix(0, -0.03).toFixed(4)}:gamma=${mix(1, 1.02).toFixed(4)},` +
+    `brightness=${mix(0, dark ? 0 : -0.03).toFixed(4)}:gamma=${mix(1, dark ? 1.08 : 1.02).toFixed(4)},` +
     `colorbalance=rs=${mix(0, -0.02).toFixed(4)}:gs=0:bs=${mix(0, 0.04).toFixed(4)}:` +
     `rm=${mix(0, -0.01).toFixed(4)}:gm=0:bm=${mix(0, 0.02).toFixed(4)}:` +
-    `rh=${mix(0, -0.01).toFixed(4)}:gh=0:bh=${mix(0, 0.02).toFixed(4)},` +
-    `vignette=angle=${mix(Math.PI / 2, angle).toFixed(4)}:mode=forward`;
+    `rh=${mix(0, -0.01).toFixed(4)}:gh=0:bh=${mix(0, 0.02).toFixed(4)}` +
+    (dark ? "" : `,vignette=angle=${mix(Math.PI / 2, angle).toFixed(4)}:mode=forward`);
 
   return withLook(calibration);
 }
@@ -507,7 +510,7 @@ export function buildVideoFilter(
    * RONDE 647 — facts the renderer measured about the file. `portraitSource` = the picture stands
    * (taller than wide, after rotation). Only consulted when nobody chose a fit for this clip.
    */
-  source?: { portraitSource?: boolean }
+  source?: { portraitSource?: boolean; darkSource?: boolean }
 ): string {
   const t = clip.transform;
   const parts: string[] = [];
@@ -534,7 +537,7 @@ export function buildVideoFilter(
    * frame that already has synthetic grain in it pulls the saturation of the grain itself, which
    * turns a subtle texture into visible coloured speckle.
    */
-  const grade = gradeChain(look, clip.sourceKind);
+  const grade = gradeChain(look, clip.sourceKind, source?.darkSource ? { darkSource: true } : {});
   if (grade) parts.push(grade);
 
   for (const effect of clip.effects ?? []) {

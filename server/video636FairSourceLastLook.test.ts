@@ -14,7 +14,7 @@
  * last-look rules, the same ledger and ceiling); the wiring tests below pin where the pipeline calls
  * them.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import fs from "fs";
 import path from "path";
 
@@ -38,6 +38,20 @@ import {
 import { MAX_JUDGEMENTS_PER_BEAT, maxBeatImageJudgementsPerRender } from "./beatImageRelevanceGate";
 import { maxShortlistPerBeat, maxShortlistPerBeatPerSource } from "./beatShortlist";
 import { FOOTAGE_SHARE_TIERS } from "./usageDiversity";
+
+/**
+ * VIDEO 661 — these tests exercise the base per-sentence ceiling (5 looks). The extra looks a sentence
+ * with nothing approved now gets are pinned off here and covered in video661Fixes.test.ts.
+ */
+const PREV_UNAPPROVED_EXTRA_661 = process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+beforeAll(() => {
+  process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = "0";
+});
+afterAll(() => {
+  if (PREV_UNAPPROVED_EXTRA_661 === undefined) delete process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+  else process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = PREV_UNAPPROVED_EXTRA_661;
+});
+
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const S = 0;

@@ -47,7 +47,7 @@ import {
   type TimelineLook,
   type TimelineVideoClip,
 } from "./projectTimeline";
-import { docGradeSourceKindForProvider } from "./documentaryStyle";
+import { docGradeSourceKindForProvider, isDarkSource } from "./documentaryStyle";
 import { SAFE_MARGIN, anchorGeometry } from "./captionLayout";
 import { probeOverlayInk, type OverlayInkResult } from "./graphicsOverlayInk";
 import {
@@ -577,6 +577,27 @@ export async function probeIsPortrait(file: string): Promise<boolean | null> {
   }
 }
 
+/**
+ * VIDEO 661 — the file's mean luma (0–255) over up to six frames, one a second, on a 32×18 grey
+ * thumbnail. Null when it cannot be read: the grade is then the ordinary one.
+ */
+export async function probeMeanLuma(file: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      ffmpeg(),
+      ["-hide_banner", "-loglevel", "error", "-i", file, "-vf", "fps=1,scale=32:18:flags=area,format=gray", "-frames:v", "6", "-f", "rawvideo", "pipe:1"],
+      { encoding: "buffer", maxBuffer: 1024 * 1024, timeout: 20_000 }
+    );
+    const bytes = stdout as unknown as Buffer;
+    if (!bytes?.length) return null;
+    let sum = 0;
+    for (const b of bytes) sum += b;
+    return sum / bytes.length;
+  } catch {
+    return null;
+  }
+}
+
 export async function probeHasStream(file: string, kind: "v" | "a"): Promise<boolean> {
   try {
     const { stdout } = await execFileAsync(FFPROBE, [
@@ -887,7 +908,13 @@ async function renderSegment(
   if (portraitSource) {
     console.log(`[PortraitFill] clip=${clip.id} the source stands — blurred fill instead of black bars`);
   }
-  const built = buildVideoFilter(graded, fmt, dur, look, { portraitSource });
+  /** VIDEO 661 — a dark source is lifted a little instead of darkened by the grade (`isDarkSource`). */
+  const meanLuma = look && look.grade !== "none" ? await probeMeanLuma(localMedia) : null;
+  const darkSource = isDarkSource(meanLuma);
+  if (darkSource) {
+    console.log(`[AdaptiveGrade] clip=${clip.id} dark source (mean luma ${meanLuma!.toFixed(0)}) — not darkened, no vignette, slight lift`);
+  }
+  const built = buildVideoFilter(graded, fmt, dur, look, { portraitSource, darkSource });
   /**
    * VIDEO 636 — A SHORT FILE HOLDS ITS LAST FRAME; IT IS NEVER PLAYED AGAIN FROM THE START.
    *

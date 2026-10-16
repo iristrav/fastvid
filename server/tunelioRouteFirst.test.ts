@@ -42,7 +42,7 @@ let testSeq = 0;
 let videoId = "tuneTest0000";
 
 function realMp4(seconds: number, out: string, withAudio = true): string {
-  const args = ["-y", "-v", "error", "-f", "lavfi", "-i", `testsrc=s=640x360:r=25:d=${seconds}`];
+  const args = ["-y", "-v", "error", "-f", "lavfi", "-i", `testsrc=s=854x480:r=25:d=${seconds}`];
   if (withAudio) args.push("-f", "lavfi", "-i", `sine=frequency=440:duration=${seconds}`);
   args.push("-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "400k");
   if (withAudio) args.push("-c:a", "aac", "-shortest");

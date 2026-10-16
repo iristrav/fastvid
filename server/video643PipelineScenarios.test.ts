@@ -51,6 +51,8 @@ let film = 96_700;
 beforeEach(() => {
   process.env = { ...ORIGINAL_ENV };
   process.env.ENABLE_YOUTUBE_SOURCING = "true";
+  /** VIDEO 661 — these scenarios exercise the base ceiling of 5 looks a sentence; the extra looks are covered in video661Fixes.test.ts */
+  process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = "0";
   process.env.YOUTUBE_API_KEY = "scenario-test-key";
   process.env.YOUTUBE_CC_DL_SERVICE = "https://scenario-cloud.example.com";
   process.env.ENABLE_SCRIPT_GUIDED_CLIPS = "false";

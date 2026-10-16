@@ -88,7 +88,7 @@ describe("RONDE 136 §4 — the 480 bar refuses stock and spares the archive", (
     }
   });
 
-  it("YOUTUBE IS NOT STOCK: 640x360 is kept, because sourcingPolicy already ruled on it", () => {
+  it("YOUTUBE IS NOT STOCK, but VIDEO 661 holds it to the same 480 bar: 640x360 is refused", () => {
     /**
      * Video 558 measured YouTube CC at 640x360 twice, under the bar — and it stays.
      *
@@ -100,26 +100,31 @@ describe("RONDE 136 §4 — the 480 bar refuses stock and spares the archive", (
      * The Pexels argument does not transfer: a stock library that cannot supply 480 lines has
      * another clip, whereas a specific YouTube video has exactly one upload.
      */
+    /**
+     * VIDEO 661 — overruled by the owner after render 70: YouTube is held to the 480-line bar like
+     * stock. A video offered only in 360p loses its turn to another candidate.
+     */
     expect(isStockSource("youtube_cc")).toBe(false);
-    expect(minShortSideForSource("youtube_cc")).toBe(VIDEO_MIN_SHORT_SIDE_PX);
-    expect(videoResolutionVerdict(640, 360, minShortSideForSource("youtube_cc")).ok).toBe(true);
-    // ...and it is still NOTED, so the evidence keeps accumulating.
-    expect(videoResolutionVerdict(640, 360, minShortSideForSource("youtube_cc")).belowQualityBar).toBe(true);
+    expect(minShortSideForSource("youtube_cc")).toBe(VIDEO_QUALITY_BAR_SHORT_SIDE_PX);
+    expect(videoResolutionVerdict(640, 360, minShortSideForSource("youtube_cc")).ok).toBe(false);
+    expect(videoResolutionVerdict(854, 480, minShortSideForSource("youtube_cc")).ok).toBe(true);
   });
 
   it("STOCK: 1080p passes", () => {
     expect(videoResolutionVerdict(1920, 1080, minShortSideForSource("pexels")).ok).toBe(true);
   });
 
-  it("ARCHIVE: a genuine 352x240 newsreel is STILL allowed", () => {
+  it("ARCHIVE: a standard-definition 480x360 newsreel is STILL allowed (VIDEO 661: floor 360)", () => {
     /**
      * The half of RONDE 134's argument that survived the data, and the most important assertion
      * here: the material this pipeline exists to find must not be collateral damage.
      */
     for (const src of ["internet_archive", "loc", "nara", "wikimedia", "archive", "europeana"]) {
-      const v = videoResolutionVerdict(352, 240, minShortSideForSource(src));
-      expect(v.ok, `${src} refused a genuine sub-SD archive clip`).toBe(true);
+      /** VIDEO 661 — a standard-definition newsreel (480×360) stays; 352×240 is under the new 360 floor */
+      const v = videoResolutionVerdict(480, 360, minShortSideForSource(src));
+      expect(v.ok, `${src} refused a standard-definition archive clip`).toBe(true);
       expect(v.belowQualityBar).toBe(true);
+      expect(videoResolutionVerdict(352, 240, minShortSideForSource(src)).ok).toBe(false);
     }
   });
 

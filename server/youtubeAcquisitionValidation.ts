@@ -24,9 +24,12 @@ export type AcquiredFileVerdict =
   | { ok: true; width: number; height: number; durationSec: number }
   | {
       ok: false;
-      code: "NO_VIDEO_STREAM" | "INVALID_DIMENSIONS" | "VERTICAL_SHORT" | "DURATION_TOO_SHORT" | "CORRUPT_FILE";
+      code: "NO_VIDEO_STREAM" | "INVALID_DIMENSIONS" | "VERTICAL_SHORT" | "LOW_RESOLUTION" | "DURATION_TOO_SHORT" | "CORRUPT_FILE";
       detail: string;
     };
+
+/** VIDEO 661 — the shortest side a YouTube file must have (the stock quality bar). */
+export const YOUTUBE_MIN_SHORT_SIDE_PX = 480;
 
 /** The shortest acceptable file for a request of `requestedSec`: half of it, and never under 1s. */
 export function minimumAcquiredDurationSec(requestedSec: number): number {
@@ -50,6 +53,14 @@ export function judgeAcquiredFile(p: {
    */
   if (height > width) {
     return { ok: false, code: "VERTICAL_SHORT", detail: `${width}x${height} — the Short format` };
+  }
+  /**
+   * VIDEO 661 — a YouTube file under 480 lines is blown up past recognition in a 1080p film. Refused
+   * like any other failed attempt: the next route is tried, and a video offered only in 360p loses
+   * its turn to another candidate.
+   */
+  if (Math.min(width, height) < YOUTUBE_MIN_SHORT_SIDE_PX) {
+    return { ok: false, code: "LOW_RESOLUTION", detail: `${width}x${height} < ${YOUTUBE_MIN_SHORT_SIDE_PX} lines` };
   }
   const floor = minimumAcquiredDurationSec(p.requestedSec);
   if (!(durationSec >= floor)) {

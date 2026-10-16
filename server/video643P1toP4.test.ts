@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, afterAll } from "vitest";
 import { execFileSync } from "child_process";
 import fsP from "fs";
 import osP from "os";
@@ -12,6 +12,20 @@ import {
   startYoutubeDownloadFunnel,
   youtubeDownloadFailureClass,
 } from "./youtubeDownloadFunnel";
+
+/**
+ * VIDEO 661 — these tests exercise the base per-sentence ceiling (5 looks). The extra looks a sentence
+ * with nothing approved now gets are pinned off here and covered in video661Fixes.test.ts.
+ */
+const PREV_UNAPPROVED_EXTRA_661 = process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+beforeAll(() => {
+  process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = "0";
+});
+afterAll(() => {
+  if (PREV_UNAPPROVED_EXTRA_661 === undefined) delete process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+  else process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = PREV_UNAPPROVED_EXTRA_661;
+});
+
 
 /**
  * VIDEO 643 — P1–P4 AFTER THE PIPELINE AUDIT.

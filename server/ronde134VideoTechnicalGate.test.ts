@@ -93,12 +93,14 @@ describe("the video resolution rule", () => {
     if (!v.ok) {
       expect(v.reason).toBe("video_too_low_res");
       expect(v.actual).toBe("128x96");
-      expect(v.required).toBe("144 lines");
+      /** VIDEO 661 — the archive floor is now 360 lines */
+      expect(v.required).toBe("360 lines");
     }
   });
 
   it("accepts at exactly the floor", () => {
-    expect(videoResolutionVerdict(256, 144).ok).toBe(true);
+    expect(videoResolutionVerdict(480, 360).ok).toBe(true);
+    expect(videoResolutionVerdict(478, 359).ok).toBe(false);
   });
 
   it("a real newsreel at 352x240 is ACCEPTED, and flagged rather than thrown away", () => {
@@ -106,9 +108,14 @@ describe("the video resolution rule", () => {
      * The single most important assertion in this file. This is the material the pipeline exists
      * to find, and a 480-line rejection would have removed it.
      */
-    const v = videoResolutionVerdict(352, 240);
+    /**
+     * VIDEO 661 — the owner's call after render 70: a standard-definition newsreel (480×360) is still
+     * kept and flagged; a 352×240 copy is now under the archive floor (360) and refused.
+     */
+    const v = videoResolutionVerdict(480, 360);
     expect(v.ok).toBe(true);
     expect(v.belowQualityBar).toBe(true);
+    expect(videoResolutionVerdict(352, 240).ok).toBe(false);
   });
 
   it("1080p is accepted and not flagged", () => {

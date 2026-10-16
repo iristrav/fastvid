@@ -110,7 +110,7 @@ beforeAll(() => {
   sourceVideoPaths = SOURCE_COLORS.map((_color, i) => {
     const p = path.join(os.tmpdir(), `f339-source-${i}.mp4`);
     execFileSync("ffmpeg", [
-      "-y", "-f", "lavfi", "-i", `testsrc2=size=320x240:rate=10`, "-t", "18",
+      "-y", "-f", "lavfi", "-i", `testsrc2=size=854x480:rate=10`, "-t", "18",
       "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-pix_fmt", "yuv420p", p,
     ], { stdio: "ignore" });
     return p;

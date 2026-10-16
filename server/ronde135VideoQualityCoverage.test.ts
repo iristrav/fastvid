@@ -205,14 +205,14 @@ describe("RONDE 135 §1 — the technical gate reaches every video route", () =>
     }
   }, 180_000);
 
-  it("BEHAVIOUR: a genuine 352x240 archive clip is kept, not refused", async () => {
+  it("BEHAVIOUR: a standard-definition 480x360 archive clip is kept, not refused (VIDEO 661: the floor is 360)", async () => {
     // The loss-aversion rule from RONDE 134, re-checked on the route this round added.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "r135-news-"));
     try {
       const src = path.join(dir, "news.mp4");
       const out = path.join(dir, "out.mp4");
       execSync(
-        `ffmpeg -y -f lavfi -i "nullsrc=s=352x240,geq=random(1)*255:128:128" -t 4 -c:v libx264 -pix_fmt yuv420p "${src}" 2>/dev/null`
+        `ffmpeg -y -f lavfi -i "nullsrc=s=480x360,geq=random(1)*255:128:128" -t 4 -c:v libx264 -pix_fmt yuv420p "${src}" 2>/dev/null`
       );
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       let ok: boolean;

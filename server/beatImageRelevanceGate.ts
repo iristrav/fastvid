@@ -830,8 +830,9 @@ const SITUATION_PREFIX_RE = /^(?:subject and situation|subject|situation) not sh
  */
 const CONCRETE_CLAIM_RE =
   /\b(?:lawsuits?|sued?|sues|suing|courts?|trials?|verdicts?|rulings?|ruled|judges?|settlements?|settled|fines?|fined|penalt\w*|indict\w*|fraud\w*|SEC|regulat\w*|tax|taxes|taxed|tariffs?|subsid\w*|incentives?|rebates?|credits?|revenues?|profit\w*|earnings|losses?|quarter\w*|shares?|stocks?|shareholders?|investors?|valuations?|valuable|worth|billions?|millions?|dollars?|euros?|percent|acqui\w*|mergers?|bankrupt\w*|recalls?|recalled|investigat\w*|probes?|contracts?|patents?)\b/i;
+/** VIDEO 661 — "text page" and "wrong place" refusals (C, D) are never promoted to acceptable either. */
 const CONTRADICTION_RE =
-  /\b(?:title card|intertitle|screenshot|screen shot|web ?page|website|thumbnail|watermark|cartoon|animation|animated|video game|meme|unrelated|not related|does not relate|no relation|nothing to do with|contradict\w*|anachron\w*|(?:different|wrong|another) (?:company|brand|manufacturer|person|subject|product|vehicle|era|period|century|decade|country|city))\b/i;
+  /\b(?:text page|page of text|book page|document page|newspaper page|wrong place|title card|intertitle|screenshot|screen shot|web ?page|website|thumbnail|watermark|cartoon|animation|animated|video game|meme|unrelated|not related|does not relate|no relation|nothing to do with|contradict\w*|anachron\w*|(?:different|wrong|another) (?:company|brand|manufacturer|person|subject|product|vehicle|era|period|century|decade|country|city))\b/i;
 
 export function abstractLineRule<T extends Pick<BeatImageJudgement, "verdict" | "depicts" | "reason">>(
   judgement: T,
@@ -1079,6 +1080,22 @@ export function buildBeatImagePrompt(
     "item about another cause, conflict, country or event — even when the kind of scene (a protest,",
     "a crowd, a meeting) fits the line. Read what the signs say. Begin your reason with",
     "\"unrelated story:\" and name what they say.",
+    /**
+     * VIDEO 661 (C) — render 70 put one static book page from a YouTube video under three sentences:
+     * a printed page filling the frame is something the viewer reads, not the story's picture.
+     */
+    "It also DOES NOT belong when a page of text fills the frame — a book, newspaper, magazine,",
+    "letter, document or report page — unless the line is about that very document (\"the treaty",
+    "was signed\" may show the treaty; \"prices rose\" may not show a page about prices). Begin your",
+    "reason with \"text page:\".",
+    /**
+     * VIDEO 661 (D) — render 70 put a photo of the port of Oakland under a sentence about Rotterdam:
+     * the KIND of place fitted, the place itself was another one.
+     */
+    "It also DOES NOT belong when it shows a recognisably different place than the one the line",
+    "names — a sign, a name, a landmark, a skyline or a caption of another city, port or country",
+    "(the port of Oakland under a line about Rotterdam). The right kind of place is not enough when",
+    "it is visibly somewhere else. Begin your reason with \"wrong place:\" and name the place.",
     /**
      * RENDER 563's finding, kept — but pointed only at the leap it was written for.
      *

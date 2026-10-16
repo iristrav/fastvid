@@ -8,6 +8,20 @@ import type { TimelineVideoClip } from "./projectTimeline";
 import type { VideoYoutubePool } from "./youtubeVideoPool";
 
 /**
+ * VIDEO 661 — these tests exercise the base per-sentence ceiling (5 looks). The extra looks a sentence
+ * with nothing approved now gets are pinned off here and covered in video661Fixes.test.ts.
+ */
+const PREV_UNAPPROVED_EXTRA_661 = process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+beforeAll(() => {
+  process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = "0";
+});
+afterAll(() => {
+  if (PREV_UNAPPROVED_EXTRA_661 === undefined) delete process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+  else process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = PREV_UNAPPROVED_EXTRA_661;
+});
+
+
+/**
  * STEP 0 (QUALITY RESCUE) — FIRST USE THE FOOTAGE THE RENDER ALREADY HAS.
  *
  * Before a sentence gets a card or a generated image, its last look (`finalReadyYoutubeLook`, run by

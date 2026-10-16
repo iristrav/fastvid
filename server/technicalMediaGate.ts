@@ -169,7 +169,14 @@ function reject(
  * RONDE 27 for exactly this question. No new threshold is invented here; the 480 that was already
  * written down is simply allowed to act, on the half of the material the evidence points at.
  */
-export const VIDEO_MIN_SHORT_SIDE_PX = 144;
+/**
+ * VIDEO 661 — the archive floor rises from 144 to 360 lines. Render 70 put Internet Archive files of
+ * 384×232, 400×300 and 534×300 into a 1920×1080 film, blown up four times: soft, smeared, blocky.
+ * 360 still keeps a standard-definition newsreel (480×360, 640×480) — the only-copy material the
+ * notes above protect — and refuses the postage stamps. Modern sources (stock and YouTube) are held
+ * to 480 (`minShortSideForSource`).
+ */
+export const VIDEO_MIN_SHORT_SIDE_PX = 360;
 export const VIDEO_QUALITY_BAR_SHORT_SIDE_PX = 480;
 
 /**
@@ -209,9 +216,17 @@ export function isStockSource(source: string | null | undefined): boolean {
   return STOCK_SOURCES.has(s) || [...STOCK_SOURCES].some((k) => s.includes(k));
 }
 
-/** The floor this source is held to. Stock gets the quality bar; everything else the absolute one. */
+/**
+ * VIDEO 661 — YouTube is modern material too: a video offered only in 360p has other videos beside
+ * it, unlike a 1945 newsreel. It is held to the same 480 lines as stock.
+ */
+export function isYoutubeSource(source: string | null | undefined): boolean {
+  return /youtube/i.test(source ?? "");
+}
+
+/** The floor this source is held to. Stock and YouTube get the quality bar; the archive its own floor. */
 export function minShortSideForSource(source: string | null | undefined): number {
-  return isStockSource(source) ? VIDEO_QUALITY_BAR_SHORT_SIDE_PX : VIDEO_MIN_SHORT_SIDE_PX;
+  return isStockSource(source) || isYoutubeSource(source) ? VIDEO_QUALITY_BAR_SHORT_SIDE_PX : VIDEO_MIN_SHORT_SIDE_PX;
 }
 
 export function videoResolutionVerdict(

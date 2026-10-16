@@ -162,7 +162,9 @@ describe("§4 — reporting only", () => {
   });
 
   it("the per-beat ceiling and the render budget are the numbers they were", () => {
-    expect(REL_SRC).toContain("spentOnBeat >= maxRelevanceLooksPerBeat() && !params.finalSay");
+    /** VIDEO 661 — the sentence's own ceiling now includes the extra looks while nothing is approved. */
+    expect(REL_SRC).toContain("spentOnBeat >= ownCeiling && !params.finalSay");
+    expect(REL_SRC).toContain("const ownCeiling = relevanceLookCeilingOnBeat(ledger, slot);");
     expect(GATE_SRC).toContain(
       "state.judgementAttempts >= maxBeatImageJudgementsPerRender() && !params.finalSay"
     );

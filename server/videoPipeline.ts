@@ -365,6 +365,7 @@ import {
   type MandatoryCheckOutcome,
   type TextCheck,
 } from "./mandatoryPictureChecks";
+import { findVisualRepeats, fingerprintClipFile, type RepeatCandidate } from "./visualRepeatCheck";
 import { createBeatImageGateState, judgementTally, formatNoVerdictReasons, formatVerdictProviders, maxBeatImageJudgementsPerRender, type BeatImageGateState } from "./beatImageRelevanceGate";
 import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
 import { beatIdentityKey, createBeatRelevanceLedger, formatRelevanceSummary, beatClipSeverity, barrierCoverage, getComposeJudgeScope, notePushOutcomeForBeat, maxComposePhaseJudgements, withComposeJudgeScope, beatRelevanceBeatKey, contentRefusedOnAnotherBeat, putRefusedElsewhereLast, postponeBehindFresherCandidate, repeatWouldTakeLastLook, looksLeftOnBeat, grantLastLookAllowance, maxRelevanceLooksPerBeat, pictureJudgedOnBeat, youtubeForLastLook, giveLastLookTo, isYoutubeContentKey, pictureLookedAtOnBeat, youtubeLookedAtOnBeat, type ComposeJudgeScope, type ComposeJudgeOutcome, type BeatRelevanceLedger, type BeatRelevanceDecision, type BeatRelevanceParams, type BeatVisualContext } from "./beatVisualRelevance";
@@ -8720,6 +8721,50 @@ export async function enforceMandatoryChecks(
   return tally;
 }
 
+/**
+ * VIDEO 661 — the same picture twice, from two different files (`visualRepeatCheck`). Run after the
+ * first mandatory checks and BEFORE the rungs below, so a sentence that loses its picture here is
+ * offered a different one by them. Earlier in the film wins; a clip that cannot be read stays.
+ */
+export async function removeVisualRepeats(
+  scenes: Scene[],
+  sceneVisualResults: Array<SceneVisualsResult | undefined>,
+  dedup: VisualDedupState,
+  fingerprint: (clipPath: string) => Promise<RepeatCandidate["prints"]> = (p) => fingerprintClipFile(p, FFMPEG_BIN)
+): Promise<{ compared: number; removed: number }> {
+  const items: RepeatCandidate[] = [];
+  const where = new Map<string, { si: number; i: number }>();
+  for (let si = 0; si < scenes.length; si++) {
+    const scene = scenes[si]!;
+    const vr = sceneVisualResults[si];
+    if (scene.isChapterCard || !vr) continue;
+    for (let i = 0; i < vr.clips.length; i++) {
+      const clipPath = vr.clips[i]!;
+      if (isPipelineFallbackClip(clipPath) || isSyntheticPlaceholderClip(dedup, clipPath)) continue;
+      if (aiKeptAnywhere(dedup, clipContentKey(clipPath))) continue;
+      const id = `s${scene.index}#${i}:${path.basename(clipPath)}`;
+      where.set(id, { si, i });
+      items.push({ id, prints: await fingerprint(clipPath).catch(() => null) });
+    }
+  }
+  const repeats = findVisualRepeats(items);
+  /** By position, not path: the same file twice in one scene keeps its first place. */
+  const bySi = new Map<number, Set<number>>();
+  for (const r of repeats) {
+    const at = where.get(r.id)!;
+    console.warn(`[VisualRepeat] ${r.id} REMOVED — the same picture as ${r.sameAs}; its sentence is offered another picture`);
+    const set = bySi.get(at.si) ?? new Set<number>();
+    set.add(at.i);
+    bySi.set(at.si, set);
+  }
+  let removed = 0;
+  for (const [si, positions] of bySi) {
+    removed += removeClipsAt(sceneVisualResults[si]!, (_c, _b, i) => positions.has(i)).length;
+  }
+  console.log(`[VisualRepeat] TOTAL compared=${items.length} unreadable=${items.filter((x) => !x.prints?.length).length} removed=${removed}`);
+  return { compared: items.length, removed };
+}
+
 /** VIDEO 655 — the log name of a picture about the right thing, refused for not showing the exact moment, placed as the last resort. */
 export const RELATED_FOOTAGE_FALLBACK = "RELATED_FOOTAGE_FALLBACK";
 
@@ -8890,7 +8935,8 @@ export async function placeGenericMovingFallbacks(
         const measuredSec = meta?.durationSec ?? 0;
         if (!meta) refusal = "not a valid video";
         else if (measuredSec + 0.05 < neededSec) refusal = `covers ${measuredSec.toFixed(2)}s of the ${neededSec.toFixed(2)}s needed`;
-        else if (await isMostlyBlackClip(outPath, measuredSec)) refusal = "mostly black";
+        /** VIDEO 661 — the emergency colour field keeps the old near-black bar (24): the floor under "always a video" never moves. */
+        else if (await isMostlyBlackClip(outPath, measuredSec, source === "synthetic" ? EMERGENCY_FIELD_NEAR_BLACK_MEAN_LUMA : NEAR_BLACK_MEAN_LUMA)) refusal = "mostly black";
         else {
           const motion = await clipHasMotion(FFMPEG_BIN, outPath);
           if (!motion.moving) refusal = `not moving (${motion.detail})`;
@@ -18701,7 +18747,20 @@ const MEDIA_PROBES: MediaProbes = {
   decodesAFrame: (f) => clipDecodesAFrame(f),
 };
 
-async function isMostlyBlackClip(filePath: string, precomputedDurationSec?: number): Promise<boolean> {
+/** VIDEO 661 — a sample darker than this mean luma (0–255) is near-black; two of the samples refuse the clip. */
+export const NEAR_BLACK_MEAN_LUMA = 34;
+/**
+ * VIDEO 661 — the generated emergency colour field (the floor under "always a video") is held to the
+ * bar it always had. Its darker palettes read between 24 and 34, and refusing it would leave a
+ * sentence with nothing at all.
+ */
+export const EMERGENCY_FIELD_NEAR_BLACK_MEAN_LUMA = 24;
+
+async function isMostlyBlackClip(
+  filePath: string,
+  precomputedDurationSec?: number,
+  nearBlackLuma: number = NEAR_BLACK_MEAN_LUMA
+): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
   const curatedStill = isCuratedPreparedStillClip(filePath);
   // Blur-fill stills darken edges by design — not embedded letterbox bars.
@@ -18737,7 +18796,11 @@ async function isMostlyBlackClip(filePath: string, precomputedDurationSec?: numb
       : [0.2, Math.max(0.05, dur / 2)];
     const samples = (await Promise.all(at.map((t) => probeClipMeanLuma(filePath, t)))).filter((m): m is number => m !== null);
     if (samples.length === 0) return false;
-    const dark = samples.filter((m) => m < 24).length;
+    /**
+     * VIDEO 661 — near-black is refused at the same mean luma as everywhere else (34, not 24): render
+     * 70 shipped archive frames that read as black after the grade. Still two samples of three.
+     */
+    const dark = samples.filter((m) => m < nearBlackLuma).length;
     return samples.length === 1 ? dark === 1 : dark >= 2;
   }
   const dur = precomputedDurationSec ?? (await probeVideoDurationSec(filePath));
@@ -18746,7 +18809,7 @@ async function isMostlyBlackClip(filePath: string, precomputedDurationSec?: numb
   let darkSamples = 0;
   for (const t of sampleTimes) {
     const mean = await probeClipMeanLuma(filePath, Math.min(t, Math.max(0, dur - 0.1)));
-    if (mean !== null && mean < 34) darkSamples++;
+    if (mean !== null && mean < NEAR_BLACK_MEAN_LUMA) darkSamples++;
   }
   if (darkSamples >= 2) return true;
   try {
@@ -28866,6 +28929,8 @@ async function _runVideoPipelineInner(
      * picture can still get a checked one below.
      */
     await enforceMandatoryChecks(scenes, sceneVisualResults, visualDedup, workDir, topicContext, "after_sourcing");
+    /** VIDEO 661 — the same picture from another file is a repeat too; its sentence gets another picture below. */
+    await removeVisualRepeats(scenes, sceneVisualResults, visualDedup);
     /** GENERATED_IMAGE_FALLBACK — after every source and the main-subject rescue: see `generateMissingBeatImages`. */
     await generateMissingBeatImages(scenes, sceneVisualResults, visualDedup, workDir, topicContext);
     /** GENERIC_FOOTAGE_FALLBACK — VIDEO 650 — the moving floor under everything above: see `placeGenericMovingFallbacks`. */

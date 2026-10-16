@@ -932,15 +932,18 @@ async function extractVideoSegmentToTemp(
   const start = startSec.toFixed(3);
   const dur = durationSec.toFixed(3);
 
+  // VIDEO 661 — veryfast/crf 18, not ultrafast/crf 23: every archive piece is encoded again at
+  // the trim and at the final render, and three lossy generations at 23 smeared render 70's
+  // footage into blocks. 18 is what the rest of the pipeline stores at.
   // Always re-encode so the clip starts on a fresh I-frame — stream copy risks clips that
   // start mid-GOP, which browsers cannot decode and show as corrupt/no-preview.
   const _ = preferStreamCopy; // reserved for future use
   const strategies: string[] = [
     `${ffmpegBin()} -y -ss ${start} -i "${inputPath}" -t ${dur} ` +
-      `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
+      `-c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -an -pix_fmt yuv420p -movflags +faststart ` +
       `-avoid_negative_ts make_zero -reset_timestamps 1 "${outputPath}"`,
     `${ffmpegBin()} -y -i "${inputPath}" -ss ${start} -t ${dur} ` +
-      `-c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -an -pix_fmt yuv420p -movflags +faststart ` +
+      `-c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -an -pix_fmt yuv420p -movflags +faststart ` +
       `-avoid_negative_ts make_zero -reset_timestamps 1 "${outputPath}"`,
   ];
 
@@ -1464,7 +1467,7 @@ export async function splitVideoBySceneChanges(
         const reencPath = path.join(workDir, "reenc.mp4");
         const reencTimeout = Math.round(Math.max(120_000, totalDur * 5000 + 60_000));
         await exec(
-          `${ffmpegBin()} -y -i "${inputPath}" -c:v libx264 ${ffmpegThreadFlag()} -preset ultrafast -crf 23 -pix_fmt yuv420p -an -movflags +faststart "${reencPath}"`,
+          `${ffmpegBin()} -y -i "${inputPath}" -c:v libx264 ${ffmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -an -movflags +faststart "${reencPath}"`,
           { maxBuffer: 8 * 1024 * 1024, timeout: reencTimeout }
         );
         const retryResults = await mapPool(

@@ -16,7 +16,7 @@
  * structural ones matter because RC-1 is a wiring defect — a gate can be perfect and still be
  * bypassed, and no behavioural test of the gate can see that.
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -37,6 +37,20 @@ import {
 } from "./beatVisualRelevance";
 import { __resetVerdictStoreForTests } from "./beatRelevanceVerdictStore";
 import {  } from "./videoPipeline";
+
+/**
+ * VIDEO 661 — these tests exercise the base per-sentence ceiling (5 looks). The extra looks a sentence
+ * with nothing approved now gets are pinned off here and covered in video661Fixes.test.ts.
+ */
+const PREV_UNAPPROVED_EXTRA_661 = process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+beforeAll(() => {
+  process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = "0";
+});
+afterAll(() => {
+  if (PREV_UNAPPROVED_EXTRA_661 === undefined) delete process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+  else process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = PREV_UNAPPROVED_EXTRA_661;
+});
+
 
 const invoke = vi.hoisted(() => ({ fn: vi.fn() }));
 // RONDE 115: the gate now asks llm.ts whether a throw was a PRE-FLIGHT refusal (no key,

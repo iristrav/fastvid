@@ -7,6 +7,20 @@ import { judgeCandidateMetadata, clipOwnQuery, isRejectedStockClip, type Candida
 import { belowArchiveMinimumDuration, MIN_VIDEO_DURATION_SEC } from "./archiveIngestion";
 
 /**
+ * VIDEO 661 — these tests exercise the base per-sentence ceiling (5 looks). The extra looks a sentence
+ * with nothing approved now gets are pinned off here and covered in video661Fixes.test.ts.
+ */
+const PREV_UNAPPROVED_EXTRA_661 = process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+beforeAll(() => {
+  process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = "0";
+});
+afterAll(() => {
+  if (PREV_UNAPPROVED_EXTRA_661 === undefined) delete process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA;
+  else process.env.MAX_BEAT_RELEVANCE_LOOKS_UNAPPROVED_EXTRA = PREV_UNAPPROVED_EXTRA_661;
+});
+
+
+/**
  * VIDEO 638 — G1, G2, G3/G4.
  *
  * 638 found 30 YouTube moments and looked at 4. Three causes, each fixed at the smallest point:
@@ -241,7 +255,7 @@ describe("G4 — inside one review pool, YouTube first, each group in its existi
     expect(PIPE).toContain("if (beatShortlistExhausted(dedup.beatShortlist, sceneIndex, beatIndex)) {");
     const BVR = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
     expect(BVR).toContain("return Number.isFinite(n) && n >= 1 && n <= 20 ? n : MAX_JUDGEMENTS_PER_BEAT + 1;");
-    expect(BVR).toContain("if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat() && !params.finalSay) {");
+    expect(BVR).toContain("if (!alreadyKnown && spentOnBeat >= ownCeiling && !params.finalSay) {"); // VIDEO 661
   });
 });
 

@@ -354,10 +354,10 @@ describe("FIX B — before a sentence gets a graphic, YouTube already on disk fo
     expect(PIPE.slice(stage, stage + 300)).toContain("adoptHistoricalBeatVideoPool(ready, beat, workDir, sceneIndex, visualDedup,");
   });
 
-  it("the look ceiling is exactly what it was (5 per sentence) and nothing here raises it", () => {
+  it("the look ceiling is 5 per sentence (VIDEO 661: +4 while nothing is approved) and nothing here raises it", () => {
     const BVR = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
     expect(BVR).toContain("return Number.isFinite(n) && n >= 1 && n <= 20 ? n : MAX_JUDGEMENTS_PER_BEAT + 1;");
-    expect(BVR).toContain("if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat() && !params.finalSay) {");
+    expect(BVR).toContain("if (!alreadyKnown && spentOnBeat >= ownCeiling && !params.finalSay) {");
     const at = PIPE.indexOf("export async function finalReadyYoutubeLook(");
     expect(PIPE.slice(at, PIPE.indexOf("\n}\n", at))).not.toMatch(/finalSay|MAX_BEAT_RELEVANCE_LOOKS|maxRelevanceLooks/);
   });

@@ -19,6 +19,7 @@ import {
   buildScriptWriterSystemPrompt,
   countNarrationWords,
   stripVisualTagsFromScript,
+  stripWriterInstructions,
   scriptStillOnTopic,
   buildScriptLengthRefinePrompt,
 } from "./scriptWriter";
@@ -809,6 +810,14 @@ export async function runScriptEngineV2(
     // Assemble markdown script
     markdownScript = assembleMarkdownScript(title, scenePlan, narrations);
     markdownScript = stripVisualTagsFromScript(markdownScript);
+    /** VIDEO 661 (G) — the outline's instructions and questions are not read out (`stripWriterInstructions`). */
+    {
+      const cleaned = stripWriterInstructions(markdownScript);
+      if (cleaned.removed.length) {
+        console.warn(`[ScriptEngine] removed ${cleaned.removed.length} writer instruction(s) from the narration: ${cleaned.removed.map((r) => `"${r.slice(0, 80)}"`).join("; ")}`);
+        markdownScript = cleaned.script;
+      }
+    }
 
     // Word count check
     const wordCount = countNarrationWords(markdownScript);
@@ -832,7 +841,8 @@ export async function runScriptEngineV2(
         });
         const refined = refineResp.choices[0]?.message?.content ?? "";
         if (typeof refined === "string" && refined.trim().length > 200 && scriptStillOnTopic(topic, refined)) {
-          const candidate = stripVisualTagsFromScript(refined.trim());
+          /** VIDEO 661 (G) — the revision is cleaned the same way as the draft. */
+          const candidate = stripWriterInstructions(stripVisualTagsFromScript(refined.trim())).script;
           const refinedWords = countNarrationWords(candidate);
           if (Math.abs(refinedWords - budget.targetWords) < Math.abs(wordCount - budget.targetWords)) {
             markdownScript = candidate;

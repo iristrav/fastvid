@@ -137,7 +137,7 @@ describe("SLOT FIX — a transfer that started keeps its slot, whatever it answe
   it("a successful transfer: delivered, transferStarted=true, the slot stays spent", async () => {
     const cache = vp.createSourcingCache(6);
     const src = path.join(dir, "service_answer.mp4");
-    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", src]);
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=854x480:rate=25:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", src]);
     serviceAnswer = () => ({
       ok: true,
       status: 200,

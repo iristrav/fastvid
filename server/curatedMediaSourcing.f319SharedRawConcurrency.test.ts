@@ -77,7 +77,7 @@ describe("prepareCuratedArchiveClip shared rawPath concurrency (F3-19)", () => {
     // Noisy source (not a flat color) and comfortably above VIDRUSH_MIN_SOURCE_VIDEO_SEC (2.8s)
     // and archiveVisualMinClipSec (5s), so the real trim step below has real margin to work with.
     execSync(
-      `ffmpeg -y -f lavfi -i "nullsrc=s=320x240,geq=random(1)*255:128:128" -t 6 -c:v libx264 -pix_fmt yuv420p "${seedPath}"`,
+      `ffmpeg -y -f lavfi -i "nullsrc=s=480x360,geq=random(1)*255:128:128" -t 6 -c:v libx264 -pix_fmt yuv420p "${seedPath}"`,
       { stdio: "pipe" }
     );
     const payload = fs.readFileSync(seedPath);
@@ -171,7 +171,7 @@ describe("prepareCuratedArchiveClip shared rawPath concurrency (F3-19)", () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-f319-retry-test-"));
     const seedPath = path.join(dir, "seed.mp4");
     execSync(
-      `ffmpeg -y -f lavfi -i "nullsrc=s=320x240,geq=random(1)*255:128:128" -t 6 -c:v libx264 -pix_fmt yuv420p "${seedPath}"`,
+      `ffmpeg -y -f lavfi -i "nullsrc=s=480x360,geq=random(1)*255:128:128" -t 6 -c:v libx264 -pix_fmt yuv420p "${seedPath}"`,
       { stdio: "pipe" }
     );
     const payload = fs.readFileSync(seedPath);

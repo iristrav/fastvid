@@ -196,6 +196,14 @@ export function sheetPrompt(
     "Never under any sentence: a protest, rally, march or news scene whose signs, banners, placards or",
     "captions are about a different story, cause, conflict or country than this film's narration —",
     "even when the kind of scene fits the sentence. Read what the signs say.",
+    /**
+     * VIDEO 661 — render 70: one static book page from a YouTube video was cut under three sentences,
+     * and a photo of the port of Oakland stood under a sentence about Rotterdam.
+     */
+    "Never under any sentence: a page of text filling the frame — a book, newspaper, magazine,",
+    "letter, document or report page — unless the sentence is about that very document.",
+    "Never under any sentence: a recognisably different place than the one the sentence names — a",
+    "sign, a name, a landmark or a skyline of another city, port or country.",
     ...(sharp
       ? ["Also never: burned-in subtitles, a channel watermark, caption text across the picture or a news ticker / headline bar."]
       : []),

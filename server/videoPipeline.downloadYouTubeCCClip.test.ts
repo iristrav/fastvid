@@ -67,7 +67,7 @@ describe("downloadYouTubeCCClip cloud-DL path (F3-05 group 5)", () => {
   function realMp4(seconds: number): Buffer {
     const out = path.join(dir, `real_${seconds}.mp4`);
     execFileSync("ffmpeg", [
-      "-y", "-v", "error", "-f", "lavfi", "-i", `testsrc=s=640x360:r=25:d=${seconds}`,
+      "-y", "-v", "error", "-f", "lavfi", "-i", `testsrc=s=854x480:r=25:d=${seconds}`,
       "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "400k", out,
     ]);
     return fs.readFileSync(out);
