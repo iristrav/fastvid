@@ -43,6 +43,11 @@ export function buildDocumentaryColorGradeVF(sourceKind?: DocGradeSourceKind, op
         : { saturation: 0.88, contrast: 1.12 };
   /** VIDEO 661 — a dark source is lifted a little, never pulled down further. */
   const { brightness, gamma } = opts.darkSource ? { brightness: "0", gamma: "1.08" } : { brightness: "-0.03", gamma: "1.02" };
+  /**
+   * VIDEO 663 — no cool shadows on a dark source: a dark frame is mostly shadow, and the shadow push
+   * (bs +0.04) turned render 73's Venice dusk purple once it was lifted. Neutral colour, lifted only.
+   */
+  if (opts.darkSource) return `eq=contrast=${contrast}:saturation=${saturation}:brightness=${brightness}:gamma=${gamma}`;
   return (
     `eq=contrast=${contrast}:saturation=${saturation}:brightness=${brightness}:gamma=${gamma},` +
     "colorbalance=rs=-0.02:gs=0:bs=0.04:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02"

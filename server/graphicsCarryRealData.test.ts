@@ -229,21 +229,25 @@ describe("a chart's axis reads", () => {
 });
 
 describe("the real map reaches the film (onScreenTextDirector rule 2)", () => {
-  it("a map with real degrees stays on; only a coordinate-less one becomes a location card", async () => {
+  /** VIDEO 663 — an animation is a whole picture: a real map over footage becomes the full frame (rule 2a). */
+  it("a map with real degrees is always a whole picture; a coordinate-less one becomes a location card", async () => {
     const { directOnScreenText } = await import("./onScreenTextDirector");
     const { emptyTimeline } = await import("./projectTimeline");
     const t = emptyTimeline(1, { widthPx: 1920, heightPx: 1080, fps: 30 });
     t.durationSec = 10;
     const g = t.tracks.find((x) => x.kind === "GRAPHICS") as { graphics: Array<Record<string, unknown>> };
     g.graphics.push(
-      { id: "real", graphicType: "map_point", start: 0, end: 4, label: "Berlin", data: { locationName: "Berlin", lon: 13.4, lat: 52.52, iso3: "DEU" } },
-      { id: "flat", graphicType: "map_point", start: 5, end: 9, label: "Paris", data: { locationName: "Paris", normX: 0.5, normY: 0.27 } }
+      { id: "real", graphicType: "map_point", start: 0, end: 4, label: "Berlin", data: { locationName: "Berlin", lon: 13.4, lat: 52.52, iso3: "DEU", primaryVisual: true } },
+      { id: "flat", graphicType: "map_point", start: 5, end: 9, label: "Paris", data: { locationName: "Paris", normX: 0.5, normY: 0.27 } },
+      { id: "over", graphicType: "map_point", start: 9.2, end: 10, label: "Rome", data: { locationName: "Rome", lon: 12.5, lat: 41.9 } }
     );
     const out = directOnScreenText(t as never);
     const byId = new Map(g.graphics.map((x) => [x.id, x]));
     expect(byId.get("real")!.disabled).toBeFalsy();
     expect(byId.get("flat")!.disabled).toBe(true);
-    expect(out.converted).toEqual(["flat map_point → location_card (Paris)"]);
+    expect(byId.get("over")!.disabled).toBeFalsy();
+    expect((byId.get("over")!.data as Record<string, unknown>).primaryVisual).toBe(true);
+    expect(out.converted).toEqual(["flat map_point → location_card (Paris)", "over map_point → full frame"]);
   });
 });
 
@@ -255,7 +259,7 @@ describe("OCTOBER 2026 (showcase render) — what the real render showed", () =>
     t.durationSec = 6;
     const g = t.tracks.find((x) => x.kind === "GRAPHICS") as { graphics: Array<Record<string, unknown>> };
     const tx = t.tracks.find((x) => x.kind === "TEXT") as { texts: Array<Record<string, unknown>> };
-    g.graphics.push({ id: "map", graphicType: "map_point", start: 0, end: 4.5, label: "Berlin, Germany", data: { locationName: "Berlin, Germany", lon: 13.4, lat: 52.52, iso3: "DEU" } });
+    g.graphics.push({ id: "map", graphicType: "map_point", start: 0, end: 4.5, label: "Berlin, Germany", data: { locationName: "Berlin, Germany", lon: 13.4, lat: 52.52, iso3: "DEU", primaryVisual: true } });
     tx.texts.push({ id: "word", role: "location", text: "Berlin", start: 0, end: 3, style: { fontSizePx: 40, color: "white", backgroundOpacity: 0, position: "bottom" } });
     directOnScreenText(t as never);
     expect(g.graphics[0]!.disabled).toBeFalsy();

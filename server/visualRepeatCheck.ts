@@ -62,6 +62,10 @@ export type RepeatCandidate = {
   prints: readonly FrameFingerprint[] | null;
   /** The source the clip was cut from (a YouTube video, an archive item); null when unknown. */
   family?: string | null;
+  /** VIDEO 663 — the seconds of that source the clip shows, when the render recorded its cut. */
+  window?: { start: number; end: number } | null;
+  /** VIDEO 663 — the sentence the clip stands under (`scene:beat`). */
+  sentence?: string | null;
 };
 
 /** Within one source: any pair of non-flat frames within `SAME_SOURCE_PICTURE_BITS`. */
@@ -73,22 +77,42 @@ export function sameSourceLooksAlike(a: readonly FrameFingerprint[], b: readonly
  * In film order: every clip that shows the same picture as a clip before it that was kept. A clip
  * without prints (unreadable) is never a repeat and is never compared against.
  */
+/**
+ * VIDEO 663 — two moments of one source video less than this far apart show the same people in the
+ * same place: render 73 showed one Venice walk at 19–24 s and again, cropped and recoloured, at
+ * 31.5–35 s. Its pixels no longer matched (`SAME_SOURCE_PICTURE_BITS`); its seconds in the video did.
+ */
+export const SAME_SOURCE_NEAR_SEC = 15;
+
+/** Do two windows of one source overlap or lie closer than `SAME_SOURCE_NEAR_SEC`? */
+export function sourceWindowsNear(a: { start: number; end: number }, b: { start: number; end: number }): boolean {
+  const gap = Math.max(a.start, b.start) - Math.min(a.end, b.end);
+  return gap < SAME_SOURCE_NEAR_SEC;
+}
+
 export function findVisualRepeats(items: readonly RepeatCandidate[]): Array<{ id: string; sameAs: string }> {
-  const kept: Array<{ id: string; prints: readonly FrameFingerprint[]; family: string | null }> = [];
+  const kept: Array<{ id: string; prints: readonly FrameFingerprint[] | null; family: string | null; window: RepeatCandidate["window"]; sentence: string | null }> = [];
   const out: Array<{ id: string; sameAs: string }> = [];
   for (const it of items) {
-    if (!it.prints || it.prints.length === 0) continue;
     const family = it.family ?? null;
+    const sentence = it.sentence ?? null;
+    const hasPrints = Boolean(it.prints && it.prints.length > 0);
     const earlier = kept.find(
       (k) =>
-        sameLookingClips(it.prints!, k.prints) ||
-        (family != null && k.family === family && sameSourceLooksAlike(it.prints!, k.prints))
+        (hasPrints && k.prints && k.prints.length > 0 && sameLookingClips(it.prints!, k.prints)) ||
+        (hasPrints && family != null && k.family === family && k.prints && k.prints.length > 0 && sameSourceLooksAlike(it.prints!, k.prints)) ||
+        /**
+         * VIDEO 663 — the same source, nearly the same seconds, under ANOTHER sentence. Within one
+         * sentence the next moment of the same scene is its continuation (`coverRestOfSentences`).
+         */
+        (family != null && k.family === family && it.window != null && k.window != null &&
+          sentence != null && k.sentence != null && sentence !== k.sentence && sourceWindowsNear(it.window, k.window))
     );
     if (earlier) {
       out.push({ id: it.id, sameAs: earlier.id });
       continue;
     }
-    kept.push({ id: it.id, prints: it.prints, family });
+    if (hasPrints || it.window) kept.push({ id: it.id, prints: it.prints ?? null, family, window: it.window, sentence });
   }
   return out;
 }

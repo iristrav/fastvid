@@ -8765,6 +8765,20 @@ function clipSourceFamily(dedup: VisualDedupState, clipPath: string): string | n
   return footageFamily(key);
 }
 
+/** VIDEO 663 — the seconds of its source a clip shows, from the cut the render recorded (on it or a record it came from). */
+function clipSourceWindow(dedup: VisualDedupState, clipPath: string): { start: number; end: number } | null {
+  const ledger = dedup.sourcingCache?.lineage;
+  let record = ledger?.resolve(clipPath, clipContentKey(clipPath)) ?? null;
+  const seen = new Set<string>();
+  while (record && record.sourceInSec == null && record.parentLineageId && !seen.has(record.lineageId)) {
+    seen.add(record.lineageId);
+    record = ledger?.get(record.parentLineageId) ?? null;
+  }
+  if (!record || record.sourceInSec == null) return null;
+  const end = record.sourceOutSec != null && record.sourceOutSec > record.sourceInSec ? record.sourceOutSec : record.sourceInSec + 4;
+  return { start: record.sourceInSec, end };
+}
+
 export async function removeVisualRepeats(
   scenes: Scene[],
   sceneVisualResults: Array<SceneVisualsResult | undefined>,
@@ -8783,7 +8797,15 @@ export async function removeVisualRepeats(
       if (aiKeptAnywhere(dedup, clipContentKey(clipPath))) continue;
       const id = `s${scene.index}#${i}:${path.basename(clipPath)}`;
       where.set(id, { si, i });
-      items.push({ id, prints: await fingerprint(clipPath).catch(() => null), family: clipSourceFamily(dedup, clipPath) });
+      const beatIndex = vr.clipBeatIndices?.[i];
+      items.push({
+        id,
+        prints: await fingerprint(clipPath).catch(() => null),
+        family: clipSourceFamily(dedup, clipPath),
+        /** VIDEO 663 — its seconds in the source and its sentence: near seconds under another sentence are a repeat */
+        window: clipSourceWindow(dedup, clipPath),
+        sentence: beatIndex != null ? `${scene.index}:${beatIndex}` : null,
+      });
     }
   }
   const repeats = findVisualRepeats(items);
@@ -14728,24 +14750,18 @@ async function transformClipForFairUse(
   const outputPath = inputPath.replace(/\.mp4$/, '_transformed.mp4');
   const strict = clipRequiresFairUseTransform(inputPath);
 
-  const grades = [
-    { contrast: 1.08, saturation: 1.12, brightness: -0.02 },
-    { contrast: 1.10, saturation: 0.95, brightness: -0.03 },
-    { contrast: 1.05, saturation: 1.20, brightness: 0.00 },
-    { contrast: 1.12, saturation: 0.90, brightness: -0.04 },
-    { contrast: 1.06, saturation: 1.08, brightness: 0.01 },
-  ];
-  const grade = grades[(sceneIndex + clipIndex) % grades.length];
-  const vignetteAngle = (0.5 + ((sceneIndex * 3 + clipIndex) % 5) * 0.1).toFixed(2);
+  /**
+   * VIDEO 663 — the reframing only. This used to grade too (saturation up to 1.20, a vignette), and
+   * the renderer grades every clip again (`gradeChain`): render 73 showed the same Venice walk once in
+   * its own colours and once, transformed, cropped and purple. One grade, in the renderer, for every
+   * clip alike; the transformation is the new framing.
+   */
   const zoom = 1.06 + ((sceneIndex + clipIndex) % 3) * 0.01;
   const zw = Math.round(VIDEO_WIDTH * zoom);
   const zh = Math.round(VIDEO_HEIGHT * zoom);
   const zoomCrop =
     `scale=${zw}:${zh}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(iw-${VIDEO_WIDTH})/2:(ih-${VIDEO_HEIGHT})/2`;
-  let filterChain =
-    `${zoomCrop},` +
-    `eq=contrast=${grade.contrast}:saturation=${grade.saturation}:brightness=${grade.brightness},` +
-    `vignette=angle=${vignetteAngle}:mode=forward`;
+  let filterChain = zoomCrop;
 
   /**
    * Video 614 — no narration subtitle is burnt into the clip any more.

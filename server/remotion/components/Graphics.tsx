@@ -23,7 +23,7 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { animationAt, easeInOut } from "./animation";
-import { GeoMap, isGeoPayload } from "./GeoMap";
+import { GeoMap, isGeoPayload, mapLookFor } from "./GeoMap";
 import { typedCount } from "./typewriter";
 import { positionStyle, type TextStyleLike } from "./Text";
 import {
@@ -99,6 +99,11 @@ function readAny(g: GraphicSpec, ...keys: string[]): string | null {
  * fonts-noto-core); DejaVu and Liberation stay behind them as the fallback they always were.
  */
 const CARD_FONT = "Inter, Noto Sans, DejaVu Sans, Liberation Sans, sans-serif";
+/** VIDEO 663 — graphics that are words over the picture: always drawn bottom left. */
+const TEXT_OVER_PICTURE = new Set([
+  "lower_third", "name", "label", "emphasis", "location_card", "date_card", "title", "callout", "animated_text", "quote",
+  "title_card", "chapter_card", "chapter_title",
+]);
 const SERIF_FONT = "Noto Serif, DejaVu Serif, Liberation Serif, serif";
 /** A muted archival gold — present without shouting over black-and-white footage. */
 const ACCENT = "#d9b45a";
@@ -287,8 +292,15 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
     );
   }
 
-  const fontSizePx = g.style?.fontSizePx ?? 46;
-  const position = g.style?.position ?? (g.graphicType === "lower_third" ? "lower_third" : "bottom");
+  /**
+   * VIDEO 663 — every text over the picture stands bottom left (the owner: "de tekst moet altijd links
+   * onderin in beeld komen"); render 73 drew "BELGIUM" bottom centre from a card with no position of
+   * its own. A card that IS the picture, and charts and maps, keep their own place.
+   */
+  const textOverPicture = TEXT_OVER_PICTURE.has(g.graphicType) && g.data?.primaryVisual !== true;
+  const fontSizePx = g.style?.fontSizePx ?? (textOverPicture ? 64 : 46);
+  /** the director places every text bottom left (`placeTextBottomLeft`); a text with no place of its own goes there too */
+  const position = g.style?.position ?? (textOverPicture ? "bottom_left" : g.graphicType === "lower_third" ? "lower_third" : "bottom");
 
   /**
    * The words a text-shaped graphic draws.
@@ -298,6 +310,8 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
    * draw from `g.data`.
    */
   const words = primary ?? "";
+  /** VIDEO 663 — the look this animation wears (the director numbers them in film order). */
+  const lookVariant = typeof g.data?.lookVariant === "number" ? (g.data.lookVariant as number) : undefined;
 
   let body: React.ReactNode;
   switch (g.graphicType) {
@@ -324,17 +338,17 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
     /** OCTOBER 2026 — a real place (lon/lat) on the real map with its camera; otherwise the abstract one. */
     case "map_point":
       body = isGeoPayload(g.data)
-        ? <GeoMap data={g.data} durationInFrames={g.durationInFrames} mode="point" />
+        ? <GeoMap data={g.data} durationInFrames={g.durationInFrames} mode="point" variant={lookVariant} fullBleed={g.data?.primaryVisual === true} />
         : <MapPoint data={g.data} durationInFrames={g.durationInFrames} />;
       break;
     case "route":
       body = isGeoPayload(g.data)
-        ? <GeoMap data={g.data} durationInFrames={g.durationInFrames} mode="route" />
+        ? <GeoMap data={g.data} durationInFrames={g.durationInFrames} mode="route" variant={lookVariant} fullBleed={g.data?.primaryVisual === true} />
         : <RouteMap data={g.data} durationInFrames={g.durationInFrames} />;
       break;
     case "multi_point":
       body = isGeoPayload(g.data)
-        ? <GeoMap data={g.data} durationInFrames={g.durationInFrames} mode="points" />
+        ? <GeoMap data={g.data} durationInFrames={g.durationInFrames} mode="points" variant={lookVariant} fullBleed={g.data?.primaryVisual === true} />
         : <RouteMap data={g.data} durationInFrames={g.durationInFrames} pointsOnly />;
       break;
     case "shape":
@@ -408,6 +422,8 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
           fontSizePx={fontSizePx}
           durationInFrames={g.durationInFrames}
           animation={g.animation}
+          variant={lookVariant}
+          geo={GEO_GRAPHICS.has(g.graphicType) && isGeoPayload(g.data)}
         >
           {body}
         </PrimaryStage>
@@ -535,11 +551,42 @@ export function primaryGroundLayers(frame: number, durationInFrames: number): Re
   ];
 }
 
+/**
+ * VIDEO 663 — THE GROUND OF AN ANIMATION IS COLOUR, NOT THE SLATE.
+ *
+ * "Als er een animatie in beeld komt, moet dat gewoon over de hele video komen … er mag wel wat meer
+ * kleur in zitten." A chart, a figure or a map that is the picture stands on a saturated ground of
+ * its own, one per `lookVariant` so two in a row differ; the blue-grey `PRIMARY_GROUND` stays the
+ * chapter card's alone (the delivery check reads that slate as a placeholder, and these grounds are
+ * outside its palette on purpose). No violet: the owner had just asked for the purple haze to go.
+ * Every ground is light enough not to read as a black frame.
+ */
+export const CONTENT_GROUNDS: ReadonlyArray<{ name: string; centre: string; edge: string; glow: string }> = [
+  { name: "ocean", centre: "#1667b5", edge: "#0a3a6e", glow: "#5cc8ff" },
+  { name: "teal", centre: "#13897f", edge: "#0a4e48", glow: "#7fe3d4" },
+  { name: "ember", centre: "#c4521c", edge: "#6e2a0d", glow: "#ffb36b" },
+  { name: "forest", centre: "#23824a", edge: "#0f4425", glow: "#a6e37a" },
+  { name: "crimson", centre: "#b3293a", edge: "#62141f", glow: "#ff8a8a" },
+];
+export function contentGroundFor(variant: number | undefined): (typeof CONTENT_GROUNDS)[number] {
+  const n = CONTENT_GROUNDS.length;
+  return CONTENT_GROUNDS[(((Math.trunc(variant ?? 0) % n) + n) % n)]!;
+}
+/** The types whose primary stage is an animation (a colour ground), not a card (the slate). */
+const ANIMATION_GRAPHICS = new Set([
+  "bar_chart", "horizontal_bar", "line_chart", "pie_chart", "donut_chart", "percentage_ring", "progress",
+  "map_point", "route", "multi_point", "counter", "statistic", "stat",
+]);
+const GEO_GRAPHICS = new Set(["map_point", "route", "multi_point"]);
+
 /** The chart, map and ring family: one SVG drawn at its natural 900×520 (`Charts.tsx`, `GeoMap.tsx`). */
 const PANEL_GRAPHICS = new Set([
   "bar_chart", "horizontal_bar", "line_chart", "pie_chart", "donut_chart",
   "percentage_ring", "progress", "map_point", "route", "multi_point",
 ]);
+/** A counter is a figure: a tenth of the frame per em, so "60 million" reads across the room. */
+const typeSize = (graphicType: string, fontSizePx: number, height: number): number =>
+  graphicType === "counter" || graphicType === "statistic" || graphicType === "stat" ? Math.round(height * 0.11) : fontSizePx;
 const PANEL_W = 900;
 const PANEL_H = 520;
 
@@ -555,19 +602,66 @@ const PrimaryStage: React.FC<{
   fontSizePx: number;
   durationInFrames: number;
   animation?: string;
+  /** VIDEO 663 — the animation's look (`lookVariant`). */
+  variant?: number;
+  /** VIDEO 663 — a real map: it fills the whole frame, edge to edge. */
+  geo?: boolean;
   children: React.ReactNode;
-}> = ({ graphicType, fontSizePx, durationInFrames, animation, children }) => {
+}> = ({ graphicType, fontSizePx, durationInFrames, animation, variant, geo, children }) => {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
   const state = animationAt(animation ?? "fade_rise", frame, durationInFrames);
   const panel = PANEL_GRAPHICS.has(graphicType);
-  const scale = Math.min((width * 0.9) / PANEL_W, (height * 0.9) / PANEL_H);
-  /** A counter is a figure: a tenth of the frame per em, so "60 million" reads across the room. */
-  const typeSize = graphicType === "counter" || graphicType === "statistic" || graphicType === "stat"
-    ? Math.round(height * 0.11)
-    : fontSizePx;
+  /** VIDEO 663 — a map covers the frame (no ground around it); a chart fills 90% of it. */
+  const scale = geo
+    ? Math.max(width / PANEL_W, height / PANEL_H)
+    : Math.min((width * 0.9) / PANEL_W, (height * 0.9) / PANEL_H);
+  if (ANIMATION_GRAPHICS.has(graphicType)) {
+    const ground = contentGroundFor(variant);
+    const t = durationInFrames > 1 ? Math.min(1, Math.max(0, frame / (durationInFrames - 1))) : 0;
+    /** a map's own ocean is its ground, so its first frame already fills the screen */
+    const base = geo
+      ? mapLookFor(variant).ocean
+      : `radial-gradient(ellipse at 50% 45%, ${ground.centre} 0%, ${ground.edge} 100%)`;
+    return (
+      /**
+       * 99% opaque as a whole (the same reason `PRIMARY_GROUND` is): a fully opaque frame is written as
+       * an RGB PNG and the overlay probe cannot read it. Opacity on the group keeps every pixel below
+       * full, whatever is stacked inside.
+       */
+      /**
+       * A map comes and goes as one picture, cut like a shot: its land never fades out alone over an
+       * empty sea, and a sentence with no shot behind it never fades through black.
+       */
+      <AbsoluteFill style={{ opacity: 0.99, fontSize: typeSize(graphicType, fontSizePx, height) }}>
+        <AbsoluteFill style={{ background: base }} />
+        {!geo && (
+          <AbsoluteFill
+            style={{
+              background: `radial-gradient(ellipse 55% 50% at ${(30 + 40 * t).toFixed(2)}% ${(40 + 8 * Math.sin(t * Math.PI)).toFixed(2)}%, ${ground.glow}40 0%, ${ground.glow}00 70%)`,
+            }}
+          />
+        )}
+        <AbsoluteFill style={{ alignItems: "center", justifyContent: "center" }}>
+          <div
+            style={
+              geo
+                ? {}
+                : { opacity: state.opacity, transform: `translate(${state.translateX}px, ${state.translateY}px) scale(${state.scale})` }
+            }
+          >
+            {panel ? (
+              <div style={{ width: PANEL_W, height: PANEL_H, transform: `scale(${scale.toFixed(4)})` }}>{children}</div>
+            ) : (
+              children
+            )}
+          </div>
+        </AbsoluteFill>
+      </AbsoluteFill>
+    );
+  }
   return (
-    <AbsoluteFill style={{ background: PRIMARY_GROUND, alignItems: "center", justifyContent: "center", fontSize: typeSize }}>
+    <AbsoluteFill style={{ background: PRIMARY_GROUND, alignItems: "center", justifyContent: "center", fontSize: typeSize(graphicType, fontSizePx, height) }}>
       {/** VIDEO 638 (F1b) — the designed ground, under the graphic; the graphic itself is unchanged. */}
       {primaryGroundLayers(frame, durationInFrames).map((style, i) => (
         <AbsoluteFill key={`ground-${i}`} style={style} />

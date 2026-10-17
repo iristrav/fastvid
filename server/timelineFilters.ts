@@ -464,11 +464,14 @@ export function gradeChain(
   const angle = kind === "ai_generated" || kind === "stock" ? 0.55 : 0.62;
   const calibration =
     `eq=contrast=${mix(1, contrast).toFixed(4)}:saturation=${mix(1, saturation).toFixed(4)}:` +
-    `brightness=${mix(0, dark ? 0 : -0.03).toFixed(4)}:gamma=${mix(1, dark ? 1.08 : 1.02).toFixed(4)},` +
-    `colorbalance=rs=${mix(0, -0.02).toFixed(4)}:gs=0:bs=${mix(0, 0.04).toFixed(4)}:` +
-    `rm=${mix(0, -0.01).toFixed(4)}:gm=0:bm=${mix(0, 0.02).toFixed(4)}:` +
-    `rh=${mix(0, -0.01).toFixed(4)}:gh=0:bh=${mix(0, 0.02).toFixed(4)}` +
-    (dark ? "" : `,vignette=angle=${mix(Math.PI / 2, angle).toFixed(4)}:mode=forward`);
+    `brightness=${mix(0, dark ? 0 : -0.03).toFixed(4)}:gamma=${mix(1, dark ? 1.08 : 1.02).toFixed(4)}` +
+    /** VIDEO 663 — a dark source keeps neutral colour (see `buildDocumentaryColorGradeVF`). */
+    (dark
+      ? ""
+      : `,colorbalance=rs=${mix(0, -0.02).toFixed(4)}:gs=0:bs=${mix(0, 0.04).toFixed(4)}:` +
+        `rm=${mix(0, -0.01).toFixed(4)}:gm=0:bm=${mix(0, 0.02).toFixed(4)}:` +
+        `rh=${mix(0, -0.01).toFixed(4)}:gh=0:bh=${mix(0, 0.02).toFixed(4)}` +
+        `,vignette=angle=${mix(Math.PI / 2, angle).toFixed(4)}:mode=forward`);
 
   return withLook(calibration);
 }
@@ -511,12 +514,14 @@ export function buildVideoFilter(
    * (taller than wide, after rotation). Only consulted when nobody chose a fit for this clip.
    * VIDEO 663 — `delogo`: the filter that wipes a measured corner logo (`logoCorner.ts`).
    */
-  source?: { portraitSource?: boolean; darkSource?: boolean; delogo?: string }
+  source?: { portraitSource?: boolean; darkSource?: boolean; delogo?: string; chroma?: string }
 ): string {
   const t = clip.transform;
   const parts: string[] = [];
   /** VIDEO 663 — a channel logo too large to zoom out of the frame is wiped first, in the file's own pixels. */
   if (source?.delogo) parts.push(source.delogo);
+  /** VIDEO 663 — and a purple cast taken out before anything grades the picture. */
+  if (source?.chroma) parts.push(source.chroma);
 
   /** Speed first: every later filter (camera, effects) works on the frames as they will be seen. */
   const speed = clipPlaybackSpeed(clip);

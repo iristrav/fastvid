@@ -195,9 +195,9 @@ describe("E — a dark source is not darkened; near-black is refused", () => {
     const half = gradeChain({ grade: "documentary", strength: 0.5 }, "stock", { darkSource: true })!;
     expect(half).toContain("brightness=0.0000:gamma=1.0400");
     expect(half).not.toContain("vignette");
-    /** the colour and contrast of the calibration stay */
+    /** the contrast and saturation of the calibration stay; VIDEO 663 — the cool shadow push does not (it turned dusk purple) */
     expect(dark).toContain("saturation=0.88");
-    expect(dark).toContain("colorbalance=");
+    expect(dark).not.toContain("colorbalance=");
   });
 
   it("dark means mean luma under 60; unmeasured is not dark", () => {
@@ -211,7 +211,7 @@ describe("E — a dark source is not darkened; near-black is refused", () => {
   it("the renderer measures the file and passes it to the grade", () => {
     const R = SRC("timelineRenderer.ts");
     expect(R).toContain("const darkSource = isDarkSource(meanLuma);");
-    expect(R).toContain("buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource, ...(logo.delogo ? { delogo: logo.delogo } : {}) })"); // VIDEO 663
+    expect(R).toContain("buildVideoFilter(unbranded, fmt, dur, look, {\n    portraitSource: portraitSource || offShape,\n    darkSource,\n    ...(logo.delogo ? { delogo: logo.delogo } : {}),\n    ...(unpurple ? { chroma: unpurple } : {}),\n  })"); // VIDEO 663
   });
 
   it("probeMeanLuma reads a dark and a bright file as such", async () => {

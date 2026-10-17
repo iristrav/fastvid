@@ -668,9 +668,10 @@ describe("J. video 614 — our own subtitle no longer refuses a clip; text is as
   it("the fair-use transform burns no narration subtitle into the clip any more", () => {
     const body = fnBody("async function transformClipForFairUse(");
     expect(body).not.toContain("drawtext");
-    /** The transformation itself stays: reframing, grade, vignette. */
-    expect(body).toContain("vignette=angle=");
-    expect(body).toContain("eq=contrast=");
+    /** The transformation itself stays: the reframing. VIDEO 663 — no grade or vignette here; the renderer grades once. */
+    expect(body).toContain("crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}");
+    expect(body).not.toContain("eq=contrast=");
+    expect(body).not.toContain("vignette=angle=");
   });
 
   it("the on-screen-text question comes before the picture editor, under the archive's own key", () => {

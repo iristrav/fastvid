@@ -517,8 +517,9 @@ describe("F1b — the ground under a full-frame graphic is designed, light and s
     const stage = GRAPHICS.slice(GRAPHICS.indexOf("const PrimaryStage"), GRAPHICS.indexOf("const GraphicBody"));
     expect(stage).toContain("background: PRIMARY_GROUND");
     expect(stage).toContain("primaryGroundLayers(frame, durationInFrames).map((style, i) => (");
-    /** layers first, the graphic after them: drawn above */
-    expect(stage.indexOf("primaryGroundLayers(")).toBeLessThan(stage.indexOf("opacity: state.opacity"));
+    /** layers first, the graphic after them: drawn above (VIDEO 663: on the slate, the chapter card's stage) */
+    const slate = stage.slice(stage.indexOf("background: PRIMARY_GROUND"));
+    expect(slate.indexOf("primaryGroundLayers(")).toBeLessThan(slate.indexOf("opacity: state.opacity"));
   });
 
   it("2/9. every layer is translucent light over the base — never a dark or opaque layer, so no black frame", () => {

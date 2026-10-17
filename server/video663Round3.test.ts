@@ -148,7 +148,7 @@ describe("4 — no bars, no logos", () => {
     expect(shapeIsNotTheFrames({ w: 1280, h: 720 }, fmt)).toBe(false);
     expect(shapeIsNotTheFrames({ w: 854, h: 480 }, fmt)).toBe(false);
     expect(shapeIsNotTheFrames(null, fmt)).toBe(false);
-    expect(SRC("timelineRenderer.ts")).toContain("buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource, ...(logo.delogo ? { delogo: logo.delogo } : {}) })");
+    expect(SRC("timelineRenderer.ts")).toContain("buildVideoFilter(unbranded, fmt, dur, look, {\n    portraitSource: portraitSource || offShape,\n    darkSource,\n    ...(logo.delogo ? { delogo: logo.delogo } : {}),\n    ...(unpurple ? { chroma: unpurple } : {}),\n  })");
   });
 
   it("render 72's archive 61523: flat bands of any colour on opposite edges are found; a clear sky is not a band", () => {

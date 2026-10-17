@@ -80,10 +80,13 @@ describe("the on-screen-text director judges crowding where the graphics really 
     expect(graphicsTrack(t).find((g) => g.id === "g_count")?.disabled).not.toBe(true);
   });
 
-  it("without word timing the planned spans are all there is: the existing rule stands unchanged", () => {
+  /** VIDEO 663 — the figure is an animation: it fills the frame (rule 2a), so it is no longer text crowding the picture. */
+  it("without word timing the figure becomes the full frame instead of being switched off", () => {
     const t = sentenceTimeline({ words: false });
     const d = directOnScreenText(t);
-    expect(d.disabled).toEqual([{ id: "g_count", reason: "too_much_text_at_once", label: "2450 cars" }]);
+    expect(d.disabled).toEqual([]);
+    expect(d.converted).toContain("g_count counter → full frame");
+    expect(graphicsTrack(t).find((g) => g.id === "g_count")?.data?.primaryVisual).toBe(true);
   });
 });
 
@@ -193,7 +196,8 @@ describeRender("one real local render: the overlay is laid over the film, each g
   });
 
   it("the film's own picture is kept everywhere the overlay drew nothing (alpha honoured, not an opaque layer)", async () => {
-    const f = await frameAt(out, 7.2);
+    /** VIDEO 663 — at 2.5 s only the year and the name are on screen (the figure, later, fills the frame) */
+    const f = await frameAt(out, 2.5);
     /** the top-left corner: no graphic there, the dark-red source must show through */
     const i = (10 * WIDTH + 10) * 3;
     expect(f[i]!).toBeGreaterThan(100);

@@ -101,7 +101,8 @@ describe("B1 — a sentence that names nothing gets the film's subject card, not
 
   it("a shot the picture editor approved for s0b1 still comes first: the subject card yields to the approved filler", () => {
     const { timeline } = plan({ filmSubject: "Berlin Wall", fillerFits: (c) => c.source.providerAssetId === "ia-2" });
-    expect(gfx(timeline).some((g) => g.data?.primaryVisual === true)).toBe(false);
+    /** VIDEO 663 — no subject card; an animation over the filler may still fill the frame for its moment */
+    expect(gfx(timeline).some((g) => g.graphicType === "chapter_card" && g.data?.primaryVisual === true)).toBe(false);
     expect(video(timeline).some(isGraphicBackdrop)).toBe(false);
   });
 

@@ -33,9 +33,9 @@
  * can switch it back on — the renderer and the Remotion props already skip a disabled element.
  */
 import type { ProjectTimeline, TimelineGraphic, TimelineText } from "./projectTimeline";
-import { graphicAnimationFor, readGeoPoint } from "./graphicsVocabulary";
+import { graphicAnimationFor, graphicIsRenderable, readGeoPoint, readGeoPoints } from "./graphicsVocabulary";
 import { graphicOnScreenWindow, timelineWordTiming } from "./remotionProps";
-import { limitOnScreenWords, MAX_ON_SCREEN_WORDS, wordCount } from "./onScreenWords";
+import { limitOnScreenWords, MAX_ON_SCREEN_WORDS, placeTextBottomLeft, wordCount } from "./onScreenWords";
 
 export const MIN_TEXT_ON_SCREEN_SEC = 2;
 export const MAX_TEXTS_AT_ONCE = 2;
@@ -98,6 +98,15 @@ export const REVEAL_MIN_GAP_SEC = 15;
 const REVEAL_MAX_CHARS = 40;
 
 const KEYWORD_ROLES = new Set(["animated_text", "callout"]);
+/** VIDEO 663 — maps: only as a sentence's whole picture (rule 2a). */
+const MAP_GRAPHICS = new Set(["map_point", "route", "multi_point", "map"]);
+export const MAP_OVER_PICTURE = "map_over_picture";
+/** VIDEO 663 — an animation (a map, a chart, a figure) fills the frame; it is never a card over footage. */
+export const FULL_FRAME_ANIMATIONS: ReadonlySet<string> = new Set([
+  ...MAP_GRAPHICS,
+  "bar_chart", "horizontal_bar", "line_chart", "pie_chart", "donut_chart", "percentage_ring", "progress",
+  "counter", "statistic", "stat",
+]);
 const PRIORITY: Record<Kind, number> = { title: 0, name: 1, place: 2, date: 3, other: 4 };
 
 const norm = (s: string): string =>
@@ -244,11 +253,51 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
   }
 
   /**
+   * Rule 2a (VIDEO 663) — an animation is a whole picture. Render 73 opened on a small card (the
+   * world, then the US, then a pin on Los Angeles) laid over a boulevard shot: "dat ziet er niet goed
+   * uit", and then: "als er een animatie in beeld komt, moet dat gewoon over de hele video komen —
+   * niet met een achtergrond erachter". A map, chart or figure that can draw itself becomes that
+   * moment's full-frame picture (`primaryVisual`); one that cannot (a map with no geography left, a
+   * chart without its numbers) is switched off rather than shown as a card over footage. After rule 2,
+   * so a map without geography still becomes its location card first.
+   */
+  for (const g of graphics) {
+    if (g.disabled || (g as { editedByUser?: boolean }).editedByUser) continue;
+    if (!FULL_FRAME_ANIMATIONS.has(g.graphicType) || g.data?.primaryVisual === true) continue;
+    const data = (g.data ?? {}) as Record<string, unknown>;
+    const draws = MAP_GRAPHICS.has(g.graphicType)
+      ? readGeoPoint(data) != null || readGeoPoints(data).length > 0
+      : graphicIsRenderable(g.graphicType, data, g.label ?? null);
+    if (draws) {
+      g.data = { ...data, primaryVisual: true };
+      out.converted.push(`${g.id} ${g.graphicType} → full frame`);
+      continue;
+    }
+    g.disabled = true;
+    g.disabledReason = MAP_OVER_PICTURE;
+    out.disabled.push({ id: g.id, reason: MAP_OVER_PICTURE, label: g.label ?? g.graphicType });
+  }
+  /**
+   * VIDEO 663 — "ik zie steeds dezelfde animaties van de kaart; er mag wel wat meer kleur in". Every
+   * full-frame animation gets its own look, in film order (`lookVariant`): the next one never wears
+   * the colours or the camera move of the one before it (Graphics.tsx, GeoMap.tsx).
+   */
+  graphics
+    .filter((g) => !g.disabled && g.data?.primaryVisual === true && FULL_FRAME_ANIMATIONS.has(g.graphicType))
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))
+    .forEach((g, i) => {
+      if (typeof g.data?.lookVariant !== "number") g.data = { ...(g.data ?? {}), lookVariant: i };
+    });
+
+  /**
    * Rule 0 (VIDEO 663) — one or two words. Before every other rule, so a shortened name or place is
    * deduplicated as what it now says ("Berlin, Germany" and "Berlin" are one place either way).
    */
   out.words = limitOnScreenWords(timeline);
   for (const line of out.words) console.log(`[OnScreenWords] ${line}`);
+  /** VIDEO 663 — and every text over the picture bottom left (`placeTextBottomLeft`). */
+  const movedLeft = placeTextBottomLeft(timeline);
+  if (movedLeft) console.log(`[OnScreenWords] ${movedLeft} text(s) placed bottom left`);
 
   /** Rule 6 judges "at the same time" on where each element is really on screen. */
   const span = onScreenSpan(timeline, timelineWordTiming(timeline));
@@ -332,8 +381,13 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
   /* Rules 3 and 4 — each person, place and year once, first, and by the card. */
   const seen = new Map<string, Element>();
   for (const e of elements) {
-    if (userEdited(e) || e.el.disabled) continue;
+    if (e.el.disabled) continue;
     if (e.kind !== "name" && e.kind !== "place" && e.kind !== "date") continue;
+    /** VIDEO 663 — a fixed element (a full-frame map, a user's edit) is never switched off, but it has shown its fact */
+    if (userEdited(e)) {
+      if (!seen.has(e.key)) seen.set(e.key, e);
+      continue;
+    }
     const first = seen.get(e.key);
     if (!first) {
       seen.set(e.key, e);

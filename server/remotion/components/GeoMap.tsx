@@ -30,11 +30,26 @@ const COUNTRIES = (WORLD as { countries: Country[] }).countries;
 const W = 900;
 const H = 520;
 const FONT = "Inter, Noto Sans, DejaVu Sans, sans-serif";
-const OCEAN = "rgba(9,18,32,0.88)";
-const LAND = "#2a3647";
-const BORDER = "rgba(255,255,255,0.22)";
-const HIGHLIGHT = "#d9b45a";
 const INK = "#ffffff";
+
+/**
+ * VIDEO 663 — the map's looks. One dark slate with grey land and a gold pin, every time, was "steeds
+ * dezelfde animaties van de kaart"; the owner asked for more colour. Each full-frame map takes the
+ * look of its `lookVariant` (the director numbers them in film order), so two maps in a row never
+ * look alike. No violet anywhere: the owner had just asked for the purple haze to go.
+ */
+export type MapLook = { name: string; ocean: string; land: string; border: string; highlight: string };
+export const MAP_LOOKS: readonly MapLook[] = [
+  { name: "atlas", ocean: "#2b7bb9", land: "#f1e3c2", border: "rgba(90,70,40,0.45)", highlight: "#e4572e" },
+  { name: "forest", ocean: "#0d4f73", land: "#5c9e5a", border: "rgba(255,255,255,0.35)", highlight: "#ffd23f" },
+  { name: "lagoon", ocean: "#127c84", land: "#f6f1e4", border: "rgba(20,60,60,0.35)", highlight: "#d7263d" },
+  { name: "sunset", ocean: "#1f4e8c", land: "#f4a259", border: "rgba(255,255,255,0.4)", highlight: "#c0392b" },
+  { name: "night", ocean: "#12355b", land: "#2f6690", border: "rgba(255,255,255,0.3)", highlight: "#ff9f1c" },
+];
+export function mapLookFor(variant: number | undefined): MapLook {
+  const n = MAP_LOOKS.length;
+  return MAP_LOOKS[(((Math.trunc(variant ?? 0) % n) + n) % n)]!;
+}
 
 const RAD = Math.PI / 180;
 
@@ -102,19 +117,37 @@ export function cameraFor(points: Array<[number, number]>, maxZoom = 6): Camera 
   return { cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, zoom };
 }
 
-/** The camera at `t` (0..1) on its way from the world to `to`: zoom in log space, centre linearly. */
-export function cameraAt(to: Camera, t: number): Camera {
-  const zoom = Math.exp(Math.log(WORLD_CAMERA.zoom) + (Math.log(to.zoom) - Math.log(WORLD_CAMERA.zoom)) * t);
+/** The camera at `t` (0..1) on its way from `from` (the world) to `to`: zoom in log space, centre linearly. */
+export function cameraAt(to: Camera, t: number, from: Camera = WORLD_CAMERA): Camera {
+  const zoom = Math.exp(Math.log(from.zoom) + (Math.log(to.zoom) - Math.log(from.zoom)) * t);
   return {
-    cx: WORLD_CAMERA.cx + (to.cx - WORLD_CAMERA.cx) * t,
-    cy: WORLD_CAMERA.cy + (to.cy - WORLD_CAMERA.cy) * t,
+    cx: from.cx + (to.cx - from.cx) * t,
+    cy: from.cy + (to.cy - from.cy) * t,
     zoom,
   };
 }
 
-const Pin: React.FC<{ x: number; y: number; size: number }> = ({ x, y, size }) => (
+/**
+ * VIDEO 663 — where the camera starts, by look: every map flew in from the whole world. Now the
+ * first flies in from the world, the next drifts in from the side at a regional height, the third
+ * starts close on the place and pulls back to show where it lies.
+ */
+export function cameraStartFor(to: Camera, variant: number | undefined): Camera {
+  switch (((Math.trunc(variant ?? 0) % 3) + 3) % 3) {
+    case 1: {
+      const zoom = Math.max(1, to.zoom * 0.45);
+      return { cx: to.cx - (W * 0.35) / zoom, cy: to.cy + (H * 0.12) / zoom, zoom };
+    }
+    case 2:
+      return { cx: to.cx, cy: to.cy, zoom: Math.min(14, to.zoom * 2.4) };
+    default:
+      return WORLD_CAMERA;
+  }
+}
+
+const Pin: React.FC<{ x: number; y: number; size: number; colour: string }> = ({ x, y, size, colour }) => (
   <g transform={`translate(${x} ${y}) scale(${size})`}>
-    <path d="M0,0 C-14,-20 -22,-30 -22,-42 A22,22 0 1 1 22,-42 C22,-30 14,-20 0,0 Z" fill={HIGHLIGHT} stroke="rgba(0,0,0,0.45)" strokeWidth={2} />
+    <path d="M0,0 C-14,-20 -22,-30 -22,-42 A22,22 0 1 1 22,-42 C22,-30 14,-20 0,0 Z" fill={colour} stroke="rgba(0,0,0,0.45)" strokeWidth={2} />
     <circle cx={0} cy={-42} r={8} fill="rgba(0,0,0,0.65)" />
   </g>
 );
@@ -129,7 +162,13 @@ export const GeoMap: React.FC<{
   durationInFrames: number;
   /** "point" for one place, "route" to draw the line between the stops, "points" for stops only. */
   mode: "point" | "route" | "points";
-}> = ({ data, durationInFrames, mode }) => {
+  /** VIDEO 663 — the look and camera move (`lookVariant`); absent: the first look. */
+  variant?: number;
+  /** VIDEO 663 — the map is the whole frame: no rounded panel corners. */
+  fullBleed?: boolean;
+}> = ({ data, durationInFrames, mode, variant, fullBleed }) => {
+  const look = mapLookFor(variant);
+  const HIGHLIGHT = look.highlight;
   const frame = useCurrentFrame();
   const single = readGeoPoint(data);
   const stops =
@@ -149,7 +188,7 @@ export const GeoMap: React.FC<{
   const travel = easeInOut(Math.min(1, frame / (life * 0.45)));
   const arrived = easeOut(Math.max(0, Math.min(1, (frame - life * 0.4) / (life * 0.2))));
   const lineT = easeOut(Math.max(0, Math.min(1, (frame - life * 0.45) / (life * 0.3))));
-  const cam = cameraAt(target, travel);
+  const cam = cameraAt(target, travel, cameraStartFor(target, variant));
   const view = `translate(${W / 2} ${H / 2}) scale(${cam.zoom.toFixed(4)}) translate(${(-cam.cx).toFixed(2)} ${(-cam.cy).toFixed(2)})`;
   /** Marks keep their size on screen while the map under them grows. */
   const inv = 1 / cam.zoom;
@@ -160,20 +199,20 @@ export const GeoMap: React.FC<{
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
       <defs>
         <clipPath id="geomap-panel">
-          <rect width={W} height={H} rx={10} />
+          <rect width={W} height={H} rx={fullBleed ? 0 : 10} />
         </clipPath>
       </defs>
       <g clipPath="url(#geomap-panel)">
-        <rect width={W} height={H} fill={OCEAN} />
+        <rect width={W} height={H} fill={look.ocean} />
         <g transform={view}>
           {PATHS.map((p, i) => (
             <path
               key={`${p.iso}-${i}`}
               d={p.d}
-              fill={highlight && p.iso === highlight ? HIGHLIGHT : LAND}
+              fill={highlight && p.iso === highlight ? HIGHLIGHT : look.land}
               fillOpacity={highlight && p.iso === highlight ? 0.25 + 0.55 * arrived : 1}
               fillRule="evenodd"
-              stroke={BORDER}
+              stroke={look.border}
               strokeWidth={0.8 * inv}
             />
           ))}
@@ -205,7 +244,7 @@ export const GeoMap: React.FC<{
             return (
               <g key={i}>
                 <circle cx={x} cy={y} r={(14 + 46 * arrived) * inv} fill="none" stroke={HIGHLIGHT} strokeWidth={2 * inv} opacity={1 - arrived} />
-                <Pin x={x} y={y} size={inv * Math.min(1, 0.4 + arrived)} />
+                <Pin x={x} y={y} size={inv * Math.min(1, 0.4 + arrived)} colour={HIGHLIGHT} />
                 {label && (
                   <text
                     x={x}

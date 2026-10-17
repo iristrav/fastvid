@@ -237,14 +237,26 @@ export function planYoutubePieces(params: {
   if (home && home.end - home.start >= reads - EPS) {
     first = Math.min(Math.max(inSec, home.start), home.end - reads);
   }
-  const overlapsFirst = (w: number) => first != null && w < first + reads - EPS && w + reads > first + EPS;
-  const rest = windows.filter((w) => !overlapsFirst(w));
-  const anchor = first ?? inSec;
-  const order: number[] = [
-    ...(first != null ? [first] : []),
-    ...rest.filter((w) => w >= anchor - EPS),
-    ...rest.filter((w) => w < anchor - EPS),
-  ];
+  /**
+   * VIDEO 663 — the pieces follow each other through the source. They were taken from a grid of
+   * windows, so the second piece of a shot jumped seconds ahead (or back) of where the first ended:
+   * the same walk, cut and cut again, which the owner saw as "steeds hetzelfde beeld terug achter
+   * elkaar". Now each piece starts where the one before it ended while its shot lasts — one movement,
+   * with cuts nobody sees — and only then moves on to the next shot of the source (then the earlier
+   * ones). Never a second twice.
+   */
+  let order = packPieces(usable, first, reads, count);
+  /** when packing from the planner's moment leaves fewer pieces than the grid holds, the grid (as before) */
+  if (order.length < Math.min(count, windows.length)) {
+    const overlapsFirst = (w: number) => first != null && w < first + reads - EPS && w + reads > first + EPS;
+    const rest = windows.filter((w) => !overlapsFirst(w));
+    const anchor = first ?? inSec;
+    order = [
+      ...(first != null ? [first] : []),
+      ...rest.filter((w) => w >= anchor - EPS),
+      ...rest.filter((w) => w < anchor - EPS),
+    ];
+  }
 
   /**
    * VIDEO 656 — never a window twice. Render 656 played the same 2.87 s three times in a row here
@@ -303,6 +315,31 @@ export function planYoutubePieces(params: {
   /** The pieces before the first held one: an unshown shot as long as a piece counts as its own footage. */
   const firstHold = pieces.findIndex((p) => p.hold);
   return { pieces, notes, distinct: firstHold < 0 ? pieces.length : firstHold };
+}
+
+/**
+ * VIDEO 663 — up to `count` piece starts, each `reads` long: from `first` (or the first shot that can
+ * hold a piece) onward through its shot, then through the shots after it, then the shots before it.
+ */
+function packPieces(
+  usable: ReadonlyArray<{ start: number; end: number }>,
+  first: number | null,
+  reads: number,
+  count: number
+): number[] {
+  const out: number[] = [];
+  if (!(reads > EPS)) return out;
+  let home = first != null ? usable.findIndex((seg) => first >= seg.start - EPS && first < seg.end - EPS) : -1;
+  if (home < 0) home = Math.max(0, usable.findIndex((seg) => seg.end - seg.start >= reads - EPS));
+  const shots = [...usable.slice(home), ...usable.slice(0, home)];
+  shots.forEach((seg, k) => {
+    let at = k === 0 && first != null ? first : seg.start;
+    while (out.length < count && at + reads <= seg.end + EPS) {
+      out.push(at);
+      at += reads;
+    }
+  });
+  return out;
 }
 
 /** VIDEO 660 — the parts of the usable shots that no window `[w, w + reads)` shows, in source order. */

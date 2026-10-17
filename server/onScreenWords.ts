@@ -16,7 +16,7 @@
  *
  * Data graphics (charts, counters, maps) draw numbers and places, not sentences: untouched.
  */
-import type { ProjectTimeline, TimelineGraphic, TimelineText } from "./projectTimeline";
+import { ON_SCREEN_TEXT_STYLE, type ProjectTimeline, type TimelineGraphic, type TimelineText } from "./projectTimeline";
 
 export const MAX_ON_SCREEN_WORDS = 2;
 export const TOO_MANY_WORDS = "too_many_words";
@@ -232,4 +232,38 @@ function limitGraphic(g: TimelineGraphic, notes: string[]): void {
       notes.push(`${g.id} ${g.graphicType} second line "${v}" — switched off`);
     }
   }
+}
+
+/** VIDEO 663 — graphics that are words over the picture (cards that ARE the picture excepted). */
+const TEXT_OVER_PICTURE = new Set([...WORD_GRAPHICS, ...SENTENCE_GRAPHICS, "title_card"]);
+
+/**
+ * VIDEO 663 — EVERY TEXT OVER THE PICTURE STANDS BOTTOM LEFT.
+ *
+ * The owner: "de tekst moet altijd links onderin in beeld komen." Render 73 drew "BELGIUM" bottom
+ * centre: a card with no position of its own fell back to the centre. Every text and word graphic over
+ * the picture is placed bottom left, left-aligned, at the normal size when it had none. A card that is
+ * the sentence's whole picture (`primaryVisual`), charts and maps keep their own place; anything the
+ * person edited is theirs. Returns how many were moved.
+ */
+export function placeTextBottomLeft(timeline: ProjectTimeline): number {
+  let moved = 0;
+  for (const track of timeline.tracks) {
+    if (track.kind === "TEXT") {
+      for (const t of track.texts ?? []) {
+        if ((t as { editedByUser?: boolean }).editedByUser) continue;
+        if (t.style?.position === "bottom_left" && t.style.align === "left") continue;
+        t.style = { ...ON_SCREEN_TEXT_STYLE, ...(t.style ?? {}), position: "bottom_left", align: "left" };
+        moved++;
+      }
+    } else if (track.kind === "GRAPHICS") {
+      for (const g of track.graphics ?? []) {
+        if ((g as { editedByUser?: boolean }).editedByUser || g.data?.primaryVisual === true || !TEXT_OVER_PICTURE.has(g.graphicType)) continue;
+        if (g.style?.position === "bottom_left") continue;
+        g.style = { ...ON_SCREEN_TEXT_STYLE, ...(g.style ?? {}), position: "bottom_left", align: "left" };
+        moved++;
+      }
+    }
+  }
+  return moved;
 }

@@ -5,7 +5,7 @@
  * → `timelineToRemotionProps` → Remotion PNG/RGBA → ffmpeg), seven sentences of 5 s:
  *
  *   0 map · 1 counter · 2 ring · 3 line chart · 4 chapter card   (no clip: the graphic is the picture)
- *   5 a red shot with a stat in its sentence                      (an overlay ON footage, as before)
+ *   5 a red shot with a stat in its sentence                      (VIDEO 663: the stat fills the frame too)
  *   6 a black shot                                                (real black, for the spot check)
  *
  * Measured in the finished MP4: where the ink is, how much of the frame is ground, the mean luma
@@ -241,8 +241,9 @@ describeRender("fullscreen primary graphics in a real MP4", () => {
   it("the plan marks the five sentences' graphics as primary, centred, from the sentence's first frame", () => {
     const graphics = graphicsTrack(timeline);
     const primaries = graphics.filter((g) => g.data?.primaryVisual === true);
-    expect(primaries.map((g) => g.graphicType)).toEqual(["map_point", "counter", "progress", "line_chart", "chapter_card"]);
-    for (const g of primaries) {
+    /** VIDEO 663 — sentence 5's stat, planned over its shot, is made full frame too (rule 2a) */
+    expect(primaries.map((g) => g.graphicType).sort()).toEqual(["chapter_card", "counter", "line_chart", "map_point", "progress", "progress"]);
+    for (const g of primaries.filter((x) => x.start < 5 * S)) {
       expect(g.style?.position, g.graphicType).toBe("center");
       expect(g.data?.anchorWord, g.graphicType).toBeUndefined();
     }
@@ -262,7 +263,8 @@ describeRender("fullscreen primary graphics in a real MP4", () => {
   it("2 — the counter is a figure in the middle of the frame, large", () => {
     const f = frames.get(1)!;
     expect(f.luma).toBeGreaterThan(22);
-    expect(f.groundShare, `ground ${f.groundShare}`).toBeGreaterThan(0.7);
+    /** VIDEO 663 — an animation stands on a colour ground, never the blue-grey slate */
+    expect(f.groundShare, `slate ${f.groundShare}`).toBeLessThan(0.01);
     const mid = (f.box!.y0 + f.box!.y1) / 2;
     expect(mid, "vertically centred").toBeGreaterThan(0.4);
     expect(mid).toBeLessThan(0.6);
@@ -294,13 +296,15 @@ describeRender("fullscreen primary graphics in a real MP4", () => {
     expect(mid).toBeLessThan(0.65);
   });
 
-  it("6 — a graphic over footage is unchanged: an overlay, the shot still the picture", () => {
-    const overlay = graphicsTrack(timeline).find((g) => g.start >= 5 * S && g.start < 6 * S && g.data?.primaryVisual !== true);
-    expect(overlay, "the sentence with a shot keeps its overlay graphic").toBeDefined();
-    expect(overlay!.style?.position).not.toBe("center");
+  /** VIDEO 663 — "als er een animatie in beeld komt, moet dat gewoon over de hele video komen". */
+  it("6 — an animation in a sentence with a shot fills the whole frame: no card over the footage", () => {
+    const stat = graphicsTrack(timeline).find((g) => g.start >= 5 * S && g.start < 6 * S && !g.disabled);
+    expect(stat, "the sentence with a shot keeps its graphic").toBeDefined();
+    expect(stat!.data?.primaryVisual).toBe(true);
     const f = frames.get(5)!;
-    expect(f.redShare, `red ${f.redShare}`).toBeGreaterThan(0.6);
-    expect(f.groundShare, "no slate behind an overlay").toBeLessThan(0.01);
+    expect(f.redShare, `red ${f.redShare}`).toBeLessThan(0.02);
+    expect(f.groundShare, "a colour ground, not the slate").toBeLessThan(0.01);
+    expect(f.luma).toBeGreaterThan(22);
   });
 
   it("9 — a film whose spot-check samples land on primary graphics is not 'black'", async () => {
@@ -320,7 +324,9 @@ describeRender("fullscreen primary graphics in a real MP4", () => {
 
   it("the delivery gate measures this film over its whole length, graphics included", () => {
     const sec = primaryGraphicSeconds(graphicsTrack(timeline));
-    expect(sec, "map + counter + ring + chart, not the card").toBeCloseTo(4 * S, 0);
+    /** map + counter + ring + chart (and, VIDEO 663, sentence 5's stat), not the card */
+    expect(sec).toBeGreaterThan(4 * S);
+    expect(sec).toBeLessThanOrEqual(5 * S);
     expect(finalTimelineFootageRefusal(videoTrack(timeline), undefined, new Map(), sec)).toBeNull();
   });
 });

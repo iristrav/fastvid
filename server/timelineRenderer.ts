@@ -51,6 +51,7 @@ import { docGradeSourceKindForProvider, isDarkSource } from "./documentaryStyle"
 import { SAFE_MARGIN, anchorGeometry } from "./captionLayout";
 import { probeOverlayInk, type OverlayInkResult } from "./graphicsOverlayInk";
 import { delogoFilter, detectCornerLogo, MAX_LOGO_ZOOM } from "./logoCorner";
+import { giveHeldSecondsToNeighbours, shortenSlowShots } from "./noHeldFrames";
 import {
   classifyFfmpegFailure,
   formatFfmpegFailure,
@@ -125,6 +126,8 @@ export type RenderedTimeline = {
   durationSec: number;
   /** VIDEO 663 — segments that show a held last frame, with how many seconds of it (`viewerReport`). */
   heldFrames?: Array<{ clipId: string; sec: number }>;
+  /** VIDEO 663 — the cuts as rendered (after held frames and slow shots moved them); the timeline handed in is unchanged. */
+  renderedClips?: TimelineVideoClip[];
   clipsRendered: number;
   textsDrawn: number;
   captionsDrawn: number;
@@ -908,6 +911,79 @@ export function segmentFrameCount(
 }
 
 /**
+ * VIDEO 663 — A PURPLE CAST IS PULLED BACK TO NEUTRAL.
+ *
+ * The owner: "haal de paarse waas ook weg". Render 73's Venice shots measured U 144–155 and V 134–147
+ * at the same time (neutral is 128): blue AND red, a magenta cast, from sources shot or uploaded that
+ * way and made worse by a second grade. A blue sky alone raises U and lowers V — that is colour, not a
+ * cast. Only when both sit clearly above neutral is the cast taken out, most of it, before the grade.
+ */
+export function purpleCastCorrection(meanU: number | null, meanV: number | null): string | null {
+  if (meanU == null || meanV == null) return null;
+  if (!(meanU - 128 > 8 && meanV - 126 > 4)) return null;
+  const du = Number(((meanU - 128) * 0.5).toFixed(1));
+  const dv = Number(((meanV - 126) * 0.85).toFixed(1));
+  return `lutyuv=u='clip(val-${du},0,255)':v='clip(val-${dv},0,255)'`;
+}
+
+/** The file's mean U and V (0–255) over up to six frames, one a second; null when it cannot be read. */
+export async function probeMeanChroma(file: string): Promise<{ u: number; v: number } | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      ffmpeg(),
+      ["-hide_banner", "-loglevel", "error", "-i", file, "-vf", "fps=1,scale=32:18:flags=area,format=yuv444p", "-frames:v", "6", "-f", "rawvideo", "pipe:1"],
+      { encoding: "buffer", maxBuffer: 1024 * 1024, timeout: 20_000 }
+    );
+    const bytes = stdout as unknown as Buffer;
+    const plane = 32 * 18;
+    const frames = Math.floor((bytes?.length ?? 0) / (plane * 3));
+    if (frames < 1) return null;
+    let u = 0;
+    let v = 0;
+    for (let f = 0; f < frames; f++) {
+      const base = f * plane * 3;
+      for (let i = 0; i < plane; i++) {
+        u += bytes[base + plane + i]!;
+        v += bytes[base + 2 * plane + i]!;
+      }
+    }
+    return { u: u / (frames * plane), v: v / (frames * plane) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * VIDEO 663 — HOW MUCH A SHOT MOVES: the mean grey-level difference between frames half a second
+ * apart, on a 32×18 thumbnail, over what the clip reads (up to six seconds). The test session measured
+ * render 73's slow aerial at about 0.8; ordinary footage moves far more. Null when it cannot be read.
+ */
+export const SLOW_MOTION_DIFF = 1.5;
+export const SLOW_SHOT_MIN_SLOT_SEC = 2.5;
+export const SLOW_SHOT_PUSH = { type: "slow_push", intensity: 0.5, startScale: 1, endScale: 1.1 } as const;
+export async function probeMotion(file: string, startAt: number, readSec: number): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      ffmpeg(),
+      ["-hide_banner", "-loglevel", "error", "-ss", startAt.toFixed(3), "-t", Math.min(6, Math.max(1, readSec)).toFixed(3), "-i", file,
+        "-vf", "fps=2,scale=32:18:flags=area,format=gray", "-f", "rawvideo", "pipe:1"],
+      { encoding: "buffer", maxBuffer: 1024 * 1024, timeout: 20_000 }
+    );
+    const bytes = stdout as unknown as Buffer;
+    const size = 32 * 18;
+    const frames = Math.floor((bytes?.length ?? 0) / size);
+    if (frames < 2) return null;
+    let sum = 0;
+    for (let f = 1; f < frames; f++) {
+      for (let i = 0; i < size; i++) sum += Math.abs(bytes[f * size + i]! - bytes[(f - 1) * size + i]!);
+    }
+    return sum / ((frames - 1) * size);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * VIDEO 663 — A CHANNEL LOGO IS NOT PART OF A PROFESSIONAL FILM.
  *
  * The on-screen-text check passes a small logo or watermark over real footage (`textCheck:
@@ -1052,7 +1128,16 @@ async function renderSegment(
   const logo = await unbrandedClip(graded, localMedia, fileSec);
   const unbranded = logo.clip;
   if (logo.note) console.log(`[LogoPunchIn] clip=${clip.id} the text check found a logo or watermark over the footage — ${logo.note}`);
-  const built = buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource, ...(logo.delogo ? { delogo: logo.delogo } : {}) });
+  /** VIDEO 663 — a magenta cast is pulled back to neutral before the grade (`purpleCastCorrection`). */
+  const chroma = clip.kind === "video" || clip.kind === "image" ? await probeMeanChroma(localMedia) : null;
+  const unpurple = purpleCastCorrection(chroma?.u ?? null, chroma?.v ?? null);
+  if (unpurple) console.log(`[PurpleCast] clip=${clip.id} mean U ${chroma!.u.toFixed(0)} V ${chroma!.v.toFixed(0)} — the cast is pulled back to neutral`);
+  const built = buildVideoFilter(unbranded, fmt, dur, look, {
+    portraitSource: portraitSource || offShape,
+    darkSource,
+    ...(logo.delogo ? { delogo: logo.delogo } : {}),
+    ...(unpurple ? { chroma: unpurple } : {}),
+  });
   /**
    * VIDEO 636 — A SHORT FILE HOLDS ITS LAST FRAME; IT IS NEVER PLAYED AGAIN FROM THE START.
    *
@@ -1357,9 +1442,14 @@ export async function renderTimeline(params: {
 
   fs.mkdirSync(workDir, { recursive: true });
 
+  /**
+   * VIDEO 663 — copies: the pre-pass below moves cuts (held frames, slow shots), and a render never
+   * changes the timeline it was handed (the same plan renders the same document, every time).
+   */
   const clips = videoTrack(timeline)
     .filter((c) => !c.disabled)
-    .sort((a, b) => a.timelineStart - b.timelineStart);
+    .sort((a, b) => a.timelineStart - b.timelineStart)
+    .map((c) => ({ ...c }));
   if (clips.length === 0) {
     throw new TimelineRenderError("timeline has no enabled video clips", "NO_VIDEO_CLIPS");
   }
@@ -1406,8 +1496,54 @@ export async function renderTimeline(params: {
   let transitionsRendered = 0;
   /** A clip's own length on the timeline. The handle is added on top of it, never taken out of it. */
   const slotOf = (c: TimelineVideoClip) => Math.max(0.04, c.timelineEnd - c.timelineStart);
-  for (const [i, clip] of clips.entries()) {
+  /**
+   * VIDEO 663 — every file is found and measured first, so a shot that cannot fill its slot gives the
+   * rest to the shot beside it before anything is encoded (`giveHeldSecondsToNeighbours`): no frame is
+   * held while a neighbour has unshown seconds of its own.
+   */
+  const mediaOf = new Map<string, string | null>();
+  const fileSecOf = new Map<string, number | null>();
+  for (const clip of clips) {
     const media = await params.resolveMedia(clip);
+    mediaOf.set(clip.id, media);
+    fileSecOf.set(clip.id, media && clip.kind === "video" ? await probeDurationSec(media) : null);
+  }
+  /** in the clip's own in-point seconds: a YouTube moment's file starts at its window (`clipInFileSeconds`) */
+  const rebalance = giveHeldSecondsToNeighbours(clips, (c) => {
+    const sec = fileSecOf.get(c.id);
+    if (sec == null) return null;
+    const at = c.source?.providerWindow?.inSec;
+    return at != null && at > 0 ? sec + at : sec;
+  });
+  for (const line of rebalance.notes) console.log(`[NoHeldFrame] ${line}`);
+  /**
+   * VIDEO 663 — a shot that hardly moves (render 73's slow aerial, 5.9 s at a frame difference of
+   * ~0.8) is kept short, its time handed to the shots beside it (`shortenSlowShots`), and what stays
+   * gets a slow push so the picture moves (`SLOW_SHOT_PUSH`).
+   */
+  const slow = new Set<string>();
+  for (const clip of clips) {
+    const media = mediaOf.get(clip.id);
+    if (!media || clip.kind !== "video" || clip.timelineEnd - clip.timelineStart < SLOW_SHOT_MIN_SLOT_SEC) continue;
+    const inFile = clipInFileSeconds(clip);
+    const motion = await probeMotion(media, Math.max(0, inFile.sourceIn ?? 0), (clip.timelineEnd - clip.timelineStart) * clipPlaybackSpeed(clip));
+    if (motion != null && motion < SLOW_MOTION_DIFF) slow.add(clip.id);
+  }
+  const fileSecInOf = (c: TimelineVideoClip): number | null => {
+    const sec = fileSecOf.get(c.id);
+    if (sec == null) return null;
+    const at = c.source?.providerWindow?.inSec;
+    return at != null && at > 0 ? sec + at : sec;
+  };
+  for (const line of shortenSlowShots(clips, fileSecInOf, (c) => slow.has(c.id))) console.log(`[SlowShot] ${line}`);
+  for (const clip of clips) {
+    /** a clip that asks to stand still (`motion: "none"`: a graphic's hidden backdrop, a fixed test shot) is left still */
+    if (!slow.has(clip.id) || clip.motion === "none" || cameraChain(clip.camera ?? { type: "camera_hold" }, fmt, 1) !== null) continue;
+    clip.camera = { ...SLOW_SHOT_PUSH };
+    console.log(`[SlowShot] ${clip.id} hardly moves — a slow push (×${SLOW_SHOT_PUSH.endScale}) over its ${(clip.timelineEnd - clip.timelineStart).toFixed(2)}s`);
+  }
+  for (const [i, clip] of clips.entries()) {
+    const media = mediaOf.get(clip.id) ?? null;
     if (!media) {
       skipped.push(`clip ${clip.id}: source could not be recovered (${clip.source.provider})`);
       continue;
@@ -2107,6 +2243,7 @@ export async function renderTimeline(params: {
     outputPath,
     durationSec,
     heldFrames,
+    renderedClips: clips,
     clipsRendered: segments.length,
     textsDrawn: texts.length + labelled.length,
     captionsDrawn: captions.length,

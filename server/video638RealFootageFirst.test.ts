@@ -100,7 +100,9 @@ describe("1/5 — real footage first: a sentence with an approved clip keeps it,
     const under = videoClips(timeline).filter((c) => !c.disabled && c.timelineStart < 8 && c.timelineEnd > 4);
     expect(under.length).toBeGreaterThan(0);
     expect(under.every((c) => !isGraphicBackdrop(c) && (c.transform?.opacity ?? 1) > 0)).toBe(true);
-    expect(graphicsOf(timeline).every((g) => g.data?.primaryVisual !== true)).toBe(true);
+    /** VIDEO 663 — the clip stays the sentence's picture; an animation in it fills the frame for its own moment, on its word */
+    const full = graphicsOf(timeline).filter((g) => !g.disabled && g.data?.primaryVisual === true);
+    expect(full.every((g) => g.graphicType !== "chapter_card" && typeof g.data?.anchorWord === "string")).toBe(true);
     expect(logs.some((l) => l.startsWith("[GRAPHIC_ONLY_REASON]"))).toBe(false);
   });
 

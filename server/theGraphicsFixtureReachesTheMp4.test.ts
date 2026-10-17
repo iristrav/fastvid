@@ -421,7 +421,7 @@ describeRender("GRAPHICS §17 — the fixture is visible in the delivered MP4, a
     expect(offEdge, `clipped by the frame — ${offEdge.join(" | ")}`).toEqual([]);
   });
 
-  it("THE LOWER THIRD IS DRAWN WHERE THE LAYOUT ENGINE SAYS IT IS", () => {
+  it("THE LOWER THIRD IS DRAWN WHERE THE LAYOUT ENGINE SAYS IT IS (bottom left — VIDEO 663)", () => {
     /**
      * The defect this round found, stated as the measurement that found it.
      *
@@ -431,14 +431,18 @@ describeRender("GRAPHICS §17 — the fixture is visible in the delivered MP4, a
      * which on this frame is 422px rather than 238px. Comparing the drawn bottom edge to the
      * anchor is the one assertion that can tell the two apart.
      */
+    /**
+     * VIDEO 663 — a text with no place of its own stands bottom left (the owner's rule), so this
+     * lower third is measured against the `bottom_left` anchor: its bottom 10% above the frame's
+     * bottom edge, its left 6% of the width in (`captionLayout`).
+     */
     const lowerThird = graphicMask[0]!;
-    const anchorBottom = HEIGHT * 0.78;
+    const anchorBottom = HEIGHT * 0.9;
     expect(
       Math.abs(lowerThird.maxY - anchorBottom),
       `the lower third's bottom edge is at ${lowerThird.maxY}, the anchor is ${anchorBottom}`
     ).toBeLessThan(HEIGHT * 0.02);
-    /** And its left edge is the anchor's 8% of the WIDTH, which was right all along. */
-    expect(Math.abs(lowerThird.minX - WIDTH * 0.08)).toBeLessThan(WIDTH * 0.02);
+    expect(Math.abs(lowerThird.minX - WIDTH * 0.06)).toBeLessThan(WIDTH * 0.02);
   });
 
   /* ── §10 graphics and captions ── */
