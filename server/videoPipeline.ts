@@ -289,6 +289,8 @@ import { addStockSection, beatRowsInStockOrder, claimLateStock, stockSectionStar
 import {
   chooseMoments,
   sectionMoments,
+  youtubeMomentCutSec,
+  youtubeMomentMaxSec,
   youtubeMomentSpanSec,
   youtubeMomentSpanStartSec,
   youtubeMomentsPerVideo,
@@ -9083,6 +9085,11 @@ export type CoverRestIo = {
   check: SentencePictureCheck;
   /** A generic library clip of at least `neededSec`, on disk under this sentence's name, or null. */
   genericClip: (sceneIndex: number, beatIndex: number, neededSec: number, seed: number) => Promise<{ path: string; durationSec: number } | null>;
+  /**
+   * VIDEO 663 — more of the sentence's own YouTube video(s) from the film's stock: shots already
+   * downloaded and cut that nobody placed, written as this sentence's moments. Empty when none.
+   */
+  sameVideoStock?: (sceneIndex: number, beat: { index: number; text: string }, own: readonly string[]) => Promise<string[]>;
 };
 
 /**
@@ -9150,7 +9157,19 @@ export async function coverRestOfSentences(
         const neighbours = sameVideoNeighbours(ownOf(), handed).filter(
           (p) => !isPipelineFallbackClip(p) && !assetUsedInVideo(dedup, { path: p, contentKey: clipContentKey(p) }) && !refusedHere(p)
         );
-        const same = await firstCheckedFallback(neighbours, dedup, io.checks, (p) => io.check(scene, beat, p, COVER_REST));
+        let same = await firstCheckedFallback(neighbours, dedup, io.checks, (p) => io.check(scene, beat, p, COVER_REST));
+        /**
+         * VIDEO 663 — "je moet gewoon meer youtube beelden ophalen": before a generic clip or a held
+         * frame, the rest of the same YouTube video the film already downloaded — its other shots,
+         * never seconds already in the film — judged for this sentence like any other picture.
+         */
+        if (!same && io.sameVideoStock) {
+          const stocked = (await io.sameVideoStock(scene.index, { index: beat.index, text: beat.text ?? "" }, ownOf()).catch(() => [] as string[])).filter(
+            (p) => !assetUsedInVideo(dedup, { path: p, contentKey: clipContentKey(p) }) && !refusedHere(p)
+          );
+          handed.push(...stocked);
+          same = await firstCheckedFallback(stocked, dedup, io.checks, (p) => io.check(scene, beat, p, COVER_REST));
+        }
         if (same) {
           push(same.path, same.durationSec, rest);
           tally.sameVideo++;
@@ -9197,6 +9216,7 @@ export function productionCoverRestIo(dedup: VisualDedupState, workDir: string, 
   return {
     checks: DEFAULT_FALLBACK_CHECKS,
     check: productionPictureCheck(dedup, workDir, videoTitle),
+    sameVideoStock: (sceneIndex, beat, own) => sameVideoStockMoments(getActiveVideoId() ?? 0, dedup, sceneIndex, beat, own, workDir),
     genericClip: async (sceneIndex, beatIndex, neededSec, seed) => {
       const where = `s${sceneIndex}b${beatIndex}`;
       try {
@@ -12015,6 +12035,64 @@ export async function takeLateStockMoments(
   return out;
 }
 
+/** VIDEO 663 — the most stock shots of its own video(s) one sentence is handed for its rest (`coverRestOfSentences`). */
+export const SAME_VIDEO_STOCK_MOMENTS = 3;
+
+/** VIDEO 663 — the YouTube video id behind a placed clip, from its lineage root; null when it is not YouTube. */
+function youtubeVideoIdOfClip(dedup: Pick<VisualDedupState, "sourcingCache">, clipPath: string): string | null {
+  const ledger = dedup.sourcingCache?.lineage;
+  const record = ledger?.resolve(clipPath, clipContentKey(clipPath)) ?? null;
+  const root = record && ledger ? ledger.rootOf(record.lineageId) ?? record : record;
+  const provider = root?.provider?.trim().toLowerCase();
+  const assetId = root?.providerAssetId?.trim();
+  return (provider === "youtube" || provider === "youtube_cc") && assetId ? assetId.split("@t")[0]! : null;
+}
+
+/**
+ * VIDEO 663 — MORE OF THE SENTENCE'S OWN YOUTUBE VIDEO, FROM THE FILM'S STOCK.
+ *
+ * Render 72: a sentence's one approved YouTube moment covered 4 s of 8.7 s, its candidates held no
+ * other moment of that video, and the rest was its last frame, held. The film's stock still had that
+ * video's other shots, downloaded and cut, never placed. Here up to `SAME_VIDEO_STOCK_MOMENTS` of them
+ * become this sentence's moments — the same filters as a late take (`lateStockShotUnusable`: too
+ * short, refused for text or black, seconds already in the film or shown recently), the same file and
+ * lineage (`writeStockMoment`). Nothing is searched or downloaded; the caller judges each one.
+ */
+export async function sameVideoStockMoments(
+  filmId: number,
+  dedup: Pick<VisualDedupState, "usedContentKeys" | "sourcingCache">,
+  sceneIndex: number,
+  beat: { index: number; text: string },
+  own: readonly string[],
+  workDir: string
+): Promise<string[]> {
+  const ids = [...new Set(own.map((p) => youtubeVideoIdOfClip(dedup, p)).filter((id): id is string => id != null))];
+  const out: string[] = [];
+  for (const id of ids) {
+    if (out.length >= SAME_VIDEO_STOCK_MOMENTS) break;
+    const { shots } = await takeStockShots(filmId, id, 0, (s) => lateStockShotUnusable(filmId, dedup, id, s) != null, SAME_VIDEO_STOCK_MOMENTS - out.length);
+    let m = 0;
+    for (const shot of shots) {
+      const dur = lateStockMomentSec(shot);
+      const moment = await writeStockMoment(
+        dedup.sourcingCache,
+        { videoId: id, title: shot.title, path: shot.path, sourceStartSec: shot.sourceStartSec, sourceEndSec: shot.sourceEndSec },
+        dur,
+        path.join(workDir, `scene_${sceneIndex}_ytfu_rest${beat.index}m${m++}_${youtubeFragmentFileTag(shot.sourceStartSec, dur)}.mp4`),
+        { sceneIndex, beatIndex: beat.index, beatText: beat.text }
+      );
+      if (moment) out.push(moment);
+    }
+    if (shots.length) {
+      console.log(
+        `[YouTubeMoments] Scene ${sceneIndex} beat ${beat.index}: ${id} — ${shots.length} more shot(s) of the sentence's own video ` +
+          `from the film's stock for its uncovered seconds [${shots.map((s) => `@${s.sourceStartSec}s`).join(", ")}] — no download`
+      );
+    }
+  }
+  return out;
+}
+
 /**
  * VIDEO 641 — which open sentence a late stock video goes to: ONE sentence each, never two sentences
  * racing for the same shots.
@@ -12060,9 +12138,12 @@ export function assignLateStockVideos<S extends { sceneIndex: number; beatIndex:
   return out;
 }
 
-/** P2 — the length one late moment is cut at: the beat clip length, never more than the shot. */
+/**
+ * P2 — the length one late moment is cut at, never more than the shot. VIDEO 663 — up to
+ * `youtubeMomentMaxSec` (was the 4 s beat clip length), like a moment in a sentence's own turn.
+ */
 function lateStockMomentSec(s: { sourceStartSec: number; sourceEndSec: number }): number {
-  return Math.min(capYoutubeClipDuration(YOUTUBE_BEAT_CLIP_SEC, "ytfu"), Number((s.sourceEndSec - s.sourceStartSec).toFixed(2)));
+  return youtubeMomentCutSec(s, capYoutubeClipDuration(Math.max(YOUTUBE_BEAT_CLIP_SEC, youtubeMomentMaxSec()), "ytfu"));
 }
 
 /**
@@ -14009,8 +14090,9 @@ export async function fetchYouTubeCCClips(
 
           try {
             const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
-            const momentDur = (s: { sourceStartSec: number; sourceEndSec: number }) =>
-              Math.min(clipDur, Number((s.sourceEndSec - s.sourceStartSec).toFixed(2)));
+            /** VIDEO 663 — a moment is its whole shot up to `youtubeMomentMaxSec`, not the 4 s beat clip length. */
+            const momentCap = capYoutubeClipDuration(Math.max(duration, youtubeMomentMaxSec()), pass.fileTag);
+            const momentDur = (s: { sourceStartSec: number; sourceEndSec: number }) => youtubeMomentCutSec(s, momentCap);
             /**
              * OCTOBER 2026 — EVERY MOMENT IS ITS OWN CANDIDATE (see `youtubeMoments.ts`).
              *

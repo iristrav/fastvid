@@ -84,16 +84,16 @@ describe("VIDEO 659 fix E — the exact reason an empty cut gives", () => {
   });
 });
 
-describe("VIDEO 659 fix E — four seconds before, eight after, inside the video", () => {
+describe("VIDEO 659 fix E / VIDEO 663 — five seconds before, fifteen after, inside the video", () => {
   it("the reach", () => {
-    expect(SECTION_BEFORE_SEC).toBe(4);
-    expect(SECTION_AFTER_SEC).toBe(8);
-    expect(windowsAroundApprovals([100], 600)).toEqual([{ startSec: 96, durationSec: 12 }]);
+    expect(SECTION_BEFORE_SEC).toBe(5);
+    expect(SECTION_AFTER_SEC).toBe(15);
+    expect(windowsAroundApprovals([100], 600)).toEqual([{ startSec: 95, durationSec: 20 }]);
   });
 
   it("never before the video's start nor past its end", () => {
-    expect(windowsAroundApprovals([2], 600)).toEqual([{ startSec: 0, durationSec: 10 }]);
-    expect(windowsAroundApprovals([595], 600)).toEqual([{ startSec: 591, durationSec: 9 }]);
+    expect(windowsAroundApprovals([2], 600)).toEqual([{ startSec: 0, durationSec: 17 }]);
+    expect(windowsAroundApprovals([595], 600)).toEqual([{ startSec: 590, durationSec: 10 }]);
     expect(windowsAroundApprovals([3], 7)).toEqual([{ startSec: 0, durationSec: 7 }]);
   });
 
@@ -108,7 +108,7 @@ describe("VIDEO 659 fix E — four seconds before, eight after, inside the video
     const w = windowsAroundApprovals(six, 600);
     expect(w).toHaveLength(MAX_SECTIONS);
     expect(MAX_SECTION_TOTAL_SEC).toBe(MAX_SECTIONS * (SECTION_BEFORE_SEC + SECTION_AFTER_SEC));
-    expect(w.reduce((n, x) => n + x.durationSec, 0)).toBe(72);
+    expect(w.reduce((n, x) => n + x.durationSec, 0)).toBe(120);
   });
 });
 

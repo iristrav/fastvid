@@ -127,7 +127,8 @@ describe("LATE STOCK — which stock is late", () => {
     /** early_B: both shots handed to a sentence in its own turn — offered already */
     expect((await takeStockShots(64101, "early_B", 0, () => false, 2)).shots.length).toBe(2);
     /** early_C: both moments refused for what their pixels show (on-screen text) — unusable for every sentence */
-    for (const start of [0, 6]) noteYoutubeFragmentRefusal(vp.youtubeFragmentKeyFor("early_C", start, 4), "baked_edit_text_before_vision");
+    /** VIDEO 663 — a moment is its whole 6 s shot now (was cut to 4 s), so its key says 6 */
+    for (const start of [0, 6]) noteYoutubeFragmentRefusal(vp.youtubeFragmentKeyFor("early_C", start, 6), "baked_edit_text_before_vision");
     const d = dedupFor([{ sceneIndex: 0, beats: [sentence(0, "A sentence without a picture.")] }]);
     const offer = vp.lateStockToOffer(64101, d as never, since);
     expect(offer.videoIds).toEqual(["early_A"]);

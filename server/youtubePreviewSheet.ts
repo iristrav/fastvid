@@ -279,11 +279,17 @@ export function parseSheetAnswer(raw: string, frameCount: number, sentenceCount:
  * a shot only counts as approved when it holds that second (`sheetApprovalFor`), every other shot
  * of the wider section is judged and text-checked as before. The total grows with it (6 × 12 s), so
  * the wider sections never push an approved section out.
+ *
+ * VIDEO 663 — five before and fifteen after (was four and eight): the owner's rule, "je moet gewoon
+ * meer youtube beelden ophalen". Render 72's approved shots were cut from 12 s sections and came out
+ * 2–4 s long, so a 6–9 s sentence held its last frame. Twenty seconds per approved frame gives the
+ * cutter a whole shot to find, and the sentence a moment as long as itself (`youtubeMomentMaxSec`).
+ * The total grows with it again (6 × 20 s).
  */
-export const SECTION_BEFORE_SEC = 4;
-export const SECTION_AFTER_SEC = 8;
+export const SECTION_BEFORE_SEC = 5;
+export const SECTION_AFTER_SEC = 15;
 export const MAX_SECTIONS = 6;
-export const MAX_SECTION_TOTAL_SEC = 72;
+export const MAX_SECTION_TOTAL_SEC = MAX_SECTIONS * (SECTION_BEFORE_SEC + SECTION_AFTER_SEC);
 export function windowsAroundApprovals(
   seconds: readonly number[],
   durationSec: number

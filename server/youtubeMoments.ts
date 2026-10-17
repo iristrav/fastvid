@@ -41,6 +41,26 @@ export function youtubeMomentsPerVideo(): number {
   return envInt("YOUTUBE_MOMENTS_PER_VIDEO", 5, 1, 8);
 }
 
+/**
+ * VIDEO 663 — HOW LONG ONE MOMENT IS CUT, NOT FOUR SECONDS.
+ *
+ * Every YouTube moment a sentence was handed was cut to the beat clip length (4 s), however long its
+ * shot. Render 72's sentences ran 6–9 s, so each approved moment left 2–5 s that the timeline closed
+ * by holding the last frame ("the source holds 1 distinct 2.18s window(s) for 4 piece(s) — 3 hold the
+ * last frame"). The owner: "Je moet gewoon meer youtube beelden ophalen." A moment is now its whole
+ * shot, up to this many seconds; the five-second rule (`youtubeShotLimit`) still cuts it on screen
+ * into pieces of at most 5 s, each from its own seconds of the same shot. A fair-use ceiling, when
+ * one is set, still caps it (`capYoutubeClipDuration`).
+ */
+export function youtubeMomentMaxSec(): number {
+  return envInt("YOUTUBE_MOMENT_MAX_SEC", 10, 4, 20);
+}
+
+/** VIDEO 663 — the seconds a moment is cut at: its shot, never more than `capSec`. */
+export function youtubeMomentCutSec(shot: { sourceStartSec: number; sourceEndSec: number }, capSec: number): number {
+  return Math.min(capSec, Number((shot.sourceEndSec - shot.sourceStartSec).toFixed(2)));
+}
+
 /** The most the download service fetches in one section. */
 export const MAX_MOMENT_SPAN_SEC = 120;
 
@@ -49,7 +69,8 @@ export const MAX_MOMENT_SPAN_SEC = 120;
  * shots, never past the video's end, never more than the service fetches in one section.
  */
 export function youtubeMomentSpanSec(clipDurSec: number, sourceDurationSec: number): number {
-  const wanted = envInt("YOUTUBE_MOMENT_SPAN_SEC", 20, 5, MAX_MOMENT_SPAN_SEC);
+  /** VIDEO 663 — 30 s (was 20): moments of up to `youtubeMomentMaxSec`, several of them, need the room. */
+  const wanted = envInt("YOUTUBE_MOMENT_SPAN_SEC", 30, 5, MAX_MOMENT_SPAN_SEC);
   const span = Math.max(clipDurSec, wanted);
   return sourceDurationSec > 0 ? Math.min(span, sourceDurationSec) : span;
 }

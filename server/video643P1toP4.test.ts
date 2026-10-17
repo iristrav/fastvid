@@ -423,7 +423,8 @@ describe("P2 — the last look's stock, end to end (real cut files, the stand-in
     const filmId = 64303;
     await stock(filmId, ["textEvery01", "inFilm00001", "goodVideo01"]);
     await stock(filmId, ["tooShort001"], 2, 2);
-    for (const start of [0, 6, 12]) fail.noteYoutubeFragmentRefusal(vpm.youtubeFragmentKeyFor("textEvery01", start, 4), start === 6 ? "mostly_black" : "baked_edit_text_before_vision");
+    /** VIDEO 663 — a moment is its whole 6 s shot now (was cut to 4 s), so its key says 6 */
+    for (const start of [0, 6, 12]) fail.noteYoutubeFragmentRefusal(vpm.youtubeFragmentKeyFor("textEvery01", start, 6), start === 6 ? "mostly_black" : "baked_edit_text_before_vision");
     const d = state(1);
     d.usedContentKeys.add(vpm.providerAssetKey("youtube_cc", "inFilm00001"));
     const offer = vpm.lateStockToOffer(filmId, d as never, 0);

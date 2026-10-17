@@ -37,10 +37,10 @@ describe("how many moments, from how much of the video", () => {
   });
 
   it("a 20 s section, never past the video's end nor the service's 120 s", () => {
-    expect(youtubeMomentSpanSec(5, 600)).toBe(20);
+    expect(youtubeMomentSpanSec(5, 600)).toBe(30); // VIDEO 663 — was 20
     expect(youtubeMomentSpanSec(5, 12)).toBe(12);
     process.env.YOUTUBE_MOMENT_SPAN_SEC = "500";
-    expect(youtubeMomentSpanSec(5, 600)).toBe(20);
+    expect(youtubeMomentSpanSec(5, 600)).toBe(30);
     process.env.YOUTUBE_MOMENT_SPAN_SEC = "120";
     expect(youtubeMomentSpanSec(5, 600)).toBe(120);
   });
