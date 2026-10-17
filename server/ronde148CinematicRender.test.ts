@@ -688,6 +688,28 @@ describe("REAL FFMPEG — every new chain produces a real file", () => {
      * depend on the video being wrong. The duration then asserts the contract: an overlap consumes
      * MATERIAL, not screen time.
      */
+    /**
+     * VIDEO 663 — the fixtures are 4 s files with nothing before their in-point, so the incoming clip
+     * reads its 1 s handle from its own seconds: a 3 s slot (3 + 1 = its 4 s). A 4 s slot would end the
+     * dissolve on a held last frame, and is now cut instead (next test). The first clip (still bars)
+     * stays within the slow-shot limit (3 s), so no time moves to the second.
+     */
+    const t = timelineWith([
+      clip({ id: "vc_0", timelineStart: 0, timelineEnd: 3 }),
+      clip({
+        id: "vc_1", timelineStart: 3, timelineEnd: 6,
+        transitionIn: "crossfade", transitionInSec: 1,
+        source: { provider: "loc", providerAssetId: "item/2", mediaUrl: "https://loc/2.mp4" },
+      }),
+    ]);
+    t.durationSec = 6;
+    const { result, check } = await render(t, "xfade");
+    expect(result.transitionsRendered, "the crossfade fell back to a cut").toBe(1);
+    expect(check.durationSec).toBeGreaterThan(5.9);
+    expect(check.durationSec).toBeLessThan(6.1);
+  }, 300_000);
+
+  it("VIDEO 663 — a crossfade that would end on a held frame is rendered as a cut, the length kept", async () => {
     const t = timelineWith([
       clip({ id: "vc_0", timelineStart: 0, timelineEnd: 4 }),
       clip({
@@ -696,8 +718,9 @@ describe("REAL FFMPEG — every new chain produces a real file", () => {
         source: { provider: "loc", providerAssetId: "item/2", mediaUrl: "https://loc/2.mp4" },
       }),
     ]);
-    const { result, check } = await render(t, "xfade");
-    expect(result.transitionsRendered, "the crossfade fell back to a cut").toBe(1);
+    const { result, check } = await render(t, "xfade_cut");
+    expect(result.transitionsRendered).toBe(0);
+    expect(result.heldFrames ?? []).toEqual([]);
     expect(check.durationSec).toBeGreaterThan(7.9);
     expect(check.durationSec).toBeLessThan(8.1);
   }, 300_000);

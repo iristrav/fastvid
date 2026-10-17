@@ -15,6 +15,20 @@ import { deriveEmotionalTone } from "./emotionalPacing";
 import { planShot } from "./shotPlanner";
 import { planCameraMovement } from "./cameraPlanner";
 import { planTransition, type TransitionContext } from "./transitionPlanner";
+import { saysWholeWord, WORLD_LOCATIONS } from "../cinematicMotion/locationMap";
+
+/**
+ * VIDEO 663 (test film) — the place a sentence is about, for the transition into it: the strict
+ * `visualLocation` (a place the sentence puts something IN, made for place cards) was empty on
+ * "Los Angeles stretches across a wide basin" and "Brussels grew up on the banks of the Senne", so a
+ * jump from one city to the other was never seen. The world places the map animations know are read
+ * as whole words; a sentence naming none has no place (and is never a jump).
+ */
+export function worldPlaceIn(text: string): string {
+  const lower = (text ?? "").toLowerCase();
+  for (const loc of WORLD_LOCATIONS) if (loc.keywords.some((k) => saysWholeWord(lower, k))) return loc.name;
+  return "";
+}
 import { planClipTiming } from "./timelinePlanner";
 import { planCaptions } from "./captionPlanner";
 import { planMotionGraphics } from "./motionGraphicsPlanner";
@@ -79,13 +93,16 @@ export function generateEDL(inputs: CinematicEditingInput[], options: EdlOptions
     const nextTransitionCtx: TransitionContext = {
       shotType: shot.shotType,
       subject: input.intent.visualSubject,
-      location: input.intent.visualLocation,
+      location: input.intent.visualLocation || worldPlaceIn(input.intent.spokenText),
       time: input.intent.visualTime,
     };
-    /** VIDEO 663 — the first shot of every scene after the film's first opens a new chapter */
-    const transitionIn = planTransition(prevTransitionCtx, nextTransitionCtx, pacing, continuity, {
-      chapterStart: i === 0 && input.scene.index > 0,
-    });
+    /**
+     * VIDEO 663 — the first shot of every scene after the film's first opens a new chapter. One EDL
+     * holds the whole film, so a chapter starts where the scene changes (test film: the dip at the
+     * second chapter never came while this read `i === 0`).
+     */
+    const chapterStart = i > 0 && inputs[i - 1]!.scene.index !== input.scene.index;
+    const transitionIn = planTransition(chapterStart ? null : prevTransitionCtx, nextTransitionCtx, pacing, continuity, { chapterStart });
 
     const clips = planClipTiming(
       input.intent.spokenText,

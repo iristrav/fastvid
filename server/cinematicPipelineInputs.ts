@@ -739,6 +739,13 @@ export function engineSourceFor(
     "internet_archive", "youtube_cc", "europeana", "ai_generated",
   ];
   if ((exact as readonly string[]).includes(p)) return p as CandidateSource;
+  /**
+   * VIDEO 663 (test film) — a YouTube clip is modern footage, also when our own archive keeps a copy
+   * (`archiveAssetId`). Classified as `own_archive` it entered the shot planner's archival branch on
+   * any sentence with a year in it ("in 2024"): film grain on a modern street, and a dissolve "back
+   * to the present" between two shots of the same city.
+   */
+  if (p === "youtube") return "youtube_cc";
 
   switch (docGradeSourceKindForProvider(provider, { archiveAssetId })) {
     /** Our own archive row is the most accurate of the archival tokens for a curated asset. */

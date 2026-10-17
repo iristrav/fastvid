@@ -182,12 +182,20 @@ export function shortenSlowShots(
 
 export function giveHeldSecondsToNeighbours(
   clips: TimelineVideoClip[],
-  fileSecIn: (c: TimelineVideoClip) => number | null
+  fileSecIn: (c: TimelineVideoClip) => number | null,
+  /**
+   * VIDEO 663 (test film) — a shot that hardly moves never takes another shot's time past
+   * `SLOW_SHOT_MAX_SEC`: the test film's 2 s file gave its 3 s to a still aerial, and the film stood
+   * still for 7.5 s instead of 0.6.
+   */
+  isSlow: (c: TimelineVideoClip) => boolean = () => false
 ): { notes: string[]; stillHeld: Array<{ clipId: string; sec: number }> } {
   const notes: string[] = [];
   const stillHeld: Array<{ clipId: string; sec: number }> = [];
-  const spareAfter = spareAfterFor(clips, fileSecIn);
-  const spareBefore = spareBeforeFor(clips);
+  const spareAfter = spareAfterFor(clips, fileSecIn, (n) => (isSlow(n) ? SLOW_SHOT_MAX_SEC : Number.POSITIVE_INFINITY));
+  const ownBefore = spareBeforeFor(clips);
+  /** a neighbour reading earlier grows its slot: a slow one only up to the same limit */
+  const spareBefore = (n: TimelineVideoClip) => (isSlow(n) ? Math.min(ownBefore(n), Math.max(0, SLOW_SHOT_MAX_SEC - slot(n))) : ownBefore(n));
   for (let i = 0; i < clips.length; i++) {
     const c = clips[i]!;
     if (c.kind === "image") continue;
@@ -197,7 +205,7 @@ export function giveHeldSecondsToNeighbours(
      * VIDEO 663 (R2) — first its own file: the shot starts earlier in its source, into seconds no other
      * shot of the film shows. No cut moves; the sentence keeps its own picture.
      */
-    const own = Math.min(deficit, spareBefore(c));
+    const own = Math.min(deficit, ownBefore(c));
     if (own > EPS) {
       c.sourceIn = round(Math.max(fileStartIn(c), (c.sourceIn ?? 0) - own * speedOf(c)));
       deficit -= own;

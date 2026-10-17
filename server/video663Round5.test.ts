@@ -8,6 +8,10 @@
  *   4  a reorder answer that misses or doubles a clip is repaired, not thrown away
  *   5  YouTube is many videos, not "one source dominating"
  *   6  an archive fetch stopped from outside says so, not "ffmpeg exit null: <banner>"
+ *   7  what the local test film showed: a chapter starts where the scene changes (one EDL holds the
+ *      film), YouTube is modern footage, a short file never gives its time to a still shot, a dissolve
+ *      that would end on a held frame is a cut, places for transitions and maps (Brussels was missing,
+ *      "Spanish plaza" is not Spain), never the same country's map twice in a row
  */
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,6 +20,11 @@ import path from "path";
 
 import { computeScreenTimeShare, screenTimeFindings } from "./deliveredScreenTime";
 import { repairOrder } from "./editorialReorder";
+import { engineSourceFor } from "./cinematicPipelineInputs";
+import { worldPlaceIn } from "./cinematicEditingEngine/edlGenerator";
+import { giveHeldSecondsToNeighbours, SLOW_SHOT_MAX_SEC } from "./noHeldFrames";
+import { directOnScreenText, MAP_SAME_PLACE } from "./onScreenTextDirector";
+import { emptyTimeline, type TimelineGraphic, type TimelineVideoClip } from "./projectTimeline";
 import { directorSearchQueries, withoutTerms } from "./scriptVisualKeywords";
 import { directorSceneToIntent } from "./visualDirector";
 
@@ -134,5 +143,77 @@ describe("6 — an archive fetch stopped from outside is named as that", () => {
   it("no more 'ffmpeg exit null' with ffmpeg's banner as the reason", () => {
     const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     expect(src).toContain("ffmpeg was stopped (${signal ?? \"signal\"}) before the segment was read");
+  });
+});
+
+describe("7 — what the local test film showed", () => {
+  it("YouTube is modern footage, also from our own archive: never the planner's archival branch", () => {
+    expect(engineSourceFor("youtube", 61525)).toBe("youtube_cc");
+    expect(engineSourceFor("youtube_cc", 61525)).toBe("youtube_cc");
+    expect(engineSourceFor("internet_archive", 1)).not.toBe("youtube_cc");
+  });
+
+  it("the place a sentence is about, for a transition: whole names, no nationality adjective", () => {
+    expect(worldPlaceIn("Los Angeles stretches across a wide basin in 2024.")).toBe("Los Angeles");
+    expect(worldPlaceIn("Brussels grew up on the banks of the Senne in 979.")).toBe("Brussels, Belgium");
+    expect(worldPlaceIn("Belgium became an independent kingdom in 1830.")).toBe("Brussels, Belgium");
+    expect(worldPlaceIn("Downtown towers rise above the old Spanish plaza.")).toBe("");
+    expect(worldPlaceIn("Its freeways carry ten million cars.")).toBe("");
+  });
+
+  it("a chapter starts where the scene changes, inside one EDL for the whole film", () => {
+    const src = fs.readFileSync(path.join(__dirname, "cinematicEditingEngine", "edlGenerator.ts"), "utf8");
+    expect(src).toContain("const chapterStart = i > 0 && inputs[i - 1]!.scene.index !== input.scene.index;");
+  });
+
+  it("a short file never hands its time to a shot that stands still past the slow-shot limit", () => {
+    const c = (id: string, start: number, end: number, extra: Partial<TimelineVideoClip> = {}) =>
+      ({ id, kind: "video", source: { provider: "pexels", providerAssetId: id }, sourceIn: 0, timelineStart: start, timelineEnd: end, transitionIn: "hard_cut", transitionOut: "hard_cut", ...extra }) as TimelineVideoClip;
+    const moving = c("m", 0, 5);
+    const short = c("s", 5, 10);
+    const still = c("t", 10, 13);
+    const files: Record<string, number> = { m: 20, s: 2, t: 20 };
+    giveHeldSecondsToNeighbours([moving, short, still], (x) => files[x.id]!, (x) => x.id === "t");
+    /** the still shot grows only to the limit (3 → 3.5 s); the moving shot before takes the other 2.5 s */
+    expect(still.timelineEnd - still.timelineStart).toBeCloseTo(SLOW_SHOT_MAX_SEC, 2);
+    expect(moving.timelineEnd).toBeCloseTo(7.5, 2);
+  });
+
+  it("a dissolve into a shot with no pre-roll and too few seconds of its own becomes a cut", () => {
+    const src = fs.readFileSync(path.join(__dirname, "timelineRenderer.ts"), "utf8");
+    expect(src).toContain("[TransitionCut] clip=");
+    expect(src.indexOf("[TransitionCut]")).toBeLessThan(src.indexOf("for (const [i, clip] of clips.entries()) {"));
+  });
+
+  it("never a map of the same country twice in a row", () => {
+    const t = emptyTimeline(1, { widthPx: 1280, heightPx: 720, fps: 25 });
+    t.durationSec = 30;
+    const map = (id: string, start: number, label: string, iso3: string): TimelineGraphic =>
+      ({ id, graphicType: "map_point", label, start, end: start + 4.5, data: { locationName: label, lon: 4.35, lat: 50.85, iso3 } }) as TimelineGraphic;
+    for (const tr of t.tracks) if (tr.kind === "GRAPHICS") tr.graphics.push(map("bxl", 15, "Brussels, Belgium", "BEL"), map("be", 20, "Belgium", "BEL"), map("la", 2, "Los Angeles", "USA"));
+    directOnScreenText(t);
+    const g = Object.fromEntries(t.tracks.flatMap((x) => (x.kind === "GRAPHICS" ? x.graphics : [])).map((x) => [x.id, x]));
+    expect(g.la!.disabled).toBeFalsy();
+    expect(g.bxl!.disabled).toBeFalsy();
+    expect(g.be).toMatchObject({ disabled: true, disabledReason: MAP_SAME_PLACE });
+  });
+
+  it("a place name the map has just shown gives way, so the year beside it stays", () => {
+    const t = emptyTimeline(1, { widthPx: 1280, heightPx: 720, fps: 25 });
+    t.durationSec = 60;
+    for (const tr of t.tracks) {
+      if (tr.kind === "GRAPHICS") {
+        tr.graphics.push(
+          { id: "bxl", graphicType: "map_point", label: "Brussels, Belgium", start: 15, end: 19.5, data: { locationName: "Brussels", lon: 4.35, lat: 50.85, iso3: "BEL" } } as TimelineGraphic,
+          { id: "year", graphicType: "date_card", label: "1830", start: 20, end: 23, data: {} } as TimelineGraphic
+        );
+      }
+      if (tr.kind === "TEXT") tr.texts.push({ id: "be", text: "Belgium", start: 20, end: 23 } as never);
+    }
+    directOnScreenText(t);
+    const texts = t.tracks.flatMap((x) => (x.kind === "TEXT" ? x.texts : []));
+    const gfx = t.tracks.flatMap((x) => (x.kind === "GRAPHICS" ? x.graphics : []));
+    expect(texts.find((x) => x.id === "be")!.disabled).toBe(true);
+    expect(gfx.find((x) => x.id === "year")!.disabled).toBeFalsy();
   });
 });

@@ -36,6 +36,7 @@ import type { ProjectTimeline, TimelineGraphic, TimelineText } from "./projectTi
 import { graphicAnimationFor, graphicIsRenderable, readGeoPoint, readGeoPoints } from "./graphicsVocabulary";
 import { graphicOnScreenWindow, timelineWordTiming } from "./remotionProps";
 import { limitOnScreenWords, MAX_ON_SCREEN_WORDS, placeTextBottomLeft, wordCount } from "./onScreenWords";
+import { saysWholeWord, WORLD_LOCATIONS } from "./cinematicMotion/locationMap";
 
 export const MIN_TEXT_ON_SCREEN_SEC = 2;
 export const MAX_TEXTS_AT_ONCE = 2;
@@ -101,6 +102,24 @@ const KEYWORD_ROLES = new Set(["animated_text", "callout"]);
 /** VIDEO 663 — maps: only as a sentence's whole picture (rule 2a). */
 const MAP_GRAPHICS = new Set(["map_point", "route", "multi_point", "map"]);
 export const MAP_OVER_PICTURE = "map_over_picture";
+/** VIDEO 663 — a map of the country the previous map showed. */
+export const MAP_SAME_PLACE = "map_same_place";
+/** VIDEO 663 — how long after a map its place is still "just shown". */
+export const PLACE_JUST_SHOWN_SEC = 10;
+/** The ISO code of the world place a label names ("Belgium", "Brussels"), or "". */
+function countryNamed(label: string): string {
+  const lower = (label ?? "").toLowerCase();
+  const loc = WORLD_LOCATIONS.find((l) => l.keywords.some((k) => saysWholeWord(lower, k)));
+  return loc ? loc.iso3.toUpperCase() : "";
+}
+/** The country a map shows: its ISO code, else its place name. */
+function mapCountry(g: TimelineGraphic): string {
+  const d = (g.data ?? {}) as Record<string, unknown>;
+  const iso = typeof d.iso3 === "string" ? d.iso3 : typeof d.countryIso3 === "string" ? d.countryIso3 : "";
+  if (iso) return iso.toUpperCase();
+  const name = typeof d.locationName === "string" ? d.locationName : g.label ?? "";
+  return name.trim().toLowerCase();
+}
 /** VIDEO 663 — an animation (a map, a chart, a figure) fills the frame; it is never a card over footage. */
 export const FULL_FRAME_ANIMATIONS: ReadonlySet<string> = new Set([
   ...MAP_GRAPHICS,
@@ -278,6 +297,29 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
     out.disabled.push({ id: g.id, reason: MAP_OVER_PICTURE, label: g.label ?? g.graphicType });
   }
   /**
+   * VIDEO 663 (test film) — never the same country twice in a row: "Brussels grew up on the Senne"
+   * and "Belgium became a kingdom" drew two maps of Belgium back to back — "steeds dezelfde animaties
+   * van de kaart". A map of the country the last map showed is switched off.
+   */
+  let lastMap: { country: string; end: number } | null = null;
+  for (const g of [...graphics].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))) {
+    if (g.disabled || !MAP_GRAPHICS.has(g.graphicType) || g.data?.primaryVisual !== true) continue;
+    if ((g as { editedByUser?: boolean }).editedByUser) {
+      lastMap = { country: mapCountry(g), end: g.end };
+      continue;
+    }
+    const country = mapCountry(g);
+    const reason = lastMap && country && country === lastMap.country ? MAP_SAME_PLACE : null;
+    if (reason) {
+      g.disabled = true;
+      g.disabledReason = reason;
+      out.disabled.push({ id: g.id, reason, label: g.label ?? g.graphicType });
+      continue;
+    }
+    lastMap = { country, end: g.end };
+  }
+
+  /**
    * VIDEO 663 — "ik zie steeds dezelfde animaties van de kaart; er mag wel wat meer kleur in". Every
    * full-frame animation gets its own look, in film order (`lookVariant`): the next one never wears
    * the colours or the camera move of the one before it (Graphics.tsx, GeoMap.tsx).
@@ -433,6 +475,21 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
     if (userEdited(e) || e.el.disabled || e.track !== "text") continue;
     const twin = cards.find((c) => overlaps(c.el, e.el) && norm(c.label) === norm(e.label));
     if (twin) switchOff(e, "duplicate_of_card", out);
+  }
+
+  /**
+   * Rule 5b (VIDEO 663, test film) — a place name a map has just shown is not said again. "Belgium"
+   * right after the map of Brussels and Belgium took the corner from the year "1830", and the per-minute
+   * budget then dropped "Belgium" too: neither was on screen. Within `PLACE_JUST_SHOWN_SEC` of a map of
+   * the same country, a place card or text gives way.
+   */
+  const shownMaps = graphics.filter((g) => !g.disabled && MAP_GRAPHICS.has(g.graphicType) && g.data?.primaryVisual === true);
+  for (const e of elements) {
+    if (userEdited(e) || e.el.disabled || e.kind !== "place") continue;
+    const country = countryNamed(e.label);
+    if (!country) continue;
+    const shown = shownMaps.some((m) => m !== e.el && mapCountry(m) === country && m.start <= e.el.start && e.el.start - m.end < PLACE_JUST_SHOWN_SEC);
+    if (shown) switchOff(e, "place_just_shown_on_map", out);
   }
 
   /* Rule 7 — long enough to read, before crowding is judged on the real on-screen spans. */

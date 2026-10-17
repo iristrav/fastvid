@@ -51,7 +51,7 @@ import { docGradeSourceKindForProvider, isDarkSource } from "./documentaryStyle"
 import { SAFE_MARGIN, anchorGeometry } from "./captionLayout";
 import { probeOverlayInk, type OverlayInkResult } from "./graphicsOverlayInk";
 import { delogoFilter, detectCornerLogo, MAX_LOGO_ZOOM } from "./logoCorner";
-import { giveHeldSecondsToNeighbours, shortenSlowShots } from "./noHeldFrames";
+import { giveHeldSecondsToNeighbours, ownSeconds, shortenSlowShots } from "./noHeldFrames";
 import {
   classifyFfmpegFailure,
   formatFfmpegFailure,
@@ -1509,12 +1509,27 @@ export async function renderTimeline(params: {
     fileSecOf.set(clip.id, media && clip.kind === "video" ? await probeDurationSec(media) : null);
   }
   /** in the clip's own in-point seconds: a YouTube moment's file starts at its window (`clipInFileSeconds`) */
-  const rebalance = giveHeldSecondsToNeighbours(clips, (c) => {
+  const fileSecInOf = (c: TimelineVideoClip): number | null => {
     const sec = fileSecOf.get(c.id);
     if (sec == null) return null;
     const at = c.source?.providerWindow?.inSec;
     return at != null && at > 0 ? sec + at : sec;
-  });
+  };
+  /**
+   * VIDEO 663 — a shot that hardly moves (render 73's slow aerial, 5.9 s at a frame difference of
+   * ~0.8) is kept short, its time handed to the shots beside it (`shortenSlowShots`), and what stays
+   * gets a slow push so the picture moves (`SLOW_SHOT_PUSH`). Measured FIRST (test film): the held-
+   * frame rebalance below may not hand a short file's time to a shot that stands still.
+   */
+  const slow = new Set<string>();
+  for (const clip of clips) {
+    const media = mediaOf.get(clip.id);
+    if (!media || clip.kind !== "video") continue;
+    const inFile = clipInFileSeconds(clip);
+    const motion = await probeMotion(media, Math.max(0, inFile.sourceIn ?? 0), Math.max(SLOW_SHOT_MIN_SLOT_SEC, clip.timelineEnd - clip.timelineStart) * clipPlaybackSpeed(clip));
+    if (motion != null && motion < SLOW_MOTION_DIFF) slow.add(clip.id);
+  }
+  const rebalance = giveHeldSecondsToNeighbours(clips, fileSecInOf, (c) => slow.has(c.id));
   for (const line of rebalance.notes) console.log(`[NoHeldFrame] ${line}`);
   /**
    * VIDEO 663 (R2) — what still holds after every rebalance is an error, and never a frozen picture:
@@ -1527,31 +1542,33 @@ export async function renderTimeline(params: {
     clip.camera = { ...SLOW_SHOT_PUSH };
     console.error(`[HeldFrame] ERROR clip=${clip.id} no unshown seconds left for its slot — the held frame moves (×${SLOW_SHOT_PUSH.endScale})`);
   }
-  /**
-   * VIDEO 663 — a shot that hardly moves (render 73's slow aerial, 5.9 s at a frame difference of
-   * ~0.8) is kept short, its time handed to the shots beside it (`shortenSlowShots`), and what stays
-   * gets a slow push so the picture moves (`SLOW_SHOT_PUSH`).
-   */
-  const slow = new Set<string>();
-  for (const clip of clips) {
-    const media = mediaOf.get(clip.id);
-    if (!media || clip.kind !== "video" || clip.timelineEnd - clip.timelineStart < SLOW_SHOT_MIN_SLOT_SEC) continue;
-    const inFile = clipInFileSeconds(clip);
-    const motion = await probeMotion(media, Math.max(0, inFile.sourceIn ?? 0), (clip.timelineEnd - clip.timelineStart) * clipPlaybackSpeed(clip));
-    if (motion != null && motion < SLOW_MOTION_DIFF) slow.add(clip.id);
-  }
-  const fileSecInOf = (c: TimelineVideoClip): number | null => {
-    const sec = fileSecOf.get(c.id);
-    if (sec == null) return null;
-    const at = c.source?.providerWindow?.inSec;
-    return at != null && at > 0 ? sec + at : sec;
-  };
   for (const line of shortenSlowShots(clips, fileSecInOf, (c) => slow.has(c.id))) console.log(`[SlowShot] ${line}`);
   for (const clip of clips) {
     /** a clip that asks to stand still (`motion: "none"`: a graphic's hidden backdrop, a fixed test shot) is left still */
     if (!slow.has(clip.id) || clip.motion === "none" || cameraChain(clip.camera ?? { type: "camera_hold" }, fmt, 1) !== null) continue;
     clip.camera = { ...SLOW_SHOT_PUSH };
     console.log(`[SlowShot] ${clip.id} hardly moves — a slow push (×${SLOW_SHOT_PUSH.endScale}) over its ${(clip.timelineEnd - clip.timelineStart).toFixed(2)}s`);
+  }
+  /**
+   * VIDEO 663 (test film) — a dissolve into a shot with nothing before its in-point reads its handle
+   * from the in-point on; when the shot's own seconds cannot cover slot AND handle, that dissolve would
+   * end on a held last frame. A hard cut instead: a frozen frame is worse than a plain cut.
+   */
+  for (let i = 1; i < clips.length; i++) {
+    const clip = clips[i]!;
+    if (clip.kind !== "video" || !clip.transitionIn || clip.transitionIn === "hard_cut") continue;
+    const handle = effectiveTransitionSec(clip.transitionIn, clip.transitionInSec, slotOf(clips[i - 1]!), slotOf(clip)) ?? 0;
+    if (!(handle > 0)) continue;
+    const speed = clipPlaybackSpeed(clip);
+    const preRoll = Math.max(0, clipInFileSeconds(clip).sourceIn ?? 0) / speed;
+    const own = ownSeconds(clip, fileSecInOf(clip));
+    if (preRoll >= handle - 0.02 || own >= slotOf(clip) + handle - 0.02) continue;
+    console.log(
+      `[TransitionCut] clip=${clip.id} ${clip.transitionIn} → hard_cut: nothing before its in-point and ${own.toFixed(2)}s of its own ` +
+        `for a ${slotOf(clip).toFixed(2)}s slot plus the ${handle.toFixed(2)}s dissolve — the dissolve would end on a held frame`
+    );
+    clip.transitionIn = "hard_cut";
+    delete clip.transitionInSec;
   }
   for (const [i, clip] of clips.entries()) {
     const media = mediaOf.get(clip.id) ?? null;
