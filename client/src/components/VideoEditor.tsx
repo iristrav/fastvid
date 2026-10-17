@@ -175,7 +175,7 @@ type TextElement = {
 
 /** VIDEO 619 — how a text the person adds looks until they change it. */
 const NEW_TEXT_STYLE = {
-  fontSizePx: 52,
+  fontSizePx: 64,
   color: "white",
   backgroundOpacity: 0.35,
   backgroundColor: "black",

@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
+import { TOO_MANY_WORDS } from "./onScreenWords";
 import { emptyTimeline, DEFAULT_TEXT_STYLE, type ProjectTimeline, type TimelineGraphic, type TimelineText } from "./projectTimeline";
 import {
   directOnScreenText,
@@ -91,7 +92,8 @@ describe("FIX A — at most 3 text/graphic moments per started minute, enforced"
     ]);
     directOnScreenText(t);
     expect(shownIds(t)).toEqual(["g_counter", "g_kim", "g_2007"]);
-    expect(offReason(t, "g_quote")).toBe(GRAPHIC_BUDGET_EXCEEDED);
+    /** VIDEO 663 — a four-word quote is off before the budget is counted: text in the picture is one or two words */
+    expect(offReason(t, "g_quote")).toBe(TOO_MANY_WORDS);
   });
 
   it("C — the budget starts again in the second minute", () => {

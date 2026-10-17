@@ -126,6 +126,23 @@ export function placeStandsAlone(text: string, alias: string): boolean {
   return !!m && !(m[1] && /^\s+\p{Lu}/u.test(m[1]));
 }
 
+/** Words that can follow a place's name and still name only the place ("New York City", "Port of Rotterdam" aside). */
+const PLACE_SUFFIXES = new Set(["city", "county", "state", "province", "region", "area", "metro", "downtown", "harbour", "harbor", "port"]);
+
+/**
+ * VIDEO 663 — does this name name a listed PLACE, and nothing else? Render 72 took "Los Angeles" for
+ * the film's person (from its title) and searched "Los Angeles Brussels" and "Los Angeles Bruges".
+ * True for a listed country, city or alias, alone or with a place word after it ("Los Angeles
+ * County"); false for anything longer ("Paris Hilton", "Brooklyn Beckham" is not listed either).
+ */
+export function nameIsAPlace(name: string | null | undefined): boolean {
+  const words = (name ?? "").toLowerCase().replace(/['’]s$/, "").replace(/[-_.,]+/g, " ").split(/\s+/).filter(Boolean);
+  if (!words.length) return false;
+  while (words.length > 1 && PLACE_SUFFIXES.has(words[words.length - 1]!)) words.pop();
+  const joined = words.join(" ");
+  return PLACES.some((p) => p.aliases.some((a) => a.replace(/[-_.]+/g, " ") === joined));
+}
+
 /** The listed places a text names. `withDemonyms` also reads "Dutch" as the Netherlands. */
 export function placesIn(text: string | null | undefined, withDemonyms = false): Place[] {
   if (!text) return [];

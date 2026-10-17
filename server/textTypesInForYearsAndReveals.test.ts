@@ -56,7 +56,8 @@ describe("years type; key-word pop-ups stay off except at the most intense momen
       [
         text("p1", "animated_text", "THE BUNKER", 10, 13),
         text("p2", "callout", "SEALED", 14, 16),
-        text("p3", "animated_text", "NO WAY OUT", 40, 43),
+        /** VIDEO 663 — two words (was "NO WAY OUT"): a three-word reveal stays off, see video663Round2.test.ts */
+        text("p3", "animated_text", "NO EXIT", 40, 43),
         text("p4", "animated_text", "A QUIET ROOM", 55, 58),
       ],
       []
@@ -73,7 +74,7 @@ describe("years type; key-word pop-ups stay off except at the most intense momen
     expect(Math.abs(40 - 10)).toBeGreaterThanOrEqual(REVEAL_MIN_GAP_SEC);
     for (const id of ["p2", "p4"]) expect(texts(t).find((x) => x.id === id)!.disabled).toBe(true);
     expect(texts(t).find((x) => x.id === "p1")!.animation).toBe("typewriter");
-    expect(formatTextDirection(608, d)).toContain('typewriter=2 (reveal:"THE BUNKER"@10.0s, reveal:"NO WAY OUT"@40.0s)');
+    expect(formatTextDirection(608, d)).toContain('typewriter=2 (reveal:"THE BUNKER"@10.0s, reveal:"NO EXIT"@40.0s)');
   });
 
   it("a reveal still obeys the rules for crowding: it never lands on a card in the same place", () => {

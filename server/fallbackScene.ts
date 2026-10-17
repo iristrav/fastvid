@@ -17,7 +17,8 @@
  * names it an EMERGENCY placeholder (QUALITY_PROBLEM SYNTHETIC_PLACEHOLDER), never footage.
  */
 import { ON_SCREEN_TEXT_STYLE, type ProjectTimeline, type TimelineVideoClip } from "./projectTimeline";
-import { keyWordsIn, nameIn, phraseIn, yearIn } from "./animationFloor";
+import { keyWordsIn, nameIn, yearIn } from "./animationFloor";
+import { filmTopicWords, relevantWordsIn, shortOnScreenLabel, subjectWordsIn } from "./onScreenWords";
 import { graphicIsRenderable } from "./graphicsVocabulary";
 import { pictureCheckMissing } from "./deliveryGate";
 import { sentenceCoverage } from "./sentenceCoverage";
@@ -47,33 +48,27 @@ export function isFallbackSceneClip(c: Pick<TimelineVideoClip, "source">): boole
 }
 
 /**
- * The words a fallback scene shows: the sentence's year, else a name it says — and, under it, a short
- * phrase of the sentence's own key words (VIDEO 660: "ECB" alone on a coloured field said nothing; now
- * "ECB" over "LOOSENING MONETARY CONTROLS"). Without a year or name: its key words, else its first
- * words. Only the sentence's own words; nothing is added.
+ * The words a fallback scene shows: the sentence's year, else a name it says. Without a year or name:
+ * the film's own words the sentence says, else its key words, else its first words. Only the
+ * sentence's own words; nothing is added.
+ *
+ * VIDEO 663 — one or two words (the owner: "dat het maar 1 of 2 woorden zijn … relevant aan de
+ * video"). The phrase under the name (VIDEO 660) is gone: render 72 drew "Meanwhile Brussels —
+ * Brussels often sits" and "LA — climatic differences frame". `phrase` is never set any more.
  */
 export function fallbackSceneWords(
-  text: string | null | undefined
+  text: string | null | undefined,
+  topic: ReadonlySet<string> = new Set()
 ): { graphicType: string; label: string; phrase?: string } | null {
   const t = (text ?? "").trim();
   if (!t) return null;
-  const anchor = yearIn(t) ?? nameIn(t);
-  if (anchor) {
-    /**
-     * VIDEO 662 — the anchor is cut out of the text `nameIn` read it from (punctuation dropped):
-     * "Meanwhile, Brussels" never held "Meanwhile Brussels", so nothing was cut and the phrase began
-     * with the anchor again. A year is cut from the sentence as written.
-     */
-    const readAs = yearIn(t) === anchor ? t : t.replace(/[.,;:!?"“”()]/g, " ").replace(/\s+/g, " ");
-    const phrase = phraseIn(readAs.split(anchor).join(","));
-    /** a phrase that only repeats part of the anchor adds nothing */
-    const adds = phrase && !anchor.toLowerCase().includes(phrase.toLowerCase());
-    if (adds) return { graphicType: "lower_third", label: anchor, phrase };
-    return { graphicType: yearIn(t) === anchor ? "date_card" : "label", label: anchor };
-  }
-  const key = keyWordsIn(t);
+  const year = yearIn(t);
+  if (year) return { graphicType: "date_card", label: year };
+  const name = shortOnScreenLabel(nameIn(t));
+  if (name) return { graphicType: "label", label: name };
+  const key = relevantWordsIn(t, topic) ?? subjectWordsIn(t) ?? shortOnScreenLabel(keyWordsIn(t));
   if (key) return { graphicType: "emphasis", label: key };
-  const first = t.replace(/[.,;:!?"“”()]/g, " ").split(/\s+/).filter(Boolean).slice(0, 4).join(" ");
+  const first = shortOnScreenLabel(t.replace(/[.,;:!?"“”()]/g, " "));
   return first ? { graphicType: "emphasis", label: first } : null;
 }
 
@@ -176,6 +171,8 @@ export function applyFallbackScenes(timeline: ProjectTimeline, log: (line: strin
 
   /* 2 — words: every visible fallback scene shows its sentence's words, unless text is already there. */
   const gfxTrack = timeline.tracks.find((t) => t.kind === "GRAPHICS");
+  /** VIDEO 663 — the words the film says more than once: what its fallback scenes may name. */
+  const topic = filmTopicWords(timeline.sentences ?? []);
   const onScreen = (): Array<{ start: number; end: number }> =>
     timeline.tracks.flatMap((t): Array<{ start: number; end: number }> =>
       t.kind === "GRAPHICS" ? (t.graphics ?? []).filter((g) => !g.disabled) : t.kind === "TEXT" ? (t.texts ?? []).filter((x) => !x.disabled) : []
@@ -185,7 +182,7 @@ export function applyFallbackScenes(timeline: ProjectTimeline, log: (line: strin
     const a = clip.timelineStart;
     const b = clip.timelineEnd;
     if (onScreen().some((g) => g.start < b - 0.05 && g.end > a + 0.05)) continue;
-    const words = fallbackSceneWords(sentenceOf(clip)?.text);
+    const words = fallbackSceneWords(sentenceOf(clip)?.text, topic);
     if (!words || gfxTrack?.kind !== "GRAPHICS" || !graphicIsRenderable(words.graphicType, {}, words.label)) {
       out.withoutWords.push(clip.id);
       log(`[FallbackScene] clip=${clip.id} ${keyOf(clip) ?? "no-sentence"} has NO words to show — the bare colour field stands in, named an emergency placeholder`);

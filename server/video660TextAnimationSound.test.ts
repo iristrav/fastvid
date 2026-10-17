@@ -54,7 +54,7 @@ const caption = (captionType: CaptionInstruction["captionType"], position: Capti
 /* ═══════════════════════ A — bottom left, normal size ═══════════════════════ */
 
 describe("A — text in the picture stands bottom left, at a normal size", () => {
-  it("every editorial text the planner places — whatever position it asked for — is bottom left at 52 px", () => {
+  it("every editorial text the planner places — whatever position it asked for — is bottom left at 64 px (VIDEO 663, was 52)", () => {
     for (const position of ["center", "top", "lower-third", "bottom"] as const) {
       const { timeline } = translateEdl({
         videoId: 1,
@@ -63,7 +63,7 @@ describe("A — text in the picture stands bottom left, at a normal size", () =>
       const text = timeline.tracks.flatMap((t) => (t.kind === "TEXT" ? t.texts : []))[0];
       expect(text, position).toBeDefined();
       expect(text!.style.position, position).toBe("bottom_left");
-      expect(text!.style.fontSizePx, position).toBe(52);
+      expect(text!.style.fontSizePx, position).toBe(64);
       expect(text!.style.align, position).toBe("left");
     }
   });
@@ -99,7 +99,7 @@ describe("A — text in the picture stands bottom left, at a normal size", () =>
     const src = read("../client/src/components/VideoEditor.tsx");
     const block = src.slice(src.indexOf("const NEW_TEXT_STYLE"), src.indexOf("};", src.indexOf("const NEW_TEXT_STYLE")));
     expect(block).toContain('position: "bottom_left"');
-    expect(block).toContain("fontSizePx: 52");
+    expect(block).toContain("fontSizePx: 64");
   });
 });
 
@@ -191,12 +191,16 @@ describe("D — at least one animation in every started minute", () => {
       [125, 133, "industry and railways changed everyday life completely"],
     ]);
     const r = ensureAnimationEveryMinute(t);
-    expect(r.missing).toEqual([]);
+    /**
+     * VIDEO 663 — one or two words, and the video's own: the name is "von Bismarck"; minute 3's
+     * sentence says no year, no name and no word the film says twice, so it draws nothing rather
+     * than "railways changed everyday" (it was a 3-word line of the sentence's longest words).
+     */
+    expect(r.missing).toEqual([2]);
     expect(r.added.map((a) => [a.minute, a.graphicType, a.label])).toEqual([
       [0, "date_card", "1871"],
-      [1, "label", "Otto von Bismarck"],
-      [2, "emphasis", "railways changed everyday"],
-    ].map(([m, g, l]) => [m, g, expect.stringContaining(l as string)]));
+      [1, "label", "von Bismarck"],
+    ]);
     for (const g of drawn(t)) {
       expect(g.style?.position).toBe("bottom_left");
       expect(g.start).toBeGreaterThanOrEqual(0);

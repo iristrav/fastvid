@@ -286,6 +286,7 @@ import { noteSameVideoRefusal, sameVideoRefusedEnough, type SameVideoRefusals } 
 import { noteRenderCost, takeRenderCostLine } from "./renderCostLedger";
 import { clearSheetApprovals, composeSheetWithFfmpeg, fetchSharpFramesFromService, fetchStoryboardFromService, lookBeforeDownload, parseYoutubeMomentKey, rememberSheetApprovals, SHEET_SCHEMA, sheetApprovalFor, transcriptSegmentsFromJson3 } from "./youtubePreviewSheet";
 import { addStockSection, beatRowsInStockOrder, claimLateStock, stockSectionStarts, stockVideoTargeted, stockedVideoIds, STOCK_SECTION_SEC, isStocked, isStockReady, MAX_STOCK_ATTEMPTS, unofferedReadyStock, MAX_STOCK_VIDEOS, releaseYoutubeShotStock, STOCK_FIRST_BATCH, startYoutubeShotStock, stockOrder, stockSummary, stockVideoState, takeStockShots, youtubeStockSettled, type StockShot } from "./youtubeShotStock";
+import { nameIsAPlace } from "./placeMismatch";
 import {
   chooseMoments,
   sectionMoments,
@@ -14884,7 +14885,10 @@ export function extractPrimaryPersonFromText(
   const aboutMatch = cleaned.match(/\babout\s+([A-Za-z][\w'-]+(?:\s+[A-Za-z][\w'-]+){0,2})/i);
   if (aboutMatch?.[1]) {
     const aboutTokens = cleanPersonNameCandidate(aboutMatch[1]);
-    if (aboutTokens.length > 0) return aboutTokens.join(" ");
+    /** VIDEO 663 — "about Los Angeles" is about a place, not a person. */
+    if (aboutTokens.length > 0 && !namesPlaceOrThing(aboutTokens) && !aboutTokens.some((_, i) => nameIsAPlace(aboutTokens.slice(0, i + 1).join(" ")))) {
+      return aboutTokens.join(" ");
+    }
   }
   const nameMatches = cleaned.match(nameRunRegex(1, 2)) ?? [];
   const skip = new Set(["deep dive", "the story", "a deep", "full story", "rumors about"]);
@@ -14903,6 +14907,8 @@ export function extractPrimaryPersonFromText(
     if (earlier) return earlier.name;
     if (tokens.length < 2) continue;
     if (namesPlaceOrThing(tokens)) continue;
+    /** VIDEO 663 — "Los Angeles", "Hong Kong", "Buenos Aires": a listed place is never a person. */
+    if (nameIsAPlace(tokens.join(" "))) continue;
     /**
      * RONDE 88 (§8/§11) — the same structural check the script scan uses.
      *
@@ -15066,8 +15072,9 @@ export async function resolvePrimaryPersonLockByReading(
     },
     { prompt: input.prompt, title: input.videoTitle, narration }
   );
-  renderPeopleReading = reading ? reading.people : null;
-  if (reading) return reading.mainPerson;
+  renderPeopleReading = reading ? reading.people.filter((p) => !nameIsAPlace(p)) : null;
+  /** VIDEO 663 — the film's person is never a place. */
+  if (reading) return nameIsAPlace(reading.mainPerson) ? "" : reading.mainPerson;
   console.warn("[PersonNames] no reading of the narration — the person lock falls back to reading capital letters");
   return resolvePrimaryPersonLock(input);
 }
@@ -17193,6 +17200,11 @@ function resolveScenePersons(scene: Scene, videoTitle?: string, globalPrimaryPer
   /** VIDEO 624 — each name as the render's reading knows it; one the reading never names is dropped. */
   const byLower = new Map<string, string>();
   for (const name of persons) {
+    /**
+     * VIDEO 663 — a place is never a scene's person, from wherever it came (the planner, the scene's
+     * text or the title): render 72's "[persons: Los Angeles]" searched "Los Angeles Brussels".
+     */
+    if (nameIsAPlace(name)) continue;
     const read = name === titlePerson ? name : personAsRead(name);
     if (read === null) continue;
     const kept = read ?? name;

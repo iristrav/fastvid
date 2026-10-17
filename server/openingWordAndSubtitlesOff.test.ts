@@ -83,7 +83,7 @@ describe("2 — one word big at the start", () => {
     expect(w.style.position).toBe("bottom_left");
     expect(w.style.align).toBe("left");
     expect(w.style.fontSizePx).toBe(OPENING_WORD_FONT_PX);
-    expect(OPENING_WORD_FONT_PX).toBe(52);
+    expect(OPENING_WORD_FONT_PX).toBe(64); // VIDEO 663 — was 52
     expect(w.style.backgroundOpacity).toBe(0);
     expect(w.start).toBeLessThan(1);
     expect(w.disabled).not.toBe(true);

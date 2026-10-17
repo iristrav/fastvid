@@ -225,7 +225,11 @@ async function providerResolver(identity: AssetSourceIdentity): Promise<Provider
  * this asks the module that owns those rules. Without that module the answer is a refusal, which is
  * why the import is inside the function — a build without it must fail closed, not throw at boot.
  */
-async function youtubeResolver(videoId: string, destPath: string): Promise<ProviderResolution | boolean> {
+async function youtubeResolver(
+  videoId: string,
+  destPath: string,
+  window?: { inSec: number; outSec: number }
+): Promise<ProviderResolution | boolean> {
   const { allowOperatorLicensedYoutube } = await import("./config");
   if (!allowOperatorLicensedYoutube()) {
     return {
@@ -248,6 +252,15 @@ async function youtubeResolver(videoId: string, destPath: string): Promise<Provi
      * places, and the renderer's is the one that is already tested.
      */
     const { downloadYouTubeCCClip } = await import("./videoPipeline");
+    /**
+     * VIDEO 663 — a clip that names the window its file holds (`providerWindow`) gets exactly that
+     * window back, located (`startIsExact`), so the renderer's `sourceIn − window.inSec` lands on the
+     * frame the film showed. Render 72's re-render fetched seconds 0–60 of a moment that sat later in
+     * the video. Without a window (an older timeline), the generous window from zero as before.
+     */
+    if (window && window.outSec > window.inSec) {
+      return await downloadYouTubeCCClip(videoId, Number((window.outSec - window.inSec).toFixed(3)), window.inSec, destPath, 0, undefined, undefined, true);
+    }
     const REHYDRATION_WINDOW_SEC = 60;
     return await downloadYouTubeCCClip(videoId, REHYDRATION_WINDOW_SEC, 0, destPath, 0);
   } catch (err) {

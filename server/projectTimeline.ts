@@ -97,6 +97,18 @@ export type AssetSourceIdentity = {
    * not find. That is more than the plan said before, not less.
    */
   heldLocallyAtRender?: true;
+  /**
+   * VIDEO 663 — WHICH SECONDS OF THE PROVIDER'S ORIGINAL THE FILE FOR THIS IDENTITY HOLDS.
+   *
+   * A YouTube moment with no archive copy keeps its clip's `sourceIn`/`sourceOut` in the seconds of
+   * the whole YouTube video (the render's cut composed with the planner's, so two moments of one video
+   * never look like the same seconds). Its file, though — the moment this render cut, or the window a
+   * re-render fetches — begins at `inSec`. Render 71/72's vc_d2fe49d8fe asked second ~100 of a 4 s
+   * moment file and froze its last frame for the whole sentence; a re-render fetched seconds 0–60.
+   * Set only for a YouTube identity without `archiveAssetId`: the renderer reads the file at
+   * `sourceIn − inSec` (`clipInFileSeconds`) and the rehydrator fetches exactly this window.
+   */
+  providerWindow?: { inSec: number; outSec: number };
 };
 
 /* ═══════════════════════ tracks ═══════════════════════ */
@@ -724,22 +736,25 @@ export const DEFAULT_TEXT_STYLE: TextStyle = {
  * VIDEO 660 — TEXT IN THE PICTURE SITS BOTTOM LEFT, AT A NORMAL SIZE.
  *
  * The owner's rule: when text comes into the picture (a year, a name, a place, a quote, the opening
- * word) it stands in the bottom-left corner, not big in the middle. 52 px is a little larger than
- * a subtitle (46) and about 60% of the old centred size (86). Left-aligned, with the same thin
+ * word) it stands in the bottom-left corner, not big in the middle. Left-aligned, with the same thin
  * outline subtitles have, because there is no box behind it.
+ *
+ * VIDEO 663 — 64 px (was 52): the owner asked for "een goede grootte" with text of one or two words
+ * (`onScreenWords`). Two words at 52 px — a lower third draws its name at 0.9em, 47 px — read as a
+ * caption on a 1080-line frame; 64 px is about 6% of its height, still well under the old centred 86.
  *
  * Graphics that ARE the picture (a sentence's map or chapter card) keep `DEFAULT_TEXT_STYLE`:
  * they fill the frame by design.
  */
 export const ON_SCREEN_TEXT_STYLE: TextStyle = {
-  fontSizePx: 52,
+  fontSizePx: 64,
   color: "white",
   backgroundOpacity: 0,
   outlineWidthPx: 2,
   outlineColor: "rgba(0,0,0,0.85)",
   position: "bottom_left",
   align: "left",
-  maxCharsPerLine: 32,
+  maxCharsPerLine: 24,
 };
 
 /**

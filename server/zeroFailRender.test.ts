@@ -131,8 +131,8 @@ describe("G/H — a picture whose file is gone keeps its slot as a fallback scen
     const said = lines.join("\n");
     expect(fetched).toEqual(expect.arrayContaining(["vc_0:synthetic_placeholder", "vc_1:synthetic_placeholder"]));
     expect(said).toMatch(/QUALITY_PROBLEM ALL_FALLBACK 8\.00s of 8\.00s \(100%\) are fallback scenes, not footage — delivered anyway \(always a video\)/);
-    /** each scene carries its sentence's words — VIDEO 660: the year with a short phrase of the sentence under it */
-    expect(said).toMatch(/clip=vc_0 s0b0 words="1932 — harvest failed" \(lower_third\)/);
+    /** each scene carries its sentence's words — VIDEO 663: one or two words, the year alone */
+    expect(said).toMatch(/clip=vc_0 s0b0 words="1932" \(date_card\)/);
     expect(said).not.toMatch(/ASSET_NOT_REHYDRATABLE/);
     reachedEncode(result);
   }, 60_000);

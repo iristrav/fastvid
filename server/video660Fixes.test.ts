@@ -264,8 +264,9 @@ describe("4 — the label of a percentage graphic comes from its own sentence", 
 describe("5 — the words of a fallback scene", () => {
   const S2B1 = "By loosening monetary controls while boosting economic support, the ECB aimed to steady prices.";
 
-  it("660 s2b1: no longer 'ECB' alone — 'ECB' with 'loosening monetary controls' under it", () => {
-    expect(fallbackSceneWords(S2B1)).toEqual({ graphicType: "lower_third", label: "ECB", phrase: "loosening monetary controls" });
+  /** VIDEO 663 — the owner's later rule, one or two words: "ECB" alone again, no phrase under it. */
+  it("660 s2b1: 'ECB', one word — no phrase under it any more (VIDEO 663)", () => {
+    expect(fallbackSceneWords(S2B1)).toEqual({ graphicType: "label", label: "ECB" });
   });
 
   it("nothing is invented: every word shown is a word of the sentence", () => {
@@ -282,7 +283,7 @@ describe("5 — the words of a fallback scene", () => {
     }
   });
 
-  it("on the timeline: the fallback scene carries both lines, stays a named fallback (not footage), and an approved picture is never replaced", () => {
+  it("on the timeline: the fallback scene carries its one line (VIDEO 663), stays a named fallback (not footage), and an approved picture is never replaced", () => {
     const t = film660(
       [shot("vc_2467e7b881_p4", 58.38, 72.59, 0, { sourceIn: 0, sourceOut: 14.21 }), shot("vc_s2b2", 72.59, 76, 2)],
       [[58.38, 64], [64, 72.26], [72.59, 76]]
@@ -292,11 +293,12 @@ describe("5 — the words of a fallback scene", () => {
     const r = applyFallbackScenes(t, (l) => lines.push(l));
     expect(r.replaced).toEqual([]);
     expect(r.captioned).toEqual([
-      { clipId: "vc_fallback_s2b1", graphicId: "gfx_fallback_vc_fallback_s2b1", text: "ECB — loosening monetary controls", graphicType: "lower_third" },
+      { clipId: "vc_fallback_s2b1", graphicId: "gfx_fallback_vc_fallback_s2b1", text: "ECB", graphicType: "label" },
     ]);
     const g = t.tracks.flatMap((x) => (x.kind === "GRAPHICS" ? x.graphics : [])).find((x) => x.id === "gfx_fallback_vc_fallback_s2b1")!;
-    expect(g).toMatchObject({ graphicType: "lower_third", label: "ECB", data: { subtitle: "loosening monetary controls", fallbackScene: true } });
-    expect(lines.join("\n")).toMatch(/words="ECB — loosening monetary controls" \(lower_third\) — fallback scene, not footage/);
+    expect(g).toMatchObject({ graphicType: "label", label: "ECB", data: { fallbackScene: true } });
+    expect(g.data?.subtitle).toBeUndefined();
+    expect(lines.join("\n")).toMatch(/words="ECB" \(label\) — fallback scene, not footage/);
     /** the approved pictures keep their approval and their source */
     const kept = on(t).filter((c) => c.id !== "vc_fallback_s2b1");
     expect(kept.every((c) => c.source.provider === "youtube_cc" && c.source.contentApproval === "judge_fit")).toBe(true);

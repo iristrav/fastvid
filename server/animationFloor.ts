@@ -22,6 +22,7 @@
  */
 import { ON_SCREEN_TEXT_STYLE, type ProjectTimeline, type TimelineGraphic } from "./projectTimeline";
 import { graphicIsRenderable } from "./graphicsVocabulary";
+import { filmTopicWords, relevantWordsIn, shortOnScreenLabel } from "./onScreenWords";
 
 export const ANIMATION_FLOOR_ID_PREFIX = "gfx_floor_";
 /** How long an added animation stays: long enough to read, short enough not to sit on the film. */
@@ -192,6 +193,12 @@ export function ensureAnimationEveryMinute(timeline: ProjectTimeline): Animation
 
     /* 2 — one drawn from a sentence spoken in this minute, in its own words. */
     const busy = busySpans(timeline);
+    /**
+     * VIDEO 663 — one or two words, and the video's own: a year, a name the sentence says (at most two
+     * words), else only words the film says in more than one sentence. Render 72 drew "breathtakingly
+     * distinct reveal" here — the sentence's longest words, not the film's subject.
+     */
+    const topic = filmTopicWords(timeline.sentences ?? []);
     const candidates = (timeline.sentences ?? [])
       .filter((s) => s.text?.trim() && s.startSec != null && s.endSec != null && s.startSec >= window.start && s.startSec < window.end)
       .map((s) => {
@@ -199,8 +206,8 @@ export function ensureAnimationEveryMinute(timeline: ProjectTimeline): Animation
         const end = Number(Math.min(start + FLOOR_MAX_SEC, s.endSec!, duration).toFixed(3));
         const text = s.text!.trim();
         const year = yearIn(text);
-        const name = year ? null : nameIn(text);
-        const key = year || name ? null : keyWordsIn(text);
+        const name = year ? null : shortOnScreenLabel(nameIn(text));
+        const key = year || name ? null : relevantWordsIn(text, topic);
         const pick = year
           ? { graphicType: "date_card", label: year }
           : name

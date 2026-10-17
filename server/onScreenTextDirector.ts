@@ -35,6 +35,7 @@
 import type { ProjectTimeline, TimelineGraphic, TimelineText } from "./projectTimeline";
 import { graphicAnimationFor, readGeoPoint } from "./graphicsVocabulary";
 import { graphicOnScreenWindow, timelineWordTiming } from "./remotionProps";
+import { limitOnScreenWords, MAX_ON_SCREEN_WORDS, wordCount } from "./onScreenWords";
 
 export const MIN_TEXT_ON_SCREEN_SEC = 2;
 export const MAX_TEXTS_AT_ONCE = 2;
@@ -58,6 +59,8 @@ export type TextDirection = {
   typewriter: Array<{ id: string; start: number; text: string; why: "year" | "reveal" }>;
   /** VIDEO 640 — sentence cards that keep their ground and lose their title (budget or repeat). */
   titleHidden: Array<{ id: string; label: string }>;
+  /** VIDEO 663 — what the one-or-two-words rule shortened or switched off (`limitOnScreenWords`). */
+  words?: string[];
 };
 
 export type TextDirectionOptions = {
@@ -240,6 +243,13 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
     out.converted.push(`${g.id} map_point → location_card (${place})`);
   }
 
+  /**
+   * Rule 0 (VIDEO 663) — one or two words. Before every other rule, so a shortened name or place is
+   * deduplicated as what it now says ("Berlin, Germany" and "Berlin" are one place either way).
+   */
+  out.words = limitOnScreenWords(timeline);
+  for (const line of out.words) console.log(`[OnScreenWords] ${line}`);
+
   /** Rule 6 judges "at the same time" on where each element is really on screen. */
   const span = onScreenSpan(timeline, timelineWordTiming(timeline));
   const elements: Element[] = [
@@ -293,6 +303,8 @@ export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectio
     const candidates = elements
       .filter((e) => e.track === "text" && e.el.disabledReason === "keyword_popup")
       .filter((e) => e.label.length >= 3 && e.label.length <= REVEAL_MAX_CHARS)
+      /** VIDEO 663 — a reveal is one or two words too: a longer line stays off, it is not cut. */
+      .filter((e) => wordCount(e.label) <= MAX_ON_SCREEN_WORDS)
       .map((e) => ({ e, intensity: opts.intensityAt!((e.el.start + e.el.end) / 2) ?? 0 }))
       .filter((c) => c.intensity >= REVEAL_MIN_INTENSITY)
       .sort((a, b) => b.intensity - a.intensity || a.e.el.start - b.e.el.start);

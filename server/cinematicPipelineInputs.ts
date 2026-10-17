@@ -519,6 +519,21 @@ function assetLabel(adoption: AdoptionFacts | null | undefined): string {
  * job. It rejects nothing the validator would have accepted: a provider with a real route still
  * passes, unchanged.
  */
+/**
+ * VIDEO 663 — a YouTube identity with no archive copy names the window of the video its file holds
+ * (`AssetSourceIdentity.providerWindow`), whenever the render's cut is known: the clip's in-point is
+ * composed in the video's seconds (`edlToTimeline`), the file starts at the cut. Any other identity,
+ * or one whose cut was not recorded, is returned as it is.
+ */
+export function withYoutubeWindow(identity: AssetSourceIdentity, adoption: AdoptionFacts | null): AssetSourceIdentity {
+  const provider = (identity.provider ?? "").trim().toLowerCase();
+  if ((provider !== "youtube" && provider !== "youtube_cc") || identity.archiveAssetId != null) return identity;
+  const inSec = adoption?.sourceInSec;
+  const outSec = adoption?.sourceOutSec;
+  if (inSec == null || outSec == null || !Number.isFinite(inSec) || !Number.isFinite(outSec) || !(outSec > inSec)) return identity;
+  return { ...identity, providerWindow: { inSec: Number(inSec.toFixed(3)), outSec: Number(outSec.toFixed(3)) } };
+}
+
 export function identityFrom(adoption: AdoptionFacts | null): AssetSourceIdentity | null {
   if (!adoption) return null;
   const identity = identityFromAdoption(adoption);
@@ -1404,7 +1419,7 @@ export function buildCinematicSceneInputs(params: {
             /** VIDEO 637 — the sentence is dressed over its whole window, not this clip's share. */
             ...(shares.length > 1 ? { sentenceVoiceStartSec: start, sentenceVoiceDurationSec: durationSec } : {}),
           },
-          identity: part.identity,
+          identity: withYoutubeWindow(part.identity, partAdopted.adoption),
           ...(partAdopted.facts.still ? { still: true } : {}),
           ...(partAdopted.adoption?.sourceInSec != null
             ? {

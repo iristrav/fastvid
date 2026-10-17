@@ -40,9 +40,10 @@ const gfx = (t: ProjectTimeline) => t.tracks.flatMap((x) => (x.kind === "GRAPHIC
 const videoClips = (t: ProjectTimeline) => t.tracks.flatMap((x) => (x.kind === "VIDEO" ? x.clips : []));
 
 describe("G/H — the words of a fallback scene come from its own sentence", () => {
-  it("year, else a name — with a short phrase of the sentence under it (VIDEO 660) — else key words, else its first words; nothing for no text", () => {
-    expect(fallbackSceneWords("The Berlin Wall fell in 1989.")).toEqual({ graphicType: "lower_third", label: "1989", phrase: "Berlin Wall fell" });
-    expect(fallbackSceneWords("Then Otto von Bismarck unified Germany.")).toMatchObject({ label: "Otto von Bismarck", phrase: "unified Germany" });
+  /** VIDEO 663 — one or two words: the phrase under the name (VIDEO 660) is gone. */
+  it("year, else a name (one or two words) — else key words, else its first words; nothing for no text", () => {
+    expect(fallbackSceneWords("The Berlin Wall fell in 1989.")).toEqual({ graphicType: "date_card", label: "1989" });
+    expect(fallbackSceneWords("Then Otto von Bismarck unified Germany.")).toEqual({ graphicType: "label", label: "von Bismarck" });
     /** a year with nothing else to say stays a date card */
     expect(fallbackSceneWords("In 1989.")).toEqual({ graphicType: "date_card", label: "1989" });
     expect(fallbackSceneWords("crowds gathered at the border crossing")).toEqual({ graphicType: "emphasis", label: "crowds gathered" });
@@ -84,15 +85,15 @@ describe("G/H — replace, then strict", () => {
   it("each fallback scene gets its sentence's words on screen, bottom left at the normal size, marked as fallback", () => {
     const t = film([clip("a", 0, 4, 0, { contentApproval: "unverified" }), clip("b", 4, 8, 1, { contentApproval: "unverified" }), clip("c", 8, 12, 2, checked)]);
     const r = applyFallbackScenes(t);
-    expect(r.captioned.map((c) => c.text)).toEqual(["1989 — Berlin Wall fell", "Otto von Bismarck — unified Germany"]);
+    expect(r.captioned.map((c) => c.text)).toEqual(["1989", "von Bismarck"]);
     const g = gfx(t);
     expect(g.map((x) => x.id)).toEqual([`${FALLBACK_SCENE_ID_PREFIX}a`, `${FALLBACK_SCENE_ID_PREFIX}b`]);
     expect(g[0]).toMatchObject({
       start: 0,
       end: 4,
       label: "1989",
-      data: { fallbackScene: true, sceneIndex: 0, beatIndex: 0, subtitle: "Berlin Wall fell" },
-      style: { position: "bottom_left", fontSizePx: 52 },
+      data: { fallbackScene: true, sceneIndex: 0, beatIndex: 0 },
+      style: { position: "bottom_left", fontSizePx: 64 },
     });
   });
 
@@ -127,7 +128,7 @@ describe("G/H — replace, then strict", () => {
     const t = film([clip("p", 0, 4, 0, { provider: "synthetic_placeholder", providerAssetId: "synthetic-p1-4s", contentApproval: "generic_footage" })]);
     const r = applyFallbackScenes(t);
     expect(r.replaced).toEqual([]);
-    expect(r.captioned[0]?.text).toBe("1989 — Berlin Wall fell");
+    expect(r.captioned[0]?.text).toBe("1989");
   });
 });
 

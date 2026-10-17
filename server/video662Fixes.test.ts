@@ -201,11 +201,11 @@ describe("5 — the fallback scene's words; 6 — key words never cross a comma"
     expect(w.phrase ?? "").not.toMatch(/Brussels|Meanwhile|often/i);
   });
 
-  it("a real two-word name is still a name; VIDEO 660's phrase is unchanged", () => {
+  it("a real two-word name is still a name; the scene shows the name alone (VIDEO 663: one or two words)", () => {
     expect(nameIn("The bank was led by Christine Lagarde in 2026.")).toBe("Christine Lagarde");
-    expect(fallbackSceneWords("By loosening monetary controls while inflation rose, the ECB acted.")).toMatchObject({
+    expect(fallbackSceneWords("By loosening monetary controls while inflation rose, the ECB acted.")).toEqual({
+      graphicType: "label",
       label: "ECB",
-      phrase: "loosening monetary controls",
     });
   });
 

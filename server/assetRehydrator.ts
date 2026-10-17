@@ -169,7 +169,8 @@ export function cacheIdentityKey(identity: AssetSourceIdentity): string {
   const provider = identity.provider.trim().toLowerCase();
   if (identity.archiveAssetId != null) return `fastvid-identity:archive:${identity.archiveAssetId}`;
   if (identity.providerAssetId?.trim()) {
-    return `fastvid-identity:${provider}:${identity.providerAssetId.trim()}`;
+    /** VIDEO 663 — a window of a video is its own file: never the whole video's (or another window's) entry. */
+    return `fastvid-identity:${provider}:${identity.providerAssetId.trim()}${providerWindowTag(identity)}`;
   }
   return identity.mediaUrl ?? identity.canonicalUrl ?? `fastvid-identity:${provider}:unknown`;
 }
@@ -248,8 +249,15 @@ export type RehydrateDeps = {
    *
    * The rehydrator may not bypass youtubeLicenseStatus, OPERATOR_AUTHORIZED, the fair-use policy
    * or the download ceilings, so it does not talk to YouTube at all: it asks this.
+   *
+   * VIDEO 663 — `window`: the seconds of the video the clip's file holds (`providerWindow`); the
+   * resolver fetches exactly those. Absent: the old generous window from zero.
    */
-  youtubeResolver?: (videoId: string, destPath: string) => Promise<ProviderResolution | boolean>;
+  youtubeResolver?: (
+    videoId: string,
+    destPath: string,
+    window?: { inSec: number; outSec: number }
+  ) => Promise<ProviderResolution | boolean>;
   /**
    * VIDEO 653 — the emergency colour field is made, not fetched: its id names its palette and its
    * length ("synthetic-p4-7s"), so it is drawn again here. Tests pass a stand-in; production draws it.
@@ -336,9 +344,17 @@ export function mediaIsUsable(facts: MediaFacts | null, expectVideo: boolean): b
 
 /* ═══════════════════════ the rehydration ═══════════════════════ */
 
+/** VIDEO 663 — `@<in>-<out>` for an identity that names the window of its original it holds, else "". */
+export function providerWindowTag(identity: AssetSourceIdentity): string {
+  const w = identity.providerWindow;
+  return w && Number.isFinite(w.inSec) && Number.isFinite(w.outSec) && w.outSec > w.inSec
+    ? `@${w.inSec.toFixed(2)}-${w.outSec.toFixed(2)}`
+    : "";
+}
+
 export function rehydratedFileName(identity: AssetSourceIdentity, ext = ".mp4"): string {
   const provider = identity.provider.trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
-  const raw = identity.providerAssetId ?? identity.mediaUrl ?? identity.canonicalUrl ?? "unknown";
+  const raw = (identity.providerAssetId ?? identity.mediaUrl ?? identity.canonicalUrl ?? "unknown") + providerWindowTag(identity);
   const id = createHash("sha1").update(raw).digest("hex").slice(0, 16);
   return `rehydrated_${provider}_${id}${ext}`;
 }
@@ -650,7 +666,8 @@ export async function rehydrateAsset(params: {
           alsoTried
       );
     }
-    const answer = await deps.youtubeResolver(assetId, destPath).catch(() => false);
+    const window = providerWindowTag(identity) ? identity.providerWindow : undefined;
+    const answer = await deps.youtubeResolver(assetId.split("@t")[0]!, destPath, window).catch(() => false);
     if (answer === true) {
       return done(destPath, {
         cacheHit: false, downloaded: true, sourceUrl: null,

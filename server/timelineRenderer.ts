@@ -869,8 +869,25 @@ export function segmentFrameCount(
   return slotFrames + Math.round(Math.max(0, handleSec) * fps);
 }
 
+/**
+ * VIDEO 663 — the clip with its in- and out-point in the seconds of the FILE it reads. A clip whose
+ * identity names the window its file holds (`AssetSourceIdentity.providerWindow`: a YouTube moment
+ * with no archive copy) carries the seconds of the whole video; its file starts at the window's
+ * start. Every other clip is returned as it is.
+ */
+export function clipInFileSeconds<T extends Pick<TimelineVideoClip, "source" | "sourceIn" | "sourceOut">>(clip: T): T {
+  const at = clip.source?.providerWindow?.inSec;
+  if (at == null || !Number.isFinite(at) || !(at > 0)) return clip;
+  const shift = (s: number) => Math.max(0, Number((s - at).toFixed(3)));
+  return {
+    ...clip,
+    ...(clip.sourceIn != null ? { sourceIn: shift(clip.sourceIn) } : {}),
+    ...(clip.sourceOut != null ? { sourceOut: shift(clip.sourceOut) } : {}),
+  };
+}
+
 async function renderSegment(
-  clip: TimelineVideoClip,
+  planned: TimelineVideoClip,
   localMedia: string,
   outPath: string,
   fmt: { widthPx: number; heightPx: number; fps: number },
@@ -878,6 +895,7 @@ async function renderSegment(
   /** Extra seconds of material at the FRONT, for the transition into this clip to consume. */
   handleSec = 0
 ): Promise<{ handleFromSource: boolean }> {
+  const clip = clipInFileSeconds(planned);
   const slot = Math.max(0.04, clip.timelineEnd - clip.timelineStart);
   const frames = segmentFrameCount(clip, fmt.fps, handleSec);
   const dur = frames / fmt.fps;
