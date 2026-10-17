@@ -509,11 +509,14 @@ export function buildVideoFilter(
   /**
    * RONDE 647 — facts the renderer measured about the file. `portraitSource` = the picture stands
    * (taller than wide, after rotation). Only consulted when nobody chose a fit for this clip.
+   * VIDEO 663 — `delogo`: the filter that wipes a measured corner logo (`logoCorner.ts`).
    */
-  source?: { portraitSource?: boolean; darkSource?: boolean }
+  source?: { portraitSource?: boolean; darkSource?: boolean; delogo?: string }
 ): string {
   const t = clip.transform;
   const parts: string[] = [];
+  /** VIDEO 663 — a channel logo too large to zoom out of the frame is wiped first, in the file's own pixels. */
+  if (source?.delogo) parts.push(source.delogo);
 
   /** Speed first: every later filter (camera, effects) works on the frames as they will be seen. */
   const speed = clipPlaybackSpeed(clip);

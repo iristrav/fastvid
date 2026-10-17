@@ -50,6 +50,7 @@ import {
 import { docGradeSourceKindForProvider, isDarkSource } from "./documentaryStyle";
 import { SAFE_MARGIN, anchorGeometry } from "./captionLayout";
 import { probeOverlayInk, type OverlayInkResult } from "./graphicsOverlayInk";
+import { delogoFilter, detectCornerLogo, MAX_LOGO_ZOOM } from "./logoCorner";
 import {
   classifyFfmpegFailure,
   formatFfmpegFailure,
@@ -915,11 +916,41 @@ export function segmentFrameCount(
  * sit. A clip the person scaled or framed in the editor keeps exactly what they chose.
  */
 export const LOGO_PUNCH_IN_SCALE = 1.15;
-export function logoPunchIn<T extends Pick<TimelineVideoClip, "source" | "transform" | "kind">>(clip: T): T {
-  if (clip.source?.textCheck !== "overlay") return clip;
+/** Whether the person framed this clip themselves: then it is left exactly as they chose. */
+function framedByHand(clip: Pick<TimelineVideoClip, "transform">): boolean {
   const t = clip.transform;
-  if (t?.fit === "crop" || (t?.scale != null && Math.abs(t.scale - 1) > 0.001)) return clip;
-  return { ...clip, transform: { ...(t ?? {}), scale: LOGO_PUNCH_IN_SCALE } };
+  return t?.fit === "crop" || (t?.scale != null && Math.abs(t.scale - 1) > 0.001);
+}
+export function logoPunchIn<T extends Pick<TimelineVideoClip, "source" | "transform" | "kind">>(clip: T, scale = LOGO_PUNCH_IN_SCALE): T {
+  if (clip.source?.textCheck !== "overlay" || framedByHand(clip)) return clip;
+  return { ...clip, transform: { ...(clip.transform ?? {}), scale: Number(scale.toFixed(3)) } };
+}
+
+/**
+ * VIDEO 663 — the local test film showed half a corner logo still on screen after the fixed 15%: the
+ * logo is now found (`detectCornerLogo`: the steady block in a corner of a moving shot) and the clip
+ * enlarged just enough for it to leave the frame; past `MAX_LOGO_ZOOM` it is wiped (`delogo`) and the
+ * picture keeps its size. Nothing found: the fixed punch-in, as before.
+ */
+async function unbrandedClip(
+  clip: TimelineVideoClip,
+  file: string,
+  fileSec: number | null
+): Promise<{ clip: TimelineVideoClip; delogo?: string; note?: string }> {
+  if (clip.source?.textCheck !== "overlay" || framedByHand(clip)) return { clip };
+  const found = clip.kind === "video" && fileSec != null ? await detectCornerLogo(file, fileSec) : null;
+  if (!found) {
+    return { clip: logoPunchIn(clip), note: `no steady corner block measured — ×${LOGO_PUNCH_IN_SCALE} so the corners leave the frame` };
+  }
+  if (found.zoom <= MAX_LOGO_ZOOM) {
+    const scale = Math.max(1.02, found.zoom * 1.02);
+    return { clip: logoPunchIn(clip, scale), note: `logo at ${found.box.x},${found.box.y} ${found.box.w}×${found.box.h} — ×${scale.toFixed(2)} pushes it out of the frame` };
+  }
+  return {
+    clip,
+    delogo: delogoFilter(found.box, found.srcW, found.srcH),
+    note: `logo at ${found.box.x},${found.box.y} ${found.box.w}×${found.box.h} would need ×${found.zoom.toFixed(2)} — wiped instead (delogo)`,
+  };
 }
 
 /**
@@ -1017,12 +1048,11 @@ async function renderSegment(
   if (darkSource) {
     console.log(`[AdaptiveGrade] clip=${clip.id} dark source (mean luma ${meanLuma!.toFixed(0)}) — not darkened, no vignette, slight lift`);
   }
-  /** VIDEO 663 — a corner logo or watermark the text check let through is pushed out of the frame (`logoPunchIn`). */
-  const unbranded = logoPunchIn(graded);
-  if (unbranded !== graded) {
-    console.log(`[LogoPunchIn] clip=${clip.id} the text check found a logo or watermark over the footage — ×${LOGO_PUNCH_IN_SCALE} so the corners leave the frame`);
-  }
-  const built = buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource });
+  /** VIDEO 663 — a corner logo or watermark the text check let through leaves the frame (`unbrandedClip`). */
+  const logo = await unbrandedClip(graded, localMedia, fileSec);
+  const unbranded = logo.clip;
+  if (logo.note) console.log(`[LogoPunchIn] clip=${clip.id} the text check found a logo or watermark over the footage — ${logo.note}`);
+  const built = buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource, ...(logo.delogo ? { delogo: logo.delogo } : {}) });
   /**
    * VIDEO 636 — A SHORT FILE HOLDS ITS LAST FRAME; IT IS NEVER PLAYED AGAIN FROM THE START.
    *

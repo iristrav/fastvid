@@ -17,6 +17,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { abstractLineRule, acceptableRule, conditionClashRule, settleSituationQuestion } from "./beatImageRelevanceGate";
 import { planVisualEffects } from "./cinematicEditingEngine/effectsPlanner";
 import { uniformBandCrop, BAND_SCAN_H, BAND_SCAN_W } from "./embeddedBarsCrop";
+import { cornerLogoBox, delogoFilter, LOGO_SCAN_H, LOGO_SCAN_W, MAX_LOGO_ZOOM, zoomToLoseBox } from "./logoCorner";
+import { limitOnScreenWords } from "./onScreenWords";
 import { emptyTimeline, type ProjectTimeline, type TimelineVideoClip } from "./projectTimeline";
 import { buildScriptLengthRefinePrompt, restoreClippedSentences } from "./scriptWriter";
 import { LOGO_PUNCH_IN_SCALE, logoPunchIn, shapeIsNotTheFrames } from "./timelineRenderer";
@@ -146,7 +148,7 @@ describe("4 — no bars, no logos", () => {
     expect(shapeIsNotTheFrames({ w: 1280, h: 720 }, fmt)).toBe(false);
     expect(shapeIsNotTheFrames({ w: 854, h: 480 }, fmt)).toBe(false);
     expect(shapeIsNotTheFrames(null, fmt)).toBe(false);
-    expect(SRC("timelineRenderer.ts")).toContain("buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource })");
+    expect(SRC("timelineRenderer.ts")).toContain("buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource, ...(logo.delogo ? { delogo: logo.delogo } : {}) })");
   });
 
   it("render 72's archive 61523: flat bands of any colour on opposite edges are found; a clear sky is not a band", () => {
@@ -176,6 +178,74 @@ describe("4 — no bars, no logos", () => {
     /** a whole flat frame is not a framed picture */
     const flat = () => frame(1, () => [40, 40, 40]);
     expect(uniformBandCrop([flat(), flat()])).toBeNull();
+  });
+
+  it("the local test film: black sides with a purple band between them are both found", () => {
+    const W = BAND_SCAN_W;
+    const H = BAND_SCAN_H;
+    const f = (seed: number) => {
+      const b = Buffer.alloc(W * H * 3);
+      let r = seed;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          r = (r * 1103515245 + 12345) & 0x7fffffff;
+          const c: [number, number, number] =
+            x < 8 || x >= W - 8 ? [0, 0, 0] : y < 2 || y >= H - 2 ? [90, 30, 120] : [r % 256, (r >> 8) % 256, (r >> 16) % 256];
+          b.set(c, (y * W + x) * 3);
+        }
+      }
+      return b;
+    };
+    expect(uniformBandCrop([f(1), f(2), f(3)])).toEqual({ top: 2, bottom: 2, left: 8, right: 8 });
+  });
+
+  it("a channel logo is found where it sits: the steady block in a corner of a moving shot", () => {
+    const W = LOGO_SCAN_W;
+    const H = LOGO_SCAN_H;
+    const moving = (seed: number, logo: boolean) => {
+      const b = Buffer.alloc(W * H);
+      let r = seed;
+      for (let i = 0; i < W * H; i++) {
+        r = (r * 1103515245 + 12345) & 0x7fffffff;
+        b[i] = r % 256;
+      }
+      if (logo) for (let y = 74; y < 84; y++) for (let x = 140; x < 156; x++) b[y * W + x] = 250;
+      return b;
+    };
+    const frames = Array.from({ length: 8 }, (_, i) => moving(i + 1, true));
+    /** the block, give or take a steady noise pixel beside it */
+    const box = cornerLogoBox(frames)!;
+    expect(box.x).toBeLessThanOrEqual(140);
+    expect(box.y).toBeLessThanOrEqual(74);
+    expect(box.x + box.w).toBeGreaterThanOrEqual(156);
+    expect(box.y + box.h).toBeGreaterThanOrEqual(84);
+    expect(box.w).toBeLessThanOrEqual(16 + 4);
+    expect(box.h).toBeLessThanOrEqual(10 + 4);
+    /** no logo: nothing */
+    expect(cornerLogoBox(Array.from({ length: 8 }, (_, i) => moving(i + 1, false)))).toBeNull();
+    /** a still shot: a steady corner proves nothing */
+    const still = Array.from({ length: 8 }, () => moving(7, true));
+    expect(cornerLogoBox(still)).toBeNull();
+  });
+
+  it("the zoom that pushes a box out of the frame, and the wipe when that costs too much", () => {
+    /** a logo from 90% to 98% across: 0.5 / (0.9 − 0.5) = 1.25 */
+    expect(zoomToLoseBox({ x0: 0.9, y0: 0.85, x1: 0.98, y1: 0.95 })).toBeCloseTo(1.25, 2);
+    /** the local test film's logo needed 1.36: past the ceiling, wiped */
+    expect(zoomToLoseBox({ x0: 0.8688, y0: 0.8556, x1: 0.98, y1: 0.98 })).toBeGreaterThan(MAX_LOGO_ZOOM);
+    expect(zoomToLoseBox({ x0: 0.4, y0: 0.4, x1: 0.6, y1: 0.6 })).toBe(Infinity);
+    expect(delogoFilter({ x: 834, y: 462, w: 108, h: 66 }, 960, 540)).toBe("delogo=x=834:y=462:w=108:h=66");
+    /** a box on the edge is kept one pixel inside it */
+    expect(delogoFilter({ x: 0, y: 500, w: 100, h: 40 }, 960, 540)).toBe("delogo=x=1:y=500:w=100:h=39");
+  });
+
+  it("a key-word line of more than two words is switched off, never cut to 'breathtakingly distinct'", () => {
+    const t = emptyTimeline(663);
+    const g = t.tracks.find((x) => x.kind === "GRAPHICS");
+    if (g?.kind !== "GRAPHICS") throw new Error("no graphics track");
+    g.graphics.push({ id: "fl", graphicType: "emphasis", label: "breathtakingly distinct reveal", start: 1, end: 3 });
+    limitOnScreenWords(t);
+    expect(g.graphics[0]).toMatchObject({ disabled: true, disabledReason: "too_many_words", label: "breathtakingly distinct reveal" });
   });
 
   it("a corner logo the text check let through is pushed out of the frame; an editor's framing is kept", () => {

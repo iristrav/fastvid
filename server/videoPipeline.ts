@@ -18893,6 +18893,21 @@ async function isMostlyBlackClip(
 ): Promise<boolean> {
   if (isPipelineFallbackClip(filePath)) return true;
   const curatedStill = isCuratedPreparedStillClip(filePath);
+  /**
+   * VIDEO 663 — flat bands of any colour baked into the source (render 72's archive 61523: black
+   * sides and a purple band) are cut off first — black sides included, so the band between them is
+   * read too. Only a band on both opposite edges counts; what it leaves is checked for black bars
+   * as before.
+   */
+  if (!curatedStill && !enclosingScopeHasEnded()) {
+    const banded = await cropUniformBandsInPlace(filePath).catch(() => null);
+    if (banded) {
+      console.log(
+        `[Pipeline] Flat bands cropped: ${path.basename(filePath)} kept ${banded.w}x${banded.h} of ` +
+          `${banded.srcW}x${banded.srcH}, frame refilled with the picture itself`
+      );
+    }
+  }
   // Blur-fill stills darken edges by design — not embedded letterbox bars.
   if (!curatedStill && (await hasEmbeddedBlackBars(filePath))) {
     /**
@@ -18909,19 +18924,6 @@ async function isMostlyBlackClip(
       `[Pipeline] Embedded black bars cropped: ${path.basename(filePath)} ` +
         `kept ${cropped.w}x${cropped.h} of ${cropped.srcW}x${cropped.srcH}, frame refilled with the picture itself`
     );
-  }
-  /**
-   * VIDEO 663 — flat bands of any colour baked into the source (render 72's archive 61523: black
-   * sides and a purple band) are cut off the same way. Only a band on both opposite edges counts.
-   */
-  if (!curatedStill && !enclosingScopeHasEnded()) {
-    const banded = await cropUniformBandsInPlace(filePath).catch(() => null);
-    if (banded) {
-      console.log(
-        `[Pipeline] Flat bands cropped: ${path.basename(filePath)} kept ${banded.w}x${banded.h} of ` +
-          `${banded.srcW}x${banded.srcH}, frame refilled with the picture itself`
-      );
-    }
   }
   // Curated archive clips: reject if too dark — threshold 25 (was 12, too permissive).
   // B&W archival clips have low luma by design; we still skip near-pitch-black ones.

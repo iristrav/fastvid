@@ -129,6 +129,8 @@ export function shortOnScreenLabel(label: string | null | undefined): string | n
 const WORD_GRAPHICS = new Set([
   "lower_third", "name", "label", "emphasis", "location_card", "date_card", "chapter_card", "chapter_title", "title", "callout", "animated_text",
 ]);
+/** Key-word graphics: shortening them keeps the wrong words ("breathtakingly distinct"). */
+const KEYWORD_GRAPHICS = new Set(["emphasis", "callout", "animated_text"]);
 /** Lines that are a sentence by nature: two words of them are not the line. */
 const SENTENCE_GRAPHICS = new Set(["quote"]);
 const SUBTITLE_KEYS = ["subtitle", "role", "description", "country", "region"] as const;
@@ -188,6 +190,13 @@ function limitGraphic(g: TimelineGraphic, notes: string[]): void {
     return;
   }
   if (!WORD_GRAPHICS.has(g.graphicType)) return;
+  /** a key-word line is the sentence's words, not a name: two of them are not the line — off, never cut */
+  if (KEYWORD_GRAPHICS.has(g.graphicType) && wordCount(g.label) > MAX_ON_SCREEN_WORDS) {
+    g.disabled = true;
+    g.disabledReason = TOO_MANY_WORDS;
+    notes.push(`${g.id} ${g.graphicType} "${g.label}" — key words, not one or two: switched off`);
+    return;
+  }
   if (g.label && wordCount(g.label) > MAX_ON_SCREEN_WORDS) {
     const short = shortOnScreenLabel(g.label);
     if (!short) {

@@ -211,7 +211,7 @@ describe("E — a dark source is not darkened; near-black is refused", () => {
   it("the renderer measures the file and passes it to the grade", () => {
     const R = SRC("timelineRenderer.ts");
     expect(R).toContain("const darkSource = isDarkSource(meanLuma);");
-    expect(R).toContain("buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource })"); // VIDEO 663
+    expect(R).toContain("buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource, ...(logo.delogo ? { delogo: logo.delogo } : {}) })"); // VIDEO 663
   });
 
   it("probeMeanLuma reads a dark and a bright file as such", async () => {

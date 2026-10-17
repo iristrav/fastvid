@@ -126,14 +126,19 @@ export function uniformBandCrop(
     const i = (y * w + x) * 3;
     return [f[i]!, f[i + 1]!, f[i + 2]!] as const;
   };
-  /** one line (row y or column x): flat in every frame, and the same colour across frames */
-  const flatLine = (kind: "row" | "col", at: number): boolean => {
+  /**
+   * One line (row y over columns [lo, hi), or column x over rows [lo, hi)): flat in every frame, and
+   * the same colour across frames. The range lets a band inside another be read: render 72's black
+   * sides first, then the purple band between them.
+   */
+  const flatLine = (kind: "row" | "col", at: number, lo: number, hi: number): boolean => {
     const means: number[][] = [];
+    const n = hi - lo;
+    if (n <= 0) return false;
     for (const f of frames) {
-      const n = kind === "row" ? w : h;
       const sum = [0, 0, 0];
       const sq = [0, 0, 0];
-      for (let k = 0; k < n; k++) {
+      for (let k = lo; k < hi; k++) {
         const c = kind === "row" ? px(f, k, at) : px(f, at, k);
         for (let ch = 0; ch < 3; ch++) {
           sum[ch]! += c[ch]!;
@@ -147,22 +152,38 @@ export function uniformBandCrop(
     }
     return means.every((m) => m.every((v, ch) => Math.abs(v - means[0]![ch]!) <= BAND_MAX_DRIFT));
   };
-  const run = (kind: "row" | "col", from: number, step: number, limit: number): number => {
+  const run = (kind: "row" | "col", from: number, step: number, limit: number, lo: number, hi: number): number => {
     let n = 0;
-    for (let at = from; n < limit && flatLine(kind, at); at += step) n++;
+    for (let at = from; n < limit && flatLine(kind, at, lo, hi); at += step) n++;
     return n;
   };
-  const top = run("row", 0, 1, Math.floor(h / 2));
-  const bottom = run("row", h - 1, -1, Math.floor(h / 2));
-  const left = run("col", 0, 1, Math.floor(w / 2));
-  const right = run("col", w - 1, -1, Math.floor(w / 2));
-  const minRows = Math.ceil(h * 0.06);
-  const minCols = Math.ceil(w * 0.06);
+  /** a band of 4% of a side is plainly visible (render 72's purple band was about 5%) */
+  const minRows = Math.max(2, Math.ceil(h * 0.04));
+  const minCols = Math.max(2, Math.ceil(w * 0.04));
+  /** sides and bands, read twice: each pass within what the other left of the frame */
+  let top = 0;
+  let bottom = 0;
+  let left = 0;
+  let right = 0;
+  for (let pass = 0; pass < 2; pass++) {
+    const t = run("row", top, 1, Math.floor(h / 2), left, w - right);
+    const b = run("row", h - 1 - bottom, -1, Math.floor(h / 2), left, w - right);
+    if (t + top >= minRows && b + bottom >= minRows) {
+      top += t;
+      bottom += b;
+    }
+    const l = run("col", left, 1, Math.floor(w / 2), top, h - bottom);
+    const r = run("col", w - 1 - right, -1, Math.floor(w / 2), top, h - bottom);
+    if (l + left >= minCols && r + right >= minCols) {
+      left += l;
+      right += r;
+    }
+  }
   const rows = top >= minRows && bottom >= minRows;
   const cols = left >= minCols && right >= minCols;
   if (!rows && !cols) return null;
   /** a whole flat frame is not a framed picture */
-  if ((rows && top + bottom >= h * 0.7) || (cols && left + right >= w * 0.7)) return null;
+  if (top + bottom >= h * 0.7 || left + right >= w * 0.7) return null;
   return { top: rows ? top : 0, bottom: rows ? bottom : 0, left: cols ? left : 0, right: cols ? right : 0 };
 }
 
