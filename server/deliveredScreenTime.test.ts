@@ -128,6 +128,18 @@ describe("the findings", () => {
      * The operator's brief is a film made mostly of YouTube, so a leading source is the intent and
      * must not trip this. The limit sits where "mostly" has become "only".
      */
+    const mostlyArchive = computeScreenTimeShare([
+      clip("internet_archive", "ia:a", 10),
+      clip("internet_archive", "ia:b", 10),
+      clip("internet_archive", "ia:c", 10),
+      clip("internet_archive", "ia:d", 10),
+      clip("pexels", "stock:1", 10),
+    ]);
+    expect(mostlyArchive.bySource[0]!.share).toBeCloseTo(0.8, 2);
+    const codes = screenTimeFindings(mostlyArchive).map((f) => f.code);
+    expect(codes, "80% from one source, no single shot dominating").toContain("ONE_SOURCE_DOMINATES");
+    expect(codes, "and no clip dominates — they are four different shots").not.toContain("ONE_CLIP_DOMINATES");
+    /** VIDEO 663 — YouTube is many independent videos ("meer youtube beelden"): not one source */
     const mostlyYoutube = computeScreenTimeShare([
       clip("youtube_cc", "yt:a", 10),
       clip("youtube_cc", "yt:b", 10),
@@ -135,10 +147,7 @@ describe("the findings", () => {
       clip("youtube_cc", "yt:d", 10),
       clip("archive", "curated:asset:1", 10),
     ]);
-    expect(mostlyYoutube.bySource[0]!.share).toBeCloseTo(0.8, 2);
-    const codes = screenTimeFindings(mostlyYoutube).map((f) => f.code);
-    expect(codes, "80% from one source, no single shot dominating").toContain("ONE_SOURCE_DOMINATES");
-    expect(codes, "and no clip dominates — they are four different shots").not.toContain("ONE_CLIP_DOMINATES");
+    expect(screenTimeFindings(mostlyYoutube).map((f) => f.code)).toEqual([]);
     expect(MAX_SINGLE_SOURCE_SHARE).toBe(0.7);
     expect(MAX_SINGLE_FOOTAGE_SHARE).toBe(0.25);
   });

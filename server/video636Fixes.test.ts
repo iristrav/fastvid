@@ -204,16 +204,20 @@ describe("4 — a reorder moves clips; it never drops or doubles one", () => {
   const answer = (order: unknown) =>
     vi.mocked(invokeLLM).mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ order }) } }] } as never);
 
-  it("video 636's answer [0,2,1,3] for five clips is refused — the approved fifth clip stays", async () => {
+  /** VIDEO 663 — repaired, not refused: the move the model asked for is made, the approved fifth clip stays */
+  it("video 636's answer [0,2,1,3] for five clips is repaired — the approved fifth clip stays", async () => {
     answer([0, 2, 1, 3]);
     const r = await ask();
-    expect(r.clips).toEqual(clips);
-    expect(r.clipBeatIndices).toEqual([0, 2, 1, 6, 6]);
+    expect(r.clips).toEqual(["a.mp4", "c.mp4", "b.mp4", "d.mp4", "e_58522.mp4"]);
+    expect(r.clips).toContain("e_58522.mp4");
+    expect(new Set(r.clips).size).toBe(clips.length);
   });
 
-  it("an answer that doubles a clip is refused", async () => {
+  it("an answer that doubles a clip never shows it twice", async () => {
     answer([0, 1, 1, 2, 3]);
-    expect((await ask()).clips).toEqual(clips);
+    const r = await ask();
+    expect(new Set(r.clips).size).toBe(clips.length);
+    expect(r.clips.length).toBe(clips.length);
   });
 
   it("a true reordering is applied, each clip keeping its own sentence", async () => {

@@ -99,6 +99,8 @@ export function computeScreenTimeShare(clips: readonly DeliveredClip[]): ScreenT
  */
 export const MAX_SINGLE_FOOTAGE_SHARE = 0.25;
 export const MAX_SINGLE_SOURCE_SHARE = 0.7;
+/** VIDEO 663 — providers whose clips come from many independent videos, each its own source. */
+export const MANY_VIDEO_PLATFORMS: ReadonlySet<string> = new Set(["youtube", "youtube_cc"]);
 
 /**
  * HOW LONG ONE UNBROKEN SHOT MAY STAND.
@@ -172,7 +174,12 @@ export function screenTimeFindings(
     });
   }
 
-  const topSource = share.bySource[0];
+  /**
+   * VIDEO 663 — a platform of many independent videos is not "one source". Render 73 warned
+   * "youtube fills 71%" for twelve different YouTube videos — what the owner asked for ("meer
+   * youtube beelden"). One video filling the film is still caught above (`ONE_CLIP_DOMINATES`).
+   */
+  const topSource = share.bySource.find((x) => !MANY_VIDEO_PLATFORMS.has(x.source));
   if (topSource && topSource.share > maxSource) {
     out.push({
       code: "ONE_SOURCE_DOMINATES",

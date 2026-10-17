@@ -61,7 +61,11 @@ export function planVisualEffects(shot: ShotInstruction, candidate: CandidateAss
 
   if (isArchive) {
     out.push(effect("film_grain", 0.45, "Archive footage — film grain matches the texture of period film stock."));
-    out.push(effect("dust", 0.2, "Archive footage — light dust/scratch texture reinforces the aged-film look."));
+    /**
+     * VIDEO 663 — only effects the renderer draws are planned. Render 73 planned `dust`, `particles`
+     * and `lens_flare`, which no renderer executes: each one a line "not carried … not executed" and
+     * nothing on screen. Grain carries the aged look; a bright, backlit shot gets bloom (drawn).
+     */
   } else if (pacing.tone === "dramatic") {
     out.push(effect("film_grain", 0.2, "Dramatic pacing on modern footage — light film grain adds cinematic texture without looking archival."));
   }
@@ -77,15 +81,11 @@ export function planVisualEffects(shot: ShotInstruction, candidate: CandidateAss
      * shots around them, the black bars came and went between cuts, and the documentary grade tinted
      * them: the "balken" the owner saw. The renderer still draws one a person adds in the editor.
      */
-    const atmosphere = textMatchesAny(searchText, ATMOSPHERE_SIGNALS);
-    if (atmosphere) {
-      out.push(effect("particles", 0.3, `Candidate's search text matches "${atmosphere}" — light particle atmosphere reinforces the environment.`));
-    }
   }
 
   const flareSignal = textMatchesAny(searchText, FLARE_SIGNALS);
   if (flareSignal && (shot.shotType === "establishing" || shot.shotType === "wide")) {
-    out.push(effect("lens_flare", 0.35, `Candidate's search text matches "${flareSignal}" — a lens flare matches a bright, backlit outdoor shot.`));
+    out.push(effect("bloom", 0.35, `Candidate's search text matches "${flareSignal}" — bloom lifts the light of a bright, backlit outdoor shot.`));
   } else {
     const brightSignal = textMatchesAny(searchText, BRIGHT_LIGHT_SIGNALS);
     if (brightSignal) {

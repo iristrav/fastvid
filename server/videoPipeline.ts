@@ -11055,9 +11055,20 @@ async function fetchArchiveSegmentViaFfmpeg(
         try { child.kill("SIGKILL"); } catch { /* ignore */ }
         reject(pipelineError(PIPELINE_ERROR.TIMEOUT, `Archive segment fetch timeout scene ${sceneIndex}`));
       }, 30_000);
-      child.on("close", (code: number | null) => {
+      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
         clearTimeout(timer);
         if (code === 0) resolve();
+        /**
+         * VIDEO 663 — stopped from outside (a signal, no exit code): render 73 logged it as "ffmpeg
+         * exit null: libpostproc 58…", its banner, as if the file had failed. Said as what it was.
+         */
+        else if (code === null) {
+          reject(pipelineError(
+            PIPELINE_ERROR.TIMEOUT,
+            `ffmpeg was stopped (${signal ?? "signal"}) before the segment was read — ` +
+              (/error|invalid|not found|denied|refused/i.test(stderr) ? lastFfmpegErrorLine(stderr) : "it was still opening the remote file")
+          ));
+        }
         /**
          * ffmpeg's real complaint is its LAST line; everything before it is banner and stream
          * detail. Taking the last non-empty line beats slicing 160 characters off the tail, which
@@ -24441,7 +24452,10 @@ export async function placeApprovedAfterSceneClosed(
     const clip = e.settled?.value ?? null;
     const at = `[LateApproved] s${sceneIndex}b${e.beatIndex}`;
     let reason: string | null = null;
-    if (!placer || !sceneReturned || !e.settled) {
+    if (opts.hasPicture?.(e.beatIndex) && (!placer || !sceneReturned || !e.settled)) {
+      /** VIDEO 663 — render 73 named three such sentences "not placed" while each had its approved picture: say so */
+      reason = "approved after scene closed — not placed: the sentence already has its picture";
+    } else if (!placer || !sceneReturned || !e.settled) {
       reason = "approved after scene closed — not placed";
       /** VIDEO 642 — a second, DIFFERENT approval for the same sentence is not refused here: the placer reads its seconds left. */
     } else if (
@@ -24475,7 +24489,12 @@ export async function placeApprovedAfterSceneClosed(
     const [s, b] = key.split(":").map(Number);
     if (s !== sceneIndex) continue;
     deferred!.delete(key);
-    if (!placed.some((p) => p.beatIndex === b)) noteApprovedNotPlaced(dedup, s!, b!, "approved after scene closed — not placed");
+    if (!placed.some((p) => p.beatIndex === b)) {
+      noteApprovedNotPlaced(
+        dedup, s!, b!,
+        opts.hasPicture?.(b!) ? "approved after scene closed — not placed: the sentence already has its picture" : "approved after scene closed — not placed"
+      );
+    }
   }
   return placed;
 }

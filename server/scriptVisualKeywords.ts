@@ -34,6 +34,7 @@ import { directorSceneToIntent, generateVisualDirectorPlan, hasDirectorPlan, mer
 import {
   emptyQueryContext,
   formatSearchQueryAudit,
+  PRODUCTION_VOCABULARY,
   validateSearchQuery,
 } from "./searchQueryContract";
 
@@ -397,20 +398,61 @@ function keepProvableDirectorQueries(queries: string[], intent: ScriptVisualInte
       kept.push(query);
       continue;
     }
-    console.warn(
-      formatSearchQueryAudit({
-        query,
-        provider: "-",
-        route: "directorSearchQueries",
-        status: "BLOCKED",
-        verified: false,
-        terms: [],
-        blockedTerms: verdict.blockedTerms,
-        reason: "LLM_UNPROVEN_CONTENT",
-      })
+    /**
+     * VIDEO 663 — only the unproven word goes, not the whole query. Render 73 lost "vibrancy medium
+     * shot los angeles" for "vibrancy" alone. The words the check refused are taken out and what is
+     * left is checked again by the SAME validator; it is kept only if that passes and it still names
+     * something (two words or more). Nothing unproven gets through.
+     */
+    const repaired = withoutTerms(query, verdict.blockedTerms ?? []);
+    const again = repaired && repaired !== query ? validateSearchQuery(repaired, ctx) : null;
+    if (repaired && again?.ok) {
+      kept.push(repaired);
+      logOnce(`${evidence}\u0000${query}`, () =>
+        console.log(`[SearchQueryRepaired] route=directorSearchQueries query="${query}" kept="${repaired}" dropped=${JSON.stringify(verdict.blockedTerms)}`)
+      );
+      continue;
+    }
+    /** VIDEO 663 — the same refusal once per sentence: render 73 logged it up to 31 times and hit the log limit */
+    logOnce(`${evidence}\u0000${query}`, () =>
+      console.warn(
+        formatSearchQueryAudit({
+          query,
+          provider: "-",
+          route: "directorSearchQueries",
+          status: "BLOCKED",
+          verified: false,
+          terms: [],
+          blockedTerms: verdict.blockedTerms,
+          reason: "LLM_UNPROVEN_CONTENT",
+        })
+      )
     );
   }
-  return kept;
+  return [...new Set(kept)];
+}
+
+/** `query` without the refused terms (whole words, a multi-word term as a phrase); "" when under two words are left. */
+export function withoutTerms(query: string, terms: readonly string[]): string {
+  let q = ` ${query.toLowerCase()} `;
+  for (const t of terms) {
+    const term = t.toLowerCase().trim();
+    if (!term) continue;
+    q = q.split(` ${term} `).join(" ");
+  }
+  const words = q.trim().split(/\s+/).filter(Boolean);
+  /** what is left must name something: production words ("medium shot", "broll") alone do not */
+  const named = words.filter((w) => !PRODUCTION_VOCABULARY.has(w));
+  return words.length >= 2 && named.length >= 1 ? words.join(" ") : "";
+}
+
+/** A line logged once per key in this process (bounded: the oldest keys are forgotten first). */
+const LOGGED = new Set<string>();
+function logOnce(key: string, log: () => void): void {
+  if (LOGGED.has(key)) return;
+  LOGGED.add(key);
+  if (LOGGED.size > 5000) LOGGED.delete(LOGGED.values().next().value as string);
+  log();
 }
 
 /** Stock/archive queries from visual director plan — never from spoken narration. */

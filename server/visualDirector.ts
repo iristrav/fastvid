@@ -216,11 +216,15 @@ export function directorSceneToIntent(scene: VisualDirectorScene): ScriptVisualI
   const sceneType = sanitizeSceneType(inferSceneTypeFromDescription(visualDescription, primary));
   const cameraShot = sanitizeCameraShot(scene.camera_shot);
   const emotion = sanitizeEmotion(scene.emotion);
-  const secondary =
-    sanitizeVisualKeyword(`${emotion} ${cameraShot} ${primary.split(/\s+/).slice(0, 2).join(" ")}`) ||
-    primary;
-  const fallback =
-    sanitizeVisualKeyword(`${sceneType} broll ${primary.split(/\s+/)[0] ?? "scene"}`) || primary;
+  /**
+   * VIDEO 663 — no mood word and no cut-off subject in a query. Render 73 asked for "vibrancy medium
+   * shot los angeles" and "city broll los": the emotion ("vibrancy", "neutral", "frustration") is
+   * never in the script, so the query check refused the whole query every time, and the subject was
+   * cut to its first word. The shot type is production vocabulary; the subject stays whole.
+   */
+  const subject = primary.split(/\s+/).slice(0, 4).join(" ");
+  const secondary = sanitizeVisualKeyword(`${cameraShot} ${subject}`) || primary;
+  const fallback = sanitizeVisualKeyword(`${primary.split(/\s+/).slice(0, 3).join(" ")} broll`) || primary;
 
   return {
     sentence: coerceText(scene.spoken_text),

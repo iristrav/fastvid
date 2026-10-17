@@ -154,7 +154,12 @@ describe("RONDE 91 §3 — the director plan cannot introduce a subject", () => 
   it("TEST 9 — the discard is logged as LLM_UNPROVEN_CONTENT, naming who guessed", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      directorSearchQueries(planFor("Hitler met Eva Braun.", "Hitler Eva Braun Berlin bunker Germany"));
+      /**
+       * VIDEO 663 — the director's own templates no longer add a mood word, and a query that loses
+       * only its unproven word is repaired; a query whose content is ALL unproven is still discarded.
+       */
+      const intent = planFor("Hitler met Eva Braun in 1936.", "Hitler Eva Braun");
+      directorSearchQueries({ ...intent, secondary_keyword: "tokyo skyline night" });
       const lines = warn.mock.calls.map((c) => String(c[0]));
       const audit = lines.find((l) => l.includes("LLM_UNPROVEN_CONTENT"));
       expect(audit, "no LLM_UNPROVEN_CONTENT line").toBeTruthy();

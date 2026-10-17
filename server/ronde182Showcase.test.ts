@@ -317,7 +317,11 @@ describe("R182 — the video the renderer actually produced", () => {
     const track = timeline.tracks.find((t) => t.kind === "VIDEO");
     const clips = track && track.kind === "VIDEO" ? track.clips : [];
     const withTransition = clips.filter((c) => c.transitionIn !== "hard_cut");
-    expect(withTransition.length, "no transition in this plan").toBeGreaterThanOrEqual(2);
+    /**
+     * VIDEO 663 — dissolves only at a jump in time or place: the plan of these three sentences holds one,
+     * so one dissolve — still a real transition the duration checks must absorb.
+     */
+    expect(withTransition.length, "no transition in this plan").toBeGreaterThanOrEqual(1);
   });
 
   /**

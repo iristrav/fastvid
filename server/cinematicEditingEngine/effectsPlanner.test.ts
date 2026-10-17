@@ -1,3 +1,4 @@
+import { unsupportedEffects } from "../timelineFilters";
 import { describe, expect, it } from "vitest";
 import { planVisualEffects } from "./effectsPlanner";
 import type { ShotInstruction, PacingProfile } from "./types";
@@ -52,12 +53,14 @@ function pacing(tone: PacingProfile["tone"], cutSpeedMultiplier = 1): PacingProf
 }
 
 describe("Visual Effects Planner (Phase 4)", () => {
-  it("applies vignette + film_grain + dust for archive footage", () => {
+  /** VIDEO 663 — only effects the renderer draws: no `dust` (grain carries the aged look) */
+  it("applies vignette + film_grain for archive footage, never an effect the renderer cannot draw", () => {
     const effects = planVisualEffects(shot("archive_footage"), makeCandidate(), pacing("neutral"));
     const types = effects.map((e) => e.effectType);
     expect(types).toContain("vignette");
     expect(types).toContain("film_grain");
-    expect(types).toContain("dust");
+    expect(types).not.toContain("dust");
+    expect(unsupportedEffects(effects)).toEqual([]);
   });
 
   it("applies a subtle vignette and light film_grain for dramatic pacing on modern footage", () => {
@@ -76,9 +79,11 @@ describe("Visual Effects Planner (Phase 4)", () => {
     }
   });
 
-  it("applies lens_flare for a bright outdoor establishing shot", () => {
+  /** VIDEO 663 — a lens flare is not drawn by any renderer: the backlit shot gets bloom */
+  it("applies bloom (not an undrawn lens_flare) for a bright outdoor establishing shot", () => {
     const effects = planVisualEffects(shot("wide"), makeCandidate({ searchQuery: "sunset over the city" }), pacing("neutral"));
-    expect(effects.some((e) => e.effectType === "lens_flare")).toBe(true);
+    expect(effects.some((e) => e.effectType === "bloom")).toBe(true);
+    expect(effects.some((e) => e.effectType === "lens_flare")).toBe(false);
   });
 
   it("applies bloom for bright-light footage without a flare-specific signal", () => {
@@ -86,9 +91,11 @@ describe("Visual Effects Planner (Phase 4)", () => {
     expect(effects.some((e) => e.effectType === "bloom")).toBe(true);
   });
 
-  it("applies particles for atmospheric establishing/wide footage", () => {
+  /** VIDEO 663 — particles are not drawn by any renderer: not planned */
+  it("plans no particles for atmospheric establishing/wide footage", () => {
     const effects = planVisualEffects(shot("wide"), makeCandidate({ searchQuery: "foggy forest at dawn" }), pacing("neutral"));
-    expect(effects.some((e) => e.effectType === "particles")).toBe(true);
+    expect(effects.some((e) => e.effectType === "particles")).toBe(false);
+    expect(unsupportedEffects(effects)).toEqual([]);
   });
 
   it("applies glow for an exciting close-up/detail shot", () => {

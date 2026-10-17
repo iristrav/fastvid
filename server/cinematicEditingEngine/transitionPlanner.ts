@@ -14,13 +14,17 @@
 import type { PacingProfile, ShotType, TransitionInstruction, TransitionType, VisualContinuityState } from "./types";
 
 /** Minimal projection of the two decisions being joined — a transition only ever needs to
- *  know shot type and subject continuity, not the full VisualIntent/ClipInstruction, which
+ *  know shot type, subject, place and time, not the full VisualIntent/ClipInstruction, which
  *  keeps this planner trivially testable with plain objects. */
 export type TransitionContext = {
   shotType: ShotType;
   /** The beat's primary visual subject, for match-cut/continuity detection. Empty string when
    *  the beat has no clear single subject. */
   subject: string;
+  /** VIDEO 663 — where the picture is (`visualLocation`); empty when the beat names no place. */
+  location?: string;
+  /** VIDEO 663 — when the picture is (`visualTime`); empty when the beat names no time. */
+  time?: string;
 };
 
 const DEFAULT_DURATION: Record<TransitionType, number> = {
@@ -40,69 +44,82 @@ const DEFAULT_DURATION: Record<TransitionType, number> = {
   match_cut: 0,
 };
 
-function transition(type: TransitionType, reason: string): TransitionInstruction {
-  return { type, durationSec: DEFAULT_DURATION[type], reason };
+/**
+ * VIDEO 663 — a chapter's opening dips through black this long: short enough that the black itself
+ * stays well under the delivered file's black check (`blackdetect d=0.35`), long enough to read as a
+ * pause between chapters.
+ */
+export const CHAPTER_DIP_SEC = 0.5;
+
+function transition(type: TransitionType, reason: string, durationSec = DEFAULT_DURATION[type]): TransitionInstruction {
+  return { type, durationSec, reason };
 }
+
+const norm = (s: string | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+/** Two named values that differ — an unnamed one is never a change. */
+const changed = (a: string | undefined, b: string | undefined) => norm(a).length > 0 && norm(b).length > 0 && norm(a) !== norm(b);
 
 /**
  * Chooses the transition from `prev` into `next`. `prev === null` means this is the first
- * decision in the scene — always a hard cut, since there is nothing to transition from.
+ * decision in the scene.
+ *
+ * VIDEO 663 — THE WAY A DOCUMENTARY EDITOR USES A DISSOLVE. The owner asked what dissolves could
+ * still do; render 73 had ten, put where the shot type happened to change ("no stronger stylistic
+ * signal — a soft cross dissolve is a safe default"), whips, slides and film burns among the plans.
+ * Now:
+ *
+ *   a new chapter (the first shot of any scene after the first)   a short dip through black
+ *   a jump in time (archive ↔ present, or another named time)    a cross dissolve
+ *   a jump in place (another named location)                     a cross dissolve (a cut when exciting)
+ *   everything else inside a scene                                a hard cut (a match cut on the same subject)
+ *
+ * Never two dissolves in a row, and pieces of one shot are always cut (`youtubeShotLimit`,
+ * `longShotLimit`).
  */
 export function planTransition(
   prev: TransitionContext | null,
   next: TransitionContext,
   pacing: PacingProfile,
-  continuity?: VisualContinuityState
+  continuity?: VisualContinuityState,
+  opts: { chapterStart?: boolean } = {}
 ): TransitionInstruction {
   if (!prev) {
+    if (opts.chapterStart) {
+      return transition("dip_to_black", "A new chapter begins — a short dip through black marks the pause between chapters.", CHAPTER_DIP_SEC);
+    }
     return transition("cut", "First shot in the scene — nothing to transition from.");
   }
 
   const recent = continuity?.recentTransitions ?? [];
-  const lastTwoNonCut = recent.length >= 2 && recent.slice(-2).every((t) => t !== "cut");
-  if (lastTwoNonCut) {
-    return transition("cut", "The last two transitions in this scene were both stylized — cutting back to a hard cut avoids transition fatigue.");
+  const lastWasSoft = recent.length > 0 && recent[recent.length - 1] !== "cut" && recent[recent.length - 1] !== "match_cut";
+  if (lastWasSoft) {
+    return transition("cut", "The previous transition was already soft — a hard cut keeps dissolves for the moments that need them.");
   }
 
-  const sameSubject = prev.subject.trim().length > 0 && prev.subject.trim().toLowerCase() === next.subject.trim().toLowerCase();
+  const sameSubject = norm(prev.subject).length > 0 && norm(prev.subject) === norm(next.subject);
   if (prev.shotType === next.shotType && sameSubject) {
     return transition("match_cut", `Same shot type (${next.shotType}) and same subject ("${next.subject}") as the previous beat — a match cut keeps the action continuous.`);
   }
 
-  if (next.shotType === "archive_footage" && prev.shotType !== "archive_footage") {
-    return transition("film_burn", "Cutting into archival footage from modern footage — a film burn signals the jump back in time.");
-  }
-  if (prev.shotType === "archive_footage" && next.shotType !== "archive_footage") {
-    return transition("dip_to_black", "Cutting out of archival footage back to modern footage — a dip to black marks the return to the present.");
+  const intoArchive = next.shotType === "archive_footage" && prev.shotType !== "archive_footage";
+  const outOfArchive = prev.shotType === "archive_footage" && next.shotType !== "archive_footage";
+  if (intoArchive || outOfArchive || changed(prev.time, next.time)) {
+    return transition(
+      "cross_dissolve",
+      intoArchive
+        ? "Into archival footage — a dissolve carries the viewer back in time."
+        : outOfArchive
+          ? "Out of archival footage — a dissolve brings the viewer back to the present."
+          : `A jump in time ("${prev.time}" → "${next.time}") — a dissolve marks it.`
+    );
   }
 
-  if (next.shotType === "establishing") {
-    if (pacing.tone === "dramatic") {
-      return transition("dip_to_black", "New location established under dramatic pacing — a dip to black gives the moment weight before revealing it.");
-    }
+  if (changed(prev.location, next.location)) {
     if (pacing.tone === "exciting") {
-      return transition("cut", "New location established under exciting pacing — a hard cut keeps the energy up rather than slowing for a fade.");
+      return transition("cut", `A new place ("${next.location}") under exciting pacing — a hard cut keeps the energy up.`);
     }
-    return transition("fade", "New location established — a fade cleanly orients the viewer before the establishing shot.");
+    return transition("cross_dissolve", `A jump in place ("${prev.location}" → "${next.location}") — a dissolve takes the viewer there.`);
   }
 
-  if ((next.shotType === "reaction" || next.shotType === "cutaway") && pacing.tone === "exciting") {
-    return transition("slide", `Cutting to a ${next.shotType} shot under exciting pacing — a slide adds lateral energy while staying quick.`);
-  }
-
-  if (prev.shotType === next.shotType) {
-    return transition("cut", `Shot type unchanged (${next.shotType}) — a hard cut is enough, no transition effect needed.`);
-  }
-
-  if (pacing.tone === "exciting" && pacing.cutSpeedMultiplier > 1.2) {
-    return transition("whip", "Shot type changed under fast, exciting pacing — a whip transition matches the energy.");
-  }
-  if (pacing.tone === "dramatic") {
-    return transition("cross_dissolve", "Shot type changed under dramatic pacing — a cross dissolve softens the cut to match the slower mood.");
-  }
-  if (pacing.tone === "educational") {
-    return transition("cut", "Educational pacing prioritizes clean, readable edits — a hard cut over a stylized transition.");
-  }
-
-  return transition("cross_dissolve", "Shot type changed with no stronger stylistic signal — a soft cross dissolve is a safe, unobtrusive default.");
+  return transition("cut", "Same time and place — a hard cut, as a documentary editor cuts inside a scene.");
 }

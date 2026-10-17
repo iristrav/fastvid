@@ -76,8 +76,16 @@ export function generateEDL(inputs: CinematicEditingInput[], options: EdlOptions
     const camera = planCameraMovement(shot, input.bestCandidate, pacing, prevCameraMovement);
     prevCameraMovement = camera.movement;
 
-    const nextTransitionCtx: TransitionContext = { shotType: shot.shotType, subject: input.intent.visualSubject };
-    const transitionIn = planTransition(prevTransitionCtx, nextTransitionCtx, pacing, continuity);
+    const nextTransitionCtx: TransitionContext = {
+      shotType: shot.shotType,
+      subject: input.intent.visualSubject,
+      location: input.intent.visualLocation,
+      time: input.intent.visualTime,
+    };
+    /** VIDEO 663 — the first shot of every scene after the film's first opens a new chapter */
+    const transitionIn = planTransition(prevTransitionCtx, nextTransitionCtx, pacing, continuity, {
+      chapterStart: i === 0 && input.scene.index > 0,
+    });
 
     const clips = planClipTiming(
       input.intent.spokenText,

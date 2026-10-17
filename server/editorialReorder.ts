@@ -246,17 +246,21 @@ export async function editorialReorderScene(
      * allowed too, which is the same picture twice. Only an order that names every clip exactly once
      * is applied; anything else keeps the scene as it was.
      */
-    const allowedOrder = (parsed.order as unknown[]).filter(
+    const answered = (parsed.order as unknown[]).filter(
       (v): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v < clips.length
     );
-    const isPermutation =
-      allowedOrder.length === clips.length && new Set(allowedOrder).size === clips.length;
-    if (!isPermutation) {
+    /**
+     * VIDEO 663 — an answer that misses or doubles a clip is repaired, not thrown away. Render 73's
+     * two scenes kept their order because the model named four of five clips ([0,2,1,3]) and doubled
+     * one in the other. Still never a clip dropped or doubled: `repairOrder` keeps each first mention
+     * and puts every clip the answer left out back right after the clip it followed before.
+     */
+    const allowedOrder = repairOrder(answered, clips.length);
+    if (allowedOrder.length !== answered.length || allowedOrder.some((v, i) => v !== answered[i])) {
       console.warn(
-        `[Editorial] s${sceneIndex} reorder refused: the answer [${allowedOrder.join(",")}] does not name each of ` +
-          `the ${clips.length} clip(s) exactly once — the scene keeps its order`
+        `[Editorial] s${sceneIndex} reorder repaired: the answer [${answered.join(",")}] did not name each of ` +
+          `the ${clips.length} clip(s) exactly once — applied as [${allowedOrder.join(",")}]`
       );
-      return original;
     }
 
     const reorderedClips = allowedOrder.map((idx) => clips[idx]!);
@@ -293,4 +297,20 @@ export async function editorialReorderScene(
     console.warn(`[Editorial] s${sceneIndex} reorder skipped:`, describeLlmFailure(err));
     return original;
   }
+}
+
+/**
+ * VIDEO 663 — `answer` made a permutation of 0..n-1: each first mention kept in its place, doubles
+ * dropped, and every index the answer left out inserted right after the index that preceded it in
+ * the original order (at the front when it was first).
+ */
+export function repairOrder(answer: readonly number[], n: number): number[] {
+  const out: number[] = [];
+  for (const v of answer) if (Number.isInteger(v) && v >= 0 && v < n && !out.includes(v)) out.push(v);
+  for (let m = 0; m < n; m++) {
+    if (out.includes(m)) continue;
+    const at = m === 0 ? 0 : out.indexOf(m - 1) + 1;
+    out.splice(at, 0, m);
+  }
+  return out;
 }
