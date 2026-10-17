@@ -17,6 +17,7 @@ import path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { buildDocumentaryColorGradeVF } from "./documentaryStyle";
+import { gradeChain } from "./timelineFilters";
 import { giveHeldSecondsToNeighbours, ownSeconds, shortenSlowShots, SLOW_SHOT_MAX_SEC } from "./noHeldFrames";
 import { directOnScreenText, MAP_OVER_PICTURE } from "./onScreenTextDirector";
 import { isPrimaryGroundPixel } from "./postRenderSpotCheck";
@@ -306,9 +307,25 @@ describe("4 — every text over the picture stands bottom left", () => {
 /* ═══════════ 5 — no purple ═══════════ */
 
 describe("5 — no purple haze", () => {
-  it("a dark source is lifted with neutral colour: no cool shadow push", () => {
+  it("a dark source is lifted with neutral colour; no source gets a colour push (\"maak hem neutraal\")", () => {
     expect(buildDocumentaryColorGradeVF("stock", { darkSource: true })).toBe("eq=contrast=1.15:saturation=0.82:brightness=0:gamma=1.08");
-    expect(buildDocumentaryColorGradeVF("stock")).toContain("colorbalance=");
+    for (const kind of ["stock", "archive", "ai_generated", undefined] as const) {
+      expect(buildDocumentaryColorGradeVF(kind)).not.toContain("colorbalance");
+    }
+    expect(gradeChain({ grade: "documentary", strength: 0.6 }, "stock")).not.toContain("colorbalance");
+    expect(gradeChain({ grade: "documentary" }, "stock")).not.toContain("colorbalance");
+  });
+
+  it("measured: a mid-grey frame through the full documentary grade keeps U and V at neutral", () => {
+    const vf = gradeChain({ grade: "documentary" }, "stock")!;
+    const stats = spawnSync("ffmpeg", [
+      "-hide_banner", "-f", "lavfi", "-i", "color=c=0x808080:s=64x36:d=0.1",
+      "-vf", `${vf},format=yuv420p,crop=16:16:24:10,signalstats,metadata=print`, "-f", "null", "-",
+    ]).stderr.toString();
+    const u = Number(/UAVG=([0-9.]+)/.exec(stats)?.[1]);
+    const v = Number(/VAVG=([0-9.]+)/.exec(stats)?.[1]);
+    expect(Math.abs(u - 128)).toBeLessThanOrEqual(1);
+    expect(Math.abs(v - 128)).toBeLessThanOrEqual(1);
   });
 
   it("measured: a dark grey frame through the dark-source grade keeps U and V at neutral", () => {

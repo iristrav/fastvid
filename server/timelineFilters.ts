@@ -465,13 +465,8 @@ export function gradeChain(
   const calibration =
     `eq=contrast=${mix(1, contrast).toFixed(4)}:saturation=${mix(1, saturation).toFixed(4)}:` +
     `brightness=${mix(0, dark ? 0 : -0.03).toFixed(4)}:gamma=${mix(1, dark ? 1.08 : 1.02).toFixed(4)}` +
-    /** VIDEO 663 — a dark source keeps neutral colour (see `buildDocumentaryColorGradeVF`). */
-    (dark
-      ? ""
-      : `,colorbalance=rs=${mix(0, -0.02).toFixed(4)}:gs=0:bs=${mix(0, 0.04).toFixed(4)}:` +
-        `rm=${mix(0, -0.01).toFixed(4)}:gm=0:bm=${mix(0, 0.02).toFixed(4)}:` +
-        `rh=${mix(0, -0.01).toFixed(4)}:gh=0:bh=${mix(0, 0.02).toFixed(4)}` +
-        `,vignette=angle=${mix(Math.PI / 2, angle).toFixed(4)}:mode=forward`);
+    /** VIDEO 663 — neutral colour always (see `buildDocumentaryColorGradeVF`); a dark source has no vignette. */
+    (dark ? "" : `,vignette=angle=${mix(Math.PI / 2, angle).toFixed(4)}:mode=forward`);
 
   return withLook(calibration);
 }
