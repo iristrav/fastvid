@@ -13,7 +13,10 @@
  * same test as `removeRepeatedFootage`). A photograph can always take the time (it keeps moving). The
  * narration, captions and graphics keep their times; only the cut between two pictures moves.
  *
- * Only when neither neighbour can take it does a shot still hold, and the line says so.
+ * VIDEO 663 (R2) — and before any cut moves, the shot first reads earlier in its own file (seconds
+ * before its in-point nobody else shows); a neighbour may also start earlier with its own unshown
+ * seconds before its in-point. Only when nothing anywhere is left does a shot still hold: that is
+ * logged as an ERROR and the held frame is given a visible move by the renderer (never a frozen picture).
  */
 import type { TimelineVideoClip } from "./projectTimeline";
 import { footageKey, OVERLAP_TOLERANCE_SEC, sourceWindow } from "./noRepeatedFootage";
@@ -70,9 +73,37 @@ function spareAfterFor(clips: readonly TimelineVideoClip[], fileSecIn: (c: Timel
   };
 }
 
+/** The file's first second in the clip's in-point seconds: a provider window starts the file later in the video. */
+const fileStartIn = (c: TimelineVideoClip): number => Math.max(0, c.source?.providerWindow?.inSec ?? 0);
+
 /**
- * Hand `want` seconds of clip `i`'s slot to the shot after it (it starts earlier), then to the shot
- * before it (it runs on). Returns how many seconds were handed over, with one note per move.
+ * VIDEO 663 (R2) — how many seconds of slot a clip can fill with the seconds of its own file BEFORE its
+ * in-point, back to the file's start or to the nearest window another shot of the same footage shows.
+ * Zero for a photograph (it never runs short) and for a clip that already overlaps another shot.
+ */
+function spareBeforeFor(clips: readonly TimelineVideoClip[]) {
+  return (n: TimelineVideoClip): number => {
+    if (n.kind === "image") return 0;
+    const at = Math.max(0, n.sourceIn ?? 0);
+    let earliest = fileStartIn(n);
+    if (!(at - earliest > EPS)) return 0;
+    const key = footageKey(n);
+    if (key) {
+      for (const o of clips) {
+        if (o === n || o.disabled || footageKey(o) !== key) continue;
+        const [a, b] = sourceWindow(o);
+        if (a < at - OVERLAP_TOLERANCE_SEC && b > at + OVERLAP_TOLERANCE_SEC) return 0;
+        if (b <= at + OVERLAP_TOLERANCE_SEC && b > earliest) earliest = b;
+      }
+    }
+    return Math.max(0, at - earliest) / speedOf(n);
+  };
+}
+
+/**
+ * Hand `want` seconds of clip `i`'s slot to the shot after it (it starts earlier: reading on past its
+ * end, then — VIDEO 663 (R2) — from the unshown seconds before its in-point), then to the shot before
+ * it (it runs on). Returns how many seconds were handed over, with one note per move.
  */
 function handOver(
   clips: TimelineVideoClip[],
@@ -80,7 +111,8 @@ function handOver(
   want: number,
   spareAfter: (n: TimelineVideoClip) => number,
   why: string,
-  notes: string[]
+  notes: string[],
+  spareBefore?: (n: TimelineVideoClip) => number
 ): number {
   const c = clips[i]!;
   const next = clips[i + 1];
@@ -94,6 +126,17 @@ function handOver(
       if (next.sourceOut != null && next.kind !== "image") next.sourceOut = round((next.sourceIn ?? 0) + slot(next) * speedOf(next));
       left -= give;
       notes.push(`${c.id}: ${why} ${give.toFixed(2)}s — ${next.id} starts that much earlier`);
+    }
+  }
+  if (left > EPS && spareBefore && next && Math.abs(next.timelineStart - c.timelineEnd) < EPS && !next.disabled && next.kind !== "image") {
+    /** the next shot starts earlier on the timeline AND in its source: its own frame at the cut it had stays where it was */
+    const give = Math.min(left, spareBefore(next), Math.max(0, slot(c) - MIN_SLOT_SEC));
+    if (give > EPS) {
+      c.timelineEnd = round(c.timelineEnd - give);
+      next.timelineStart = c.timelineEnd;
+      next.sourceIn = round(Math.max(fileStartIn(next), (next.sourceIn ?? 0) - give * speedOf(next)));
+      left -= give;
+      notes.push(`${c.id}: ${why} ${give.toFixed(2)}s — ${next.id} starts that much earlier, with its own seconds before its in-point`);
     }
   }
   if (left > EPS && prev && Math.abs(prev.timelineEnd - c.timelineStart) < EPS && !prev.disabled) {
@@ -144,15 +187,27 @@ export function giveHeldSecondsToNeighbours(
   const notes: string[] = [];
   const stillHeld: Array<{ clipId: string; sec: number }> = [];
   const spareAfter = spareAfterFor(clips, fileSecIn);
+  const spareBefore = spareBeforeFor(clips);
   for (let i = 0; i < clips.length; i++) {
     const c = clips[i]!;
     if (c.kind === "image") continue;
     let deficit = slot(c) - ownSeconds(c, fileSecIn(c));
     if (!(deficit > EPS)) continue;
-    deficit -= handOver(clips, i, deficit, spareAfter, "its own seconds end before its slot by", notes);
+    /**
+     * VIDEO 663 (R2) — first its own file: the shot starts earlier in its source, into seconds no other
+     * shot of the film shows. No cut moves; the sentence keeps its own picture.
+     */
+    const own = Math.min(deficit, spareBefore(c));
+    if (own > EPS) {
+      c.sourceIn = round(Math.max(fileStartIn(c), (c.sourceIn ?? 0) - own * speedOf(c)));
+      deficit -= own;
+      notes.push(`${c.id}: its file ends before its slot — it starts ${own.toFixed(2)}s earlier in its own source`);
+    }
+    if (!(deficit > EPS)) continue;
+    deficit -= handOver(clips, i, deficit, spareAfter, "its own seconds end before its slot by", notes, spareBefore);
     if (deficit > EPS) {
       stillHeld.push({ clipId: c.id, sec: round(deficit) });
-      notes.push(`${c.id}: ${deficit.toFixed(2)}s HELD — neither shot beside it has unshown seconds of its own to take it`);
+      notes.push(`${c.id}: ERROR ${deficit.toFixed(2)}s HELD — no unshown seconds in its own file or beside it; the held frame is given a visible move`);
     }
   }
   return { notes, stillHeld };

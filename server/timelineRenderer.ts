@@ -1517,6 +1517,17 @@ export async function renderTimeline(params: {
   });
   for (const line of rebalance.notes) console.log(`[NoHeldFrame] ${line}`);
   /**
+   * VIDEO 663 (R2) — what still holds after every rebalance is an error, and never a frozen picture:
+   * a held clip with no move of its own is pushed visibly over its whole slot (`SLOW_SHOT_PUSH`, not the
+   * barely-there tail push).
+   */
+  const stillHeldIds = new Set(rebalance.stillHeld.map((h) => h.clipId));
+  for (const clip of clips) {
+    if (!stillHeldIds.has(clip.id) || cameraChain(clip.camera ?? { type: "camera_hold" }, fmt, 1) !== null) continue;
+    clip.camera = { ...SLOW_SHOT_PUSH };
+    console.error(`[HeldFrame] ERROR clip=${clip.id} no unshown seconds left for its slot — the held frame moves (×${SLOW_SHOT_PUSH.endScale})`);
+  }
+  /**
    * VIDEO 663 — a shot that hardly moves (render 73's slow aerial, 5.9 s at a frame difference of
    * ~0.8) is kept short, its time handed to the shots beside it (`shortenSlowShots`), and what stays
    * gets a slow push so the picture moves (`SLOW_SHOT_PUSH`).

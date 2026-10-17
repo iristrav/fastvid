@@ -34,6 +34,7 @@ import { sameAssetIdentity } from "./cinematicPipelineInputs";
 import { SYNTHETIC_PLACEHOLDER_PROVIDER, syntheticAssetId } from "./genericFootageFallback";
 import { applyFallbackScenes, FALLBACK_SCENE_MAX_SHARE, isFallbackSceneClip, rescueMissingPictures, toFallbackScene } from "./fallbackScene";
 import { formatViewerReport, viewerReport } from "./viewerReport";
+import { measureFilmPicture } from "./measuredPicture";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -1151,7 +1152,24 @@ export async function runRenderJob(params: {
     );
     /** VIDEO 663 — what a viewer sees, in one line: held frames, fallback scenes, repeats, long texts, unapproved pictures. */
     try {
-      console.log(formatViewerReport(job.videoId, viewerReport(timelineRendered, rendered.heldFrames ?? [])));
+      /**
+       * VIDEO 663 (R2) — and the made file itself, read every half second: still, slow and repeated
+       * picture. Full-frame graphics and fallback scenes are drawn, not filmed: left out.
+       */
+      const drawn = [
+        ...graphicsTrack(timelineRendered)
+          .filter((g) => !g.disabled && g.data?.primaryVisual === true)
+          .map((g) => ({ fromSec: g.start, toSec: g.end })),
+        ...videoTrack(timelineRendered)
+          .filter((c) => !c.disabled && isFallbackSceneClip(c))
+          .map((c) => ({ fromSec: c.timelineStart, toSec: c.timelineEnd })),
+      ];
+      const measured = await measureFilmPicture(rendered.outputPath, drawn);
+      /** the cuts as the renderer really made them (held frames and slow shots move them) */
+      const asCut: ProjectTimeline = rendered.renderedClips
+        ? { ...timelineRendered, tracks: timelineRendered.tracks.map((t) => (t.kind === "VIDEO" ? { ...t, clips: rendered.renderedClips! } : t)) }
+        : timelineRendered;
+      console.log(formatViewerReport(job.videoId, viewerReport(asCut, rendered.heldFrames ?? [], measured)));
     } catch (err) {
       console.warn(`[ViewerReport] job=${job.id} could not be made: ${((err as Error)?.message ?? String(err)).slice(0, 160)}`);
     }

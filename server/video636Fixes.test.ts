@@ -110,10 +110,18 @@ describe("1 — a source too short for its slot is never replayed from its start
     expect(await lumaAt(out, 6.5)).toBeLessThan(40);
   }, 120_000);
 
+  /**
+   * VIDEO 663 (R2) — with the first piece on the timeline, as in the film: a piece alone may now read
+   * earlier in its own file (seconds no other shot shows), but here the first piece shows them.
+   */
   it("a second piece that starts past the file's end shows its last frame, not its first", async () => {
-    const out = await render("p2", { sourceIn: 3.8, sourceOut: 7.6 }, 3.8);
-    expect(await lumaAt(out, 0.5)).toBeLessThan(40);
-    expect(await lumaAt(out, 3.2)).toBeLessThan(40);
+    const t = timeline({ sourceIn: 0, sourceOut: 3.8, timelineEnd: 3.8 }, 7.6);
+    const video = t.tracks.find((x) => x.kind === "VIDEO") as { clips: TimelineVideoClip[] };
+    video.clips.push({ ...video.clips[0]!, id: timelineElementId("clip", "v636", 1), sourceIn: 3.8, sourceOut: 7.6, timelineStart: 3.8, timelineEnd: 7.6 });
+    const out = path.join(dir, "p2.mp4");
+    await renderTimeline({ timeline: t, workDir: path.join(dir, "w_p2"), outputPath: out, resolveMedia: async () => source });
+    expect(await lumaAt(out, 4.3)).toBeLessThan(40);
+    expect(await lumaAt(out, 7.0)).toBeLessThan(40);
   }, 120_000);
 
   it("the renderer no longer opens any input with -stream_loop", () => {

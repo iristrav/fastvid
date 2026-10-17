@@ -26,7 +26,8 @@ import { planYoutubePieces } from "./youtubeShotLimit";
 import { placeTextBottomLeft } from "./onScreenWords";
 import { emptyTimeline, timelineElementId, type ProjectTimeline, type TimelineGraphic, type TimelineVideoClip } from "./projectTimeline";
 import { probeMeanChroma, probeMotion, purpleCastCorrection, renderTimeline, SLOW_MOTION_DIFF, SLOW_SHOT_PUSH } from "./timelineRenderer";
-import { viewerReport } from "./viewerReport";
+import { formatViewerReport, viewerReport } from "./viewerReport";
+import { measureFilmPicture, readPicture, SAMPLE_H, SAMPLE_W } from "./measuredPicture";
 import { findVisualRepeats, sourceWindowsNear, SAME_SOURCE_NEAR_SEC } from "./visualRepeatCheck";
 
 const SRC = (f: string) => fs.readFileSync(path.join(__dirname, f), "utf8");
@@ -85,6 +86,44 @@ describe("1 — a shot that cannot fill its slot gives the rest to the shot besi
     const out = giveHeldSecondsToNeighbours([a, b, d], (x) => ({ r1: 2, r2: 20, r3: 20 })[x.id as "r1" | "r2" | "r3"]!);
     expect(b.timelineStart).toBe(4);
     expect(out.stillHeld).toEqual([{ clipId: "r1", sec: 2 }]);
+  });
+
+  it("R2 — first its own file: a late in-point reads earlier, no cut moves", () => {
+    /** 4 s slot, file 10 s, in-point at 8: 2 s short — it starts at 6 instead */
+    const a = clip("w1", 0, 4, { sourceIn: 8 });
+    const b = clip("w2", 4, 8, { sourceIn: 0 });
+    const out = giveHeldSecondsToNeighbours([a, b], (x) => (x.id === "w1" ? 10 : 30));
+    expect(a.sourceIn).toBe(6);
+    expect(a.timelineEnd).toBe(4);
+    expect(out.stillHeld).toEqual([]);
+    expect(out.notes[0]).toMatch(/starts 2\.00s earlier in its own source/);
+  });
+
+  it("R2 — never into seconds another shot of the same footage shows", () => {
+    const a = clip("x1", 0, 4, { source: { provider: "youtube_cc", archiveAssetId: 77 }, sourceIn: 8, sourceOut: 10 });
+    const d = clip("x2", 4, 6, { source: { provider: "youtube_cc", archiveAssetId: 77 }, sourceIn: 5, sourceOut: 7 });
+    const out = giveHeldSecondsToNeighbours([a, d], () => 10);
+    /** 7–8 is free; 5–7 is x2's own */
+    expect(a.sourceIn).toBe(7);
+    expect(out.stillHeld.length).toBe(0);
+  });
+
+  it("R2 — the next shot starts earlier with its own unshown seconds before its in-point", () => {
+    const a = clip("y1", 0, 4, { sourceIn: 0 });
+    const b = clip("y2", 4, 8, { sourceIn: 5, holdAtSourceOut: true, sourceOut: 9 });
+    const out = giveHeldSecondsToNeighbours([a, b], (x) => (x.id === "y1" ? 2 : 9));
+    expect(a.timelineEnd).toBe(2);
+    expect(b.timelineStart).toBe(2);
+    expect(b.sourceIn).toBe(3);
+    expect(out.stillHeld).toEqual([]);
+  });
+
+  it("R2 — what nothing can fill is an ERROR, and the renderer moves the held frame", () => {
+    const a = clip("z1", 0, 4, { sourceIn: 0 });
+    const out = giveHeldSecondsToNeighbours([a], () => 1.5);
+    expect(out.stillHeld).toEqual([{ clipId: "z1", sec: 2.5 }]);
+    expect(out.notes.at(-1)).toMatch(/ERROR 2\.50s HELD/);
+    expect(SRC("timelineRenderer.ts")).toContain("[HeldFrame] ERROR clip=");
   });
 
   it("a real render: the short file's slot is taken by the next shot — no held frame, PROFESSIONAL", async () => {
@@ -337,5 +376,77 @@ describe("6 — pieces of one YouTube shot follow each other, no jump back or ah
     for (let i = 0; i < spans.length; i++)
       for (let j = i + 1; j < spans.length; j++) expect(Math.min(spans[i]![1], spans[j]![1]) - Math.max(spans[i]![0], spans[j]![0])).toBeLessThanOrEqual(0.01);
     expect(pieces.some((p) => p.inSec >= 10)).toBe(true);
+  });
+});
+
+describe("7 — R2: the made film is measured — still, slow and repeated picture", () => {
+  const flat = (v: number) => new Uint8Array(SAMPLE_W * SAMPLE_H).fill(v);
+  const textured = (seed: number, shift = 0) =>
+    Uint8Array.from({ length: SAMPLE_W * SAMPLE_H }, (_, i) => (((i * 37 + seed * 101) % 211) + shift) & 0xff);
+
+  it("pure reading: two seconds of one frame are still; a cut away and back is a repeat", () => {
+    const a = textured(1);
+    const samples = [textured(5), textured(6), a, a, a, a, a, textured(7), textured(8), textured(9), textured(10), textured(11), a, a, a];
+    const m = readPicture(samples, 2);
+    expect(m.still[0]).toEqual({ fromSec: 1, toSec: 3 });
+    expect(m.repeats.length).toBe(1);
+    expect(m.repeats[0]).toMatchObject({ fromSec: 6, firstSeenSec: 1 });
+  });
+
+  it("a black stretch or a colour field is not a repeat, and a drawn graphic's window is left out", () => {
+    const samples = [flat(0), flat(0), textured(2), textured(3), textured(4), textured(5), textured(6), flat(0), flat(0), flat(0)];
+    expect(readPicture(samples, 2).repeatSec).toBe(0);
+    const still = [textured(1), textured(1), textured(1), textured(1), textured(2)];
+    expect(readPicture(still, 2).stillSec).toBe(1.5);
+    expect(readPicture(still, 2, [{ fromSec: 0, toSec: 2 }]).stillSec).toBe(0);
+  });
+
+  it("the night walk of the uploaded film: two shots in a row from one source that jump inside it are named", () => {
+    const t = emptyTimeline(1, { widthPx: 320, heightPx: 180, fps: 25 });
+    t.durationSec = 12;
+    const yt = { provider: "youtube_cc" as const, archiveAssetId: 55, contentApproval: "judge_fit" as const };
+    const walk = [
+      clip("j1", 0, 3, { source: yt, sourceIn: 10, sourceOut: 13 }),
+      clip("j2", 3, 6, { source: yt, sourceIn: 18, sourceOut: 21 }),
+      clip("j3", 6, 9, { source: yt, sourceIn: 21, sourceOut: 24 }),
+      clip("j4", 9, 12, { source: yt, sourceIn: 24.5, sourceOut: 27.5 }),
+    ];
+    for (const tr of t.tracks) if (tr.kind === "VIDEO") tr.clips.push(...walk);
+    const r = viewerReport(t);
+    /** 13 → 18 jumps; 21 → 21 continues; 24 → 24.5 steps over one cut in the source */
+    expect(r.jumpCuts).toEqual(["j1→j2 (13.0s → 18.0s)"]);
+    expect(formatViewerReport(1, r)).toMatch(/jumpCuts=1 .*NOT_YET — .*1 jump\(s\) inside one source/);
+  });
+
+  it("measured on a real file: the held seconds and the shot that comes back are found; the line says NOT_YET", async () => {
+    const film = path.join(dir, "measured.mp4");
+    execFileSync("ffmpeg", [
+      "-y", "-loglevel", "error",
+      "-f", "lavfi", "-i", "testsrc2=s=320x180:d=3:r=25",
+      "-f", "lavfi", "-i", "mandelbrot=s=320x180:r=25",
+      "-filter_complex",
+      "[0:v]split=2[a][b];[a]trim=0:2,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=2[held];" +
+        "[1:v]trim=0:3,setpts=PTS-STARTPTS,format=yuv420p[m];[b]trim=0:2,setpts=PTS-STARTPTS[again];" +
+        "[held][m][again]concat=n=3:v=1:a=0,format=yuv420p[v]",
+      "-map", "[v]", "-c:v", "libx264", film,
+    ]);
+    const m = (await measureFilmPicture(film))!;
+    expect(m.sampledSec).toBeGreaterThan(8);
+    expect(m.stillSec).toBeGreaterThanOrEqual(1.5);
+    expect(m.still[0]!.fromSec).toBeGreaterThanOrEqual(1.5);
+    expect(m.still[0]!.fromSec).toBeLessThanOrEqual(2.5);
+    expect(m.repeatSec).toBeGreaterThanOrEqual(1);
+    expect(m.repeats[0]!.fromSec).toBeGreaterThanOrEqual(6.5);
+    const t = emptyTimeline(1, { widthPx: 320, heightPx: 180, fps: 25 });
+    t.durationSec = 9;
+    const line = formatViewerReport(1, viewerReport(t, [], m));
+    expect(line).toMatch(/measured=still \d/);
+    expect(line).toMatch(/NOT_YET — .*the picture stands still.*a picture comes back/);
+  }, 120_000);
+
+  it("a file that cannot be read says so; the worker measures every made film", () => {
+    const t = emptyTimeline(1, { widthPx: 320, heightPx: 180, fps: 25 });
+    expect(formatViewerReport(1, viewerReport(t, [], null))).toContain("measured=UNREADABLE");
+    expect(SRC("renderJobWorker.ts")).toContain("const measured = await measureFilmPicture(rendered.outputPath, drawn);");
   });
 });

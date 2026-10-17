@@ -330,7 +330,7 @@ describe("6 — the viewer report", () => {
   });
 
   it("every render job prints it, from the timeline it rendered and the renderer's held frames", () => {
-    expect(SRC("renderJobWorker.ts")).toContain("console.log(formatViewerReport(job.videoId, viewerReport(timelineRendered, rendered.heldFrames ?? [])));");
+    expect(SRC("renderJobWorker.ts")).toContain("console.log(formatViewerReport(job.videoId, viewerReport(asCut, rendered.heldFrames ?? [], measured)));");
     expect(SRC("timelineRenderer.ts")).toContain("if (stillSec > 0.04) heldFrames.push({ clipId: clip.id, sec: stillSec });");
   });
 });
