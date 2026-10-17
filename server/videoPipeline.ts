@@ -8414,6 +8414,19 @@ export async function generateMissingBeatImages(
       const clip = await fetchBeatGeneratedImage(beat, scene, workDir, si, dedup, videoTitle, GENERATED_IMAGES_PER_FILM - made);
       if (!clip) continue;
       made++;
+      /**
+       * VIDEO 662 — stored in the inactive AI-beelden archive, so a render that has to fetch it again
+       * finds it. Render 72's retry lost three approved AI pictures (REHYDRATION_UNSUPPORTED_PROVIDER)
+       * because this route placed them without the push's archive step. The picture is placed
+       * whatever the archive answers: it is the sentence's picture by the owner's rule (VIDEO 658).
+       */
+      const archived = await ensureArchiveBackedBeforePush(dedup, clip, clipContentKey(clip), scene.index, beat.index).catch(
+        (err): ArchivePushVerdict => ({ ok: false, reason: (err as Error)?.message?.slice(0, 120) ?? String(err) })
+      );
+      console.log(
+        `[${GENERATED_IMAGE_FALLBACK}] s${scene.index}b${beat.index} archive=${archived.ok ? archived.reason : `FAILED (${archived.reason})`} ` +
+          `file=${path.basename(clip)}` + (archived.ok ? "" : " — placed anyway; a retry render could not read it back")
+      );
       const target = (sceneVisualResults[si] ??= { clips: [], beatDurations: [], clipBeatIndices: [] });
       target.clips.push(clip);
       target.beatDurations.push(generatedStillSec(beat));
@@ -8726,6 +8739,29 @@ export async function enforceMandatoryChecks(
  * first mandatory checks and BEFORE the rungs below, so a sentence that loses its picture here is
  * offered a different one by them. Earlier in the film wins; a clip that cannot be read stays.
  */
+/**
+ * VIDEO 662 — the source a clip was cut from, read from its content key: a YouTube moment's key is
+ * `<provider>:<video>@t<start>d<dur>`, so everything before `@t` names the video. Null when the key
+ * names no moment (the clip IS its own source).
+ */
+export function footageFamily(contentKey: string | null | undefined): string | null {
+  const key = contentKey ?? "";
+  const at = key.indexOf("@t");
+  return at > 0 ? key.slice(0, at) : null;
+}
+
+/** The source video of a placed clip: the lineage root's provider asset (a YouTube video id), else the content key's. */
+function clipSourceFamily(dedup: VisualDedupState, clipPath: string): string | null {
+  const key = clipContentKey(clipPath);
+  const ledger = dedup.sourcingCache?.lineage;
+  const record = ledger?.resolve(clipPath, key) ?? null;
+  const root = record && ledger ? ledger.rootOf(record.lineageId) ?? record : record;
+  const provider = root?.provider?.trim().toLowerCase();
+  const assetId = root?.providerAssetId?.trim();
+  if ((provider === "youtube" || provider === "youtube_cc") && assetId) return `youtube:${assetId.split("@t")[0]}`;
+  return footageFamily(key);
+}
+
 export async function removeVisualRepeats(
   scenes: Scene[],
   sceneVisualResults: Array<SceneVisualsResult | undefined>,
@@ -8744,7 +8780,7 @@ export async function removeVisualRepeats(
       if (aiKeptAnywhere(dedup, clipContentKey(clipPath))) continue;
       const id = `s${scene.index}#${i}:${path.basename(clipPath)}`;
       where.set(id, { si, i });
-      items.push({ id, prints: await fingerprint(clipPath).catch(() => null) });
+      items.push({ id, prints: await fingerprint(clipPath).catch(() => null), family: clipSourceFamily(dedup, clipPath) });
     }
   }
   const repeats = findVisualRepeats(items);

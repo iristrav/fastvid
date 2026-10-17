@@ -229,7 +229,8 @@ describe("the renderer reads no further than a held clip's out-point", () => {
 
   it("the input is opened with that read", () => {
     const R = readFileSync(join(__dirname, "timelineRenderer.ts"), "utf8");
-    expect(R).toContain("const readSec = sourceReadSec(fitted, startAt, dur * speed);");
+    /** VIDEO 662 — a start clamped to the file's end reads the tail it starts on; otherwise exactly this read */
+    expect(R).toContain(": sourceReadSec(fitted, startAt, dur * speed);");
     expect(R).toContain('args.push("-ss", startAt.toFixed(3), "-t", readSec.toFixed(3), "-i", localMedia);');
   });
 });

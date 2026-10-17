@@ -513,6 +513,9 @@ export function sourceReadSec(
   return Math.min(wantSec, Math.max(0.04, clip.sourceOut - startAt));
 }
 
+/** VIDEO 662 — a start this close to a file's end (or past it) reads this much of the end instead. */
+export const TAIL_READ_SEC = 0.5;
+
 /** The push a held tail gets: 4% over the whole clip — enough to read as alive, too little to read as a zoom. */
 export const HOLD_TAIL_PUSH_SCALE = 1.04;
 
@@ -970,9 +973,23 @@ async function renderSegment(
     /** A sped-up clip reads `speed` seconds of source per second of slot (see `clipPlaybackSpeed`). */
     const speed = clipPlaybackSpeed(fitted);
     const sourceHandle = Math.max(0, handleSec) * speed;
-    /** A start past the file's end would read nothing at all; it starts on the last frame instead. */
-    const lastFrameAt = fileSec != null && fileSec > 0.1 ? fileSec - 0.1 : null;
-    const startAt = Math.min(Math.max(0, inPoint - sourceHandle), lastFrameAt ?? Infinity);
+    /**
+     * A start past the file's end would read nothing at all. VIDEO 662 — starting 0.1 s before the
+     * end was not enough either: render 71's vc_d2fe49d8fe (in-point past its 4.07 s file) decoded
+     * no frame from there, the segment came out empty, the film was 3.9 s short and the render
+     * failed its length check. A late start now begins at least `TAIL_READ_SEC` before the end and
+     * reads that much; the last frame then holds for the rest of the slot.
+     */
+    const latestStart = fileSec != null && fileSec > 0.1 ? Math.max(0, fileSec - TAIL_READ_SEC) : null;
+    const wantedStart = Math.max(0, inPoint - sourceHandle);
+    const startAt = Math.min(wantedStart, latestStart ?? Infinity);
+    const startClamped = latestStart != null && wantedStart > latestStart;
+    if (startClamped) {
+      console.log(
+        `[ShotFreeze] clip=${clip.id} its in-point ${wantedStart.toFixed(2)}s lies at or past the end of its ${fileSec!.toFixed(2)}s file — ` +
+          `the last ${(fileSec! - startAt).toFixed(2)}s are read and the last frame holds (never an empty segment)`
+      );
+    }
     handleFromSource = handleSec <= 0 || inPoint >= sourceHandle;
     const shortBy = fileSec != null ? startAt + dur * speed - fileSec : 0;
     if (shortBy > 0.1) {
@@ -981,7 +998,9 @@ async function renderSegment(
           `its last frame holds instead of replaying its start`
       );
     }
-    const readSec = sourceReadSec(fitted, startAt, dur * speed);
+    const readSec = startClamped
+      ? Math.max(sourceReadSec(fitted, startAt, dur * speed), Math.min(dur * speed, fileSec! - startAt))
+      : sourceReadSec(fitted, startAt, dur * speed);
     if (readSec < dur * speed - 0.01) {
       console.log(
         `[ShotHold] clip=${clip.id} reads ${readSec.toFixed(2)}s of source to its out-point, then holds that frame ` +

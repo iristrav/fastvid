@@ -842,7 +842,12 @@ export async function runScriptEngineV2(
         const refined = refineResp.choices[0]?.message?.content ?? "";
         if (typeof refined === "string" && refined.trim().length > 200 && scriptStillOnTopic(topic, refined)) {
           /** VIDEO 661 (G) — the revision is cleaned the same way as the draft. */
-          const candidate = stripWriterInstructions(stripVisualTagsFromScript(refined.trim())).script;
+          const cleanedRevision = stripWriterInstructions(stripVisualTagsFromScript(refined.trim()));
+          if (cleanedRevision.removed.length) {
+            /** VIDEO 662 — the revision's removals are named like the draft's. */
+            console.warn(`[ScriptEngine] removed ${cleanedRevision.removed.length} writer instruction(s) from the length revision: ${cleanedRevision.removed.map((r) => `"${r.slice(0, 80)}"`).join("; ")}`);
+          }
+          const candidate = cleanedRevision.script;
           const refinedWords = countNarrationWords(candidate);
           if (Math.abs(refinedWords - budget.targetWords) < Math.abs(wordCount - budget.targetWords)) {
             markdownScript = candidate;

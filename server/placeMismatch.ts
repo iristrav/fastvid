@@ -10,7 +10,7 @@
  * Deliberately narrow, so it cannot refuse on a guess:
  *  - only names on the list below count, matched as whole words; ambiguous names (Georgia, Jordan,
  *    Turkey, Nice, Victoria, Washington as a state, England (New England), Wales (New South Wales),
- *    Santos, Savannah, Alexandria, Valencia…) are left out;
+ *    Santos, Savannah, Alexandria, Valencia, Venice (Venice Beach)…) are left out;
  *  - a sentence or title that names no listed place decides nothing;
  *  - a title naming the sentence's place, or any place in the same country, passes;
  *  - nationality words ("Dutch", "German") count on the sentence side only: a title like "French
@@ -72,19 +72,20 @@ const DEMONYMS: Record<string, string> = {
 const CITIES: Array<[string, string, string[]?]> = [
   ["amsterdam", "netherlands"], ["rotterdam", "netherlands"], ["the hague", "netherlands", ["the hague", "den haag"]],
   ["utrecht", "netherlands"], ["eindhoven", "netherlands"], ["antwerp", "belgium", ["antwerp", "antwerpen"]],
-  ["brussels", "belgium", ["brussels", "brussel", "bruxelles"]], ["hamburg", "germany"], ["berlin", "germany"],
+  ["brussels", "belgium", ["brussels", "brussel", "bruxelles"]],
+  ["bruges", "belgium", ["bruges", "brugge"]], ["ghent", "belgium", ["ghent", "gent"]], ["liege", "belgium", ["liege", "liège"]], ["hamburg", "germany"], ["berlin", "germany"],
   ["frankfurt", "germany"], ["munich", "germany", ["munich", "münchen"]], ["cologne", "germany", ["cologne", "köln"]],
   ["bremen", "germany"], ["paris", "france"], ["marseille", "france"], ["le havre", "france"], ["lyon", "france"],
   ["london", "united kingdom"], ["liverpool", "united kingdom"], ["manchester", "united kingdom"],
   ["southampton", "united kingdom"], ["felixstowe", "united kingdom"], ["glasgow", "united kingdom"],
   ["edinburgh", "united kingdom"], ["dublin", "ireland"], ["madrid", "spain"], ["barcelona", "spain"],
   ["algeciras", "spain"], ["lisbon", "portugal"], ["rome", "italy"], ["milan", "italy"],
-  ["genoa", "italy"], ["naples", "italy"], ["venice", "italy"], ["athens", "greece"], ["piraeus", "greece"],
+  ["genoa", "italy"], ["naples", "italy"], ["athens", "greece"], ["piraeus", "greece"],
   ["warsaw", "poland"], ["gdansk", "poland", ["gdansk", "gdańsk"]], ["vienna", "austria"], ["zurich", "switzerland", ["zurich", "zürich"]],
   ["geneva", "switzerland"], ["stockholm", "sweden"], ["gothenburg", "sweden"], ["oslo", "norway"],
   ["copenhagen", "denmark"], ["helsinki", "finland"], ["moscow", "russia"], ["st. petersburg", "russia", ["st. petersburg", "saint petersburg"]],
   ["kyiv", "ukraine", ["kyiv", "kiev"]], ["odesa", "ukraine", ["odesa", "odessa"]],
-  ["new york", "united states", ["new york", "manhattan"]], ["los angeles", "united states"], ["long beach", "united states"],
+  ["new york", "united states", ["new york", "manhattan"]], ["los angeles", "united states", ["los angeles", "venice beach", "santa monica"]], ["long beach", "united states"],
   ["oakland", "united states"], ["san francisco", "united states"], ["seattle", "united states"], ["chicago", "united states"],
   ["houston", "united states"], ["miami", "united states"], ["boston", "united states"], ["detroit", "united states"],
   ["baltimore", "united states"], ["new orleans", "united states"],
@@ -112,6 +113,17 @@ function escapeRe(s: string): string {
 function mentions(text: string, alias: string): boolean {
   const hay = ` ${text.toLowerCase().replace(/[-_./]+/g, " ")} `;
   return new RegExp(`[^\\p{L}\\p{N}]${escapeRe(alias.toLowerCase())}[^\\p{L}\\p{N}]`, "u").test(hay);
+}
+
+/**
+ * VIDEO 662 — a place standing on its own, not the start of a longer name: "Bruges misty mornings"
+ * names Bruges; "Paris Hilton", "Berlin Wall" and "New York City Ballet" name something else.
+ */
+export function placeStandsAlone(text: string, alias: string): boolean {
+  const hay = text.replace(/[-_./]+/g, " ");
+  /** case-insensitive for the place itself; the capital after it is read from the text as written */
+  const m = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRe(alias)}(?![\\p{L}\\p{N}])(\\s+\\S)?`, "iu").exec(hay);
+  return !!m && !(m[1] && /^\s+\p{Lu}/u.test(m[1]));
 }
 
 /** The listed places a text names. `withDemonyms` also reads "Dutch" as the Netherlands. */

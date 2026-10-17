@@ -19,7 +19,16 @@ export const OTHER_ARCHIVE_SLUG = "overig";
 /** VIDEO 650 — the system's own generated generic footage (genericFootageFallback.ts). */
 export const GENERIC_ARCHIVE_SLUG = "generic";
 
-export type AutoArchiveKind = "stock" | "youtube" | "other" | "generic";
+/**
+ * VIDEO 662 — the pictures FastVid generates itself (ElevenLabs/Veo video, Stability stills,
+ * Replicate). Kept so a render can read them back — render 72's retry lost three approved AI
+ * pictures because no archive held them — and never offered as archive footage to another film.
+ */
+export const AI_ARCHIVE_SLUG = "ai";
+/** The generated-picture providers (generatedImageFallback's AI_GENERATED_PROVIDERS), spelled here so this module stays import-free. */
+const AI_PLATFORMS: ReadonlySet<string> = new Set(["stability", "elevenlabs_video", "replicate_pvideo"]);
+
+export type AutoArchiveKind = "stock" | "youtube" | "other" | "generic" | "ai";
 
 export const AUTO_ARCHIVES: Record<AutoArchiveKind, { slug: string; name: string; description: string; isActive: number }> = {
   stock: {
@@ -45,6 +54,14 @@ export const AUTO_ARCHIVES: Record<AutoArchiveKind, { slug: string; name: string
       "synthetic colour fields FastVid renders itself are filed here too.",
     isActive: 1,
   },
+  ai: {
+    slug: AI_ARCHIVE_SLUG,
+    name: "AI-beelden",
+    description:
+      "Pictures FastVid generated itself for a sentence (ElevenLabs/Veo, Stability, Replicate). Kept so " +
+      "every shot can be read back from our own storage; never offered as archive footage.",
+    isActive: 0,
+  },
   other: {
     slug: OTHER_ARCHIVE_SLUG,
     name: "Overig",
@@ -61,6 +78,7 @@ export function autoArchiveKind(meta: { sourcePlatform?: string | null; sourceNo
   if (platform === "pexels" || platform === "pixabay" || note.startsWith("pexels:") || note.startsWith("pixabay:")) {
     return "stock";
   }
+  if (AI_PLATFORMS.has(platform) || [...AI_PLATFORMS].some((p) => note.startsWith(`${p}:`))) return "ai";
   if (platform === "youtube" || platform === "youtube_cc" || note.startsWith("youtube")) return "youtube";
   if (platform === "generic_footage" || note.startsWith("generic_footage:")) return "generic";
   /** the synthetic placeholder is filed with the generic clips so an operator finds and replaces it, never as footage */

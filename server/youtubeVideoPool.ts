@@ -16,6 +16,7 @@
  * requeue after a deploy, a second replica or a user trying again never gets a fresh budget.
  */
 import { youtubeResultIsShort } from "./youtubeNonFootage";
+import { placesIn, placeStandsAlone } from "./placeMismatch";
 import { judgeFootageTitle, judgeFootageType } from "./visualJudge";
 import { claimYoutubeSearch, MAX_YOUTUBE_SEARCHES_PER_VIDEO, type YoutubeSearchBudgetStore } from "./youtubeSearchBudget";
 import {
@@ -487,6 +488,19 @@ export function namedSubjectCoverage(
    */
   const asked = [pool.query1 ?? "", ...(opts.asked ?? [])].map((q) => new Set(contentWords(q))).filter((q) => q.size > 0);
   const usable = pool.candidates.filter((c) => c.usable);
+  /**
+   * VIDEO 662 — a need that names a PLACE no query has asked for goes first among the uncovered.
+   * Render 72 (LA set against Brussels and Bruges) spent its four searches elsewhere and never asked
+   * for Bruges ("budget_spent"): the film had no Belgian picture at all. The budget is unchanged.
+   */
+  /** Only a planner subject, and only a place standing on its own ("Bruges misty mornings", not "Paris Hilton"). */
+  const asksForNewPlace = (name: string, kind: NamedSubjectKind): boolean =>
+    kind === "subject" &&
+    placesIn(name).some(
+      (p) =>
+        p.aliases.some((a) => placeStandsAlone(name, a)) &&
+        !asked.some((q) => p.aliases.some((a) => contentWords(a).every((w) => q.has(w))))
+    );
   return scriptVisualNeeds(pool, namedSubjects)
     .filter((e) => !asked.some((q) => contentWords(e.name).every((w) => q.has(w))))
     .map((e) => ({
@@ -496,14 +510,17 @@ export function namedSubjectCoverage(
       reason: SUBJECT_REASON[e.kind],
       score: e.beats.length + (opts.important && queryNames(opts.important, e.name) ? 1 : 0) + (e.listed ? 1 : 0),
       covered: usable.some((c) => candidateShows(c, e.name)),
+      newPlace: asksForNewPlace(e.name, e.kind),
     }))
     .sort(
       (a, b) =>
         Number(a.covered) - Number(b.covered) ||
+        Number(b.newPlace) - Number(a.newPlace) ||
         b.score - a.score ||
         SUBJECT_PRIORITY[a.kind] - SUBJECT_PRIORITY[b.kind] ||
         a.beats[0]! - b.beats[0]!
-    );
+    )
+    .map(({ newPlace: _newPlace, ...need }) => need);
 }
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

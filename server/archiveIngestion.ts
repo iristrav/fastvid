@@ -373,6 +373,19 @@ async function ingestExternalClipToArchiveInner(
       );
       return refuse("EXEMPT_SOURCE", `${platform || sourcePrefix.split(":")[0]} is stock footage`);
     }
+    /**
+     * VIDEO 662 — a picture FastVid generated goes to the inactive AI-beelden archive: read back by
+     * a later render of THIS film, never offered to another one. Not cut into shots and not text-
+     * checked (VIDEO 659: a generated picture stays by the owner's rule).
+     */
+    let aiArchiveId: number | null = null;
+    if (autoArchiveKind(metadata) === "ai") {
+      const { ensureAutoMediaArchive } = await import("./db");
+      aiArchiveId = await ensureAutoMediaArchive("ai").catch(() => null);
+      if (aiArchiveId == null) {
+        return refuse("NO_ACTIVE_ARCHIVE", "the AI-beelden archive could not be found or created");
+      }
+    }
     if (isStock && genericArchiveId == null) {
       const { ensureStockMediaArchive } = await import("./db");
       stockArchiveId = await ensureStockMediaArchive().catch(() => null);
@@ -388,6 +401,7 @@ async function ingestExternalClipToArchiveInner(
       metadata.mediaType === "video" &&
       stockArchiveId == null &&
       genericArchiveId == null &&
+      aiArchiveId == null &&
       !metadata.alreadyOneShot &&
       !isArticleScreenshotFile(localPath)
     ) {
@@ -417,7 +431,7 @@ async function ingestExternalClipToArchiveInner(
      */
     const articleScreenshot = isArticleScreenshotFile(localPath);
     /** VIDEO 621 — always looked at, never on the render's budget (memo key, no budget). */
-    const overlay = articleScreenshot
+    const overlay = articleScreenshot || aiArchiveId != null
       ? null
       : await judgeOnScreenText({ path: localPath, mimeType: metadata.mimeType, memoKey: overlayKey });
     const hasText = articleScreenshot || overlay?.decision === "REJECT";
@@ -482,7 +496,7 @@ async function ingestExternalClipToArchiveInner(
     }
 
     // Resolve archive to ingest into
-    let archiveId = stockArchiveId ?? genericArchiveId ?? metadata.archiveId;
+    let archiveId = stockArchiveId ?? genericArchiveId ?? aiArchiveId ?? metadata.archiveId;
     if (!archiveId) {
       /**
        * RONDE 648 — by the kind of source, never "the most recently updated archive".
@@ -571,7 +585,7 @@ async function ingestExternalClipToArchiveInner(
       title: metadata.title.slice(0, 512),
       mediaType: metadata.mediaType,
       mixKind:
-        stockArchiveId != null || genericArchiveId != null ? "stock" : metadata.mediaType === "video" ? "real_video" : "photo",
+        stockArchiveId != null || genericArchiveId != null || aiArchiveId != null ? "stock" : metadata.mediaType === "video" ? "real_video" : "photo",
       mimeType: metadata.mimeType,
       storageUrl: url,
       storageKey: key,

@@ -159,7 +159,7 @@ describe("G — the outline's instructions and questions are not read out", () =
   it("it runs on GENERATED scripts (draft and length revision), never on a script the customer edited", () => {
     const ENGINE = fs.readFileSync(path.join(__dirname, "scriptEngine.ts"), "utf8");
     expect(ENGINE).toContain("const cleaned = stripWriterInstructions(markdownScript);");
-    expect(ENGINE).toContain("stripWriterInstructions(stripVisualTagsFromScript(refined.trim())).script");
+    expect(ENGINE).toContain("stripWriterInstructions(stripVisualTagsFromScript(refined.trim()))"); // VIDEO 662: its removals are logged too
     const ROUTERS = fs.readFileSync(path.join(__dirname, "routers.ts"), "utf8");
     expect(ROUTERS).not.toContain("stripWriterInstructions");
   });

@@ -59,6 +59,25 @@ export function yearIn(text: string): string | null {
   return /\b(1[0-9]{3}|20[0-9]{2})\b/.exec(text)?.[1] ?? null;
 }
 
+/**
+ * VIDEO 662 — words that open a sentence or a clause and are never part of a name: render 72's
+ * fallback scene read "Meanwhile Brussels" because "Meanwhile, Brussels" lost its comma first.
+ */
+const NEVER_A_NAME = new Set(
+  (
+    "meanwhile however yet still today now then instead moreover furthermore indeed nevertheless nonetheless " +
+    "thus hence therefore later finally first second third besides consequently ultimately sometimes often " +
+    "intussen echter toch nu toen vandaag daarna later uiteindelijk bovendien"
+  ).split(" ")
+);
+/**
+ * VIDEO 662 — adverbs are filler for a phrase too: "Brussels often sits" took "often" as a key word.
+ */
+const ADVERBS = new Set(
+  "often always never even only already again sometimes usually rarely perhaps really quite almost still yet soon".split(" ")
+);
+const isFiller = (w: string): boolean => STOPWORDS.has(w.toLowerCase()) || ADVERBS.has(w.toLowerCase());
+
 /** Lower-case words that sit inside a name: Otto von Bismarck, Vincent van Gogh. */
 const NAME_PARTICLES = new Set(["von", "van", "de", "der", "den", "da", "di", "du", "la", "le", "del", "ter", "ten"]);
 
@@ -69,7 +88,8 @@ const NAME_PARTICLES = new Set(["von", "van", "de", "der", "den", "da", "di", "d
  */
 export function nameIn(text: string): string | null {
   const words = text.replace(/[.,;:!?"“”()]/g, " ").split(/\s+/).filter(Boolean);
-  const cap = (w: string | undefined) => !!w && /^\p{Lu}/u.test(w) && !STOPWORDS.has(w.toLowerCase());
+  const cap = (w: string | undefined) =>
+    !!w && /^\p{Lu}/u.test(w) && !STOPWORDS.has(w.toLowerCase()) && !NEVER_A_NAME.has(w.toLowerCase());
   let best: string[] = [];
   for (let i = 0; i < words.length; i++) {
     if (!cap(words[i])) continue;
@@ -96,7 +116,7 @@ export function phraseIn(text: string): string | null {
   for (const clause of text.split(/[,;:.!?—–()"“”]/)) {
     let run: string[] = [];
     for (const w of clause.split(/\s+/).filter(Boolean)) {
-      if (STOPWORDS.has(w.toLowerCase()) || w.length < 3 || /^\d/.test(w)) {
+      if (isFiller(w) || w.length < 3 || /^\d/.test(w)) {
         if (run.length >= 2) break;
         run = [];
         continue;
@@ -111,18 +131,23 @@ export function phraseIn(text: string): string | null {
 
 /** The sentence's key words: the longest run of up to three words that are not filler. */
 export function keyWordsIn(text: string): string | null {
-  const words = text.replace(/[.,;:!?"“”()]/g, " ").split(/\s+/).filter(Boolean);
+  /**
+   * VIDEO 662 — a run never crosses a comma or a full stop: render 72's animation read
+   * "breathtakingly distinct reveal" across "distinct, reveal". Clause by clause, like `phraseIn`.
+   */
   let best: string[] = [];
-  let run: string[] = [];
-  for (const w of words) {
-    if (STOPWORDS.has(w.toLowerCase()) || w.length < 3) {
-      run = [];
-      continue;
+  const score = (r: string[]) => r.length * 100 + r.join("").length;
+  for (const clause of text.split(/[,;:.!?—–()"“”]/)) {
+    let run: string[] = [];
+    for (const w of clause.split(/\s+/).filter(Boolean)) {
+      if (isFiller(w) || w.length < 3) {
+        run = [];
+        continue;
+      }
+      run.push(w);
+      if (run.length > 3) run.shift();
+      if (score(run) > score(best)) best = [...run];
     }
-    run.push(w);
-    if (run.length > 3) run.shift();
-    const score = (r: string[]) => r.length * 100 + r.join("").length;
-    if (score(run) > score(best)) best = [...run];
   }
   return best.length ? best.join(" ") : null;
 }

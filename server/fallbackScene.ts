@@ -59,7 +59,13 @@ export function fallbackSceneWords(
   if (!t) return null;
   const anchor = yearIn(t) ?? nameIn(t);
   if (anchor) {
-    const phrase = phraseIn(t.split(anchor).join(","));
+    /**
+     * VIDEO 662 — the anchor is cut out of the text `nameIn` read it from (punctuation dropped):
+     * "Meanwhile, Brussels" never held "Meanwhile Brussels", so nothing was cut and the phrase began
+     * with the anchor again. A year is cut from the sentence as written.
+     */
+    const readAs = yearIn(t) === anchor ? t : t.replace(/[.,;:!?"“”()]/g, " ").replace(/\s+/g, " ");
+    const phrase = phraseIn(readAs.split(anchor).join(","));
     /** a phrase that only repeats part of the anchor adds nothing */
     const adds = phrase && !anchor.toLowerCase().includes(phrase.toLowerCase());
     if (adds) return { graphicType: "lower_third", label: anchor, phrase };

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { admitProviderForTier } from "./centralVisualSourcing";
+import { placesIn } from "./placeMismatch";
 import { providerRemoved } from "./sourcingTiers";
 
 import { foldSearchText } from "./searchTextNormalize";
@@ -2124,11 +2125,49 @@ export function narrowToCanonicalQuery(
   keepFormPhrase = false
 ): { query: string; narrowed: boolean } {
   const out = narrowToCanonicalQueryInner(text, ctx);
+  /**
+   * VIDEO 662 — NARROWING NEVER DROPS A PLACE THE QUERY NAMES. "Venice Beach skateboarders Bruges
+   * canals" went out as "Venice Beach", and Bruges was never asked for anywhere in the film. A
+   * place the query names (a verified place of the beat, or one on `placesIn`'s list) that the
+   * narrowed form no longer holds sends the query as it arrived.
+   */
+  if (out.narrowed) {
+    /**
+     * Only a query that sets two places side by side (a comparison) and would keep one of them:
+     * narrowing a query down to its subject alone ("Kris Jenner New York City bombard" → "Kris
+     * Jenner", render 594) is the narrowing's own job and stays as it was.
+     */
+    const named = placesNamedIn(text, ctx);
+    const dropped = named.length >= 2 ? placesDroppedByNarrowing(text, out.query, ctx) : [];
+    if (dropped.length && dropped.length < named.length) {
+      console.log(`[SearchQueryCanonical] kept="${(text ?? "").trim()}" — narrowing would drop the place(s) ${dropped.join(", ")}`);
+      return { query: (text ?? "").trim(), narrowed: false };
+    }
+  }
   if (!out.narrowed || !keepFormPhrase) return out;
   const form = /\b(archival footage|footage)\s*$/i.exec((text ?? "").trim())?.[1];
   if (!form || new RegExp(`\\b${form}\\s*$`, "i").test(out.query)) return out;
   const query = `${out.query} ${form}`;
   return query === (text ?? "").trim() ? { query, narrowed: false } : { query, narrowed: true };
+}
+
+/** VIDEO 662 — the places `original` names in full: verified places of the beat, and `placesIn`'s list. */
+export function placesNamedIn(original: string, ctx: VerifiedQueryContext | undefined): string[] {
+  const originalSet = new Set(conceptWords(original));
+  const verified = [...(ctx?.places ?? []), ...(ctx?.countries ?? [])].filter((t) => t.verified && t.term.trim()).map((t) => t.term.trim());
+  const listed = placesIn(original).map((p) => p.aliases.find((a) => conceptWords(a).every((w) => originalSet.has(w))) ?? p.name);
+  const byWords = new Map<string, string>();
+  for (const p of [...verified, ...listed]) {
+    const words = conceptWords(p);
+    if (words.length > 0 && words.every((w) => originalSet.has(w)) && !byWords.has(words.join(" "))) byWords.set(words.join(" "), p);
+  }
+  return [...byWords.values()];
+}
+
+/** VIDEO 662 — the places `original` names in full that `narrowed` no longer holds. */
+export function placesDroppedByNarrowing(original: string, narrowed: string, ctx: VerifiedQueryContext | undefined): string[] {
+  const narrowedSet = new Set(conceptWords(narrowed));
+  return placesNamedIn(original, ctx).filter((p) => !conceptWords(p).every((w) => narrowedSet.has(w)));
 }
 
 function narrowToCanonicalQueryInner(

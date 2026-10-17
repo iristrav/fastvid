@@ -48,23 +48,47 @@ export function sameLookingClips(a: readonly FrameFingerprint[], b: readonly Fra
   return matchingPrints(short, long) >= need;
 }
 
-export type RepeatCandidate = { id: string; prints: readonly FrameFingerprint[] | null };
+/**
+ * VIDEO 662 — two moments of the SAME source video are held to a looser bar. Render 72 showed one
+ * boulevard twice (YouTube uOqcqEiSTPE at 30 s and at 149 s, archive 61544 and 61548): different
+ * windows, the same street, frames close but not near-identical, so the strict rule let them both
+ * through and the contact sheet counted REPEATS=9 after delivery. Within one source, one pair of
+ * frames within `SAME_SOURCE_PICTURE_BITS` is the same picture again.
+ */
+export const SAME_SOURCE_PICTURE_BITS = 12;
+
+export type RepeatCandidate = {
+  id: string;
+  prints: readonly FrameFingerprint[] | null;
+  /** The source the clip was cut from (a YouTube video, an archive item); null when unknown. */
+  family?: string | null;
+};
+
+/** Within one source: any pair of non-flat frames within `SAME_SOURCE_PICTURE_BITS`. */
+export function sameSourceLooksAlike(a: readonly FrameFingerprint[], b: readonly FrameFingerprint[]): boolean {
+  return a.some((p) => !p.flat && b.some((q) => !q.flat && hammingBits(p.hash, q.hash) <= SAME_SOURCE_PICTURE_BITS));
+}
 
 /**
  * In film order: every clip that shows the same picture as a clip before it that was kept. A clip
  * without prints (unreadable) is never a repeat and is never compared against.
  */
 export function findVisualRepeats(items: readonly RepeatCandidate[]): Array<{ id: string; sameAs: string }> {
-  const kept: Array<{ id: string; prints: readonly FrameFingerprint[] }> = [];
+  const kept: Array<{ id: string; prints: readonly FrameFingerprint[]; family: string | null }> = [];
   const out: Array<{ id: string; sameAs: string }> = [];
   for (const it of items) {
     if (!it.prints || it.prints.length === 0) continue;
-    const earlier = kept.find((k) => sameLookingClips(it.prints!, k.prints));
+    const family = it.family ?? null;
+    const earlier = kept.find(
+      (k) =>
+        sameLookingClips(it.prints!, k.prints) ||
+        (family != null && k.family === family && sameSourceLooksAlike(it.prints!, k.prints))
+    );
     if (earlier) {
       out.push({ id: it.id, sameAs: earlier.id });
       continue;
     }
-    kept.push({ id: it.id, prints: it.prints });
+    kept.push({ id: it.id, prints: it.prints, family });
   }
   return out;
 }
