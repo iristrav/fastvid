@@ -37,6 +37,8 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 
 import { beatSentences } from "./youtubeVideoPool";
+import { wrongPlaceInTitle } from "./placeMismatch";
+import { conditionClash } from "./visibleConditions";
 
 const execFileAsync = promisify(execFile);
 
@@ -407,6 +409,35 @@ export type SheetOutcome =
   | { kind: "nothing_fits"; frames: number }
   | { kind: "no_sheet"; reason: string };
 
+/**
+ * VIDEO 663 — a sentence a frame may not be approved for, whatever the sheet answered: what the frame
+ * shows (`depicts`) contradicts a visible condition the sentence names (night under "sun") or names
+ * another place than the sentence does (Santa Monica under a line about Brussels). A sheet approval
+ * stands as the sentence's verdict without a second look, so it is checked here. Returns the picks
+ * with those sentences taken out (and picks left with none dropped), plus one line per removal.
+ */
+export function withoutContradictedSentences<P extends { sentences: number[]; depicts: string; sec: number }>(
+  picks: readonly P[],
+  sentences: readonly string[]
+): { picks: P[]; removed: string[] } {
+  const removed: string[] = [];
+  const out: P[] = [];
+  for (const p of picks) {
+    const keep = p.sentences.filter((i) => {
+      const line = sentences[i] ?? "";
+      const clash = conditionClash(line, p.depicts);
+      const place = clash ? null : wrongPlaceInTitle(line, p.depicts);
+      if (!clash && !place) return true;
+      removed.push(
+        `@${p.sec}s not for sentence ${i}: ${clash ? `contradicts the line (${clash})` : `wrong place (${place!.titled.join(", ")}, the line says ${place!.said.join(", ")})`}`
+      );
+      return false;
+    });
+    if (keep.length) out.push({ ...p, sentences: keep });
+  }
+  return { picks: out, removed };
+}
+
 export async function lookBeforeDownload(params: {
   videoId: string;
   title: string;
@@ -451,9 +482,12 @@ export async function lookBeforeDownload(params: {
     .catch(() => null);
   const picks = answer ? parseSheetAnswer(answer, frames.length, params.sentences.length) : null;
   if (!picks) return { kind: "no_sheet", reason: "the picture editor's answer could not be read" };
-  const approved = picks
-    .filter((p) => p.sentences.length > 0)
-    .map((p) => ({ sec: frames[p.frame - 1]!.sec, sentences: p.sentences, depicts: p.depicts }));
+  const sheetChecked = withoutContradictedSentences(
+    picks.filter((p) => p.sentences.length > 0).map((p) => ({ sec: frames[p.frame - 1]!.sec, sentences: p.sentences, depicts: p.depicts })),
+    params.sentences
+  );
+  for (const r of sheetChecked.removed) say(`[YouTubeSheet] ${videoId} ${r}`);
+  const approved = sheetChecked.picks;
   say(
     `[YouTubeSheet] ${videoId} quick look (storyboard): ${frames.length} frame(s) of ${Math.round(durationSec)}s ` +
       `(${hits.length} from the transcript) — ${approved.length} candidate(s) for ` +
@@ -476,9 +510,12 @@ export async function lookBeforeDownload(params: {
     say(`[YouTubeSheet] ${videoId} the sharp look's answer could not be read — candidates downloaded, judged after the download`);
     return { kind: "approved", picks: approved, windows: windowsAroundApprovals(approved.map((a) => a.sec), durationSec), frames: frames.length, confirmed: false };
   }
-  const confirmed = sharpPicks
-    .filter((p) => p.sentences.length > 0)
-    .map((p) => ({ sec: sharpFrames[p.frame - 1]!.sec, sentences: p.sentences, depicts: p.depicts }));
+  const sharpChecked = withoutContradictedSentences(
+    sharpPicks.filter((p) => p.sentences.length > 0).map((p) => ({ sec: sharpFrames[p.frame - 1]!.sec, sentences: p.sentences, depicts: p.depicts })),
+    params.sentences
+  );
+  for (const r of sharpChecked.removed) say(`[YouTubeSheet] ${videoId} sharp look: ${r}`);
+  const confirmed = sharpChecked.picks;
   say(
     `[YouTubeSheet] ${videoId} sharp look: ${sharpFrames.length} frame(s) — ${confirmed.length} approved for ` +
       `${new Set(confirmed.flatMap((a) => a.sentences)).size} sentence(s); only those seconds are downloaded`

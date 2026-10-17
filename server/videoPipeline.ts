@@ -60,7 +60,7 @@ import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry } from "./youtubeLookahead";
 import { askForFootage, namesInSentence, neighbourSentences, queriesThatNameSomething, sentenceOnlyQueries, sentenceOnlyYoutubeQueries, subjectWordOverlap, subjectWords, visualIntentSearchQuery, youtubeResultIsShort } from "./youtubeNonFootage";
 import { loadUnusableYoutubeVideos, recordYoutubeVideoOutcome, unreliableChannelsLast, unreliableYoutubeChannels, withoutUnusableYoutubeVideos, youtubeVideoUnusable } from "./youtubeUnusableVideos";
-import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
+import { cropEmbeddedBarsInPlace, cropUniformBandsInPlace } from "./embeddedBarsCrop";
 import { buildSimpleStillVF, buildMatFramedStillVF, buildStillEncodeArgs, documentaryStyleEnabled, resolveStillCompositionVF, stillOutputFrameCount } from "./documentaryStyle";
 import { extractBeatGeoPlaceTags, extractPrimaryGeoSearchTag, extractPrimaryVisualAnchor } from "./visualBeatTags";
 import {
@@ -18910,6 +18910,19 @@ async function isMostlyBlackClip(
         `kept ${cropped.w}x${cropped.h} of ${cropped.srcW}x${cropped.srcH}, frame refilled with the picture itself`
     );
   }
+  /**
+   * VIDEO 663 — flat bands of any colour baked into the source (render 72's archive 61523: black
+   * sides and a purple band) are cut off the same way. Only a band on both opposite edges counts.
+   */
+  if (!curatedStill && !enclosingScopeHasEnded()) {
+    const banded = await cropUniformBandsInPlace(filePath).catch(() => null);
+    if (banded) {
+      console.log(
+        `[Pipeline] Flat bands cropped: ${path.basename(filePath)} kept ${banded.w}x${banded.h} of ` +
+          `${banded.srcW}x${banded.srcH}, frame refilled with the picture itself`
+      );
+    }
+  }
   // Curated archive clips: reject if too dark — threshold 25 (was 12, too permissive).
   // B&W archival clips have low luma by design; we still skip near-pitch-black ones.
   
@@ -31061,7 +31074,13 @@ async function _runVideoPipelineInner(
            */
           youtubeSourceFacts: async (identity) => {
             const { youtubeSourceFactsFor, productionShotCutDeps } = await import("./youtubeShotCuts");
-            return youtubeSourceFactsFor(identity, productionShotCutDeps(workDir));
+            const { pickLocalFileByIdentity } = await import("./cinematicPipelineInputs");
+            return youtubeSourceFactsFor(identity, {
+              ...productionShotCutDeps(workDir),
+              /** VIDEO 663 — a moment with no archive row is measured on the file this render cut. */
+              localFile: (id) =>
+                pickLocalFileByIdentity([...localFilesByBeat.values()].flat(), { source: id, sourceIn: id.providerWindow?.inSec }),
+            });
           },
           /**
            * The emotional curve this render already built, handed to the score.

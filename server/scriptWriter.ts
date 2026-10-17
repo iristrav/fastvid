@@ -127,6 +127,55 @@ export function isWriterInstructionSentence(sentence: string): boolean {
   return /\?\s*["'”’)]?\s*$/.test(s) && OUTLINE_QUESTION_RE.test(s);
 }
 
+/**
+ * VIDEO 663 — A LENGTH REVISION NEVER LEAVES A SENTENCE WITH WORDS CUT OUT OF ITS MIDDLE.
+ *
+ * Render 72's revision (167 → 128 words) narrated "This isn't just about landscapes clash of
+ * cultures": the draft's sentence with words taken from inside it. A revised sentence whose words are
+ * the words of one draft sentence, in order, with words missing from BETWEEN them (not only shorter at
+ * an end, and not a rewrite) is put back as the draft wrote it. Length is the lesser fault; a broken
+ * sentence is heard by every viewer. Returns the repaired script and each repair.
+ */
+const words = (s: string): string[] => s.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").split(/\s+/).filter(Boolean);
+
+/** Where `short` sits inside `long` as a subsequence, or null; `interiorGap` when a word is missing between two kept ones. */
+function subsequenceGap(short: string[], long: string[]): { interiorGap: boolean } | null {
+  let j = 0;
+  const at: number[] = [];
+  for (const w of short) {
+    while (j < long.length && long[j] !== w) j++;
+    if (j >= long.length) return null;
+    at.push(j++);
+  }
+  return { interiorGap: at.some((p, i) => i > 0 && p - at[i - 1]! > 1) };
+}
+
+export function restoreClippedSentences(draft: string, revised: string): { script: string; restored: Array<{ was: string; now: string }> } {
+  const sentencesOf = (t: string): string[] =>
+    t
+      .split("\n")
+      .filter((l) => l.trim() && !/^#/.test(l.trim()) && !/^\[visual:/i.test(l.trim()))
+      .flatMap((l) => l.trim().match(/[^.!?]+[.!?]+["'”’)]*|[^.!?]+$/g) ?? []);
+  const draftSentences = sentencesOf(draft).map((s) => ({ text: s.trim(), words: words(s) }));
+  const restored: Array<{ was: string; now: string }> = [];
+  let out = revised;
+  for (const sen of sentencesOf(revised)) {
+    const own = words(sen);
+    if (own.length < 3) continue;
+    /** a sentence the draft also has, word for word, is not clipped */
+    if (draftSentences.some((d) => d.words.join(" ") === own.join(" "))) continue;
+    const source = draftSentences.find((d) => {
+      if (d.words.length <= own.length) return false;
+      const gap = subsequenceGap(own, d.words);
+      return gap != null && gap.interiorGap;
+    });
+    if (!source) continue;
+    restored.push({ was: sen.trim(), now: source.text });
+    out = out.replace(sen.trim(), source.text);
+  }
+  return { script: out, restored };
+}
+
 export function stripWriterInstructions(script: string): { script: string; removed: string[] } {
   const removed: string[] = [];
   const out = script
@@ -414,6 +463,7 @@ Rules:
 - Preserve retention mechanics: macro loop, mid-loops, bridges between sections, value bomb near 60–70%, pattern interrupts. Bridges stay statements; add no questions.
 - Remove any [VISUAL: ...] tags — narration only.
 - ${direction === "EXPAND" ? "Add substance: another fact, contrast, micro-hook, or named entity — not padding or filler phrases." : "Cut redundancy only — keep hooks, loops, bridges, and the narrative arc intact."}
+- Every sentence stays a complete, grammatical sentence that reads naturally aloud. To cut, remove whole sentences or rewrite a sentence in full — never delete words from inside a sentence and leave the rest ("This isn't just about landscapes clash of cultures" is broken).
 - Return the FULL revised script only (markdown).
 
 SCRIPT TO REVISE:

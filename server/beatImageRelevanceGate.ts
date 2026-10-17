@@ -47,6 +47,7 @@ import { normaliseShotType } from "./shotVocabulary";
 import type { ShotType } from "./cinematicEditingEngine/types";
 import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
 import type { LineFacts } from "./beatVisualIntent";
+import { conditionClash } from "./visibleConditions";
 
 /**
  * VIDEO 650 — the four answers, and the rule for each:
@@ -895,6 +896,21 @@ export function acceptableRule<T extends Pick<BeatImageJudgement, "verdict" | "d
  * footage of the subject is admitted again. Each step logs what it changed, against the model's own
  * answer, so a log line always names the rule that wrote the verdict.
  */
+/**
+ * VIDEO 663 — a frame that shows the opposite of a condition the line names (night under "relentless
+ * sun", clear skies under "shrouded in rain") contradicts the line: refused, whatever the verdict, and
+ * the refusal says "contradicts" so no rule after it (`abstractLineRule`, `acceptableRule`) promotes it.
+ * Read from what the model said the frame SHOWS (`depicts`) only. See `visibleConditions.ts`.
+ */
+export const CONDITION_CLASH_PREFIX = "contradicts the line: ";
+
+export function conditionClashRule<T extends Pick<BeatImageJudgement, "verdict" | "depicts" | "reason">>(judgement: T, beatText: string): T {
+  if (judgement.verdict === "does_not_fit" && (judgement.reason ?? "").startsWith(CONDITION_CLASH_PREFIX)) return judgement;
+  const clash = conditionClash(beatText, judgement.depicts);
+  if (!clash) return judgement;
+  return { ...judgement, verdict: "does_not_fit", reason: `${CONDITION_CLASH_PREFIX}${clash} — ${judgement.reason ?? ""}`.slice(0, 200) };
+}
+
 export function settleSituationQuestion(
   judgementAsGiven: BeatImageJudgement,
   parsed: { subject_matches?: unknown; situation_matches?: unknown },
@@ -902,9 +918,17 @@ export function settleSituationQuestion(
   beatText: string,
   guess?: { subject?: string; personAsRead?: (name: string) => string | null | undefined }
 ): BeatImageJudgement {
+  /** VIDEO 663 — before anything else: a frame showing the opposite of what the line says is refused. */
+  const judgementAfterClash = conditionClashRule(judgementAsGiven, beatText);
+  if (judgementAfterClash !== judgementAsGiven) {
+    console.log(
+      `[BeatImageGate] the picture contradicts the line — refused: ${judgementAfterClash.reason.slice(0, 120)} ` +
+        `depicts="${judgementAsGiven.depicts.slice(0, 80)}"`
+    );
+  }
   /** OCTOBER 2026 (render 626) — see `situationRule`: the subject alone is not a fit. */
-  const judgementAfterSituation = situationRule(judgementAsGiven, parsed);
-  if (judgementAfterSituation !== judgementAsGiven) {
+  const judgementAfterSituation = situationRule(judgementAfterClash, parsed);
+  if (judgementAfterSituation !== judgementAfterClash) {
     console.log(
       `[BeatImageGate] subject without the situation — refused: depicts="${judgementAsGiven.depicts.slice(0, 80)}" ` +
         `subject_matches=${parsed.subject_matches} situation_matches=${parsed.situation_matches}`

@@ -459,7 +459,7 @@ describe("wiring — the facts reach the judge on every pipeline route", () => {
   it("judgeBeatImage applies the rule after the situation rule and before the identity guards", () => {
     const gate = read("beatImageRelevanceGate.ts");
     /** Inside `settleSituationQuestion`: the situation rule, then its exception. */
-    const situation = gate.indexOf("const judgementAfterSituation = situationRule(judgementAsGiven, parsed);");
+    const situation = gate.indexOf("const judgementAfterSituation = situationRule(judgementAfterClash, parsed);"); // VIDEO 663 — after the condition-clash rule
     const abstract = gate.indexOf("const judgementAfterAbstractLine = abstractLineRule(judgementAfterSituation, parsed, line, beatText);");
     expect(situation).toBeGreaterThan(0);
     expect(abstract).toBeGreaterThan(situation);

@@ -82,7 +82,7 @@ describe("P1-I — the next binary only when this one cannot run", () => {
 describe("P1-G — the black check and the approved mark", () => {
   it("Railway: three luma samples, dark when two are (pinned), never one frame deciding", () => {
     const at = PIPE.indexOf("async function isMostlyBlackClip(");
-    const body = PIPE.slice(at, at + 2600);
+    const body = PIPE.slice(at, at + 3400); // VIDEO 663 — the flat-band crop sits before the samples
     expect(body).toContain("THREE single-frame luma samples");
     expect(body).toContain("return samples.length === 1 ? dark === 1 : dark >= 2;");
     expect(body).not.toContain("const mid = await probeClipMeanLuma(filePath, 0.5);\n    return mid !== null && mid < 24;");

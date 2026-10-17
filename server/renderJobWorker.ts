@@ -33,6 +33,7 @@ import { isGraphicBackdrop } from "./edlToTimeline";
 import { sameAssetIdentity } from "./cinematicPipelineInputs";
 import { SYNTHETIC_PLACEHOLDER_PROVIDER, syntheticAssetId } from "./genericFootageFallback";
 import { applyFallbackScenes, FALLBACK_SCENE_MAX_SHARE, isFallbackSceneClip, rescueMissingPictures, toFallbackScene } from "./fallbackScene";
+import { formatViewerReport, viewerReport } from "./viewerReport";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -1148,6 +1149,12 @@ export async function runRenderJob(params: {
         `audioTracks=${rendered.audioTracks} ducked=${rendered.duckedTracks} ` +
         `ffmpegCommands=${rendered.ffmpegCommands}`
     );
+    /** VIDEO 663 — what a viewer sees, in one line: held frames, fallback scenes, repeats, long texts, unapproved pictures. */
+    try {
+      console.log(formatViewerReport(job.videoId, viewerReport(timelineRendered, rendered.heldFrames ?? [])));
+    } catch (err) {
+      console.warn(`[ViewerReport] job=${job.id} could not be made: ${((err as Error)?.message ?? String(err)).slice(0, 160)}`);
+    }
     /**
      * The editorial silences, each stated once.
      *

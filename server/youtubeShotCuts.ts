@@ -41,6 +41,11 @@ export type ShotCutDeps = {
   /** `incomplete`: the scan stopped before the end of the file — its cuts are not the whole truth. */
   detect: (filePath: string) => Promise<{ durationSec: number; cutsSec: number[]; incomplete?: string }>;
   save: (archiveAssetId: number, cutsSec: number[], durationSec: number) => Promise<void>;
+  /**
+   * VIDEO 663 — the file this render holds for an identity with no archive row (a YouTube moment it
+   * cut itself), or null. Its cuts are measured there instead of the clip being kept uncut.
+   */
+  localFile?: (identity: AssetSourceIdentity) => string | null | undefined;
   workDir?: string;
   log?: (line: string) => void;
 };
@@ -60,6 +65,26 @@ export async function youtubeSourceFactsFor(
   const row = id != null ? await deps.getAsset(id).catch(() => null) : null;
   if (!isYoutubeOrigin(identity, row)) return null;
   if (id == null || !row) {
+    /**
+     * VIDEO 663 — render 72's vc_d2fe49d8fe had no archive row, was "KEPT_UNCUT … it may show a
+     * transition" and froze. The moment's own file is on this disk: its cuts are measured there, in
+     * its seconds, and the pieces are planned inside one shot like any archived source's.
+     */
+    const local = identity.providerWindow ? deps.localFile?.(identity) : null;
+    if (local && fs.existsSync(local)) {
+      const measured = await deps.detect(local).catch(() => null);
+      if (measured && measured.durationSec > 0 && !measured.incomplete) {
+        const cutsSec = measured.cutsSec
+          .filter((c) => Number.isFinite(c) && c > 0 && c < measured.durationSec)
+          .map((c) => Number(c.toFixed(3)))
+          .sort((a, b) => a - b);
+        say(
+          `[YouTubeShots] provider=${identity.provider} id=${identity.providerAssetId ?? "?"} no archive row — measured on the ` +
+            `render's own file: duration=${measured.durationSec.toFixed(2)}s cuts=${cutsSec.length ? cutsSec.map((c) => c.toFixed(2)).join(",") : "none"}`
+        );
+        return { sourceDurationSec: measured.durationSec, cutsSec, measured: true, fileStartSec: identity.providerWindow!.inSec };
+      }
+    }
     say(
       `[YouTubeShots] provider=${identity.provider} id=${identity.providerAssetId ?? "?"} has no ` +
         `archive row — its length and cuts are unknown`

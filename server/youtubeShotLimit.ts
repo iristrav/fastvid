@@ -42,6 +42,13 @@ export type YoutubeSourceFacts = {
   cutsSec: readonly number[];
   /** False when the cuts were never measured; the source is then treated as one shot. */
   measured: boolean;
+  /**
+   * VIDEO 663 — set when the facts were measured on a file that starts this many seconds into the
+   * original (a YouTube moment with no archive copy: `AssetSourceIdentity.providerWindow`), while the
+   * clip's in-point is in the original's seconds. The pieces are planned in the file's seconds and
+   * written back in the original's.
+   */
+  fileStartSec?: number;
 };
 
 /**
@@ -402,8 +409,11 @@ export function limitYoutubeShots(params: {
       out.push(clip);
       continue;
     }
+    /** VIDEO 663 — the clip's in-point in the measured file's seconds (see `YoutubeSourceFacts.fileStartSec`). */
+    const offset = facts.fileStartSec != null && facts.fileStartSec > 0 ? facts.fileStartSec : 0;
+    const inFile = Math.max(0, (clip.sourceIn ?? 0) - offset);
     const plan = planYoutubePieces({
-      inSec: clip.sourceIn ?? 0,
+      inSec: inFile,
       durationSec: dur(clip),
       facts,
       maxSec,
@@ -469,7 +479,7 @@ export function limitYoutubeShots(params: {
          * ground under a card), so the pieces are played slower instead of repeating a window.
          */
         const slowed = planYoutubePieces({
-          inSec: clip.sourceIn ?? 0,
+          inSec: inFile,
           durationSec: dur(clip),
           facts,
           maxSec,
@@ -486,7 +496,7 @@ export function limitYoutubeShots(params: {
         }
       }
     }
-    if (plan.pieces.length > 1 || Math.abs(plan.pieces[0]!.inSec - (clip.sourceIn ?? 0)) > EPS) {
+    if (plan.pieces.length > 1 || Math.abs(plan.pieces[0]!.inSec - inFile) > EPS) {
       adjustedIds.push(clip.id);
     }
     if (plan.pieces.length > 1) {
@@ -503,8 +513,8 @@ export function limitYoutubeShots(params: {
       const piece: TimelineVideoClip = {
         ...clip,
         id: plan.pieces.length === 1 ? clip.id : `${clip.id}_p${k + 1}`,
-        sourceIn: p.inSec,
-        sourceOut: round(p.inSec + (p.hold ? (p.readsSec ?? YOUTUBE_HOLD_READ_SEC) : (end - at) * (p.speed ?? 1))),
+        sourceIn: round(p.inSec + offset),
+        sourceOut: round(p.inSec + offset + (p.hold ? (p.readsSec ?? YOUTUBE_HOLD_READ_SEC) : (end - at) * (p.speed ?? 1))),
         timelineStart: round(at),
         timelineEnd: end,
         ...(p.speed != null ? { speed: p.speed } : {}),

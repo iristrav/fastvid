@@ -68,9 +68,12 @@ describe("Visual Effects Planner (Phase 4)", () => {
     expect(grain?.intensity).toBeLessThan(0.3);
   });
 
-  it("applies letterbox for a dramatic wide/establishing shot", () => {
-    const effects = planVisualEffects(shot("establishing"), makeCandidate(), pacing("dramatic"));
-    expect(effects.some((e) => e.effectType === "letterbox")).toBe(true);
+  /** VIDEO 663 — bars that come and go between cuts are not cinematic: the planner never paints a letterbox. */
+  it("never plans a letterbox, not even on a dramatic wide/establishing shot", () => {
+    for (const type of ["establishing", "wide", "medium", "close_up"] as const) {
+      const effects = planVisualEffects(shot(type), makeCandidate(), pacing("dramatic"));
+      expect(effects.some((e) => e.effectType === "letterbox"), type).toBe(false);
+    }
   });
 
   it("applies lens_flare for a bright outdoor establishing shot", () => {

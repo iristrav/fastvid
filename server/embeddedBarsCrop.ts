@@ -95,6 +95,117 @@ export async function detectEmbeddedBarsCrop(file: string): Promise<BarsCrop | n
 export async function cropEmbeddedBarsInPlace(file: string, fps = 25): Promise<BarsCrop | null> {
   const crop = await detectEmbeddedBarsCrop(file);
   if (!crop || !cropIsWorthMaking(crop)) return null;
+  return applyBarsCrop(file, crop, fps);
+}
+
+/* ═══════════ VIDEO 663 — flat bands of ANY colour baked into the source ═══════════ */
+
+/** The analysis size: small enough to read three frames in one call, large enough for 6% of a side. */
+export const BAND_SCAN_W = 64;
+export const BAND_SCAN_H = 36;
+/** A row or column this flat (per-channel standard deviation, 0–255) is part of a band. */
+export const BAND_MAX_STDDEV = 6;
+/** A band whose colour moves more than this between frames is picture, not a band. */
+export const BAND_MAX_DRIFT = 8;
+
+/**
+ * VIDEO 663 — render 72 approved a 4:3 archive clip with black bars AND a purple band baked in
+ * (archive 61523): `cropdetect` reads black only, and `hasEmbeddedBlackBars` only black sides. This
+ * reads flat bands of any colour on the frame's edges, in three frames: a run of rows (or columns)
+ * from an edge that are each one flat colour, the same colour in every frame. A crop is proposed only
+ * when BOTH opposite edges carry one (top and bottom, or left and right) — a clear sky at the top
+ * of a landscape is not a band, a letterbox is. Pure: `frames` are rgb24 frames of `w`×`h`.
+ */
+export function uniformBandCrop(
+  frames: readonly Buffer[],
+  w = BAND_SCAN_W,
+  h = BAND_SCAN_H
+): { top: number; bottom: number; left: number; right: number } | null {
+  if (!frames.length || frames.some((f) => f.length < w * h * 3)) return null;
+  const px = (f: Buffer, x: number, y: number) => {
+    const i = (y * w + x) * 3;
+    return [f[i]!, f[i + 1]!, f[i + 2]!] as const;
+  };
+  /** one line (row y or column x): flat in every frame, and the same colour across frames */
+  const flatLine = (kind: "row" | "col", at: number): boolean => {
+    const means: number[][] = [];
+    for (const f of frames) {
+      const n = kind === "row" ? w : h;
+      const sum = [0, 0, 0];
+      const sq = [0, 0, 0];
+      for (let k = 0; k < n; k++) {
+        const c = kind === "row" ? px(f, k, at) : px(f, at, k);
+        for (let ch = 0; ch < 3; ch++) {
+          sum[ch]! += c[ch]!;
+          sq[ch]! += c[ch]! * c[ch]!;
+        }
+      }
+      const mean = sum.map((v) => v / n);
+      const sd = sq.map((v, ch) => Math.sqrt(Math.max(0, v / n - mean[ch]! * mean[ch]!)));
+      if (sd.some((d) => d > BAND_MAX_STDDEV)) return false;
+      means.push(mean);
+    }
+    return means.every((m) => m.every((v, ch) => Math.abs(v - means[0]![ch]!) <= BAND_MAX_DRIFT));
+  };
+  const run = (kind: "row" | "col", from: number, step: number, limit: number): number => {
+    let n = 0;
+    for (let at = from; n < limit && flatLine(kind, at); at += step) n++;
+    return n;
+  };
+  const top = run("row", 0, 1, Math.floor(h / 2));
+  const bottom = run("row", h - 1, -1, Math.floor(h / 2));
+  const left = run("col", 0, 1, Math.floor(w / 2));
+  const right = run("col", w - 1, -1, Math.floor(w / 2));
+  const minRows = Math.ceil(h * 0.06);
+  const minCols = Math.ceil(w * 0.06);
+  const rows = top >= minRows && bottom >= minRows;
+  const cols = left >= minCols && right >= minCols;
+  if (!rows && !cols) return null;
+  /** a whole flat frame is not a framed picture */
+  if ((rows && top + bottom >= h * 0.7) || (cols && left + right >= w * 0.7)) return null;
+  return { top: rows ? top : 0, bottom: rows ? bottom : 0, left: cols ? left : 0, right: cols ? right : 0 };
+}
+
+/** The bands of `uniformBandCrop` measured on the file, as a crop in its own pixels; null when none. */
+export async function detectUniformBandsCrop(file: string): Promise<BarsCrop | null> {
+  const size = await probeSize(file);
+  if (!size) return null;
+  const frames: Buffer[] = [];
+  for (const t of [0.4, 1.2, 2.4]) {
+    try {
+      const { stdout } = await run(
+        resolveFFmpegBin(),
+        ["-hide_banner", "-loglevel", "error", "-ss", String(t), "-i", file, "-frames:v", "1", "-vf", `scale=${BAND_SCAN_W}:${BAND_SCAN_H}:flags=area,format=rgb24`, "-f", "rawvideo", "pipe:1"],
+        { encoding: "buffer", maxBuffer: 1024 * 1024 } as never
+      );
+      const buf = stdout as unknown as Buffer;
+      if (buf?.length >= BAND_SCAN_W * BAND_SCAN_H * 3) frames.push(buf);
+    } catch {
+      /* a short file has fewer frames to read */
+    }
+  }
+  if (frames.length < 2) return null;
+  const b = uniformBandCrop(frames);
+  if (!b) return null;
+  /** one scan pixel inward on each cropped side, so a soft band edge never survives */
+  const sx = size.w / BAND_SCAN_W;
+  const sy = size.h / BAND_SCAN_H;
+  const x = b.left ? Math.ceil((b.left + 1) * sx) : 0;
+  const y = b.top ? Math.ceil((b.top + 1) * sy) : 0;
+  const right = b.right ? Math.ceil((b.right + 1) * sx) : 0;
+  const bottom = b.bottom ? Math.ceil((b.bottom + 1) * sy) : 0;
+  const even = (n: number) => Math.max(2, n - (n % 2));
+  return { x: x - (x % 2), y: y - (y % 2), w: even(size.w - x - right), h: even(size.h - y - bottom), srcW: size.w, srcH: size.h };
+}
+
+/** VIDEO 663 — crop flat bands of any colour and refill the frame with the picture itself. Null when nothing changed. */
+export async function cropUniformBandsInPlace(file: string, fps = 25): Promise<BarsCrop | null> {
+  const crop = await detectUniformBandsCrop(file);
+  if (!crop || !cropIsWorthMaking(crop)) return null;
+  return applyBarsCrop(file, crop, fps);
+}
+
+async function applyBarsCrop(file: string, crop: BarsCrop, fps: number): Promise<BarsCrop | null> {
   const tmp = path.join(path.dirname(file), `.${path.basename(file, path.extname(file))}.bars${path.extname(file) || ".mp4"}`);
   try {
     await run(resolveFFmpegBin(), [

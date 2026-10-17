@@ -72,9 +72,11 @@ export function planVisualEffects(shot: ShotInstruction, candidate: CandidateAss
   }
 
   if (shot.shotType === "establishing" || shot.shotType === "wide") {
-    if (pacing.tone === "dramatic") {
-      out.push(effect("letterbox", 0.5, "Dramatic pacing on a wide/establishing shot — letterboxing adds cinematic scale to the frame."));
-    }
+    /**
+     * VIDEO 663 — no letterbox planned any more. Painted on some dramatic wide shots and not on the
+     * shots around them, the black bars came and went between cuts, and the documentary grade tinted
+     * them: the "balken" the owner saw. The renderer still draws one a person adds in the editor.
+     */
     const atmosphere = textMatchesAny(searchText, ATMOSPHERE_SIGNALS);
     if (atmosphere) {
       out.push(effect("particles", 0.3, `Candidate's search text matches "${atmosphere}" — light particle atmosphere reinforces the environment.`));

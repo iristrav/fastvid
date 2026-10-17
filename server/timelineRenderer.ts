@@ -122,6 +122,8 @@ export type GraphicsRenderer = "remotion" | "ffmpeg_ass" | "none";
 export type RenderedTimeline = {
   outputPath: string;
   durationSec: number;
+  /** VIDEO 663 — segments that show a held last frame, with how many seconds of it (`viewerReport`). */
+  heldFrames?: Array<{ clipId: string; sec: number }>;
   clipsRendered: number;
   textsDrawn: number;
   captionsDrawn: number;
@@ -551,6 +553,41 @@ export function holdTailCamera(
   return { type: "slow_push", intensity: 0.3, startScale: 1, endScale: HOLD_TAIL_PUSH_SCALE };
 }
 
+/**
+ * VIDEO 663 — a source whose shape is not the frame's: standing, square, or 4:3 archival footage in a
+ * 16:9 film. `containChain` would put black bars beside it, and the documentary grade tinted those bars
+ * (the "balken" the owner saw); it is filled with itself instead (`blurFillChain`). Within
+ * `FRAME_SHAPE_TOLERANCE` of the frame's own aspect a source fills the frame as it always did.
+ */
+export const FRAME_SHAPE_TOLERANCE = 0.06;
+export function shapeIsNotTheFrames(src: { w: number; h: number } | null, fmt: { widthPx: number; heightPx: number }): boolean {
+  if (!src || !(src.w > 0) || !(src.h > 0) || !(fmt.heightPx > 0)) return false;
+  const frame = fmt.widthPx / fmt.heightPx;
+  return Math.abs(src.w / src.h - frame) / frame > FRAME_SHAPE_TOLERANCE;
+}
+
+/** The displayed size (after rotation), or null when it cannot be read. */
+export async function probeDisplaySize(file: string): Promise<{ w: number; h: number } | null> {
+  try {
+    const { stdout } = await execFileAsync(FFPROBE, [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=width,height:stream_tags=rotate:stream_side_data=rotation",
+      "-of", "json",
+      file,
+    ]);
+    const stream = (JSON.parse(stdout) as {
+      streams?: Array<{ width?: number; height?: number; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number }> }>;
+    }).streams?.[0];
+    if (!stream?.width || !stream?.height) return null;
+    const rotation = Number(stream.side_data_list?.find((d) => d.rotation != null)?.rotation ?? stream.tags?.rotate ?? 0);
+    const quarterTurn = Math.abs(Math.round(rotation / 90)) % 2 === 1;
+    return quarterTurn ? { w: stream.height, h: stream.width } : { w: stream.width, h: stream.height };
+  } catch {
+    return null;
+  }
+}
+
 export async function probeIsPortrait(file: string): Promise<boolean | null> {
   try {
     const { stdout } = await execFileAsync(FFPROBE, [
@@ -870,6 +907,22 @@ export function segmentFrameCount(
 }
 
 /**
+ * VIDEO 663 — A CHANNEL LOGO IS NOT PART OF A PROFESSIONAL FILM.
+ *
+ * The on-screen-text check passes a small logo or watermark over real footage (`textCheck:
+ * "overlay"`); refusing those would throw away most YouTube footage, whose channels brand a corner.
+ * Such a clip is played 15% larger, centred: 6.5% of each side leaves the frame, where corner logos
+ * sit. A clip the person scaled or framed in the editor keeps exactly what they chose.
+ */
+export const LOGO_PUNCH_IN_SCALE = 1.15;
+export function logoPunchIn<T extends Pick<TimelineVideoClip, "source" | "transform" | "kind">>(clip: T): T {
+  if (clip.source?.textCheck !== "overlay") return clip;
+  const t = clip.transform;
+  if (t?.fit === "crop" || (t?.scale != null && Math.abs(t.scale - 1) > 0.001)) return clip;
+  return { ...clip, transform: { ...(t ?? {}), scale: LOGO_PUNCH_IN_SCALE } };
+}
+
+/**
  * VIDEO 663 — the clip with its in- and out-point in the seconds of the FILE it reads. A clip whose
  * identity names the window its file holds (`AssetSourceIdentity.providerWindow`: a YouTube moment
  * with no archive copy) carries the seconds of the whole video; its file starts at the window's
@@ -894,8 +947,10 @@ async function renderSegment(
   look?: TimelineLook,
   /** Extra seconds of material at the FRONT, for the transition into this clip to consume. */
   handleSec = 0
-): Promise<{ handleFromSource: boolean }> {
+): Promise<{ handleFromSource: boolean; stillSec: number }> {
   const clip = clipInFileSeconds(planned);
+  /** VIDEO 663 — the seconds of this segment that show a held frame (`ViewerReport`). */
+  let stillSec = 0;
   const slot = Math.max(0.04, clip.timelineEnd - clip.timelineStart);
   const frames = segmentFrameCount(clip, fmt.fps, handleSec);
   const dur = frames / fmt.fps;
@@ -946,7 +1001,13 @@ async function renderSegment(
           }),
         };
   /** RONDE 647 — a standing picture is filled with itself, blurred, instead of black bars. */
-  const portraitSource = !clip.transform?.fit && (await probeIsPortrait(localMedia)) === true;
+  const shown = clip.transform?.fit ? null : await probeDisplaySize(localMedia);
+  const portraitSource = shown != null && shown.h > shown.w;
+  /** VIDEO 663 — any shape that is not the frame's is filled with itself, never with bars. */
+  const offShape = !portraitSource && shapeIsNotTheFrames(shown, fmt);
+  if (offShape) {
+    console.log(`[ShapeFill] clip=${clip.id} the source is ${shown!.w}×${shown!.h}, not the frame's shape — blurred fill instead of bars`);
+  }
   if (portraitSource) {
     console.log(`[PortraitFill] clip=${clip.id} the source stands — blurred fill instead of black bars`);
   }
@@ -956,7 +1017,12 @@ async function renderSegment(
   if (darkSource) {
     console.log(`[AdaptiveGrade] clip=${clip.id} dark source (mean luma ${meanLuma!.toFixed(0)}) — not darkened, no vignette, slight lift`);
   }
-  const built = buildVideoFilter(graded, fmt, dur, look, { portraitSource, darkSource });
+  /** VIDEO 663 — a corner logo or watermark the text check let through is pushed out of the frame (`logoPunchIn`). */
+  const unbranded = logoPunchIn(graded);
+  if (unbranded !== graded) {
+    console.log(`[LogoPunchIn] clip=${clip.id} the text check found a logo or watermark over the footage — ×${LOGO_PUNCH_IN_SCALE} so the corners leave the frame`);
+  }
+  const built = buildVideoFilter(unbranded, fmt, dur, look, { portraitSource: portraitSource || offShape, darkSource });
   /**
    * VIDEO 636 — A SHORT FILE HOLDS ITS LAST FRAME; IT IS NEVER PLAYED AGAIN FROM THE START.
    *
@@ -1026,6 +1092,9 @@ async function renderSegment(
       );
     }
     args.push("-ss", startAt.toFixed(3), "-t", readSec.toFixed(3), "-i", localMedia);
+    /** what the file gives (bounded by its end) against what the slot shows; the rest is its last frame, held */
+    const shownSec = Math.min(readSec, fileSec != null ? Math.max(0, fileSec - startAt) : readSec) / speed;
+    stillSec = Math.max(0, Number((dur - shownSec).toFixed(3)));
   }
   args.push(
     "-an",
@@ -1038,7 +1107,7 @@ async function renderSegment(
     outPath
   );
   await runFfmpeg(args, "segment encode");
-  return { handleFromSource };
+  return { handleFromSource, stillSec };
 }
 
 export type AssElement = {
@@ -1252,6 +1321,8 @@ export async function renderTimeline(params: {
   const { timeline, workDir, outputPath } = params;
   const fmt = timeline.format;
   const skipped: string[] = [];
+  /** VIDEO 663 — per segment, the seconds that show a held last frame (`RenderedTimeline.heldFrames`). */
+  const heldFrames: Array<{ clipId: string; sec: number }> = [];
   let commands = 0;
 
   fs.mkdirSync(workDir, { recursive: true });
@@ -1332,8 +1403,9 @@ export async function renderTimeline(params: {
     const handleSec = Math.floor(plannedHandleSec * fmt.fps + 1e-6) / fmt.fps;
     const seg = path.join(workDir, `seg_${String(i).padStart(3, "0")}.mp4`);
     try {
-      const { handleFromSource } = await renderSegment(clip, media, seg, fmt, timeline.look, handleSec);
+      const { handleFromSource, stillSec } = await renderSegment(clip, media, seg, fmt, timeline.look, handleSec);
       commands++;
+      if (stillSec > 0.04) heldFrames.push({ clipId: clip.id, sec: stillSec });
       if (handleSec > 0 && !handleFromSource) {
         skipped.push(
           `transition_handle clip ${clip.id}: the source has less than ${handleSec.toFixed(2)}s ` +
@@ -2004,6 +2076,7 @@ export async function renderTimeline(params: {
   return {
     outputPath,
     durationSec,
+    heldFrames,
     clipsRendered: segments.length,
     textsDrawn: texts.length + labelled.length,
     captionsDrawn: captions.length,

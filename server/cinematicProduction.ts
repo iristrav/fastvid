@@ -299,10 +299,12 @@ export async function planAndStoreCinematicTimeline(
       const asked = new Map<string, Promise<YoutubeSourceFacts | null>>();
       for (const scene of built.scenes) {
         for (const beat of scene.beats) {
+          /** VIDEO 663 — two moments of one video without an archive copy are two files: the window is part of the key. */
+          const window = beat.identity.providerWindow;
           const key =
             beat.identity.archiveAssetId != null
               ? `a:${beat.identity.archiveAssetId}`
-              : `p:${beat.identity.provider}:${beat.identity.providerAssetId ?? ""}`;
+              : `p:${beat.identity.provider}:${beat.identity.providerAssetId ?? ""}${window ? `@${window.inSec}-${window.outSec}` : ""}`;
           if (!asked.has(key)) {
             asked.set(key, params.youtubeSourceFacts(beat.identity).catch(() => null));
           }

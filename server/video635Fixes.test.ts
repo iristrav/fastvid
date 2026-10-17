@@ -245,7 +245,7 @@ describe("D — the renderer plays a short file once instead of looping its star
     const src = require("fs").readFileSync(require("path").join(__dirname, "timelineRenderer.ts"), "utf8") as string;
     const seg = src.slice(src.indexOf("async function renderSegment("));
     expect(seg.indexOf("speedThatFitsSource(clip")).toBeGreaterThan(-1);
-    expect(seg.indexOf("speedThatFitsSource(clip")).toBeLessThan(seg.indexOf("buildVideoFilter(graded"));
+    expect(seg.indexOf("speedThatFitsSource(clip")).toBeLessThan(seg.indexOf("buildVideoFilter(unbranded")); // VIDEO 663 — the graded clip, after the logo punch-in
     expect(seg).toContain("const speed = clipPlaybackSpeed(fitted);");
   });
 });

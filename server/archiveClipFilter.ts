@@ -278,7 +278,9 @@ Bij meerdere stills: true als minstens één still grotendeels uit zulke tekst b
 textIsCaptions — is de toegevoegde tekst MEER dan een klein logo of watermerk in een hoek?
 - true: ingebakken ondertitels of captions, een nieuwsticker of kopbalk, een lower third of
   naambalk, een "EXCLUSIVE"/"BREAKING"-banner, of tekst die over het midden van het beeld loopt.
-- false: alleen een klein zender- of kanaallogo of watermerk in een hoek van het beeld.
+- true: een copyright-vermelding (©) of een website-adres als watermerk, ook klein en ook in een
+  hoek — dat is de handtekening van een fotograaf of site op een beschermde foto.
+- false: alleen een klein zender- of kanaallogo zonder © of website-adres in een hoek van het beeld.
 - false wanneer hasBakedEditText false is.
 Bij meerdere stills: true als minstens één still zulke tekst toont.`;
 

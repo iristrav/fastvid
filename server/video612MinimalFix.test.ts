@@ -857,7 +857,7 @@ describe("L. an approval that rests on a guess about who is on screen is refused
      */
     expect(GATE).toContain("refuseGuessedIdentity(storedGuessAsGiven(storedRaw), beatText, params.anchors?.subject, state.personAsRead)");
     // OCTOBER 2026: the subject-and-situation rule runs first; the identity refusal still sees every fresh verdict.
-    expect(GATE).toContain("const judgementAfterSituation = situationRule(judgementAsGiven, parsed);");
+    expect(GATE).toContain("const judgementAfterSituation = situationRule(judgementAfterClash, parsed);"); // VIDEO 663 — after the condition-clash rule
     expect(GATE).toContain("const judgement = refuseGuessedIdentity(judgementAfterSituation, beatText, params.anchors?.subject, state.personAsRead);");
   });
 });

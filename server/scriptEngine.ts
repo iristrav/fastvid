@@ -19,6 +19,7 @@ import {
   buildScriptWriterSystemPrompt,
   countNarrationWords,
   stripVisualTagsFromScript,
+  restoreClippedSentences,
   stripWriterInstructions,
   scriptStillOnTopic,
   buildScriptLengthRefinePrompt,
@@ -847,7 +848,12 @@ export async function runScriptEngineV2(
             /** VIDEO 662 — the revision's removals are named like the draft's. */
             console.warn(`[ScriptEngine] removed ${cleanedRevision.removed.length} writer instruction(s) from the length revision: ${cleanedRevision.removed.map((r) => `"${r.slice(0, 80)}"`).join("; ")}`);
           }
-          const candidate = cleanedRevision.script;
+          /** VIDEO 663 — a sentence the revision cut words out of is put back whole (`restoreClippedSentences`). */
+          const repaired = restoreClippedSentences(markdownScript, cleanedRevision.script);
+          for (const r of repaired.restored) {
+            console.warn(`[ScriptEngine] the length revision clipped a sentence — restored: "${r.was.slice(0, 80)}" → "${r.now.slice(0, 80)}"`);
+          }
+          const candidate = repaired.script;
           const refinedWords = countNarrationWords(candidate);
           if (Math.abs(refinedWords - budget.targetWords) < Math.abs(wordCount - budget.targetWords)) {
             markdownScript = candidate;
